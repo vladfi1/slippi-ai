@@ -3,6 +3,7 @@
 import itertools
 import os
 import pickle
+import zlib
 
 from absl import app
 from absl import flags
@@ -20,6 +21,7 @@ import utils
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
+flags.DEFINE_boolean('compressed', False, 'Compress with zlib.')
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -36,6 +38,7 @@ class TrajectoryManager:
     self.game = None
 
   def grab_chunk(self, n):
+    # TODO: write a unit test for this
     is_first = False
     if self.game is None:
       self.game = next(self.source)
@@ -71,10 +74,21 @@ class TrajectoryManager:
       frames_left -= size
     return tf.nest.map_structure(lambda *xs: np.concatenate(xs), *chunks)
 
+def swap_players(game):
+  old_players = game['player']
+  new_players = {1: old_players[2], 2: old_players[1]}
+  new_game = game.copy()
+  new_game['player'] = new_players
+  return new_game
+
 class DataSource:
-  def __init__(self, embed_game, filenames, batch_size=64, unroll_length=64):
+  def __init__(
+      self, embed_game, filenames, compressed,
+      batch_size=64,
+      unroll_length=64):
     self.embed_game = embed_game
     self.filenames = filenames
+    self.compressed = compressed
     trajectories = self.produce_trajectories()
     self.managers = [
         TrajectoryManager(trajectories, unroll_length)
@@ -83,9 +97,12 @@ class DataSource:
   def produce_trajectories(self):
     for path in itertools.cycle(self.filenames):
       with open(path, 'rb') as f:
-        game = pickle.load(f)
+        obj_bytes = f.read()
+      if self.compressed:
+        obj_bytes = zlib.decompress(obj_bytes)
+      game = pickle.loads(obj_bytes)
       yield game
-      # TODO: also yield with players swapped?
+      yield swap_players(game)
 
   def __next__(self):
     return utils.batch_nest([m.next() for m in self.managers])
@@ -97,6 +114,7 @@ class Learner:
     self.optimizer = snt.optimizers.Adam(1e-4)
     self.embed_game = embed_game
 
+  @tf.function
   def step(self, batch):
     gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
 
@@ -123,14 +141,30 @@ def main(_):
   embed_game = embed.make_game_embedding()
   learner = Learner(embed_game)
 
+  data_dir = paths.FOX_DITTO_PATH
+  if FLAGS.compressed:
+    data_dir += 'Compressed'
+
   filenames = [
-      paths.FOX_DITTO_PATH + name + '.pkl'
+      os.path.join(data_dir, name + '.pkl')
       for name in make_dataset.get_fox_ditto_names()]
-  data_source = DataSource(embed_game, filenames, batch_size=FLAGS.batch_size)
+  data_source = DataSource(
+      embed_game, filenames,
+      batch_size=FLAGS.batch_size,
+      compressed=FLAGS.compressed)
+
+  data_profiler = utils.Profiler()
+  step_profiler = utils.Profiler()
 
   for _ in range(1000):
-    loss = learner.step(next(data_source))
+    for _ in range(10):
+      with data_profiler:
+        batch = next(data_source)
+      with step_profiler:
+        loss = learner.step(batch)
     print(loss.numpy())
+    print('data', data_profiler.mean_time())
+    print('step', step_profiler.mean_time())
 
 if __name__ == '__main__':
   app.run(main)
