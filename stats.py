@@ -3,10 +3,9 @@ import os
 import pandas
 import sqlite3
 import melee
+import paths
 
-DB_PATH = os.path.expanduser('~/Scratch/melee_public_slp_dataset.sqlite3')
-
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect(paths.DB_PATH)
 table = pandas.read_sql_query("SELECT * from replays", conn)
 
 def to_name(c):

@@ -2,6 +2,7 @@
 
 import itertools
 import os
+import pickle
 
 from absl import app
 from absl import flags
@@ -13,46 +14,12 @@ import tensorflow as tf
 import melee
 import embed
 import stats
+import make_dataset
+import paths
+import utils
 
-REPLAY_PATH = os.path.expanduser('~/Slippi/Game_20201113T162336.slp')
-DATASET_PATH = '/media/vlad/Archive-2T-Nomad/Vlad/training_data/'
-
-def read_gamestates(replay_path):
-  print("Reading from ", replay_path)
-  console = melee.Console(is_dolphin=False,
-                          allow_old_version=True,
-                          path=replay_path)
-  console.connect()
-
-  gamestate = console.step()
-  port_map = dict(zip(gamestate.player.keys(), [1, 2]))
-
-  def fix_state(s):
-    s.player = {port_map[p]: v for p, v in s.player.items()}
-
-  while gamestate:
-    fix_state(gamestate)
-    yield gamestate
-    gamestate = console.step()
-
-class TrajectoryProducer:
-  def __init__(self, embed_game):
-    self.embed_game = embed_game
-
-  def __iter__(self):
-    for name in itertools.cycle(stats.table['filename']):
-      path = DATASET_PATH + name
-      yield [self.embed_game.from_state(s) for s in read_gamestates(path)]
-      # TODO: also yield with players swapped?
-
-def np_array(*vals):
-  return np.array(vals)
-
-def batch_nest(nests):
-  return tf.nest.map_structure(np_array, *nests)
-
-def make_trajectory(embed_game, states):
-  return batch_nest(embed_game.from_state(s) for s in states)
+FLAGS = flags.FLAGS
+flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -66,28 +33,62 @@ class TrajectoryManager:
   def __init__(self, source, num_frames: int):
     self.source = source
     self.num_frames = num_frames
-    self.frames = self.iter_frames()
+    self.game = None
 
-  def iter_frames(self):
-    for trajectory in self.source:
-      restart = True
-      for frame in trajectory:
-        yield frame, restart
-        restart = False
+  def grab_chunk(self, n):
+    is_first = False
+    if self.game is None:
+      self.game = next(self.source)
+      self.frame = 0
+      is_first = True
+
+    left = len(self.game['stage']) - self.frame
+
+    if n < left:
+      new_frame = self.frame + n
+      slice = lambda a: a[self.frame:new_frame]
+      chunk = tf.nest.map_structure(slice, self.game)
+      self.frame = new_frame
+      size = n
+    else:
+      slice = lambda a: a[self.frame:]
+      chunk = tf.nest.map_structure(slice, self.game)
+      self.game = None
+      size = left
+
+    restarting = np.zeros([size], dtype=bool)
+    if is_first:
+      restarting[0] = True
+
+    return size, (chunk, restarting)
 
   def next(self):
-    frames, restarts = zip(*[next(self.frames) for _ in range(self.num_frames)])
-    return batch_nest(frames), np.array(restarts)
+    chunks = []
+    frames_left = self.num_frames
+    while frames_left > 0:
+      size, chunk = self.grab_chunk(frames_left)
+      chunks.append(chunk)
+      frames_left -= size
+    return tf.nest.map_structure(lambda *xs: np.concatenate(xs), *chunks)
 
 class DataSource:
-  def __init__(self, embed_game, batch_size=64, unroll_length=64):
-    producer = iter(TrajectoryProducer(embed_game))
+  def __init__(self, embed_game, filenames, batch_size=64, unroll_length=64):
+    self.embed_game = embed_game
+    self.filenames = filenames
+    trajectories = self.produce_trajectories()
     self.managers = [
-        TrajectoryManager(producer, unroll_length)
+        TrajectoryManager(trajectories, unroll_length)
         for _ in range(batch_size)]
 
+  def produce_trajectories(self):
+    for path in itertools.cycle(self.filenames):
+      with open(path, 'rb') as f:
+        game = pickle.load(f)
+      yield game
+      # TODO: also yield with players swapped?
+
   def __next__(self):
-    return batch_nest([m.next() for m in self.managers])
+    return utils.batch_nest([m.next() for m in self.managers])
 
 class Learner:
 
@@ -96,13 +97,13 @@ class Learner:
     self.optimizer = snt.optimizers.Adam(1e-4)
     self.embed_game = embed_game
 
-  def step(self, batch_gamestate, restarting):
-    time_major_gamestate = tf.nest.map_structure(to_time_major, batch_gamestate)
+  def step(self, batch):
+    gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
 
-    flat_gamestate = self.embed_game(time_major_gamestate)
+    flat_gamestate = self.embed_game(gamestate)
     prev_gamestate = flat_gamestate[:-1]
 
-    p1_controller = time_major_gamestate['player'][1]['controller_state']
+    p1_controller = gamestate['player'][1]['controller_state']
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
 
     with tf.GradientTape() as tape:
@@ -121,10 +122,14 @@ class Learner:
 def main(_):
   embed_game = embed.make_game_embedding()
   learner = Learner(embed_game)
-  data_source = DataSource(embed_game)
+
+  filenames = [
+      paths.FOX_DITTO_PATH + name + '.pkl'
+      for name in make_dataset.get_fox_ditto_names()]
+  data_source = DataSource(embed_game, filenames, batch_size=FLAGS.batch_size)
 
   for _ in range(1000):
-    loss = learner.step(*next(data_source))
+    loss = learner.step(next(data_source))
     print(loss.numpy())
 
 if __name__ == '__main__':
