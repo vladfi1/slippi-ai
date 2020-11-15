@@ -40,6 +40,7 @@ def read_gamestates(replay_path):
     yield gamestate
     gamestate = console.step()
 
+# TODO: enable speeds?
 embed_game = embed.make_game_embedding()
 
 def game_to_numpy(replay_path):

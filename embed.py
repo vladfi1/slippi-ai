@@ -17,7 +17,8 @@ class Embedding:
 class BoolEmbedding(Embedding):
   size = 1
 
-  def __init__(self, on=1., off=0.):
+  def __init__(self, name='bool', on=1., off=0.):
+    self.name = name
     self.on = on
     self.off = off
 
@@ -287,13 +288,13 @@ def make_player_embedding(
     xy_scale: float = 0.05,
     shield_scale: float = 0.01,
     speed_scale: float = 0.5,
+    with_speeds: bool = False,
     ):
     embed_xy = FloatEmbedding("xy", scale=xy_scale)
-    embed_speed = FloatEmbedding("speed", scale=speed_scale)
 
     embedding = [
       ("percent", FloatEmbedding("percent", scale=0.01)),
-      ("facing", embed_bool),
+      ("facing", BoolEmbedding("facing", off=-1.)),
       ("x", embed_xy),
       ("y", embed_xy),
       ("action", embed_action),
@@ -306,13 +307,18 @@ def make_player_embedding(
       # ("charging_smash", embedFloat),
       ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale)),
       ("on_ground", embed_bool),
-      # ('speed_air_x_self', embed_speed),
-      # ('speed_ground_x_self', embed_speed),
-      # ('speed_y_self', embed_speed),
-      # ('speed_x_attack', embed_speed),
-      # ('speed_y_attack', embed_speed),
       ('controller_state', embed_controller),
     ]
+
+    if with_speeds:
+      embed_speed = FloatEmbedding("speed", scale=speed_scale)
+      embedding.extend([
+          ('speed_air_x_self', embed_speed),
+          ('speed_ground_x_self', embed_speed),
+          ('speed_y_self', embed_speed),
+          ('speed_x_attack', embed_speed),
+          ('speed_y_attack', embed_speed),
+      ])
 
     return StructEmbedding("player", embedding)
 
