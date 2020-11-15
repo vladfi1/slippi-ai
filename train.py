@@ -55,22 +55,17 @@ def main(_):
     filenames = sorted(os.listdir(data_dir))
 
   # reproducible train/test split
-  indices = range(len(filenames))
   rng = random.Random()
-  test_indices = rng.sample(indices, int(.1 * len(filenames)))
-  is_test = [False] * len(filenames)
-  for i in test_indices:
-    is_test[i] = True
-  train_files = []
-  test_files = []
-  for i, b in enumerate(is_test):
-    files = test_files if b else train_files
-    files.append(os.path.join(data_dir, filenames[i]))
-  print(f'Training on {len(train_files)} replays, testing with {len(test_files)}')
+  test_files = rng.sample(filenames, int(.1 * len(filenames)))
+  test_set = set(test_files)
+  train_files = [f for f in filenames if f not in test_set]
+  print(f'Training on {len(train_files)} replays, testing on {len(test_files)}')
+  train_paths = [os.path.join(data_dir, f) for f in train_files]
+  test_paths = [os.path.join(data_dir, f) for f in test_files]
 
   data_config = config['data']
-  train_data = data.DataSource(embed_game, train_files, **data_config)
-  test_data = data.DataSource(embed_game, test_files, **data_config)
+  train_data = data.DataSource(embed_game, train_paths, **data_config)
+  test_data = data.DataSource(embed_game, test_paths, **data_config)
 
   data_profiler = utils.Profiler()
   step_profiler = utils.Profiler()
