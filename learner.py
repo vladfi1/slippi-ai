@@ -1,5 +1,6 @@
 """Learner test script."""
 
+import random
 import os
 
 from absl import app
@@ -19,6 +20,7 @@ import data
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
+flags.DEFINE_string('dataset', paths.FOX_DITTO_PATH, 'Path to pickled dataset.')
 flags.DEFINE_boolean('compressed', False, 'Compress with zlib.')
 
 def to_time_major(t):
@@ -35,7 +37,7 @@ class Learner:
     self.embed_game = embed_game
 
   @tf.function
-  def step(self, batch):
+  def step(self, batch, train=True):
     gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
 
     flat_gamestate = self.embed_game(gamestate)
@@ -52,24 +54,38 @@ class Learner:
           tf.reduce_mean, next_action_distances)
       loss = tf.add_n(tf.nest.flatten(mean_distances))
 
-    params = self.network.trainable_variables
-    grads = tape.gradient(loss, params)
-    self.optimizer.apply(grads, params)
+    if train:
+      params = self.network.trainable_variables
+      grads = tape.gradient(loss, params)
+      self.optimizer.apply(grads, params)
     return loss
 
 def main(_):
   embed_game = embed.make_game_embedding()
   learner = Learner(embed_game)
 
-  data_dir = paths.FOX_DITTO_PATH
-  if FLAGS.compressed:
-    data_dir += 'Compressed'
+  data_dir = FLAGS.dataset
+  filenames = sorted(os.listdir(data_dir))
 
-  filenames = [
-      os.path.join(data_dir, name + '.pkl')
-      for name in make_dataset.get_fox_ditto_names()]
-  data_source = data.DataSource(
-      embed_game, filenames,
+  # reproducible train/test split
+  indices = range(len(filenames))
+  rng = random.Random()
+  test_indices = rng.sample(indices, int(.1 * len(filenames)))
+  is_test = [False] * len(filenames)
+  for i in test_indices:
+    is_test[i] = True
+  train_files = []
+  test_files = []
+  for i, b in enumerate(is_test):
+    files = test_files if b else train_files
+    files.append(os.path.join(data_dir, filenames[i]))
+
+  train_data = data.DataSource(
+      embed_game, train_files,
+      batch_size=FLAGS.batch_size,
+      compressed=FLAGS.compressed)
+  test_data = data.DataSource(
+      embed_game, test_files,
       batch_size=FLAGS.batch_size,
       compressed=FLAGS.compressed)
 
@@ -77,14 +93,20 @@ def main(_):
   step_profiler = utils.Profiler()
 
   for _ in range(1000):
-    for _ in range(10):
+    # train for a while
+    for _ in range(20):
       with data_profiler:
-        batch = next(data_source)
+        batch = next(train_data)
       with step_profiler:
-        loss = learner.step(batch)
-    print(loss.numpy())
-    print('data', data_profiler.mean_time())
-    print('step', step_profiler.mean_time())
+        train_loss = learner.step(batch)
+    # now test
+    batch = next(test_data)
+    test_loss = learner.step(batch, train=False)
+
+    print('train_loss', train_loss.numpy())
+    print('test_loss', test_loss.numpy())
+    print(f'data {data_profiler.mean_time():.3f}')
+    print(f'step {step_profiler.mean_time():.3f}')
 
 if __name__ == '__main__':
   app.run(main)
