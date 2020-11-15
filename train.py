@@ -4,8 +4,8 @@ import os
 import random
 import time
 
-from absl import app
-from absl import flags
+from sacred import Experiment
+from sacred.observers import MongoObserver
 
 import numpy as np
 import sonnet as snt
@@ -13,7 +13,6 @@ import tensorflow as tf
 
 import melee
 
-from config import ConfigParser
 import data
 import embed
 from learner import Learner
@@ -22,34 +21,33 @@ import paths
 import stats
 import utils
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('dataset', paths.COMPRESSED_PATH, 'Path to pickled dataset.')
-flags.DEFINE_string('subset', None, 'Subset to train on. Defaults to all files.')
+ex = Experiment('imitation')
+ex.observers.append(MongoObserver())
 
-DEFAULT_CONFIG = dict(
-    data=dict(
-        batch_size=32,
-        unroll_length=64,
-        compressed=True,
-    ),
-    learner=Learner.DEFAULT_CONFIG,
-    network=networks.DEFAULT_CONFIG,
-)
+@ex.config
+def config():
+  dataset = paths.COMPRESSED_PATH  # Path to pickled dataset.
+  subset = None  # Subset to train on. Defaults to all files.
+  data = dict(
+      batch_size=32,
+      unroll_length=64,
+      compressed=True,
+  )
+  learner = Learner.DEFAULT_CONFIG
+  network = networks.DEFAULT_CONFIG
 
-config_parser = ConfigParser('config', DEFAULT_CONFIG)
-
-def main(_):
-  config = config_parser.parse()
+@ex.automain
+def main(dataset, subset, _config):
   embed_game = embed.make_game_embedding()
-  network = networks.construct_network(**config['network'])
+  network = networks.construct_network(**_config['network'])
   learner = Learner(
       embed_game=embed_game,
       network=network,
-      **config['learner'])
+      **_config['learner'])
 
-  data_dir = FLAGS.dataset
-  if FLAGS.subset:
-    filenames = stats.SUBSETS[FLAGS.subset]()
+  data_dir = dataset
+  if subset:
+    filenames = stats.SUBSETS[subset]()
     filenames = [name + '.pkl' for name in filenames]
   else:
     filenames = sorted(os.listdir(data_dir))
@@ -63,7 +61,7 @@ def main(_):
   train_paths = [os.path.join(data_dir, f) for f in train_files]
   test_paths = [os.path.join(data_dir, f) for f in test_files]
 
-  data_config = config['data']
+  data_config = _config['data']
   train_data = data.DataSource(embed_game, train_paths, **data_config)
   test_data = data.DataSource(embed_game, test_paths, **data_config)
 
@@ -83,16 +81,23 @@ def main(_):
         train_loss = learner.step(batch)
       steps += 1
 
+    train_loss = train_loss.numpy()
+    ex.log_scalar('train.loss', train_loss)
+
     # now test
     batch = next(test_data)
     test_loss = learner.step(batch, train=False)
+    test_loss = test_loss.numpy()
+    ex.log_scalar('test.loss', test_loss)
 
     elapsed_time = time.perf_counter() - start_time
     sps = steps / elapsed_time
     mps = sps * frames_per_batch / (60 * 60)
+    ex.log_scalar('sps', sps)
+    ex.log_scalar('mps', mps)
 
     print(f'batches={steps} sps={sps:.2f} mps={mps:.2f}')
-    print(f'losses: train={train_loss.numpy():.4f} test={test_loss.numpy():.4f}')
+    print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
           f' data={data_profiler.mean_time():.3f}'
           f' step={step_profiler.mean_time():.3f}')
