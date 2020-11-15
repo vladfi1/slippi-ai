@@ -1,7 +1,7 @@
 import sonnet as snt
 
 DEFAULT_CONFIG = dict(
-    type='mlp',
+    name='mlp',
     mlp=dict(output_sizes=[256, 128]),
 )
 
@@ -12,5 +12,5 @@ CONSTRUCTORS = dict(
     mlp=mlp,
 )
 
-def construct_network(type, **config):
-  return CONSTRUCTORS[type](**config[type])
+def construct_network(name, **config):
+  return CONSTRUCTORS[name](**config[name])

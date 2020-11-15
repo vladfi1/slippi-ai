@@ -13,24 +13,39 @@ import tensorflow as tf
 
 import melee
 
+from config import ConfigParser
 import data
 import embed
 from learner import Learner
+import networks
 import paths
 import stats
 import utils
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('dataset', paths.COMPRESSED_PATH, 'Path to pickled dataset.')
-flags.DEFINE_boolean('compressed', True, 'Compress with zlib.')
 flags.DEFINE_string('subset', None, 'Subset to train on. Defaults to all files.')
 
-flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
-flags.DEFINE_integer('unroll_length', 64, 'Learner unroll length.')
+DEFAULT_CONFIG = dict(
+    data=dict(
+        batch_size=32,
+        unroll_length=64,
+        compressed=True,
+    ),
+    learner=Learner.DEFAULT_CONFIG,
+    network=networks.DEFAULT_CONFIG,
+)
+
+config_parser = ConfigParser('config', DEFAULT_CONFIG)
 
 def main(_):
+  config = config_parser.parse()
   embed_game = embed.make_game_embedding()
-  learner = Learner(embed_game)
+  network = networks.construct_network(**config['network'])
+  learner = Learner(
+      embed_game=embed_game,
+      network=network,
+      **config['learner'])
 
   data_dir = FLAGS.dataset
   if FLAGS.subset:
@@ -53,22 +68,15 @@ def main(_):
     files.append(os.path.join(data_dir, filenames[i]))
   print(f'Training on {len(train_files)} replays, testing with {len(test_files)}')
 
-  train_data = data.DataSource(
-      embed_game, train_files,
-      batch_size=FLAGS.batch_size,
-      unroll_length=FLAGS.unroll_length,
-      compressed=FLAGS.compressed)
-  test_data = data.DataSource(
-      embed_game, test_files,
-      batch_size=FLAGS.batch_size,
-      unroll_length=FLAGS.unroll_length,
-      compressed=FLAGS.compressed)
+  data_config = config['data']
+  train_data = data.DataSource(embed_game, train_files, **data_config)
+  test_data = data.DataSource(embed_game, test_files, **data_config)
 
   data_profiler = utils.Profiler()
   step_profiler = utils.Profiler()
 
   steps = 0
-  frames_per_batch = FLAGS.batch_size * FLAGS.unroll_length
+  frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
 
   start_time = time.perf_counter()
   for _ in range(1000):

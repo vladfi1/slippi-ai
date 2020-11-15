@@ -12,11 +12,18 @@ def to_time_major(t):
 
 class Learner:
 
-  def __init__(self, embed_game, network=networks.DEFAULT_CONFIG):
-    self.network = networks.construct_network(**network)
-    self.controller_head = snt.Linear(embed.embed_controller.size)
-    self.optimizer = snt.optimizers.Adam(1e-4)
+  DEFAULT_CONFIG = dict(
+      learning_rate=1e-4,
+  )
+
+  def __init__(self,
+      embed_game: embed.Embedding,
+      learning_rate: float,
+      network: snt.Module):
     self.embed_game = embed_game
+    self.network = network
+    self.controller_head = snt.Linear(embed.embed_controller.size)
+    self.optimizer = snt.optimizers.Adam(learning_rate)
 
   @tf.function
   def step(self, batch, train=True):
