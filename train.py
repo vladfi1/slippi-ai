@@ -21,6 +21,8 @@ import paths
 import stats
 import utils
 
+LOG_INTERVAL = 10
+
 ex = Experiment('imitation')
 ex.observers.append(MongoObserver())
 
@@ -68,35 +70,41 @@ def main(dataset, subset, _config):
   data_profiler = utils.Profiler()
   step_profiler = utils.Profiler()
 
-  steps = 0
+  total_steps = 0
   frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
 
-  start_time = time.perf_counter()
   for _ in range(1000):
+    steps = 0
+    start_time = time.perf_counter()
+
     # train for a while
-    for _ in range(20):
+    while True:
+      elapsed_time = time.perf_counter() - start_time
+      if elapsed_time > LOG_INTERVAL: break
+
       with data_profiler:
         batch = next(train_data)
       with step_profiler:
         train_loss = learner.step(batch)
       steps += 1
 
+    total_steps += steps
+
     train_loss = train_loss.numpy()
-    ex.log_scalar('train.loss', train_loss)
+    ex.log_scalar('train.loss', train_loss, total_steps)
 
     # now test
     batch = next(test_data)
     test_loss = learner.step(batch, train=False)
     test_loss = test_loss.numpy()
-    ex.log_scalar('test.loss', test_loss)
+    ex.log_scalar('test.loss', test_loss, total_steps)
 
-    elapsed_time = time.perf_counter() - start_time
     sps = steps / elapsed_time
     mps = sps * frames_per_batch / (60 * 60)
-    ex.log_scalar('sps', sps)
-    ex.log_scalar('mps', mps)
+    ex.log_scalar('sps', sps, total_steps)
+    ex.log_scalar('mps', mps, total_steps)
 
-    print(f'batches={steps} sps={sps:.2f} mps={mps:.2f}')
+    print(f'batches={total_steps} sps={sps:.2f} mps={mps:.2f}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
           f' data={data_profiler.mean_time():.3f}'
