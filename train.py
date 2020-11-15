@@ -1,7 +1,9 @@
 """Learner test script."""
 
+import datetime
 import os
 import random
+import secrets
 import time
 
 from sacred import Experiment
@@ -22,9 +24,18 @@ import stats
 import utils
 
 LOG_INTERVAL = 10
+SAVE_INTERVAL = 300
 
 ex = Experiment('imitation')
 ex.observers.append(MongoObserver())
+
+def get_experiment_directory():
+  # create directory for tf checkpoints and other experiment artifacts
+  today = datetime.date.today()
+  expt_tag = f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
+  expt_dir = f'experiments/{expt_tag}'
+  os.makedirs(expt_dir, exist_ok=True)
+  return expt_dir
 
 @ex.config
 def config():
@@ -37,15 +48,24 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
+  expt_dir = get_experiment_directory()
 
 @ex.automain
-def main(dataset, subset, _config):
+def main(dataset, subset, expt_dir, _config, _log):
   embed_game = embed.make_game_embedding()
   network = networks.construct_network(**_config['network'])
   learner = Learner(
       embed_game=embed_game,
       network=network,
       **_config['learner'])
+
+  ckpt = tf.train.Checkpoint(
+      step=tf.Variable(0),
+      optimizer=learner.optimizer,
+      network=network)
+  manager = tf.train.CheckpointManager(
+      ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
+  save = utils.Periodically(manager.save, SAVE_INTERVAL)
 
   data_dir = dataset
   if subset:
@@ -88,7 +108,8 @@ def main(dataset, subset, _config):
         train_loss = learner.step(batch)
       steps += 1
 
-    total_steps += steps
+    ckpt.step.assign_add(steps)
+    total_steps = ckpt.step.numpy()
 
     train_loss = train_loss.numpy()
     ex.log_scalar('train.loss', train_loss, total_steps)
@@ -110,6 +131,10 @@ def main(dataset, subset, _config):
           f' data={data_profiler.mean_time():.3f}'
           f' step={step_profiler.mean_time():.3f}')
     print()
+
+    save_path = save()
+    if save_path:
+      _log.info('Saving network to %s', save_path)
 
 if __name__ == '__main__':
   app.run(main)

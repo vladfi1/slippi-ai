@@ -23,3 +23,15 @@ class Profiler:
 
   def mean_time(self):
     return self.cumtime / self.num_calls
+
+class Periodically:
+  def __init__(self, f, interval):
+    self.f = f
+    self.interval = interval
+    self.last_call = None
+
+  def __call__(self, *args, **kwargs):
+    now = time.time()
+    if self.last_call is None or now - self.last_call > self.interval:
+      self.last_call = now
+      return self.f(*args, **kwargs)
