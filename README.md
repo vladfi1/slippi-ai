@@ -8,4 +8,16 @@ To get started with Google Cloud Platform, you can use the 'Deep Learning VM' in
 
 `pip install --user -r requirements.txt`
 
-The code expects 'melee_public_slp_dataset.sqlite3' in the `/data/` folder, which can be obtained here: https://drive.google.com/file/d/1ab6ovA46tfiPZ2Y3a_yS1J3k3656yQ8f/view?usp=sharing (27G, unzips to 200G). Check the ai channel of the Slippi discord for potential updates. 
+An preexisting dataset of raw slippi replays is available at https://drive.google.com/file/d/1ab6ovA46tfiPZ2Y3a_yS1J3k3656yQ8f (27G, unzips to 200G; check the ai channel of the Slippi discord for potential updates). You can place this in the `data/` folder using `gdown <drive link> <destination>`.
+
+The code relies on a small (~3 MB) sql database which is 'melee_public_slp_dataset.sqlite3' in the `data/` folder.
+
+A dataset of processed and compressed slippi replays is available at https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B. It is a tarball of zipped pickled slp files. Use
+
+`gdown https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B data/`
+`tar -xf data/AllCompressed.tar`
+
+to expand it, yielding zipped pickled slp files for training ML models. To try training a simple model, run
+
+`python train.py`.
+

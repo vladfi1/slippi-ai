@@ -1,3 +1,4 @@
 pandas
 dm-sonnet
 git+https://github.com/altf4/libmelee.git@6c129d00237061813db20bfa4fbc51bad0c9e582
+gdown
