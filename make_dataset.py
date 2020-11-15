@@ -21,7 +21,7 @@ def get_fox_ditto_names():
   table = stats.table
   table = table[table.css_character_0 == melee.Character.FOX.value]
   table = table[table.css_character_1 == melee.Character.FOX.value]
-  return table.filename[:100]
+  return table.filename
 
 def read_gamestates(replay_path):
   print("Reading from ", replay_path)
