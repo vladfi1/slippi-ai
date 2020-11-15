@@ -2,6 +2,7 @@ import sonnet as snt
 import tensorflow as tf
 
 import embed
+import networks
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -11,8 +12,9 @@ def to_time_major(t):
 
 class Learner:
 
-  def __init__(self, embed_game):
-    self.network = snt.nets.MLP([256, 128, embed.embed_controller.size])
+  def __init__(self, embed_game, network=networks.DEFAULT_CONFIG):
+    self.network = networks.construct_network(**network)
+    self.controller_head = snt.Linear(embed.embed_controller.size)
     self.optimizer = snt.optimizers.Adam(1e-4)
     self.embed_game = embed_game
 
@@ -28,8 +30,9 @@ class Learner:
 
     with tf.GradientTape() as tape:
       outputs = self.network(prev_gamestate)
+      controller_prediction = self.controller_head(outputs)
       next_action_distances = embed.embed_controller.distance(
-          outputs, next_action)
+          controller_prediction, next_action)
       mean_distances = tf.nest.map_structure(
           tf.reduce_mean, next_action_distances)
       loss = tf.add_n(tf.nest.flatten(mean_distances))
