@@ -35,6 +35,8 @@ class Learner:
     p1_controller = gamestate['player'][1]['controller_state']
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
 
+    # import code; code.interact(local=dict(globals(), **locals()))
+
     with tf.GradientTape() as tape:
       outputs = self.network(prev_gamestate)
       controller_prediction = self.controller_head(outputs)
