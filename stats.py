@@ -6,7 +6,21 @@ import melee
 import paths
 
 conn = sqlite3.connect(paths.DB_PATH)
-table = pandas.read_sql_query("SELECT * from replays", conn)
+TABLE = pandas.read_sql_query("SELECT * from replays", conn)
+
+def get_all_names():
+  return TABLE.filename
+
+def get_fox_ditto_names():
+  table = TABLE
+  table = table[table.css_character_0 == melee.Character.FOX.value]
+  table = table[table.css_character_1 == melee.Character.FOX.value]
+  return table.filename
+
+SUBSETS = {
+  "fox_dittos": get_fox_ditto_names,
+  "all": get_all_names,
+}
 
 def to_name(c):
   return melee.Character(c).name

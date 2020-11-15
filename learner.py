@@ -14,14 +14,14 @@ import tensorflow as tf
 import melee
 import embed
 import stats
-import make_dataset
 import paths
 import utils
 import data
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('dataset', paths.FOX_DITTO_PATH, 'Path to pickled dataset.')
-flags.DEFINE_boolean('compressed', False, 'Compress with zlib.')
+flags.DEFINE_string('dataset', paths.COMPRESSED_PATH, 'Path to pickled dataset.')
+flags.DEFINE_boolean('compressed', True, 'Compress with zlib.')
+flags.DEFINE_string('subset', None, 'Subset to train on. Defaults to all files.')
 
 flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
 flags.DEFINE_integer('unroll_length', 64, 'Learner unroll length.')
@@ -68,7 +68,11 @@ def main(_):
   learner = Learner(embed_game)
 
   data_dir = FLAGS.dataset
-  filenames = sorted(os.listdir(data_dir))
+  if FLAGS.subset:
+    filenames = stats.SUBSETS[FLAGS.subset]()
+    filenames = [name + '.pkl' for name in filenames]
+  else:
+    filenames = sorted(os.listdir(data_dir))
 
   # reproducible train/test split
   indices = range(len(filenames))
@@ -120,7 +124,7 @@ def main(_):
     mps = sps * frames_per_batch / (60 * 60)
 
     print(f'batches={steps} sps={sps:.2f} mps={mps:.2f}')
-    print(f'losses: train={train_loss.numpy():.2f} test={test_loss.numpy():.2f}')
+    print(f'losses: train={train_loss.numpy():.4f} test={test_loss.numpy():.4f}')
     print(f'timing:'
           f' data={data_profiler.mean_time():.3f}'
           f' step={step_profiler.mean_time():.3f}')

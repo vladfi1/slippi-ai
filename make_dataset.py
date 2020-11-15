@@ -16,12 +16,11 @@ import utils
 FLAGS = flags.FLAGS
 flags.DEFINE_integer('cores', 1, 'number of cores')
 flags.DEFINE_boolean('compress', False, 'Compress with zlib.')
+flags.DEFINE_enum('subset', stats.SUBSETS, 'fox_dittos', 'Subset of full dataset.')
+flags.DEFINE_string('dst_dir', paths.FOX_DITTO_PATH, 'Where to create the dataset.')
 
-def get_fox_ditto_names():
-  table = stats.table
-  table = table[table.css_character_0 == melee.Character.FOX.value]
-  table = table[table.css_character_1 == melee.Character.FOX.value]
-  return table.filename
+def get_subset():
+  return stats.SUBSETS[FLAGS.subset]()
 
 def read_gamestates(replay_path):
   print("Reading from ", replay_path)
@@ -78,13 +77,13 @@ def batch_slp_to_pkl(src_dir, dst_dir, names, compress=False, cores=1):
 
 def main(_):
   # print(len(get_fox_ditto_names()))
-  dst_dir = paths.FOX_DITTO_PATH
+  dst_dir = FLAGS.dst_dir
   if FLAGS.compress:
     dst_dir += "Compressed"
   batch_slp_to_pkl(
       paths.DATASET_PATH,
       dst_dir,
-      get_fox_ditto_names(),
+      get_subset(),
       FLAGS.compress,
       FLAGS.cores)
 
