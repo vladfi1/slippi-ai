@@ -1,7 +1,8 @@
 """Learner test script."""
 
-import random
 import os
+import random
+import time
 
 from absl import app
 from absl import flags
@@ -19,9 +20,11 @@ import utils
 import data
 
 FLAGS = flags.FLAGS
-flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
 flags.DEFINE_string('dataset', paths.FOX_DITTO_PATH, 'Path to pickled dataset.')
 flags.DEFINE_boolean('compressed', False, 'Compress with zlib.')
+
+flags.DEFINE_integer('batch_size', 2, 'Learner batch size.')
+flags.DEFINE_integer('unroll_length', 64, 'Learner unroll length.')
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -79,19 +82,26 @@ def main(_):
   for i, b in enumerate(is_test):
     files = test_files if b else train_files
     files.append(os.path.join(data_dir, filenames[i]))
+  print(f'Training on {len(train_files)} replays, testing with {len(test_files)}')
 
   train_data = data.DataSource(
       embed_game, train_files,
       batch_size=FLAGS.batch_size,
+      unroll_length=FLAGS.unroll_length,
       compressed=FLAGS.compressed)
   test_data = data.DataSource(
       embed_game, test_files,
       batch_size=FLAGS.batch_size,
+      unroll_length=FLAGS.unroll_length,
       compressed=FLAGS.compressed)
 
   data_profiler = utils.Profiler()
   step_profiler = utils.Profiler()
 
+  steps = 0
+  frames_per_batch = FLAGS.batch_size * FLAGS.unroll_length
+
+  start_time = time.perf_counter()
   for _ in range(1000):
     # train for a while
     for _ in range(20):
@@ -99,14 +109,22 @@ def main(_):
         batch = next(train_data)
       with step_profiler:
         train_loss = learner.step(batch)
+      steps += 1
+
     # now test
     batch = next(test_data)
     test_loss = learner.step(batch, train=False)
 
-    print('train_loss', train_loss.numpy())
-    print('test_loss', test_loss.numpy())
-    print(f'data {data_profiler.mean_time():.3f}')
-    print(f'step {step_profiler.mean_time():.3f}')
+    elapsed_time = time.perf_counter() - start_time
+    sps = steps / elapsed_time
+    mps = sps * frames_per_batch / (60 * 60)
+
+    print(f'batches={steps} sps={sps:.2f} mps={mps:.2f}')
+    print(f'losses: train={train_loss.numpy():.2f} test={test_loss.numpy():.2f}')
+    print(f'timing:'
+          f' data={data_profiler.mean_time():.3f}'
+          f' step={step_profiler.mean_time():.3f}')
+    print()
 
 if __name__ == '__main__':
   app.run(main)
