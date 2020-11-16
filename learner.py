@@ -25,19 +25,20 @@ class Learner:
     self.controller_head = snt.Linear(embed.embed_controller.size)
     self.optimizer = snt.optimizers.Adam(learning_rate)
 
-  @tf.function
-  def step(self, batch, train=True):
+    self.compiled_step = tf.function(self.step)
+
+  def step(self, batch, initial_states, train=True):
     gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
 
     flat_gamestate = self.embed_game(gamestate)
-    prev_gamestate = flat_gamestate[:-1]
 
     p1_controller = gamestate['player'][1]['controller_state']
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
 
     with tf.GradientTape() as tape:
-      outputs = self.network(prev_gamestate)
-      controller_prediction = self.controller_head(outputs)
+      outputs, final_states = self.network.unroll(
+          flat_gamestate, initial_states)
+      controller_prediction = self.controller_head(outputs[:-1])
       next_action_distances = embed.embed_controller.distance(
           controller_prediction, next_action)
       mean_distances = tf.nest.map_structure(
@@ -48,4 +49,4 @@ class Learner:
       params = self.network.trainable_variables
       grads = tape.gradient(loss, params)
       self.optimizer.apply(grads, params)
-    return loss
+    return loss, final_states

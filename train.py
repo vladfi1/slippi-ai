@@ -93,6 +93,9 @@ def main(dataset, subset, expt_dir, _config, _log):
   total_steps = 0
   frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
 
+  train_hidden_state = network.initial_state(data_config['batch_size'])
+  test_hidden_state = network.initial_state(data_config['batch_size'])
+
   for _ in range(1000):
     steps = 0
     start_time = time.perf_counter()
@@ -105,7 +108,8 @@ def main(dataset, subset, expt_dir, _config, _log):
       with data_profiler:
         batch = next(train_data)
       with step_profiler:
-        train_loss = learner.step(batch)
+        train_loss, train_hidden_state = learner.compiled_step(
+            batch, train_hidden_state)
       steps += 1
 
     ckpt.step.assign_add(steps)
@@ -116,7 +120,8 @@ def main(dataset, subset, expt_dir, _config, _log):
 
     # now test
     batch = next(test_data)
-    test_loss = learner.step(batch, train=False)
+    test_loss, test_hidden_state = learner.compiled_step(
+        batch, test_hidden_state, train=False)
     test_loss = test_loss.numpy()
     ex.log_scalar('test.loss', test_loss, total_steps)
 
