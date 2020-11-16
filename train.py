@@ -17,7 +17,7 @@ import data
 from learner import Learner
 import networks
 import paths
-from policy import Policy
+import policies
 import stats
 import train_lib
 import utils
@@ -31,7 +31,8 @@ ex.observers.append(MongoObserver())
 @ex.config
 def config():
   dataset = dict(
-      data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
+      # data_dir=paths.ALL_COMPRESSED_PATH,  # Path to pickled dataset.
+      data_dir=paths.FOXDITTO_COMPRESSED_PATH,  # Path to pickled dataset.
       subset=None,  # Subset to train on. Defaults to all files.
       test_ratio=.1,  # Fraction of dataset for testing.
   )
@@ -42,15 +43,56 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
+  policy = policies.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
+
+class TrainManager:
+
+  def __init__(self, learner, data_source, step_kwargs={}):
+    self.learner = learner
+    self.data_source = data_source
+    self.hidden_state = learner.policy.initial_state(data_source.batch_size)
+    self.step_kwargs = step_kwargs
+
+    self.data_profiler = utils.Profiler()
+    self.step_profiler = utils.Profiler()
+
+  def step(self):
+    with self.data_profiler:
+      batch = next(self.data_source)
+    with self.step_profiler:
+      loss, self.hidden_state = self.learner.compiled_step(
+          batch, self.hidden_state, **self.step_kwargs)
+      # loss, self.hidden_state = self.learner.step(
+      #     batch, self.hidden_state, **self.step_kwargs)
+    return loss
 
 @ex.automain
 def main(dataset, expt_dir, _config, _log):
   network = networks.construct_network(**_config['network'])
-  policy = Policy(network)
+  policy = policies.construct_policy(**_config['policy'])(network)
   learner = Learner(
       policy=policy,
       **_config['learner'])
+  print(f'\nUsing network: {_config["network"]["name"]}')
+
+  train_paths, test_paths = data.train_test_split(**dataset)
+  print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
+
+  data_config = _config['data']
+  train_data = data.DataSource(train_paths, **data_config)
+  test_data = data.DataSource(test_paths, **data_config)
+  test_batch = train_lib.sanitize_batch(next(test_data))
+
+  import numpy as np
+  # assert test_batch[0]['player'][1]['jumps_left'].dtype == np.uint8
+
+  train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
+  test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
+
+  # initialize variables
+  train_loss = train_manager.step()
+  _log.info('loss initial: %f', train_loss.numpy())
 
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
@@ -154,4 +196,10 @@ def main(dataset, expt_dir, _config, _log):
     save_path = save()
     if save_path:
       _log.info('Saved network to %s', save_path)
+<<<<<<< HEAD
     save_model()
+=======
+
+if __name__ == '__main__':
+  app.run(main)
+>>>>>>> Get variables to restore properly.

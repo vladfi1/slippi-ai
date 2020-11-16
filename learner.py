@@ -1,7 +1,7 @@
 import sonnet as snt
 import tensorflow as tf
 
-from policy import Policy
+from policies import Policy
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
