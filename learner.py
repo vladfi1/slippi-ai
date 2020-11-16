@@ -46,7 +46,7 @@ class Learner:
       loss = tf.add_n(tf.nest.flatten(mean_distances))
 
     if train:
-      params = self.network.trainable_variables
+      params = tape.watched_variables()
       grads = tape.gradient(loss, params)
       self.optimizer.apply(grads, params)
     return loss, final_states

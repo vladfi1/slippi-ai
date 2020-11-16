@@ -24,7 +24,7 @@ import stats
 import utils
 
 LOG_INTERVAL = 10
-SAVE_INTERVAL = 300
+SAVE_INTERVAL = 30
 
 ex = Experiment('imitation')
 ex.observers.append(MongoObserver())
@@ -59,14 +59,6 @@ def main(dataset, subset, expt_dir, _config, _log):
       network=network,
       **_config['learner'])
 
-  ckpt = tf.train.Checkpoint(
-      step=tf.Variable(0),
-      optimizer=learner.optimizer,
-      network=network)
-  manager = tf.train.CheckpointManager(
-      ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
-  save = utils.Periodically(manager.save, SAVE_INTERVAL)
-
   data_dir = dataset
   if subset:
     filenames = stats.SUBSETS[subset]()
@@ -87,14 +79,32 @@ def main(dataset, subset, expt_dir, _config, _log):
   train_data = data.DataSource(embed_game, train_paths, **data_config)
   test_data = data.DataSource(embed_game, test_paths, **data_config)
 
+  train_hidden_state = network.initial_state(data_config['batch_size'])
+  test_hidden_state = network.initial_state(data_config['batch_size'])
+
+  # initialize variables
+  train_loss, train_hidden_state = learner.compiled_step(
+      next(train_data), train_hidden_state)
+  _log.info('loss initial: %f', train_loss.numpy())
+
+  ckpt = tf.train.Checkpoint(
+      step=tf.Variable(0, trainable=False),
+      optimizer=learner.optimizer,
+      network=network,
+      controller_head=learner.controller_head)
+  manager = tf.train.CheckpointManager(
+      ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
+  manager.restore_or_initialize()
+  save = utils.Periodically(manager.save, SAVE_INTERVAL)
+  train_loss, train_hidden_state = learner.compiled_step(
+      next(train_data), train_hidden_state, train=False)
+  _log.info('loss post-restore: %f', train_loss.numpy())
+
   data_profiler = utils.Profiler()
   step_profiler = utils.Profiler()
 
   total_steps = 0
   frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
-
-  train_hidden_state = network.initial_state(data_config['batch_size'])
-  test_hidden_state = network.initial_state(data_config['batch_size'])
 
   for _ in range(1000):
     steps = 0
@@ -139,7 +149,7 @@ def main(dataset, subset, expt_dir, _config, _log):
 
     save_path = save()
     if save_path:
-      _log.info('Saving network to %s', save_path)
+      _log.info('Saved network to %s', save_path)
 
 if __name__ == '__main__':
   app.run(main)
