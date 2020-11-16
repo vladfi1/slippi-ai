@@ -42,6 +42,10 @@ class MLP(Network):
     del prev_state
     return self._mlp(inputs), ()
 
+  def unroll(self, inputs, initial_state):
+    del initial_state
+    return self._mlp(inputs), ()
+
 class LSTM(Network):
   CONFIG=dict(hidden_size=128)
 
