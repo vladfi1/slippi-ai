@@ -20,6 +20,7 @@ import embed
 from learner import Learner
 import networks
 import paths
+from policy import Policy
 import stats
 import utils
 
@@ -55,7 +56,7 @@ class TrainManager:
   def __init__(self, learner, data_source, step_kwargs={}):
     self.learner = learner
     self.data_source = data_source
-    self.hidden_state = learner.network.initial_state(data_source.batch_size)
+    self.hidden_state = learner.policy.initial_state(data_source.batch_size)
     self.step_kwargs = step_kwargs
 
     self.data_profiler = utils.Profiler()
@@ -73,9 +74,9 @@ class TrainManager:
 def main(dataset, subset, expt_dir, _config, _log):
   embed_game = embed.make_game_embedding()
   network = networks.construct_network(**_config['network'])
+  policy = Policy(embed_game, network)
   learner = Learner(
-      embed_game=embed_game,
-      network=network,
+      policy=policy,
       **_config['learner'])
 
   data_dir = dataset
@@ -107,9 +108,9 @@ def main(dataset, subset, expt_dir, _config, _log):
 
   ckpt = tf.train.Checkpoint(
       step=tf.Variable(0, trainable=False),
+      policy=policy,
       optimizer=learner.optimizer,
-      network=network,
-      controller_head=learner.controller_head)
+  )
   manager = tf.train.CheckpointManager(
       ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
   manager.restore_or_initialize()

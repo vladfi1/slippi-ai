@@ -1,8 +1,7 @@
 import sonnet as snt
 import tensorflow as tf
 
-import embed
-import networks
+from policy import Policy
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -17,36 +16,24 @@ class Learner:
   )
 
   def __init__(self,
-      embed_game: embed.Embedding,
       learning_rate: float,
-      network: snt.Module):
-    self.embed_game = embed_game
-    self.network = network
-    self.controller_head = snt.Linear(embed.embed_controller.size)
+      policy: Policy):
+    self.policy = policy
     self.optimizer = snt.optimizers.Adam(learning_rate)
-
     self.compiled_step = tf.function(self.step)
 
   def step(self, batch, initial_states, train=True):
     gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
 
-    flat_gamestate = self.embed_game(gamestate)
-
-    p1_controller = gamestate['player'][1]['controller_state']
-    next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
-
     with tf.GradientTape() as tape:
-      outputs, final_states = self.network.unroll(
-          flat_gamestate, initial_states)
-      controller_prediction = self.controller_head(outputs[:-1])
-      next_action_distances = embed.embed_controller.distance(
-          controller_prediction, next_action)
-      mean_distances = tf.nest.map_structure(
-          tf.reduce_mean, next_action_distances)
-      loss = tf.add_n(tf.nest.flatten(mean_distances))
+      loss, final_states = self.policy.loss(
+          gamestate, restarting, initial_states)
 
     if train:
       params = tape.watched_variables()
+      watched_names = [p.name for p in params]
+      trainable_names = [v.name for v in self.policy.trainable_variables]
+      assert set(watched_names) == set(trainable_names)
       grads = tape.gradient(loss, params)
       self.optimizer.apply(grads, params)
     return loss, final_states
