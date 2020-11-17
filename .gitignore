@@ -130,3 +130,6 @@ dmypy.json
 
 # mainly tf checkpoints
 experiments/
+
+# don't track replays
+data/AllCompressed/
