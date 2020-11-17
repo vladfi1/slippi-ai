@@ -3,54 +3,39 @@ import pickle
 import zlib
 
 import numpy as np
-import tensorflow as tf
+import tree
 
 import utils
+
+def game_len(game):
+  return len(game['stage'])
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source, num_frames: int):
+  def __init__(self, source):
     self.source = source
-    self.num_frames = num_frames
     self.game = None
+
+  def find_game(self, n):
+    while True:
+      game = next(self.source)
+      if game_len(game) >= n: break
+    self.game = game
+    self.frame = 0
 
   def grab_chunk(self, n):
     # TODO: write a unit test for this
-    is_first = False
-    if self.game is None:
-      self.game = next(self.source)
-      self.frame = 0
-      is_first = True
+    needs_reset = self.game is None or game_len(self.game) - self.frame < n
+    if needs_reset:
+      self.find_game(n)
 
-    left = len(self.game['stage']) - self.frame
+    new_frame = self.frame + n
+    slice = lambda a: a[self.frame:new_frame]
+    chunk = tree.map_structure(slice, self.game)
+    self.frame = new_frame
 
-    if n < left:
-      new_frame = self.frame + n
-      slice = lambda a: a[self.frame:new_frame]
-      chunk = tf.nest.map_structure(slice, self.game)
-      self.frame = new_frame
-      size = n
-    else:
-      slice = lambda a: a[self.frame:]
-      chunk = tf.nest.map_structure(slice, self.game)
-      self.game = None
-      size = left
-
-    restarting = np.zeros([size], dtype=bool)
-    if is_first:
-      restarting[0] = True
-
-    return size, (chunk, restarting)
-
-  def next(self):
-    chunks = []
-    frames_left = self.num_frames
-    while frames_left > 0:
-      size, chunk = self.grab_chunk(frames_left)
-      chunks.append(chunk)
-      frames_left -= size
-    return tf.nest.map_structure(lambda *xs: np.concatenate(xs), *chunks)
+    return chunk, needs_reset
 
 def swap_players(game):
   old_players = game['player']
@@ -71,7 +56,7 @@ class DataSource:
     self.compressed = compressed
     trajectories = self.produce_trajectories()
     self.managers = [
-        TrajectoryManager(trajectories, unroll_length)
+        TrajectoryManager(trajectories)
         for _ in range(batch_size)]
 
   def produce_trajectories(self):
@@ -85,4 +70,5 @@ class DataSource:
       yield swap_players(game)
 
   def __next__(self):
-    return utils.batch_nest([m.next() for m in self.managers])
+    return utils.batch_nest(
+        [m.grab_chunk(self.unroll_length) for m in self.managers])

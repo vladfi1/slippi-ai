@@ -10,15 +10,15 @@ class Policy(snt.Module):
     self.controller_head = snt.Linear(embed.embed_controller.size)
     self.initial_state = self.network.initial_state
 
-  def unroll(self, gamestate, restarting, initial_states):
+  def unroll(self, gamestate, initial_states):
     outputs, final_states = self.network.unroll(
         gamestate, initial_states)
     controller_prediction = self.controller_head(outputs)
     return controller_prediction, final_states
 
-  def loss(self, gamestate, restarting, initial_states):
+  def loss(self, gamestate, initial_states):
     controller_prediction, final_states = self.unroll(
-        gamestate, restarting, initial_states)
+        gamestate, initial_states)
 
     p1_controller = gamestate['player'][1]['controller_state']
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)

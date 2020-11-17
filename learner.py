@@ -23,11 +23,21 @@ class Learner:
     self.compiled_step = tf.function(self.step)
 
   def step(self, batch, initial_states, train=True):
-    gamestate, restarting = tf.nest.map_structure(to_time_major, batch)
+    bm_gamestate, restarting = batch
+
+    # reset initial_states where necessary
+    restarting = tf.expand_dims(restarting, -1)
+    initial_states = tf.nest.map_structure(
+        lambda x, y: tf.where(restarting, x, y),
+        self.policy.initial_state(restarting.shape[0]),
+        initial_states)
+
+    # switch axes to time-major
+    tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
 
     with tf.GradientTape() as tape:
       loss, final_states = self.policy.loss(
-          gamestate, restarting, initial_states)
+          tm_gamestate, initial_states)
 
     if train:
       params = tape.watched_variables()
