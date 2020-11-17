@@ -66,7 +66,6 @@ class DataSource:
       unroll_length=64):
     self.batch_size = batch_size
     self.unroll_length = unroll_length
-
     self.embed_game = embed_game
     self.filenames = filenames
     self.compressed = compressed

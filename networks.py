@@ -29,9 +29,9 @@ class MLP(Network):
   def __init__(self, output_sizes, dropout_rate):
     super().__init__(name='MLP')
     self._mlp = snt.nets.MLP(
-        output_sizes,
-        activate_final=True,
-        dropout_rate=dropout_rate)
+      output_sizes,
+      activate_final=True,
+      dropout_rate=dropout_rate)
 
   def initial_state(self, batch_size):
     return ()
@@ -340,7 +340,6 @@ class GRU(Network):
   def partial_restart_state(self, state, init_state, restart_mask):
     expand = lambda x: tf.expand_dims(x, axis = -1)
     restart_mask = expand(restart_mask)
-    keep_mask = expand(keep_mask)
     return tf.multiply(state, restart_mask) - tf.multiply(init_state, 1-restart_mask)
 
   def unroll(self, inputs, state, restarting):
