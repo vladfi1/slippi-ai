@@ -39,15 +39,17 @@ def get_experiment_directory():
 
 @ex.config
 def config():
-  dataset = paths.COMPRESSED_PATH  # Path to pickled dataset.
+  # dataset = paths.ALL_COMPRESSED_PATH  # Path to pickled dataset.
+  dataset = paths.FOXDITTO_COMPRESSED_PATH
   subset = None  # Subset to train on. Defaults to all files.
   data = dict(
-      batch_size=32,
-      unroll_length=64,
-      compressed=True,
+    batch_size=32,
+    unroll_length=64,
+    compressed=True,
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
+  # network = networks.LSTM_CONFIG
   expt_dir = get_experiment_directory()
 
 class TrainManager:
@@ -74,9 +76,18 @@ def main(dataset, subset, expt_dir, _config, _log):
   embed_game = embed.make_game_embedding()
   network = networks.construct_network(**_config['network'])
   learner = Learner(
-      embed_game=embed_game,
-      network=network,
-      **_config['learner'])
+    embed_game=embed_game,
+    network=network,
+    network_name=_config['network']['name'],
+    **_config['learner'])
+
+  ckpt = tf.train.Checkpoint(
+    step=tf.Variable(0),
+    optimizer=learner.optimizer,
+    network=network)
+  manager = tf.train.CheckpointManager(
+    ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
+  save = utils.Periodically(manager.save, SAVE_INTERVAL)
 
   data_dir = dataset
   if subset:
@@ -130,6 +141,7 @@ def main(dataset, subset, expt_dir, _config, _log):
       if elapsed_time > LOG_INTERVAL: break
       train_loss = train_manager.step()
       steps += 1
+      # print(f'Num steps: {steps}')
 
     ckpt.step.assign_add(steps)
     total_steps = ckpt.step.numpy()
