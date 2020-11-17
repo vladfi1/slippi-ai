@@ -52,6 +52,53 @@ class MLP(Network):
     flat_inputs = self._embed_game(inputs)
     return self._mlp(flat_inputs), ()
 
+class FrameStackingMLP(Network):
+
+  CONFIG = dict(
+      output_sizes=[256, 128],
+      dropout_rate=0.,
+      num_frames=5,
+  )
+
+  def __init__(self, output_sizes, dropout_rate, num_frames):
+    super().__init__(name='MLP')
+    self._mlp = snt.nets.MLP(
+        output_sizes,
+        activate_final=True,
+        dropout_rate=dropout_rate)
+    self._num_frames = num_frames
+    self._embed_game = embed.make_game_embedding()
+
+  def initial_state(self, batch_size):
+    return [
+        tf.zeros([batch_size, self._embed_game.size])
+        for _ in range(self._num_frames-1)
+    ]
+
+  def step(self, inputs, prev_state):
+    flat_inputs = self._embed_game(inputs)
+    frames = prev_state + [flat_inputs]
+    stacked_frames = tf.concat(frames, -1)
+    next_state = frames[1:]
+    return self._mlp(stacked_frames), next_state
+
+  def unroll(self, inputs, initial_state):
+    flat_inputs = self._embed_game(inputs)  # [T, B, ...]
+
+    past_frames = tf.stack(initial_state)  # [N-1, B, ...]
+    all_frames = tf.concat([past_frames, flat_inputs], 0)  # [N-1 + T, B, ...]
+
+    n = self._num_frames - 1
+
+    slices = [all_frames[i:i-n] for i in range(n)]
+    slices.append(all_frames[n:])
+    # slices has num_frames tensors of dimension [T, B, ...]
+    stacked_frames = tf.concat(slices, -1)
+
+    final_state = [all_frames[i] for i in range(-n, 0)]
+
+    return self._mlp(stacked_frames), final_state
+
 class LSTM(Network):
   CONFIG=dict(hidden_size=128)
 
@@ -74,12 +121,14 @@ class LSTM(Network):
 
 CONSTRUCTORS = dict(
     mlp=MLP,
+    frame_stack_mlp=FrameStackingMLP,
     lstm=LSTM,
 )
 
 DEFAULT_CONFIG = dict(
     name='mlp',
     mlp=MLP.CONFIG,
+    frame_stack_mlp=FrameStackingMLP.CONFIG,
     lstm=LSTM.CONFIG,
 )
 
