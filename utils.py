@@ -2,6 +2,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+import tree
 
 def np_array(*vals):
   return np.array(vals)
@@ -35,3 +36,14 @@ class Periodically:
     if self.last_call is None or now - self.last_call > self.interval:
       self.last_call = now
       return self.f(*args, **kwargs)
+
+def add_batch_dims(spec: tf.TensorSpec, num_dims: int):
+  return tf.TensorSpec([None] * num_dims + spec.shape.as_list(), spec.dtype)
+
+def nested_add_batch_dims(nest, num_dims):
+  return tree.map_structure(lambda spec: add_batch_dims(spec, num_dims), nest)
+
+def with_flat_signature(fn, signature):
+  def g(*flat_args):
+    return fn(*tree.unflatten_as(signature, flat_args))
+  return tf.function(g, input_signature=tree.flatten(signature))

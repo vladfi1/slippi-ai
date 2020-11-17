@@ -4,9 +4,10 @@ import tensorflow as tf
 import embed
 
 def dynamic_rnn(core, inputs, initial_state):
-  outputs = tf.TensorArray(dtype=tf.float32, size=inputs.shape[0])
+  unroll_length = tf.shape(inputs)[0]
+  outputs = tf.TensorArray(dtype=tf.float32, size=unroll_length)
   state = initial_state
-  for i in tf.range(tf.shape(inputs)[0]):
+  for i in tf.range(unroll_length):
     input_ = inputs[i]  # TODO: handle nested inputs
     output, state = core(input_, state)
     outputs = outputs.write(i, output)

@@ -22,6 +22,9 @@ class BoolEmbedding(Embedding):
     self.on = on
     self.off = off
 
+  def input_signature(self):
+    return tf.TensorSpec((), tf.bool)
+
   def __call__(self, t):
     return tf.expand_dims(tf.where(t, self.on, self.off), -1)
 
@@ -40,6 +43,9 @@ class FloatEmbedding(Embedding):
     self.lower = lower
     self.upper = upper
     self.size = 1
+
+  def input_signature(self):
+    return tf.TensorSpec((), tf.float32)
 
   def __call__(self, t, **_):
     if t.dtype is not float_type:
@@ -87,10 +93,14 @@ class FloatEmbedding(Embedding):
 embed_float = FloatEmbedding("float")
 
 class OneHotEmbedding(Embedding):
-  def __init__(self, name, size):
+  def __init__(self, name, size, dtype=tf.int64):
     self.name = name
     self.size = size
     self.input_size = size
+    self.dtype = dtype
+
+  def input_signature(self):
+    return tf.TensorSpec((), self.dtype)
 
   def __call__(self, t, residual=False, **_):
     one_hot = tf.one_hot(t, self.size, 1., 0.)

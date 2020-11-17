@@ -1,6 +1,7 @@
 """Learner test script."""
 
 import datetime
+import functools
 import os
 import random
 import secrets
@@ -24,7 +25,7 @@ import stats
 import utils
 
 LOG_INTERVAL = 10
-SAVE_INTERVAL = 30
+SAVE_INTERVAL = 300
 
 ex = Experiment('imitation')
 ex.observers.append(MongoObserver())
@@ -96,6 +97,7 @@ def main(dataset, subset, expt_dir, _config, _log):
   data_config = _config['data']
   train_data = data.DataSource(train_paths, **data_config)
   test_data = data.DataSource(test_paths, **data_config)
+  test_batch = next(test_data)
 
   train_manager = TrainManager(learner, train_data, dict(train=True))
   test_manager = TrainManager(learner, test_data, dict(train=False))
@@ -110,11 +112,35 @@ def main(dataset, subset, expt_dir, _config, _log):
       optimizer=learner.optimizer,
   )
   manager = tf.train.CheckpointManager(
-      ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
+      ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
   manager.restore_or_initialize()
   save = utils.Periodically(manager.save, SAVE_INTERVAL)
   train_loss = train_manager.step()
   _log.info('loss post-restore: %f', train_loss.numpy())
+
+  # signatures without batch dims
+  gamestate_signature = tf.nest.map_structure(
+      lambda t: tf.TensorSpec(t.shape[2:], t.dtype),
+      test_batch[0])
+  hidden_state_signature = tf.nest.map_structure(
+      lambda t: tf.TensorSpec(t.shape[1:], t.dtype),
+      test_manager.hidden_state)
+
+  loss_signature = [
+      utils.nested_add_batch_dims(gamestate_signature, 2),
+      utils.nested_add_batch_dims(hidden_state_signature, 1),
+  ]
+
+  saved_module = snt.Module()
+  # with_flat_signature is a workaround for tf.function not supporting dicts
+  # with non-string keys in the input_signature. The solution is to change
+  # embed_players in embed.py to be an ArrayEmbedding, not a StructEmbedding.
+  saved_module.loss = utils.with_flat_signature(policy.loss, loss_signature)
+  saved_module.all_variables = policy.variables
+
+  saved_model_path = os.path.join(expt_dir, 'saved_model')
+  save_model = utils.Periodically(functools.partial(
+      tf.saved_model.save, saved_module, saved_model_path), SAVE_INTERVAL)
 
   total_steps = 0
   frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
@@ -156,6 +182,4 @@ def main(dataset, subset, expt_dir, _config, _log):
     save_path = save()
     if save_path:
       _log.info('Saved network to %s', save_path)
-
-if __name__ == '__main__':
-  app.run(main)
+    save_model()
