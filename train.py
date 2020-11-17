@@ -50,6 +50,25 @@ def config():
   network = networks.DEFAULT_CONFIG
   expt_dir = get_experiment_directory()
 
+class TrainManager:
+
+  def __init__(self, learner, data_source, step_kwargs={}):
+    self.learner = learner
+    self.data_source = data_source
+    self.hidden_state = learner.network.initial_state(data_source.batch_size)
+    self.step_kwargs = step_kwargs
+
+    self.data_profiler = utils.Profiler()
+    self.step_profiler = utils.Profiler()
+
+  def step(self):
+    with self.data_profiler:
+      batch = next(self.data_source)
+    with self.step_profiler:
+      loss, self.hidden_state = self.learner.compiled_step(
+          batch, self.hidden_state, **self.step_kwargs)
+    return loss
+
 @ex.automain
 def main(dataset, subset, expt_dir, _config, _log):
   embed_game = embed.make_game_embedding()
@@ -79,12 +98,11 @@ def main(dataset, subset, expt_dir, _config, _log):
   train_data = data.DataSource(embed_game, train_paths, **data_config)
   test_data = data.DataSource(embed_game, test_paths, **data_config)
 
-  train_hidden_state = network.initial_state(data_config['batch_size'])
-  test_hidden_state = network.initial_state(data_config['batch_size'])
+  train_manager = TrainManager(learner, train_data, dict(train=True))
+  test_manager = TrainManager(learner, test_data, dict(train=False))
 
   # initialize variables
-  train_loss, train_hidden_state = learner.compiled_step(
-      next(train_data), train_hidden_state)
+  train_loss = train_manager.step()
   _log.info('loss initial: %f', train_loss.numpy())
 
   ckpt = tf.train.Checkpoint(
@@ -96,12 +114,8 @@ def main(dataset, subset, expt_dir, _config, _log):
       ckpt, f'{expt_dir}/tf_ckpts', max_to_keep=3)
   manager.restore_or_initialize()
   save = utils.Periodically(manager.save, SAVE_INTERVAL)
-  train_loss, train_hidden_state = learner.compiled_step(
-      next(train_data), train_hidden_state, train=False)
+  train_loss = train_manager.step()
   _log.info('loss post-restore: %f', train_loss.numpy())
-
-  data_profiler = utils.Profiler()
-  step_profiler = utils.Profiler()
 
   total_steps = 0
   frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
@@ -114,12 +128,7 @@ def main(dataset, subset, expt_dir, _config, _log):
     while True:
       elapsed_time = time.perf_counter() - start_time
       if elapsed_time > LOG_INTERVAL: break
-
-      with data_profiler:
-        batch = next(train_data)
-      with step_profiler:
-        train_loss, train_hidden_state = learner.compiled_step(
-            batch, train_hidden_state)
+      train_loss = train_manager.step()
       steps += 1
 
     ckpt.step.assign_add(steps)
@@ -129,9 +138,7 @@ def main(dataset, subset, expt_dir, _config, _log):
     ex.log_scalar('train.loss', train_loss, total_steps)
 
     # now test
-    batch = next(test_data)
-    test_loss, test_hidden_state = learner.compiled_step(
-        batch, test_hidden_state, train=False)
+    test_loss = test_manager.step()
     test_loss = test_loss.numpy()
     ex.log_scalar('test.loss', test_loss, total_steps)
 
@@ -143,8 +150,8 @@ def main(dataset, subset, expt_dir, _config, _log):
     print(f'batches={total_steps} sps={sps:.2f} mps={mps:.2f}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
-          f' data={data_profiler.mean_time():.3f}'
-          f' step={step_profiler.mean_time():.3f}')
+          f' data={train_manager.data_profiler.mean_time():.3f}'
+          f' step={train_manager.step_profiler.mean_time():.3f}')
     print()
 
     save_path = save()
