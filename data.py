@@ -61,13 +61,12 @@ def swap_players(game):
 
 class DataSource:
   def __init__(
-      self, embed_game, filenames, compressed,
+      self, filenames, compressed,
       batch_size=64,
       unroll_length=64):
     self.batch_size = batch_size
     self.unroll_length = unroll_length
 
-    self.embed_game = embed_game
     self.filenames = filenames
     self.compressed = compressed
     trajectories = self.produce_trajectories()

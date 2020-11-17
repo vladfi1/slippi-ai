@@ -16,7 +16,6 @@ import tensorflow as tf
 import melee
 
 import data
-import embed
 from learner import Learner
 import networks
 import paths
@@ -72,9 +71,8 @@ class TrainManager:
 
 @ex.automain
 def main(dataset, subset, expt_dir, _config, _log):
-  embed_game = embed.make_game_embedding()
   network = networks.construct_network(**_config['network'])
-  policy = Policy(embed_game, network)
+  policy = Policy(network)
   learner = Learner(
       policy=policy,
       **_config['learner'])
@@ -96,8 +94,8 @@ def main(dataset, subset, expt_dir, _config, _log):
   test_paths = [os.path.join(data_dir, f) for f in test_files]
 
   data_config = _config['data']
-  train_data = data.DataSource(embed_game, train_paths, **data_config)
-  test_data = data.DataSource(embed_game, test_paths, **data_config)
+  train_data = data.DataSource(train_paths, **data_config)
+  test_data = data.DataSource(test_paths, **data_config)
 
   train_manager = TrainManager(learner, train_data, dict(train=True))
   test_manager = TrainManager(learner, test_data, dict(train=False))

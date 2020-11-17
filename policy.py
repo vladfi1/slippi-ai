@@ -4,17 +4,15 @@ import tensorflow as tf
 import embed
 
 class Policy(snt.Module):
-  def __init__(self, embed_game, network):
+  def __init__(self, network):
     super().__init__(name='Policy')
-    self.embed_game = embed_game
     self.network = network
     self.controller_head = snt.Linear(embed.embed_controller.size)
     self.initial_state = self.network.initial_state
 
   def unroll(self, gamestate, restarting, initial_states):
-    flat_gamestate = self.embed_game(gamestate)
     outputs, final_states = self.network.unroll(
-        flat_gamestate, initial_states)
+        gamestate, initial_states)
     controller_prediction = self.controller_head(outputs)
     return controller_prediction, final_states
 
