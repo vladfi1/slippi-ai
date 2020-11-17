@@ -3,7 +3,6 @@
 import datetime
 import functools
 import os
-import random
 import secrets
 import time
 
@@ -40,8 +39,11 @@ def get_experiment_directory():
 
 @ex.config
 def config():
-  dataset = paths.COMPRESSED_PATH  # Path to pickled dataset.
-  subset = None  # Subset to train on. Defaults to all files.
+  dataset = dict(
+      data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
+      subset=None,  # Subset to train on. Defaults to all files.
+      test_ratio=.1,  # Fraction of dataset for testing.
+  )
   data = dict(
       batch_size=32,
       unroll_length=64,
@@ -71,28 +73,15 @@ class TrainManager:
     return loss
 
 @ex.automain
-def main(dataset, subset, expt_dir, _config, _log):
+def main(dataset, expt_dir, _config, _log):
   network = networks.construct_network(**_config['network'])
   policy = Policy(network)
   learner = Learner(
       policy=policy,
       **_config['learner'])
 
-  data_dir = dataset
-  if subset:
-    filenames = stats.SUBSETS[subset]()
-    filenames = [name + '.pkl' for name in filenames]
-  else:
-    filenames = sorted(os.listdir(data_dir))
-
-  # reproducible train/test split
-  rng = random.Random()
-  test_files = rng.sample(filenames, int(.1 * len(filenames)))
-  test_set = set(test_files)
-  train_files = [f for f in filenames if f not in test_set]
-  print(f'Training on {len(train_files)} replays, testing on {len(test_files)}')
-  train_paths = [os.path.join(data_dir, f) for f in train_files]
-  test_paths = [os.path.join(data_dir, f) for f in test_files]
+  train_paths, test_paths = data.train_test_split(**dataset)
+  print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
 
   data_config = _config['data']
   train_data = data.DataSource(train_paths, **data_config)
@@ -145,7 +134,7 @@ def main(dataset, subset, expt_dir, _config, _log):
       tf.saved_model.save, saved_module, saved_model_path), SAVE_INTERVAL)
 
   total_steps = 0
-  frames_per_batch = data_config['batch_size'] * data_config['unroll_length']
+  frames_per_batch = train_data.batch_size * train_data.unroll_length
 
   for _ in range(1000):
     steps = 0

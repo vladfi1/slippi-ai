@@ -1,11 +1,30 @@
 import itertools
+import os
 import pickle
+import random
 import zlib
 
 import numpy as np
 import tree
 
+import stats
 import utils
+
+def train_test_split(data_dir, subset=None, test_ratio=.1):
+  if subset:
+    filenames = stats.SUBSETS[subset]()
+    filenames = [name + '.pkl' for name in filenames]
+  else:
+    filenames = sorted(os.listdir(data_dir))
+
+  # reproducible train/test split
+  rng = random.Random()
+  test_files = rng.sample(filenames, int(test_ratio * len(filenames)))
+  test_set = set(test_files)
+  train_files = [f for f in filenames if f not in test_set]
+  train_paths = [os.path.join(data_dir, f) for f in train_files]
+  test_paths = [os.path.join(data_dir, f) for f in test_files]
+  return train_paths, test_paths
 
 def game_len(game):
   return len(game['stage'])
