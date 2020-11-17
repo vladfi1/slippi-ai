@@ -136,6 +136,8 @@ def main(dataset, subset, expt_dir, _config, _log):
   # with non-string keys in the input_signature. The solution is to change
   # embed_players in embed.py to be an ArrayEmbedding, not a StructEmbedding.
   saved_module.loss = utils.with_flat_signature(policy.loss, loss_signature)
+  saved_module.initial_state = tf.function(
+      policy.initial_state, input_signature=[tf.TensorSpec((), tf.int64)])
   saved_module.all_variables = policy.variables
 
   saved_model_path = os.path.join(expt_dir, 'saved_model')
