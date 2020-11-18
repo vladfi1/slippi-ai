@@ -72,24 +72,6 @@ def main(dataset, expt_dir, _config, _log):
   train_loss = train_manager.step()
   _log.info('loss initial: %f', train_loss.numpy())
 
-  train_paths, test_paths = data.train_test_split(**dataset)
-  print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
-
-  data_config = _config['data']
-  train_data = data.DataSource(train_paths, **data_config)
-  test_data = data.DataSource(test_paths, **data_config)
-  test_batch = train_lib.sanitize_batch(next(test_data))
-
-  import numpy as np
-  assert test_batch[0]['player'][1]['jumps_left'].dtype == np.uint8
-
-  train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
-  test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
-
-  # initialize variables
-  train_loss = train_manager.step()
-  _log.info('loss initial: %f', train_loss.numpy())
-
   ckpt = tf.train.Checkpoint(
       step=tf.Variable(0, trainable=False),
       policy=policy,

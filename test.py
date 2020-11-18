@@ -17,7 +17,6 @@ import data
 from learner import Learner
 import networks
 import paths
-from policy import Policy
 import stats
 import train_lib
 import utils

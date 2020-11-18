@@ -24,12 +24,13 @@ class Policy(snt.Module):
     return loss, final_states
 
   def sample(self, gamestate, initial_state):
-    controller_prediction, final_states = self.network.unroll(gamestate, initial_state)
-    controller_sample = self.embed_controller.sample(controller_prediction)
+    controller_prediction, final_state = self.unroll(gamestate, initial_state)
+    controller_sample = embed.embed_controller.sample(controller_prediction)
     return controller_sample, final_state
 
 
 class DefaultPolicy(Policy):
+
   def __init__(self, network):
     super().__init__(name='Policy')
     self.network = network
