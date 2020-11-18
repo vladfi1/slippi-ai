@@ -26,7 +26,6 @@ LOG_INTERVAL = 10
 SAVE_INTERVAL = 300
 
 ex = Experiment('imitation')
-ex.observers.append(MongoObserver())
 
 @ex.config
 def config():
