@@ -1,9 +1,7 @@
 """Learner test script."""
 
-import datetime
 import functools
 import os
-import secrets
 import time
 
 from sacred import Experiment
@@ -21,6 +19,7 @@ import networks
 import paths
 from policy import Policy
 import stats
+import train_lib
 import utils
 
 LOG_INTERVAL = 10
@@ -28,14 +27,6 @@ SAVE_INTERVAL = 300
 
 ex = Experiment('imitation')
 ex.observers.append(MongoObserver())
-
-def get_experiment_directory():
-  # create directory for tf checkpoints and other experiment artifacts
-  today = datetime.date.today()
-  expt_tag = f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
-  expt_dir = f'experiments/{expt_tag}'
-  os.makedirs(expt_dir, exist_ok=True)
-  return expt_dir
 
 @ex.config
 def config():
@@ -51,26 +42,7 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
-  expt_dir = get_experiment_directory()
-
-class TrainManager:
-
-  def __init__(self, learner, data_source, step_kwargs={}):
-    self.learner = learner
-    self.data_source = data_source
-    self.hidden_state = learner.policy.initial_state(data_source.batch_size)
-    self.step_kwargs = step_kwargs
-
-    self.data_profiler = utils.Profiler()
-    self.step_profiler = utils.Profiler()
-
-  def step(self):
-    with self.data_profiler:
-      batch = next(self.data_source)
-    with self.step_profiler:
-      loss, self.hidden_state = self.learner.compiled_step(
-          batch, self.hidden_state, **self.step_kwargs)
-    return loss
+  expt_dir = train_lib.get_experiment_directory()
 
 @ex.automain
 def main(dataset, expt_dir, _config, _log):
@@ -88,8 +60,8 @@ def main(dataset, expt_dir, _config, _log):
   test_data = data.DataSource(test_paths, **data_config)
   test_batch = next(test_data)
 
-  train_manager = TrainManager(learner, train_data, dict(train=True))
-  test_manager = TrainManager(learner, test_data, dict(train=False))
+  train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
+  test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
   # initialize variables
   train_loss = train_manager.step()
