@@ -70,7 +70,38 @@ network.name=
     gru
     copier
 
-policy.name=
-    default_policy (default)
-    residual_policy
+controller_head.name=
+    independent (default)
+    autoregressive
+
+# Discrete vs float stick embeddings
+controller_head.{independent/autoregressive}.discrete_axis=
+    True
+    False
+
+network.frame_stack_mlp
+    .num_frames=5 (default, any integer >1)
+    .frame_delay=0 (default, any integer >=0)
+
 ```
+
+## Testing and evaluation
+
+During training, models are saved in directories such as `experiments/<YYYY>-<MM>-<DD>-<hash>/saved_model/saved_model/`. To test the model on a different dataset, run:
+
+```bash
+python test.py with saved_model_path=experiments/<YYYY>-<MM>-<DD>-<hash>/saved_model/saved_model/ dataset.subset=all
+```
+
+To write out model inputs, output samples, losses, gamestate info, etc to help investigate model behavior through data analysis:
+```bash
+python debug_test.py with saved_model_path=experiments/<YYYY>-<MM>-<DD>-<hash>/saved_model/saved_model/ dataset.subset=all debug.table_length=<num. rows in resulting pandas dataframe>
+```
+
+To evaluate a trained model at playing SSBM in Dolphin, run:
+
+```bash
+python eval.py with saved_model_path=experiments/<YYYY>-<MM>-<DD>-<hash>/saved_model/saved_model/ dolphin_path=<path/to/dolphin/> iso_path=<path/to/iso>
+```
+
+While Google Cloud Platform VM instances seem to support remote desktop environments with graphical applications (https://cloud.google.com/solutions/chrome-desktop-remote-on-compute-engine), at this time we recommend running dolphin for evaluation with a local computer. We and others have been able to install model evaluation on Linux, MacOS, and Windows.
