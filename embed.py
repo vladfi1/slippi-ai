@@ -7,6 +7,7 @@ from typing import List, Tuple
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 
 from melee import enums
 
@@ -38,6 +39,11 @@ class BoolEmbedding(Embedding):
     return tf.nn.sigmoid_cross_entropy_with_logits(
         logits=tf.squeeze(predicted, [-1]),
         labels=tf.cast(target, float_type))
+
+  def sample(self, t):
+    t = tf.squeeze(t, -1)
+    dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
+    return dist.sample()
 
 embed_bool = BoolEmbedding()
 
@@ -94,6 +100,9 @@ class FloatEmbedding(Embedding):
 
     predicted = tf.squeeze(predicted, [-1])
     return tf.square(predicted - target)
+
+  def sample(self, t):
+    return self.extract(t)
 
 embed_float = FloatEmbedding("float")
 
@@ -179,50 +188,26 @@ class StructEmbedding(Embedding):
       embed.append(t)
     return tf.concat(axis=rank-1, values=embed)
 
-  def to_input(self, embedded):
-    rank = len(embedded.get_shape())
-    begin = (rank-1) * [0]
-    size = (rank-1) * [-1]
-
-    inputs = []
-    offset = 0
-
-    for _, op in self.embedding:
-      t = tf.slice(embedded, begin + [offset], size + [op.size])
-      inputs.append(op.to_input(t))
-      offset += op.size
-
-    return tf.concat(axis=rank-1, values=inputs)
-
-  def extract(self, embedded):
-    rank = len(embedded.get_shape())
-    begin (rank-1) * [0]
-    size = (rank-1) * [-1]
-
-    struct = {}
-    offset = 0
-
-    for field, op in self.embedding:
-      t = tf.slice(embedded, begin + [offset], size + [op.size])
-      struct[field] = op.extract(t)
-      offset += op.size
-
-    return struct
+  def split(self, embedded):
+    fields, ops = zip(*self.embedding)
+    sizes = [op.size for op in ops]
+    splits = tf.split(embedded, sizes, -1)
+    return dict(zip(fields, splits))
 
   def distance(self, embedded, target):
-    rank = len(embedded.get_shape())
-    begin = (rank-1) * [0]
-    size = (rank-1) * [-1]
-
     distances = {}
-    offset = 0
-
+    split = self.split(embedded)
     for field, op in self.embedding:
-      t = tf.slice(embedded, begin + [offset], size + [op.size])
-      distances[field] = op.distance(t, target[field])
-      offset += op.size
-
+      distances[field] = op.distance(split[field], target[field])
     return distances
+
+  def sample(self, embedded):
+    samples = {}
+    split = self.split(embedded)
+    for field, op in self.embedding:
+      samples[field] = op.sample(split[field])
+    return samples
+
 
 class ArrayEmbedding(Embedding):
   def __init__(self, name: str, op: Embedding, permutation: List[int]):
@@ -244,10 +229,8 @@ class ArrayEmbedding(Embedding):
     return tf.concat(
         [self.op(array[i], **kwargs) for i in self.permutation], axis=-1)
 
-  def to_input(self, embedded):
-    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
-    inputs = list(map(self.op.to_input, ts))
-    return tf.concat(inputs, -1)
+  def split(self, embedded):
+    return tf.split(embedded, len(self.permutation), -1)
 
   def extract(self, embedded):
     # a bit suspect here, we can't recreate the original array,
@@ -262,14 +245,11 @@ class ArrayEmbedding(Embedding):
     return array
 
   def distance(self, embedded, target):
-    distances = []
+    splits = self.split(embedded)
+    return [self.op.distance(s, t) for s, t in zip(splits, target)]
 
-    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
-
-    for i, t in zip(self.permutation, ts):
-      distances.append(self.op.distance(t, target[i]))
-
-    return distances
+  def sample(self, embedded):
+    return [self.op.sample(s) for s in self.split(embedded)]
 
 embed_action = EnumEmbedding(enums.Action)
 embed_char = EnumEmbedding(enums.Character)

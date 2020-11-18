@@ -104,6 +104,12 @@ def main(dataset, expt_dir, _config, _log):
       policy.initial_state, input_signature=[tf.TensorSpec((), tf.int64)])
   saved_module.all_variables = policy.variables
 
+  sample_signature = [
+      utils.nested_add_batch_dims(gamestate_signature, 1),
+      utils.nested_add_batch_dims(hidden_state_signature, 1),
+  ]
+  saved_module.sample = utils.with_flat_signature(policy.sample, sample_signature)
+
   saved_model_path = os.path.join(expt_dir, 'saved_model')
   save_model = utils.Periodically(functools.partial(
       tf.saved_model.save, saved_module, saved_model_path), SAVE_INTERVAL)
