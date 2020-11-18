@@ -255,7 +255,7 @@ embed_action = EnumEmbedding(enums.Action)
 embed_char = EnumEmbedding(enums.Character)
 
 # puff and kirby have 6 jumps
-embed_jumps_left = OneHotEmbedding("jumps_left", 6)
+embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
 
 def make_player_embedding(
     xy_scale: float = 0.05,

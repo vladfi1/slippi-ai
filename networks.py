@@ -18,7 +18,7 @@ class Network(snt.Module):
   def initial_state(self, batch_size):
     raise NotImplementedError()
 
-  def step(self, inputs, prev_state, restarting):
+  def step(self, inputs, prev_state):
     '''
       Returns outputs and next recurrent state.
       inputs: (batch_size, x_dim)

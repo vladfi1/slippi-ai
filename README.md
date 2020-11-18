@@ -49,5 +49,28 @@ The code relies on a small (~3 MB) sql database which is 'melee_public_slp_datas
 
 For updates on this raw slippi replay dataset, the sql database, or the dataset of processed and compressed slippi replays, check the ai channel of the Slippi discord.
 
+## Configuration
 
+Example command configurations:
 
+```bash
+python train.py with dataset.subset=fox_dittos network.name=frame_stack_mlp
+```
+
+These are some available options:
+```
+dataset.subset=
+    all (default)
+    fox_dittos
+
+network.name=
+    mlp (default)
+    frame_stack_mlp
+    lstm
+    gru
+    copier
+
+policy.name=
+    default_policy (default)
+    residual_policy
+```
