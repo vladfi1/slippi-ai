@@ -25,7 +25,7 @@ import utils
 LOG_INTERVAL = 10
 SAVE_INTERVAL = 300
 
-ex = Experiment('imitation')
+ex = Experiment('imitation_test')
 ex.observers.append(MongoObserver())
 
 @ex.config
@@ -42,10 +42,9 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   saved_model_path = None
-  expt_dir = train_lib.get_experiment_directory()
 
 @ex.automain
-def main(dataset, expt_dir, saved_model_path, _config, _log):
+def main(dataset, saved_model_path, _config, _log):
   policy = tf.saved_model.load(saved_model_path)
   flat_loss = policy.loss
   policy.loss = lambda *structs: flat_loss(*tf.nest.flatten(structs))

@@ -37,4 +37,4 @@ class Policy(snt.Module):
     output, final_state = self.network.step(gamestate, initial_state)
     controller_prediction = self.controller_head(output)
     controller_sample = self.embed_controller.sample(controller_prediction)
-    return controller_sample
+    return controller_sample, final_state
