@@ -47,4 +47,6 @@ class TrainManager:
     with self.step_profiler:
       loss, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
+      # loss, self.hidden_state = self.learner.step(
+      #     batch, self.hidden_state, **self.step_kwargs)
     return loss

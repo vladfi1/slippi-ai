@@ -29,11 +29,7 @@ class Policy(snt.Module):
 
     next_action_distances = self.controller_head.log_prob(
         output[:-1], prev_action, next_action)
-    mean_distances = tf.nest.map_structure(
-        tf.reduce_mean, next_action_distances)
-    loss = tf.add_n(tf.nest.flatten(mean_distances))
-
-    return loss, final_state
+    return next_action_distances, final_state
 
   def sample(self, gamestate, initial_state):
     gamestate, action_repeat = gamestate

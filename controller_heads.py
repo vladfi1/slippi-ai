@@ -24,7 +24,8 @@ class Independent(ControllerHead):
     self.to_controller_input = snt.Linear(self.embed_controller.size)
     self.residual = residual
     if residual:
-      self.residual_net = snt.Linear(self.embed_controller.size)
+      self.residual_net = snt.Linear(self.embed_controller.size,
+      w_init=snt.initializers.Identity(), with_bias=False)
 
   def controller_prediction(self, inputs, prev_controller_state):
     controller_prediction = self.to_controller_input(inputs)
