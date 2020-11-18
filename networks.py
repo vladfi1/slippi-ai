@@ -2,16 +2,7 @@ import sonnet as snt
 import tensorflow as tf
 
 import embed
-
-def dynamic_rnn(core, inputs, initial_state):
-  unroll_length = tf.shape(inputs)[0]
-  outputs = tf.TensorArray(dtype=tf.float32, size=unroll_length)
-  state = initial_state
-  for i in tf.range(unroll_length):
-    input_ = inputs[i]  # TODO: handle nested inputs
-    output, state = core(input_, state)
-    outputs = outputs.write(i, output)
-  return outputs.stack(), state
+import utils
 
 class Network(snt.Module):
 
@@ -26,7 +17,7 @@ class Network(snt.Module):
     raise NotImplementedError()
 
   def unroll(self, inputs, initial_state):
-    return dynamic_rnn(self.step, inputs, initial_state)
+    return utils.dynamic_rnn(self.step, inputs, initial_state)
 
 class MLP(Network):
   CONFIG = dict(
@@ -120,7 +111,7 @@ class LSTM(Network):
 
   def unroll(self, inputs, prev_state):
     flat_inputs = self._embed_game(inputs)
-    return dynamic_rnn(self._lstm, flat_inputs, prev_state)
+    return utils.dynamic_rnn(self._lstm, flat_inputs, prev_state)
 
 class GRU(Network):
   CONFIG=dict(hidden_size=128)
@@ -140,7 +131,7 @@ class GRU(Network):
 
   def unroll(self, inputs, prev_state):
     flat_inputs = self._embed_game(inputs)
-    return dynamic_rnn(self._gru, flat_inputs, prev_state)
+    return utils.dynamic_rnn(self._gru, flat_inputs, prev_state)
 
 class Copier(Network):
   '''
@@ -154,7 +145,7 @@ class Copier(Network):
 
   def initial_state(self, batch_size):
     return ()
-  
+
   def step(self, inputs, prev_state):
     outputs = self._embed_controller(inputs['player'][1]['controller_state'])
     return outputs, ()

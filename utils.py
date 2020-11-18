@@ -10,6 +10,16 @@ def np_array(*vals):
 def batch_nest(nests):
   return tf.nest.map_structure(np_array, *nests)
 
+def dynamic_rnn(core, inputs, initial_state):
+  unroll_length = tf.shape(inputs)[0]
+  outputs = tf.TensorArray(dtype=tf.float32, size=unroll_length)
+  state = initial_state
+  for i in tf.range(unroll_length):
+    input_ = inputs[i]  # TODO: handle nested inputs
+    output, state = core(input_, state)
+    outputs = outputs.write(i, output)
+  return outputs.stack(), state
+
 class Profiler:
   def __init__(self):
     self.cumtime = 0
