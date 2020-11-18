@@ -2,28 +2,34 @@
 Converts SSBM types to Tensorflow types.
 """
 
+import math
 from typing import List, Tuple
 
+import numpy as np
 import tensorflow as tf
-import math
+
 from melee import enums
 
 float_type = tf.float32
 
 class Embedding:
   def from_state(self, state):
-    return state
+    return self.dtype(state)
+
+  def input_signature(self):
+    return tf.TensorSpec((), self.dtype)
+
+  def map(self, f):
+    return f(self)
 
 class BoolEmbedding(Embedding):
   size = 1
+  dtype = bool
 
   def __init__(self, name='bool', on=1., off=0.):
     self.name = name
     self.on = on
     self.off = off
-
-  def input_signature(self):
-    return tf.TensorSpec((), tf.bool)
 
   def __call__(self, t):
     return tf.expand_dims(tf.where(t, self.on, self.off), -1)
@@ -36,6 +42,8 @@ class BoolEmbedding(Embedding):
 embed_bool = BoolEmbedding()
 
 class FloatEmbedding(Embedding):
+  dtype = np.float32
+
   def __init__(self, name, scale=None, bias=None, lower=-10., upper=10.):
     self.name = name
     self.scale = scale
@@ -43,9 +51,6 @@ class FloatEmbedding(Embedding):
     self.lower = lower
     self.upper = upper
     self.size = 1
-
-  def input_signature(self):
-    return tf.TensorSpec((), tf.float32)
 
   def __call__(self, t, **_):
     if t.dtype is not float_type:
@@ -93,14 +98,12 @@ class FloatEmbedding(Embedding):
 embed_float = FloatEmbedding("float")
 
 class OneHotEmbedding(Embedding):
-  def __init__(self, name, size, dtype=tf.int64):
+
+  def __init__(self, name, size, dtype=np.int64):
     self.name = name
     self.size = size
     self.input_size = size
     self.dtype = dtype
-
-  def input_signature(self):
-    return tf.TensorSpec((), self.dtype)
 
   def __call__(self, t, residual=False, **_):
     one_hot = tf.one_hot(t, self.size, 1., 0.)
@@ -121,37 +124,16 @@ class OneHotEmbedding(Embedding):
   def distance(self, embedded, target):
     logprobs = tf.nn.log_softmax(embedded)
     target = self(target)
-    return -tfl.batch_dot(logprobs, target)
+    return -tf.reduce_sum(logprobs * target, -1)
 
-class EnumEmbedding(Embedding):
-  def __init__(self, enum_class):
+class EnumEmbedding(OneHotEmbedding):
+  def __init__(self, enum_class, **kwargs):
+    super().__init__(str(enum_class), len(enum_class), **kwargs)
     self._class = enum_class
-    self.size = len(enum_class)
     self._map = {obj: i for i, obj in enumerate(enum_class)}
 
   def from_state(self, obj):
-    return self._map[obj]
-
-  def __call__(self, t):
-    return tf.one_hot(t, self.size, 1., 0.)
-
-class LookupEmbedding(object):
-
-  def __init__(self, name, input_size, output_size):
-    self.name = name
-    with tf.variable_scope(name):
-      self.table = tfl.weight_variable([input_size, output_size], "table")
-
-    self.size = output_size
-    self.input_size = input_size
-
-  def __call__(self, indices, **kwargs):
-    return tf.nn.embedding_lookup(self.table, indices)
-
-  def to_input(self, input_):
-    # FIXME: "to_input" is the wrong name. model.py uses it to go from logits ("residual" embedding, used for prediction) to probabilites ("input" embedding, used for passing through the network). Here we interpret it as going from embedding space (output_size) to probabilities (input_size), which changes the dimensionality and would break model.py.
-    logits = tfl.matmul(input_, tf.transpose(self.table))
-    return tf.nn.softmax(logits)
+    return self.dtype(self._map[obj])
 
 class StructEmbedding(Embedding):
   def __init__(self, name: str, embedding: List[Tuple[object, Embedding]],
@@ -169,12 +151,18 @@ class StructEmbedding(Embedding):
     for _, op in embedding:
       self.size += op.size
 
+  def map(self, f):
+    return {k: e.map(f) for k, e in self.embedding}
+
   def from_state(self, state) -> dict:
     struct = {}
     for field, op in self.embedding:
       key = self.key_map.get(field, field)
       struct[field] = op.from_state(self.getter(state, key))
     return struct
+
+  def input_signature(self):
+    return {k: e.input_signature() for k, e in self.embedding}
 
   def __call__(self, struct: dict, **kwargs):
     embed = []
@@ -243,28 +231,23 @@ class ArrayEmbedding(Embedding):
     self.permutation = permutation
     self.size = len(permutation) * op.size
 
+  def map(self, f):
+    return [self.op.map(f)] * len(self.permutation)
+
   def from_state(self, state):
     return [self.op.from_state(state[i]) for i in self.permutation]
 
-  def __call__(self, array, **kwargs):
-    embed = []
-    rank = None
-    for i in self.permutation:
-      with tf.name_scope(str(i)):
-        t = self.op(array[i], **kwargs)
-        if rank is None:
-          rank = len(t.get_shape())
-        else:
-          assert(rank == len(t.get_shape()))
+  def input_signature(self):
+    return [self.op.input_signature()] * len(self.permutation)
 
-        embed.append(t)
-    return tf.concat(axis=rank-1, values=embed)
+  def __call__(self, array, **kwargs):
+    return tf.concat(
+        [self.op(array[i], **kwargs) for i in self.permutation], axis=-1)
 
   def to_input(self, embedded):
-    rank = len(embedded.get_shape())
-    ts = tf.split(axis=rank-1, num_or_size_splits=len(self.permutation), value=embedded)
+    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
     inputs = list(map(self.op.to_input, ts))
-    return tf.concat(axis=rank-1, values=inputs)
+    return tf.concat(inputs, -1)
 
   def extract(self, embedded):
     # a bit suspect here, we can't recreate the original array,
@@ -281,7 +264,7 @@ class ArrayEmbedding(Embedding):
   def distance(self, embedded, target):
     distances = []
 
-    ts = tf.split(axis=tf.rank(embedded)-1, num_or_size_splits=len(self.permutation), value=embedded)
+    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
 
     for i, t in zip(self.permutation, ts):
       distances.append(self.op.distance(t, target[i]))
@@ -292,7 +275,7 @@ embed_action = EnumEmbedding(enums.Action)
 embed_char = EnumEmbedding(enums.Character)
 
 # 8 should be enough for puff and kirby
-embed_jumps_left = OneHotEmbedding("jumps_left", 8)
+embed_jumps_left = OneHotEmbedding("jumps_left", 8, dtype=np.uint8)
 
 def make_player_embedding(
     xy_scale: float = 0.05,

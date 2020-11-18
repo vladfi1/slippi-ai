@@ -1,4 +1,4 @@
-"""Learner test script."""
+"""Train (and test) a network via imitation learning."""
 
 import functools
 import os
@@ -58,7 +58,10 @@ def main(dataset, expt_dir, _config, _log):
   data_config = _config['data']
   train_data = data.DataSource(train_paths, **data_config)
   test_data = data.DataSource(test_paths, **data_config)
-  test_batch = next(test_data)
+  test_batch = train_lib.sanitize_batch(next(test_data))
+
+  import numpy as np
+  assert test_batch[0]['player'][1]['jumps_left'].dtype == np.uint8
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))

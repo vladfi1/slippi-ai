@@ -1,7 +1,9 @@
 import datetime
+import embed
 import os
 import secrets
 
+import tree
 import utils
 
 def get_experiment_directory():
@@ -11,6 +13,21 @@ def get_experiment_directory():
   expt_dir = f'experiments/{expt_tag}'
   os.makedirs(expt_dir, exist_ok=True)
   return expt_dir
+
+# necessary because our dataset has some mismatching types, which ultimately
+# come from libmelee occasionally giving differently-typed data
+# Won't be necessary if we re-generate the dataset.
+embed_game = embed.make_game_embedding()
+game_dtypes = embed_game.map(lambda e: e.dtype)
+
+def sanitize_game(game):
+  """Casts inputs to the right dtype."""
+  return tree.map_structure(lambda a, t: a.astype(t), game, game_dtypes)
+
+def sanitize_batch(batch):
+  game, restarting = batch
+  game = sanitize_game(game)
+  return game, restarting
 
 class TrainManager:
 
@@ -25,7 +42,7 @@ class TrainManager:
 
   def step(self):
     with self.data_profiler:
-      batch = next(self.data_source)
+      batch = sanitize_batch(next(self.data_source))
     with self.step_profiler:
       loss, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
