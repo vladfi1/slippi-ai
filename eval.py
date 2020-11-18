@@ -104,6 +104,9 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
       controller.tilt_analog(melee.Button.BUTTON_C, *c_stick)
       controller.press_shoulder(melee.Button.BUTTON_L, sampled_controller["l_shoulder"])
       controller.press_shoulder(melee.Button.BUTTON_R, sampled_controller["r_shoulder"])
+
+     if gamestate.frame == -123: # initial frame
+        controller.release_all()
     else:
       melee.MenuHelper.menu_helper_simple(gamestate,
                                           controller,

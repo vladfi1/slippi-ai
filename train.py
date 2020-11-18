@@ -55,7 +55,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       policy=policy,
       **_config['learner'])
   for comp in ['network', 'controller_head']:
-    print(f'\nUsing {comp}: {_config[comp]["name"]}')
+    print(f'Using {comp}: {_config[comp]["name"]}')
 
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
