@@ -17,7 +17,7 @@ import data
 from learner import Learner
 import networks
 import paths
-from policy import Policy
+import policies
 import stats
 import train_lib
 import utils
@@ -42,15 +42,35 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
+  policy = policies.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
 
 @ex.automain
 def main(dataset, expt_dir, _config, _log):
   network = networks.construct_network(**_config['network'])
-  policy = Policy(network)
+  policy = policies.construct_policy(**_config['policy'])(network)
   learner = Learner(
       policy=policy,
       **_config['learner'])
+  print(f'\nUsing network: {_config["network"]["name"]}')
+
+  train_paths, test_paths = data.train_test_split(**dataset)
+  print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
+
+  data_config = _config['data']
+  train_data = data.DataSource(train_paths, **data_config)
+  test_data = data.DataSource(test_paths, **data_config)
+  test_batch = train_lib.sanitize_batch(next(test_data))
+
+  import numpy as np
+  assert test_batch[0]['player'][1]['jumps_left'].dtype == np.uint8
+
+  train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
+  test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
+
+  # initialize variables
+  train_loss = train_manager.step()
+  _log.info('loss initial: %f', train_loss.numpy())
 
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')

@@ -13,8 +13,8 @@ def get_all_names():
 
 def get_fox_ditto_names():
   table = TABLE
-  table = table[table.css_character_0 == melee.Character.FOX.value]
-  table = table[table.css_character_1 == melee.Character.FOX.value]
+  table = table[table.in_game_character_0 == melee.Character.FOX.value]
+  table = table[table.in_game_character_1 == melee.Character.FOX.value]
   return table.filename
 
 SUBSETS = {
@@ -26,8 +26,8 @@ def to_name(c):
   return melee.Character(c).name
 
 def print_matchups():
-  p0 = map(to_name, table['css_character_0'])
-  p1 = map(to_name, table['css_character_1'])
+  p0 = map(to_name, table['in_game_character_0'])
+  p1 = map(to_name, table['in_game_character_1'])
 
   matchups = map(tuple, map(sorted, zip(p0, p1)))
   matchups = collections.Counter(matchups)
