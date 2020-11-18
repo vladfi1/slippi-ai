@@ -22,13 +22,14 @@ import stats
 import train_lib
 import utils
 
-LOG_INTERVAL = 10
-SAVE_INTERVAL = 300
-
 ex = Experiment('imitation')
 
 @ex.config
 def config():
+  num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
+  epoch_time = 10  # seconds between testing/logging
+  save_interval = 300  # seconds between saving to disk
+
   dataset = dict(
       data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
       subset=None,  # Subset to train on. Defaults to all files.
@@ -45,7 +46,7 @@ def config():
   expt_dir = train_lib.get_experiment_directory()
 
 @ex.automain
-def main(dataset, expt_dir, _config, _log):
+def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log):
   network = networks.construct_network(**_config['network'])
   policy = policies.construct_policy(**_config['policy'])(network)
   learner = Learner(
@@ -79,7 +80,7 @@ def main(dataset, expt_dir, _config, _log):
   manager = tf.train.CheckpointManager(
       ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
   manager.restore_or_initialize()
-  save = utils.Periodically(manager.save, SAVE_INTERVAL)
+  save = utils.Periodically(manager.save, save_interval)
   train_loss = train_manager.step()
   _log.info('loss post-restore: %f', train_loss.numpy())
 
@@ -113,19 +114,22 @@ def main(dataset, expt_dir, _config, _log):
 
   saved_model_path = os.path.join(expt_dir, 'saved_model')
   save_model = utils.Periodically(functools.partial(
-      tf.saved_model.save, saved_module, saved_model_path), SAVE_INTERVAL)
+      tf.saved_model.save, saved_module, saved_model_path), save_interval)
 
   total_steps = 0
   frames_per_batch = train_data.batch_size * train_data.unroll_length
 
-  for _ in range(1000):
-    steps = 0
+  for _ in range(num_epochs):
     start_time = time.perf_counter()
 
-    # train for a while
+    # ensure at least one step per epoch
+    train_loss = train_manager.step()
+    steps = 1
+
+    # train for epoch_time seconds
     while True:
       elapsed_time = time.perf_counter() - start_time
-      if elapsed_time > LOG_INTERVAL: break
+      if elapsed_time > epoch_time: break
       train_loss = train_manager.step()
       steps += 1
 
