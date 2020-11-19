@@ -20,8 +20,8 @@ class Embedding:
   def input_signature(self):
     return tf.TensorSpec((), self.dtype)
 
-  def map(self, f):
-    return f(self)
+  def map(self, f, *args):
+    return f(self, *args)
 
 class BoolEmbedding(Embedding):
   size = 1
@@ -160,8 +160,8 @@ class StructEmbedding(Embedding):
     for _, op in embedding:
       self.size += op.size
 
-  def map(self, f):
-    return {k: e.map(f) for k, e in self.embedding}
+  def map(self, f, *args):
+    return {k: e.map(f, *[x[k] for x in args]) for k, e in self.embedding}
 
   def from_state(self, state) -> dict:
     struct = {}
@@ -216,8 +216,8 @@ class ArrayEmbedding(Embedding):
     self.permutation = permutation
     self.size = len(permutation) * op.size
 
-  def map(self, f):
-    return [self.op.map(f)] * len(self.permutation)
+  def map(self, f, *args):
+    return [self.op.map(f, *[x[i] for x in args]) for i in self.permutation]
 
   def from_state(self, state):
     return [self.op.from_state(state[i]) for i in self.permutation]

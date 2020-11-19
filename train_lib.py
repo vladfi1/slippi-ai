@@ -18,11 +18,10 @@ def get_experiment_directory():
 # come from libmelee occasionally giving differently-typed data
 # Won't be necessary if we re-generate the dataset.
 embed_game = embed.make_game_embedding()
-game_dtypes = embed_game.map(lambda e: e.dtype)
 
 def sanitize_game(game):
-  """Casts inputs to the right dtype."""
-  return tree.map_structure(lambda a, t: a.astype(t), game, game_dtypes)
+  """Casts inputs to the right dtype and discard unused inputs."""
+  return embed_game.map(lambda e, a: a.astype(e.dtype), game)
 
 def sanitize_batch(batch):
   game, restarting = batch
