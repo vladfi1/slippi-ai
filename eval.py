@@ -88,21 +88,17 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
       batched_game = tf.nest.map_structure(
           lambda a: np.expand_dims(a, 0), embedded_game)
       sampled_controller, hidden_state = sample(batched_game, hidden_state)
-      for b in melee.Button:
-        if b in embed.banned_buttons:
-          continue
-        if b is melee.Button.BUTTON_START:
-          continue
+      for b in embed.LEGAL_BUTTONS:
         if sampled_controller['button'][b.value]:
           controller.press_button(b)
         else:
           controller.release_button(b)
-        main_stick = sampled_controller["main_stick"]
-        controller.tilt_analog(melee.Button.BUTTON_MAIN, *main_stick)
-        c_stick = sampled_controller["main_stick"]
-        controller.tilt_analog(melee.Button.BUTTON_C, *c_stick)
-        controller.press_shoulder(melee.Button.BUTTON_L, sampled_controller["l_shoulder"])
-        controller.press_shoulder(melee.Button.BUTTON_R, sampled_controller["r_shoulder"])
+      main_stick = sampled_controller["main_stick"]
+      controller.tilt_analog(melee.Button.BUTTON_MAIN, *main_stick)
+      c_stick = sampled_controller["c_stick"]
+      controller.tilt_analog(melee.Button.BUTTON_C, *c_stick)
+      controller.press_shoulder(melee.Button.BUTTON_L, sampled_controller["l_shoulder"])
+      controller.press_shoulder(melee.Button.BUTTON_R, sampled_controller["r_shoulder"])
     else:
       melee.MenuHelper.menu_helper_simple(gamestate,
                                           controller,

@@ -311,17 +311,18 @@ def make_game_embedding(player_config={}, players=(1, 2)):
 
   return StructEmbedding("game", embedding)
 
-banned_buttons = (
+LEGAL_BUTTONS = set(enums.Button) - set([
     enums.Button.BUTTON_MAIN,
     enums.Button.BUTTON_C,
-)
+    enums.Button.BUTTON_START,
+])
 
 embed_buttons = StructEmbedding(
     "buttons",
-    [(b.value, embed_bool) for b in enums.Button if b not in banned_buttons],
+    [(b.value, embed_bool) for b in LEGAL_BUTTONS],
     is_dict=True,
-    key_map={b.value: b for b in enums.Button},
-    )
+    key_map={b.value: b for b in LEGAL_BUTTONS},
+)
 
 # each controller axis is in [0, 1]
 embed_stick = ArrayEmbedding("stick", embed_float, [0, 1])
