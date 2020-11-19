@@ -14,6 +14,7 @@ import tensorflow as tf
 import melee
 
 import data
+import controller_heads
 from learner import Learner
 import networks
 import paths
@@ -42,17 +43,19 @@ def config():
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
-  policy = policies.DEFAULT_CONFIG
+  controller_head = controller_heads.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
 
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log):
-  network = networks.construct_network(**_config['network'])
-  policy = policies.construct_policy(**_config['policy'])(network)
+  policy = policies.Policy(
+      networks.construct_network(**_config['network']),
+      controller_heads.construct(**_config['controller_head']))
   learner = Learner(
       policy=policy,
       **_config['learner'])
-  print(f'\nUsing network: {_config["network"]["name"]}')
+  for comp in ['network', 'controller_head']:
+    print(f'\nUsing {comp}: {_config[comp]["name"]}')
 
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')

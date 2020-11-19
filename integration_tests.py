@@ -1,25 +1,25 @@
 import itertools
 import unittest
 
-import policies
+import controller_heads
 import networks
 from train import ex as train_ex
 
 class TrainTest(unittest.TestCase):
-  def train(self, policy='default', network='mlp'):
+  def train(self, controller_head='independent', network='mlp'):
     run = train_ex.run(config_updates=dict(
         num_epochs=1,
         epoch_time=0,
         save_interval=0,
-        policy=dict(name=policy),
+        controller_head=dict(name=controller_head),
         network=dict(name=network),
     ))
     self.assertEqual(run.status, 'COMPLETED')
 
   def test_train(self):
-    for policy, network in itertools.product(
-        policies.CONSTRUCTORS, networks.CONSTRUCTORS):
-      kwargs = dict(policy=policy, network=network)
+    for controller_head, network in itertools.product(
+        controller_heads.CONSTRUCTORS, networks.CONSTRUCTORS):
+      kwargs = dict(controller_head=controller_head, network=network)
       with self.subTest(**kwargs):
         self.train(**kwargs)
 
