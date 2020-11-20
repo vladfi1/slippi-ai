@@ -14,28 +14,34 @@ class ControllerHead(snt.Module):
 class IndependentControllerHead(ControllerHead):
   """Models each component of the controller independently."""
 
-  CONFIG = dict(residual=False)
+  CONFIG = dict(
+      residual=False,
+      discrete_axis=False,
+  )
 
-  def __init__(self, residual):
+  def __init__(self, residual, discrete_axis):
     super().__init__(name='IndependentControllerHead')
-    self.to_controller_input = snt.Linear(embed.embed_controller.size)
+    self.embed_controller = embed.embed_controller
+    if discrete_axis:
+        self.embed_controller = embed.embed_controller_discrete
+    self.to_controller_input = snt.Linear(self.embed_controller.size)
     self.residual = residual
     if residual:
-      self.residual_net = snt.Linear(embed.embed_controller.size)
+      self.residual_net = snt.Linear(self.embed_controller.size)
 
   def controller_prediction(self, inputs, prev_controller_state):
     controller_prediction = self.to_controller_input(inputs)
     if self.residual:
-      prev_controller_flat = embed.embed_controller(prev_controller_state)
+      prev_controller_flat = self.embed_controller(prev_controller_state)
       controller_prediction += self.residual_net(prev_controller_flat)
     return controller_prediction
 
   def sample(self, inputs, prev_controller_state):
-    return embed.embed_controller.sample(
+    return self.embed_controller.sample(
         self.controller_prediction(inputs, prev_controller_state))
 
   def log_prob(self, inputs, prev_controller_state, target_controller_state):
-    return embed.embed_controller.distance(
+    return self.embed_controller.distance(
         self.controller_prediction(inputs, prev_controller_state),
         target_controller_state)
 

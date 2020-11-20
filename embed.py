@@ -135,6 +135,9 @@ class OneHotEmbedding(Embedding):
     target = self(target)
     return -tf.reduce_sum(logprobs * target, -1)
 
+  def sample(self, embedded):
+    return tfp.distributions.Categorical(logits=embedded).sample()
+
 class EnumEmbedding(OneHotEmbedding):
   def __init__(self, enum_class, **kwargs):
     super().__init__(str(enum_class), len(enum_class), **kwargs)
@@ -331,6 +334,38 @@ embed_controller = StructEmbedding("controller", [
     ("button", embed_buttons),
     ("main_stick", embed_stick),
     ("c_stick", embed_stick),
+    ("l_shoulder", embed_float),
+    ("r_shoulder", embed_float),
+])
+
+class DiscreteAxisEmbedding(OneHotEmbedding):
+  def __init__(self, n=16):
+    super().__init__('DiscreteAxisEmbedding', n+1)
+    self.n = n
+
+  def maybe_bucket(self, t):
+    if t.dtype == tf.float32:
+      t = tf.cast(t * self.n + 0.5, tf.int32)
+    return t
+
+  def __call__(self, t):
+    return super().__call__(self.maybe_bucket(t))
+
+  def distance(self, embedded, target):
+    return super().distance(embedded, self.maybe_bucket(target))
+
+  def sample(self, embedded):
+    discrete = super().sample(embedded)
+    return tf.cast(discrete, tf.float32) / self.n
+
+# each controller axis is in [0, 1]
+embed_axis_discrete = DiscreteAxisEmbedding()
+embed_stick_discrete = ArrayEmbedding("stick", embed_axis_discrete, [0, 1])
+
+embed_controller_discrete = StructEmbedding("controller", [
+    ("button", embed_buttons),
+    ("main_stick", embed_stick_discrete),
+    ("c_stick", embed_stick_discrete),
     ("l_shoulder", embed_float),
     ("r_shoulder", embed_float),
 ])
