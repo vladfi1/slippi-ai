@@ -1,4 +1,6 @@
+import atexit
 import itertools
+import multiprocessing as mp
 import os
 import pickle
 import random
@@ -90,3 +92,23 @@ class DataSource:
   def __next__(self):
     return utils.batch_nest(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
+
+def produce_batches(data_source_kwargs, batch_queue):
+  data_source = DataSource(**data_source_kwargs)
+  while True:
+    batch_queue.put(next(data_source))
+
+class DataSourceMP:
+  def __init__(self, buffer=4, **kwargs):
+    for k, v in kwargs.items():
+      setattr(self, k, v)
+    self.batch_queue = mp.Queue(buffer)
+    self.process = mp.Process(
+        target=produce_batches, args=(kwargs, self.batch_queue))
+    self.process.start()
+
+    atexit.register(self.batch_queue.close)
+    atexit.register(self.process.terminate)
+
+  def __next__(self):
+    return self.batch_queue.get()
