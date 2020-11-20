@@ -94,12 +94,19 @@ class FrameStackingMLP(Network):
     return self._mlp(stacked_frames), final_state
 
 class LSTM(Network):
-  CONFIG=dict(hidden_size=128)
+  CONFIG=dict(
+      hidden_size=128,
+      num_mlp_layers=0,
+  )
 
-  def __init__(self, hidden_size):
+  def __init__(self, hidden_size, num_mlp_layers):
     super().__init__(name='LSTM')
     self._hidden_size = hidden_size
     self._lstm = snt.LSTM(hidden_size)
+    if num_mlp_layers:
+      self._mlp = snt.nets.MLP([hidden_size] * num_mlp_layers)
+    else:
+      self._mlp = lambda x: x
     self._embed_game = embed.make_game_embedding()
 
   def initial_state(self, batch_size):
@@ -107,10 +114,12 @@ class LSTM(Network):
 
   def step(self, inputs, prev_state):
     flat_inputs = self._embed_game(inputs)
+    flat_inputs = self._mlp(flat_inputs)
     return self._lstm(flat_inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
     flat_inputs = self._embed_game(inputs)
+    flat_inputs = self._mlp(flat_inputs)
     return utils.dynamic_rnn(self._lstm, flat_inputs, prev_state)
 
 class GRU(Network):
