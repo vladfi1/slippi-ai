@@ -13,6 +13,7 @@ class TrainTest(unittest.TestCase):
         save_interval=0,
         controller_head=dict(name=controller_head),
         network=dict(name=network),
+        data=dict(batch_size=8, unroll_length=8),  # small data for tests
     ))
     self.assertEqual(run.status, 'COMPLETED')
 
