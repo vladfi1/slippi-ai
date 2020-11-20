@@ -2,6 +2,7 @@
 Converts SSBM types to Tensorflow types.
 """
 
+import collections
 import math
 from typing import List, Tuple
 
@@ -22,6 +23,9 @@ class Embedding:
 
   def map(self, f, *args):
     return f(self, *args)
+
+  def traverse(self):
+    yield self
 
 class BoolEmbedding(Embedding):
   size = 1
@@ -164,7 +168,13 @@ class StructEmbedding(Embedding):
       self.size += op.size
 
   def map(self, f, *args):
-    return {k: e.map(f, *[x[k] for x in args]) for k, e in self.embedding}
+    return collections.OrderedDict(
+        (k, e.map(f, *[x[k] for x in args]))
+        for k, e in self.embedding)
+
+  def traverse(self):
+    for _, e in self.embedding:
+      yield from e.traverse()
 
   def from_state(self, state) -> dict:
     struct = {}
@@ -221,6 +231,10 @@ class ArrayEmbedding(Embedding):
 
   def map(self, f, *args):
     return [self.op.map(f, *[x[i] for x in args]) for i in self.permutation]
+
+  def traverse(self):
+    for _ in self.permutation:
+      yield from self.op.traverse()
 
   def from_state(self, state):
     return [self.op.from_state(state[i]) for i in self.permutation]
