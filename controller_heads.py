@@ -21,9 +21,7 @@ class Independent(ControllerHead):
 
   def __init__(self, residual, discrete_axis):
     super().__init__(name='IndependentControllerHead')
-    self.embed_controller = embed.embed_controller
-    if discrete_axis:
-        self.embed_controller = embed.embed_controller_discrete
+    self.embed_controller = embed.get_controller_embedding(discrete_axis)
     self.to_controller_input = snt.Linear(self.embed_controller.size)
     self.residual = residual
     if residual:
@@ -48,11 +46,13 @@ class Independent(ControllerHead):
 class AutoRegressive(ControllerHead):
   """Samples components sequentially conditioned on past samples."""
 
-  CONFIG = dict()
+  CONFIG = dict(
+      discrete_axis=True,
+  )
 
-  def __init__(self):
+  def __init__(self, discrete_axis):
     super().__init__(name='AutoRegressive')
-    self.embed_controller = embed.embed_controller
+    self.embed_controller = embed.get_controller_embedding(discrete_axis)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     # TODO: we'd like the order of the flattened embeddings to match the natural
     # traversal of the embed_controller StructEmbedding. This relies on

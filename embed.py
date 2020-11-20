@@ -297,7 +297,7 @@ def make_player_embedding(
       # ("charging_smash", embedFloat),
       ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale)),
       ("on_ground", embed_bool),
-      ('controller_state', embed_controller),
+      ('controller_state', embed_controller),  # make this configurable
     ]
 
     if with_speeds:
@@ -328,6 +328,8 @@ def make_game_embedding(player_config={}, players=(1, 2)):
 
   return StructEmbedding("game", embedding)
 
+# Embeddings for controllers
+
 LEGAL_BUTTONS = set(enums.Button) - set([
     enums.Button.BUTTON_MAIN,
     enums.Button.BUTTON_C,
@@ -341,20 +343,11 @@ embed_buttons = StructEmbedding(
     key_map={b.value: b for b in LEGAL_BUTTONS},
 )
 
-# each controller axis is in [0, 1]
-embed_stick = ArrayEmbedding("stick", embed_float, [0, 1])
+class DiscreteEmbedding(OneHotEmbedding):
+  """Buckets float inputs in [0, 1]."""
 
-embed_controller = StructEmbedding("controller", [
-    ("button", embed_buttons),
-    ("main_stick", embed_stick),
-    ("c_stick", embed_stick),
-    ("l_shoulder", embed_float),
-    ("r_shoulder", embed_float),
-])
-
-class DiscreteAxisEmbedding(OneHotEmbedding):
   def __init__(self, n=16):
-    super().__init__('DiscreteAxisEmbedding', n+1)
+    super().__init__('DiscreteEmbedding', n+1)
     self.n = n
 
   def maybe_bucket(self, t):
@@ -373,13 +366,19 @@ class DiscreteAxisEmbedding(OneHotEmbedding):
     return tf.cast(discrete, tf.float32) / self.n
 
 # each controller axis is in [0, 1]
-embed_axis_discrete = DiscreteAxisEmbedding()
-embed_stick_discrete = ArrayEmbedding("stick", embed_axis_discrete, [0, 1])
+embed_axis_discrete = DiscreteEmbedding(16)
 
-embed_controller_discrete = StructEmbedding("controller", [
-    ("button", embed_buttons),
-    ("main_stick", embed_stick_discrete),
-    ("c_stick", embed_stick_discrete),
-    ("l_shoulder", embed_float),
-    ("r_shoulder", embed_float),
-])
+def get_controller_embedding(discrete_axis=False):
+  embed_axis = embed_axis_discrete if discrete_axis else embed_float
+  embed_stick = ArrayEmbedding("stick", embed_axis_discrete, [0, 1])
+
+  return StructEmbedding("controller", [
+      ("button", embed_buttons),
+      ("main_stick", embed_stick),
+      ("c_stick", embed_stick),
+      ("l_shoulder", embed_float),
+      ("r_shoulder", embed_float),
+  ])
+
+embed_controller = get_controller_embedding()  # default embedding
+embed_controller_discrete = get_controller_embedding(discrete_axis=True)
