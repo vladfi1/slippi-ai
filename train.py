@@ -61,8 +61,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
 
   data_config = _config['data']
-  train_data = data.DataSource(train_paths, **data_config)
-  test_data = data.DataSource(test_paths, **data_config)
+  train_data = data.DataSourceMP(filenames=train_paths, **data_config)
+  test_data = data.DataSourceMP(filenames=test_paths, **data_config)
   test_batch = train_lib.sanitize_batch(next(test_data))
 
   import numpy as np
