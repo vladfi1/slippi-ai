@@ -77,6 +77,9 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
     if gamestate is None:
         continue
 
+    if gamestate.frame == -123: # initial frame
+      controller.release_all()
+
     # The console object keeps track of how long your bot is taking to process frames
     #   And can warn you if it's taking too long
     if console.processingtime * 1000 > 12:
