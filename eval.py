@@ -70,6 +70,9 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
         sys.exit(-1)
     print("Controller connected")
 
+  action_repeat = 0
+  repeats_left = 0
+
   # Main loop
   while True:
     # "step" to the next frame
@@ -87,12 +90,21 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
 
     # What menu are we in?
     if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-      embedded_game = embed_game.from_state(gamestate)
+      if repeats_left > 0:
+        repeats_left -= 1
+        continue
+
+      embedded_game = embed_game.from_state(gamestate), action_repeat
       batched_game = tf.nest.map_structure(
           lambda a: np.expand_dims(a, 0), embedded_game)
-      sampled_controller, hidden_state = sample(batched_game, hidden_state)
-      sampled_controller = tf.nest.map_structure(
-          lambda t: np.squeeze(t.numpy(), 0), sampled_controller)
+      sampled_controller_with_repeat, hidden_state = sample(
+          batched_game, hidden_state)
+      sampled_controller_with_repeat = tf.nest.map_structure(
+          lambda t: np.squeeze(t.numpy(), 0), sampled_controller_with_repeat)
+      sampled_controller = sampled_controller_with_repeat['controller']
+      action_repeat = sampled_controller_with_repeat['action_repeat']
+      repeats_left = action_repeat
+
       for b in embed.LEGAL_BUTTONS:
         if sampled_controller['button'][b.value]:
           controller.press_button(b)
