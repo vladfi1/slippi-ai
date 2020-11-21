@@ -365,12 +365,12 @@ class DiscreteEmbedding(OneHotEmbedding):
     discrete = super().sample(embedded)
     return tf.cast(discrete, tf.float32) / self.n
 
-# each controller axis is in [0, 1]
-embed_axis_discrete = DiscreteEmbedding(16)
-
-def get_controller_embedding(discrete_axis=False):
-  embed_axis = embed_axis_discrete if discrete_axis else embed_float
-  embed_stick = ArrayEmbedding("stick", embed_axis_discrete, [0, 1])
+def get_controller_embedding(discrete_axis_spacing=0):
+  if discrete_axis_spacing:
+    embed_axis = DiscreteEmbedding(discrete_axis_spacing)
+  else:
+    embed_axis = embed_float
+  embed_stick = ArrayEmbedding("stick", embed_axis, [0, 1])
 
   return StructEmbedding("controller", [
       ("button", embed_buttons),
@@ -381,4 +381,4 @@ def get_controller_embedding(discrete_axis=False):
   ])
 
 embed_controller = get_controller_embedding()  # default embedding
-embed_controller_discrete = get_controller_embedding(discrete_axis=True)
+embed_controller_discrete = get_controller_embedding(16)
