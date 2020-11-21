@@ -24,8 +24,11 @@ class Embedding:
   def map(self, f, *args):
     return f(self, *args)
 
-  def traverse(self):
-    yield self
+  def flatten(self, struct):
+    yield struct
+
+  def unflatten(self, seq):
+    return next(seq)
 
   def preprocess(self, x):
     """Used by discretization."""
@@ -176,9 +179,12 @@ class StructEmbedding(Embedding):
         (k, e.map(f, *[x[k] for x in args]))
         for k, e in self.embedding)
 
-  def traverse(self):
-    for _, e in self.embedding:
-      yield from e.traverse()
+  def flatten(self, struct):
+    for k, e in self.embedding:
+      yield from e.flatten(struct[k])
+
+  def unflatten(self, seq):
+    return {k: e.unflatten(seq) for k, e in self.embedding}
 
   def from_state(self, state) -> dict:
     struct = {}
@@ -234,11 +240,18 @@ class ArrayEmbedding(Embedding):
     self.size = len(permutation) * op.size
 
   def map(self, f, *args):
-    return [self.op.map(f, *[x[i] for x in args]) for i in self.permutation]
+    return [
+        self.op.map(f, *[x[i] for x in args])
+        for i in range(len(self.permutation))
+    ]
 
-  def traverse(self):
-    for _ in self.permutation:
-      yield from self.op.traverse()
+  def flatten(self, array):
+    assert len(array) == len(self.permutation)
+    for a in array:
+      yield from self.op.flatten(a)
+
+  def unflatten(self, seq):
+    return [self.op.unflatten(seq) for _ in self.permutation]
 
   def from_state(self, state):
     return [self.op.from_state(state[i]) for i in self.permutation]
@@ -347,7 +360,7 @@ LEGAL_BUTTONS = [
 ]
 embed_buttons = StructEmbedding(
     "buttons",
-    [(b.value, embed_bool) for b in LEGAL_BUTTONS],
+    [(b.value, BoolEmbedding(name=b.value)) for b in LEGAL_BUTTONS],
     is_dict=True,
     key_map={b.value: b for b in LEGAL_BUTTONS},
 )

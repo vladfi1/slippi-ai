@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
+import embed
 import utils
 
 def static_rnn(core, inputs, initial_state):
@@ -43,6 +44,17 @@ class UtilsTest(unittest.TestCase):
     dynamic_outputs, _ = utils.dynamic_rnn(nested_core, inputs, initial_state)
 
     tf.nest.map_structure(assert_tensors_close, static_outputs, dynamic_outputs)
+
+class EmbedTest(unittest.TestCase):
+
+  def test_flatten_and_unflatten(self):
+    embed_game = embed.make_game_embedding()
+
+    embed_game_struct = embed_game.map(lambda e: e)
+    embed_game_flat = embed_game.flatten(embed_game_struct)
+    embed_game_unflat = embed_game.unflatten(embed_game_flat)
+
+    self.assertEqual(embed_game_unflat, embed_game_struct)
 
 if __name__ == '__main__':
   unittest.main()
