@@ -330,16 +330,17 @@ def make_game_embedding(player_config={}, players=(1, 2)):
 
 # Embeddings for controllers
 
-ILLEGAL_BUTTONS = set([
-    enums.Button.BUTTON_MAIN,
-    enums.Button.BUTTON_C,
-    enums.Button.BUTTON_START,
-    enums.Button.BUTTON_D_DOWN,
-    enums.Button.BUTTON_D_LEFT,
-    enums.Button.BUTTON_D_RIGHT,
-])
-LEGAL_BUTTONS = [b for b in enums.Button if b not in ILLEGAL_BUTTONS]
-
+# this is the autoregressive order
+LEGAL_BUTTONS = [
+    enums.Button.BUTTON_A,
+    enums.Button.BUTTON_B,
+    enums.Button.BUTTON_X,
+    enums.Button.BUTTON_Y,
+    enums.Button.BUTTON_Z,
+    enums.Button.BUTTON_L,
+    enums.Button.BUTTON_R,
+    enums.Button.BUTTON_D_UP,
+]
 embed_buttons = StructEmbedding(
     "buttons",
     [(b.value, embed_bool) for b in LEGAL_BUTTONS],
