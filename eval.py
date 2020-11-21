@@ -91,6 +91,8 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
       batched_game = tf.nest.map_structure(
           lambda a: np.expand_dims(a, 0), embedded_game)
       sampled_controller, hidden_state = sample(batched_game, hidden_state)
+      sampled_controller = tf.nest.map_structure(
+          lambda t: np.squeeze(t.numpy(), 0), sampled_controller)
       for b in embed.LEGAL_BUTTONS:
         if sampled_controller['button'][b.value]:
           controller.press_button(b)
