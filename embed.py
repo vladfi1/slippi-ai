@@ -27,6 +27,10 @@ class Embedding:
   def traverse(self):
     yield self
 
+  def preprocess(self, x):
+    """Used by discretization."""
+    return x
+
 class BoolEmbedding(Embedding):
   size = 1
   dtype = bool
@@ -370,6 +374,9 @@ class DiscreteEmbedding(OneHotEmbedding):
     discrete = super().sample(embedded)
     return tf.cast(discrete, tf.float32) / self.n
 
+  def preprocess(self, a):
+    return (a * self.n + 0.5).astype(self.dtype)
+
 def get_controller_embedding(discrete_axis_spacing=0):
   if discrete_axis_spacing:
     embed_axis = DiscreteEmbedding(discrete_axis_spacing)
@@ -387,3 +394,9 @@ def get_controller_embedding(discrete_axis_spacing=0):
 
 embed_controller = get_controller_embedding()  # default embedding
 embed_controller_discrete = get_controller_embedding(16)
+
+def get_controller_embedding_with_action_repeat(max_repeat):
+  return StructEmbedding("controller_with_action_repeat", [
+      ("controller", embed_controller),
+      ("action_repeat", OneHotEmbedding('action_repeat', max_repeat+1)),
+  ])

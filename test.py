@@ -14,6 +14,7 @@ import tensorflow as tf
 import melee
 
 import data
+import embed
 from learner import Learner
 import networks
 import paths
@@ -53,7 +54,8 @@ def main(dataset, saved_model_path, _config, _log):
 
   _, test_paths = data.train_test_split(**dataset)
 
-  data_config = _config['data']
+  embed_controller = embed.embed_controller_discrete  # TODO: configure
+  data_config = dict(_config['data'], embed_controller=embed_controller)
   test_data = data.DataSource(test_paths, **data_config)
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 

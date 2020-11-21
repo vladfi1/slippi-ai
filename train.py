@@ -13,8 +13,9 @@ import tensorflow as tf
 
 import melee
 
-import data
 import controller_heads
+import data
+import embed
 from learner import Learner
 import networks
 import paths
@@ -40,6 +41,7 @@ def config():
       batch_size=32,
       unroll_length=64,
       compressed=True,
+      max_action_repeat=15,
   )
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
@@ -48,9 +50,15 @@ def config():
 
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log):
+  embed_controller = embed.embed_controller_discrete  # TODO: configure
+
+  controller_head_config = dict(
+      _config['controller_head'],
+      embed_controller=embed.get_controller_embedding_with_action_repeat(
+          _config['data']['max_action_repeat']))
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
-      controller_heads.construct(**_config['controller_head']))
+      controller_heads.construct(**controller_head_config))
   learner = Learner(
       policy=policy,
       **_config['learner'])
@@ -60,13 +68,12 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
 
-  data_config = _config['data']
+  data_config = dict(_config['data'], embed_controller=embed_controller)
   train_data = data.DataSourceMP(filenames=train_paths, **data_config)
   test_data = data.DataSourceMP(filenames=test_paths, **data_config)
   test_batch = train_lib.sanitize_batch(next(test_data))
 
-  import numpy as np
-  assert test_batch[0]['player'][1]['jumps_left'].dtype == np.uint8
+  assert test_batch[0][0]['player'][1]['jumps_left'].dtype == np.uint8
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
