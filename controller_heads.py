@@ -8,8 +8,8 @@ class ControllerHead(snt.Module):
   def sample(self, inputs, prev_controller_state):
     """Sample a controller state given input features and previous state."""
 
-  def log_prob(self, inputs, prev_controller_state, target_controller_state):
-    """A struct of log probabilities."""
+  def distance(self, inputs, prev_controller_state, target_controller_state):
+    """A struct of distances (generally, negative log probs)."""
 
 class Independent(ControllerHead):
   """Models each component of the controller independently."""
@@ -37,69 +37,84 @@ class Independent(ControllerHead):
     return self.embed_controller.sample(
         self.controller_prediction(inputs, prev_controller_state))
 
-  def log_prob(self, inputs, prev_controller_state, target_controller_state):
+  def distance(self, inputs, prev_controller_state, target_controller_state):
     return self.embed_controller.distance(
         self.controller_prediction(inputs, prev_controller_state),
         target_controller_state)
+
+class ResBlock(snt.Module):
+
+  def __init__(self, embedder: embed.Embedding, residual_size):
+    super().__init__(name='ResBlock')
+    self.embedder = embedder
+    self.encoder = snt.Linear(embedder.size)
+    # initialize the resnet as the identity function
+    self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
+
+  def sample(self, residual, prev_raw):
+    # directly connect from the same component at time t-1
+    prev_embedding = self.embedder(prev_raw)
+    input_ = tf.concat([residual, prev_embedding], -1)
+    # project down to the size desired by the component
+    input_ = self.encoder(input_)
+    # sample the component
+    sample = self.embedder.sample(input_)
+    # condition future components on the current sample
+    sample_embedding = self.embedder(sample)
+    residual += self.decoder(sample_embedding)
+    return residual, sample
+
+  def distance(self, residual, prev_raw, target_raw):
+    # directly connect from the same component at time t-1
+    prev_embedding = self.embedder(prev_raw)
+    input_ = tf.concat([residual, prev_embedding], -1)
+    # project down to the size desired by the component
+    input_ = self.encoder(input_)
+    # compute the distance between prediction and target
+    distance = self.embedder.distance(input_, target_raw)
+    # auto-regress using the target (aka teacher forcing)
+    target_embedding = self.embedder(target_raw)
+    residual += self.decoder(target_embedding)
+    return residual, distance
 
 class AutoRegressive(ControllerHead):
   """Samples components sequentially conditioned on past samples."""
 
   CONFIG = dict(
+      residual_size=128,
   )
 
-  def __init__(self, embed_controller):
+  def __init__(self, embed_controller, residual_size):
     super().__init__(name='AutoRegressive')
     self.embed_controller = embed_controller
+    self.to_residual = snt.Linear(residual_size)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
-    self.projections = [snt.Linear(e.size) for e in self.embed_flat]
+    self.res_blocks = [ResBlock(e, residual_size) for e in self.embed_flat]
 
   def sample(self, inputs, prev_controller_state):
+    residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
 
     samples = []
-    for embedder, project, prev_component in zip(
-        self.embed_flat, self.projections, prev_controller_flat):
-      prev_component_embed = embedder(prev_component)
-
-      # directly connect from the same component at time t-1
-      input_ = tf.concat([inputs, prev_component_embed], -1)
-      # project down to the size desired by the component
-      input_ = project(input_)
-      # sample the component
-      sample = embedder.sample(input_)
+    for res_block, prev in zip(self.res_blocks, prev_controller_flat):
+      residual, sample = res_block.sample(residual, prev)
       samples.append(sample)
-      # auto-regress using the sampled component
-      sample_repr = embedder(sample)
-      # condition future components on the current sample
-      inputs = tf.concat([inputs, sample_repr], -1)
 
     return self.embed_controller.unflatten(iter(samples))
 
-  def log_prob(self, inputs, prev_controller_state, target_controller_state):
+  def distance(self, inputs, prev_controller_state, target_controller_state):
+    residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
     target_controller_flat = self.embed_controller.flatten(target_controller_state)
-    logps = []
 
-    for embedder, project, prev_component, target in zip(
-        self.embed_flat, self.projections, prev_controller_flat,
-        target_controller_flat):
-      prev_component_embed = embedder(prev_component)
+    distances = []
+    for res_block, prev, target in zip(
+        self.res_blocks, prev_controller_flat, target_controller_flat):
+      residual, distance = res_block.distance(residual, prev, target)
+      distances.append(distance)
 
-      # directly connect from the same component at time t-1
-      input_ = tf.concat([inputs, prev_component_embed], -1)
-      # project down to the size desired by the component
-      input_ = project(input_)
-      # compute the distance between prediction and target
-      # in practice this is the cnegative log prob of the target
-      logps.append(embedder.distance(input_, target))
-      # auto-regress using the target (aka teacher forcing)
-      sample_repr = embedder(target)
-      # condition future components on the current sample
-      inputs = tf.concat([inputs, sample_repr], -1)
-
-    return self.embed_controller.unflatten(iter(logps))
+    return self.embed_controller.unflatten(iter(distances))
 
 CONSTRUCTORS = dict(
     independent=Independent,

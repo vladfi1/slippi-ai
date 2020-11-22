@@ -29,7 +29,7 @@ class Policy(snt.Module):
     prev_action = tf.nest.map_structure(lambda t: t[:-1], p1_controller)
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
 
-    distances = self.controller_head.log_prob(
+    distances = self.controller_head.distance(
         outputs[:-1], prev_action, next_action)
     loss = tf.add_n(tf.nest.flatten(distances))
 
