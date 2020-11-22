@@ -104,7 +104,9 @@ class LSTM(Network):
     self._hidden_size = hidden_size
     self._lstm = snt.LSTM(hidden_size)
     if num_mlp_layers:
-      self._mlp = snt.nets.MLP([hidden_size] * num_mlp_layers)
+      self._mlp = snt.nets.MLP(
+          [hidden_size] * num_mlp_layers,
+          activate_final=True)
     else:
       self._mlp = lambda x: x
     self._embed_game = embed.make_game_embedding()
