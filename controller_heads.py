@@ -99,7 +99,7 @@ class AutoRegressive(ControllerHead):
       # condition future components on the current sample
       inputs = tf.concat([inputs, sample_repr], -1)
 
-    return tf.add_n(logps)
+    return self.embed_controller.unflatten(iter(logps))
 
 CONSTRUCTORS = dict(
     independent=Independent,

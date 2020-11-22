@@ -3,7 +3,9 @@ import embed
 import os
 import secrets
 
+import tensorflow as tf
 import tree
+
 import utils
 
 def get_experiment_directory():
@@ -45,6 +47,14 @@ class TrainManager:
     with self.data_profiler:
       batch = sanitize_batch(next(self.data_source))
     with self.step_profiler:
-      loss, self.hidden_state = self.learner.compiled_step(
+      stats, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
-    return loss
+    return stats
+
+def log_stats(ex, stats, step=None, sep='.'):
+  def log(path, value):
+    if isinstance(value, tf.Tensor):
+      value = value.numpy()
+    key = sep.join(map(str, path))
+    ex.log_scalar(key, value, step=step)
+  tree.map_structure_with_path(log, stats)

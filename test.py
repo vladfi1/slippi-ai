@@ -63,7 +63,7 @@ def main(dataset, saved_model_path, _config, _log):
 
   for _ in range(1000):
     # now test
-    test_loss = test_manager.step()
-    test_loss = test_loss.numpy()
-    ex.log_scalar('test.loss', test_loss, total_steps)
+    test_stats = test_manager.step()
+    train_lib.log_stats(ex, test_stats, total_steps)
+    test_loss = test_stats['loss'].numpy()
     print(f'test_loss={test_loss:.4f}')

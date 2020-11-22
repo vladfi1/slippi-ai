@@ -79,8 +79,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
   # initialize variables
-  train_loss = train_manager.step()
-  _log.info('loss initial: %f', train_loss.numpy())
+  train_stats = train_manager.step()
+  _log.info('loss initial: %f', train_stats['loss'].numpy())
 
   ckpt = tf.train.Checkpoint(
       step=tf.Variable(0, trainable=False),
@@ -91,7 +91,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
   manager.restore_or_initialize()
   save = utils.Periodically(manager.save, save_interval)
-  train_loss = train_manager.step()
+  train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
 
   # signatures without batch dims
@@ -133,26 +133,27 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     start_time = time.perf_counter()
 
     # ensure at least one step per epoch
-    train_loss = train_manager.step()
+    train_stats = train_manager.step()
     steps = 1
 
     # train for epoch_time seconds
     while True:
       elapsed_time = time.perf_counter() - start_time
       if elapsed_time > epoch_time: break
-      train_loss = train_manager.step()
+      train_stats = train_manager.step()
       steps += 1
 
     ckpt.step.assign_add(steps)
     total_steps = ckpt.step.numpy()
 
-    train_loss = train_loss.numpy()
-    ex.log_scalar('train.loss', train_loss, total_steps)
-
     # now test
-    test_loss = test_manager.step()
-    test_loss = test_loss.numpy()
-    ex.log_scalar('test.loss', test_loss, total_steps)
+    test_stats = test_manager.step()
+
+    train_loss = train_stats['loss'].numpy()
+    test_loss = test_stats['loss'].numpy()
+
+    all_stats = dict(train=train_stats, test=test_stats)
+    train_lib.log_stats(ex, all_stats, total_steps)
 
     sps = steps / elapsed_time
     mps = sps * frames_per_batch / (60 * 60)

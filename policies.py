@@ -33,7 +33,7 @@ class Policy(snt.Module):
         tf.reduce_mean, next_action_distances)
     loss = tf.add_n(tf.nest.flatten(mean_distances))
 
-    return loss, final_state
+    return loss, final_state, mean_distances
 
   def sample(self, gamestate, initial_state):
     gamestate, action_repeat = gamestate
