@@ -296,6 +296,7 @@ def make_player_embedding(
     shield_scale: float = 0.01,
     speed_scale: float = 0.5,
     with_speeds: bool = False,
+    with_controller: bool = True,
     ):
     embed_xy = FloatEmbedding("xy", scale=xy_scale)
 
@@ -314,8 +315,11 @@ def make_player_embedding(
       # ("charging_smash", embedFloat),
       ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale)),
       ("on_ground", embed_bool),
-      ('controller_state', embed_controller),  # make this configurable
     ]
+
+    if with_controller:
+      # TODO: make this configurable
+      embedding.append(('controller_state', embed_controller_default))
 
     if with_speeds:
       embed_speed = FloatEmbedding("speed", scale=speed_scale)
