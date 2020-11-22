@@ -57,4 +57,4 @@ class EmbedTest(unittest.TestCase):
     self.assertEqual(embed_game_unflat, embed_game_struct)
 
 if __name__ == '__main__':
-  unittest.main()
+  unittest.main(failfast=True)

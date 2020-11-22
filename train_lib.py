@@ -3,6 +3,7 @@ import embed
 import os
 import secrets
 
+import numpy as np
 import tensorflow as tf
 import tree
 
@@ -55,6 +56,8 @@ def log_stats(ex, stats, step=None, sep='.'):
   def log(path, value):
     if isinstance(value, tf.Tensor):
       value = value.numpy()
+    if isinstance(value, np.ndarray):
+      value = value.mean()
     key = sep.join(map(str, path))
     ex.log_scalar(key, value, step=step)
   tree.map_structure_with_path(log, stats)

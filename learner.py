@@ -36,16 +36,16 @@ class Learner:
     tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
 
     with tf.GradientTape() as tape:
-      total_loss, final_states, mean_distances = self.policy.loss(
+      loss, final_states, distances = self.policy.loss(
           tm_gamestate, initial_states)
-
-    stats = dict(loss=total_loss, distances=mean_distances)
+      mean_loss = tf.reduce_mean(loss)
+    stats = dict(loss=mean_loss, distances=distances)
 
     if train:
       params = tape.watched_variables()
       watched_names = [p.name for p in params]
       trainable_names = [v.name for v in self.policy.trainable_variables]
       assert set(watched_names) == set(trainable_names)
-      grads = tape.gradient(total_loss, params)
+      grads = tape.gradient(mean_loss, params)
       self.optimizer.apply(grads, params)
     return stats, final_states
