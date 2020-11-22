@@ -47,34 +47,47 @@ class MLP(Network):
     return self._mlp(flat_inputs), ()
 
 class FrameStackingMLP(Network):
+  '''
+    MLP on frames concatenated through time; e.g.,
+      [t-5, t-4, t-3, t-2, t-1] -> predict t
+
+    Optionally, can drop last frame_delay frames to force human reaction time:
+      [t-23, t-22, t-20, t-19, t-18] -> predict t
+    Humans do not have to react to their own previous inputs, so we suggest coupling
+    frame_delay with a residual prediction policy.
+  '''
 
   CONFIG = dict(
       output_sizes=[256, 128],
       dropout_rate=0.,
       num_frames=5,
+      frame_delay=0,
   )
 
-  def __init__(self, output_sizes, dropout_rate, num_frames):
-    super().__init__(name='MLP')
+  def __init__(self, output_sizes, dropout_rate, num_frames, frame_delay):
+    super().__init__(name='FrameStackingMLP')
     self._mlp = snt.nets.MLP(
         output_sizes,
         activate_final=True,
         dropout_rate=dropout_rate)
+    self._frame_delay = frame_delay
     self._num_frames = num_frames
+    self._frame_buffer_len = num_frames + frame_delay
     self._embed_game = embed.make_game_embedding()
 
   def initial_state(self, batch_size):
     return [
         tf.zeros([batch_size, self._embed_game.size])
-        for _ in range(self._num_frames-1)
+        for _ in range(self._frame_buffer_len-1)
     ]
 
   def step(self, inputs, prev_state):
     flat_inputs = self._embed_game(inputs)
     frames = prev_state + [flat_inputs]
-    stacked_frames = tf.concat(frames, -1)
+    trimmed_frames = frames[:len(frames)-self._frame_delay]
+    stacked_trimmed_frames = tf.concat(trimmed_frames, -1)
     next_state = frames[1:]
-    return self._mlp(stacked_frames), next_state
+    return self._mlp(stacked_trimmed_frames), next_state
 
   def unroll(self, inputs, initial_state):
     flat_inputs = self._embed_game(inputs)  # [T, B, ...]
@@ -82,16 +95,17 @@ class FrameStackingMLP(Network):
     past_frames = tf.stack(initial_state)  # [N-1, B, ...]
     all_frames = tf.concat([past_frames, flat_inputs], 0)  # [N-1 + T, B, ...]
 
-    n = self._num_frames - 1
+    n = self._frame_buffer_len - 1
 
     slices = [all_frames[i:i-n] for i in range(n)]
     slices.append(all_frames[n:])
     # slices has num_frames tensors of dimension [T, B, ...]
-    stacked_frames = tf.concat(slices, -1)
+    trimmed_slices = slices[:len(slices)-self._frame_delay]
+    stacked_trimmed_frames = tf.concat(trimmed_slices, -1)
 
     final_state = [all_frames[i] for i in range(-n, 0)]
 
-    return self._mlp(stacked_frames), final_state
+    return self._mlp(stacked_trimmed_frames), final_state
 
 class LSTM(Network):
   CONFIG=dict(
