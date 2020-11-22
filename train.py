@@ -55,6 +55,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   controller_head_config = dict(
       _config['controller_head'],
       embed_controller=embed.get_controller_embedding_with_action_repeat(
+          embed_controller,
           _config['data']['max_action_repeat']))
   policy = policies.Policy(
       networks.construct_network(**_config['network']),

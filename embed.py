@@ -405,10 +405,10 @@ def get_controller_embedding(discrete_axis_spacing=0):
       ("r_shoulder", embed_float),
   ])
 
-embed_controller = get_controller_embedding()  # default embedding
+embed_controller_default = get_controller_embedding()  # continuous sticks
 embed_controller_discrete = get_controller_embedding(16)
 
-def get_controller_embedding_with_action_repeat(max_repeat):
+def get_controller_embedding_with_action_repeat(embed_controller, max_repeat):
   return StructEmbedding("controller_with_action_repeat", [
       ("controller", embed_controller),
       ("action_repeat", OneHotEmbedding('action_repeat', max_repeat+1)),
