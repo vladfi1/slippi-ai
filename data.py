@@ -112,7 +112,7 @@ def indices_and_counts(repeats, max_repeat=15):
   indices.append(len(repeats))
   counts.append(count)
 
-  return indices, counts
+  return np.array(indices), np.array(counts)
 
 def compress_repeated_actions(game, embed_controller, max_repeat):
   controllers = game['player'][1]['controller_state']
@@ -122,7 +122,7 @@ def compress_repeated_actions(game, embed_controller, max_repeat):
   indices, counts = indices_and_counts(repeats, max_repeat)
 
   compressed_game = tree.map_structure(lambda a: a[indices], game)
-  return compressed_game, np.array(counts)
+  return compressed_game, counts
 
 class DataSource:
   def __init__(
