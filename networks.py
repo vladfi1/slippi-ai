@@ -102,34 +102,48 @@ class FrameStackingMLP(Network):
 
     return self._mlp(stacked_frames), final_state
 
+class ResBlock(snt.Module):
+
+  def __init__(self, residual_size, hidden_size=None, name='ResBlock'):
+    super().__init__(name=name)
+    self.block = snt.Sequential([
+        snt.Linear(hidden_size or residual_size),
+        tf.nn.relu,
+        # initialize the resnet as the identity function
+        snt.Linear(residual_size, w_init=tf.zeros_initializer()),
+    ])
+
+  def __call__(self, residual):
+    return residual + self.block(residual)
+
 class LSTM(Network):
   CONFIG=dict(
       hidden_size=128,
-      num_mlp_layers=0,
+      num_res_blocks=0,
   )
 
-  def __init__(self, hidden_size, num_mlp_layers):
+  def __init__(self, hidden_size, num_res_blocks):
     super().__init__(name='LSTM')
     self._hidden_size = hidden_size
     self._lstm = snt.LSTM(hidden_size)
-    if num_mlp_layers:
-      self._mlp = snt.nets.MLP(
-          [hidden_size] * num_mlp_layers,
-          activate_final=True)
-    else:
-      self._mlp = lambda x: x
+
+    # use a resnet before the LSTM
+    layers = [snt.Linear(hidden_size)]
+    for _ in range(num_res_blocks):
+      layers.append(ResBlock(hidden_size))
+    self._resnet = snt.Sequential(layers)
 
   def initial_state(self, batch_size):
     return self._lstm.initial_state(batch_size)
 
   def step(self, inputs, prev_state):
     flat_inputs = process_inputs(inputs)
-    flat_inputs = self._mlp(flat_inputs)
+    flat_inputs = self._resnet(flat_inputs)
     return self._lstm(flat_inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
     flat_inputs = process_inputs(inputs)
-    flat_inputs = self._mlp(flat_inputs)
+    flat_inputs = self._resnet(flat_inputs)
     return utils.dynamic_rnn(self._lstm, flat_inputs, prev_state)
 
 class GRU(Network):
