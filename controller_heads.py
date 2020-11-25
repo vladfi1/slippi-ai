@@ -42,13 +42,16 @@ class Independent(ControllerHead):
         self.controller_prediction(inputs, prev_controller_state),
         target_controller_state)
 
-class ResBlock(snt.Module):
+class AutoRegressiveComponent(snt.Module):
+  """Autoregressive residual component."""
 
-  def __init__(self, embedder: embed.Embedding, residual_size):
+  def __init__(self, embedder: embed.Embedding, residual_size, depth=0):
     super().__init__(name='ResBlock')
     self.embedder = embedder
-    self.encoder = snt.Linear(embedder.size)
-    # initialize the resnet as the identity function
+
+    self.encoder = snt.nets.MLP([residual_size] * depth + [embedder.size])
+    # the decoder doesn't need depth, because a single Linear decoding a one-hot
+    # has full expressive power over the output
     self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
 
   def sample(self, residual, prev_raw):
@@ -82,15 +85,18 @@ class AutoRegressive(ControllerHead):
 
   CONFIG = dict(
       residual_size=128,
+      component_depth=0,
   )
 
-  def __init__(self, embed_controller, residual_size):
+  def __init__(self, embed_controller, residual_size, component_depth):
     super().__init__(name='AutoRegressive')
     self.embed_controller = embed_controller
     self.to_residual = snt.Linear(residual_size)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
-    self.res_blocks = [ResBlock(e, residual_size) for e in self.embed_flat]
+    self.res_blocks = [
+        AutoRegressiveComponent(e, residual_size, component_depth)
+        for e in self.embed_flat]
 
   def sample(self, inputs, prev_controller_state):
     residual = self.to_residual(inputs)
