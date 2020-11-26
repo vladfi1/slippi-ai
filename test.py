@@ -5,7 +5,6 @@ import os
 import time
 
 from sacred import Experiment
-from sacred.observers import MongoObserver
 
 import numpy as np
 import sonnet as snt
@@ -26,7 +25,6 @@ LOG_INTERVAL = 10
 SAVE_INTERVAL = 300
 
 ex = Experiment('imitation_test')
-ex.observers.append(MongoObserver())
 
 @ex.config
 def config():
@@ -35,11 +33,7 @@ def config():
       subset=None,  # Subset to train on. Defaults to all files.
       test_ratio=.1,  # Fraction of dataset for testing.
   )
-  data = dict(
-      batch_size=32,
-      unroll_length=64,
-      compressed=True,
-  )
+  data = data.CONFIG
   learner = Learner.DEFAULT_CONFIG
   saved_model_path = None
 
@@ -56,7 +50,7 @@ def main(dataset, saved_model_path, _config, _log):
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
   data_config = dict(_config['data'], embed_controller=embed_controller)
-  test_data = data.DataSource(test_paths, **data_config)
+  test_data = data.make_source(filenames=test_paths, **data_config)
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
   total_steps = 0
