@@ -116,6 +116,14 @@ class ResBlock(snt.Module):
   def __call__(self, residual):
     return residual + self.block(residual)
 
+def resnet(num_blocks, residual_size, hidden_size=None, with_encoder=True):
+  layers = []
+  if with_encoder:
+    layers.append(snt.Linear(residual_size))
+  for _ in range(num_blocks):
+    layers.append(ResBlock(residual_size, hidden_size))
+  return snt.Sequential(layers)
+
 class LSTM(Network):
   CONFIG=dict(
       hidden_size=128,
@@ -128,10 +136,7 @@ class LSTM(Network):
     self._lstm = snt.LSTM(hidden_size)
 
     # use a resnet before the LSTM
-    layers = [snt.Linear(hidden_size)]
-    for _ in range(num_res_blocks):
-      layers.append(ResBlock(hidden_size))
-    self._resnet = snt.Sequential(layers)
+    self._resnet = resnet(num_res_blocks, hidden_size)
 
   def initial_state(self, batch_size):
     return self._lstm.initial_state(batch_size)
