@@ -9,18 +9,25 @@ import zlib
 import numpy as np
 import tree
 
+import melee
+
 import stats
 import utils
 
 def train_test_split(data_dir, subset=None, test_ratio=.1):
   if subset:
-    filenames = stats.SUBSETS[subset]()
+    print("Using subset:", subset)
+    filenames = stats.get_subset(subset)
     filenames = [name + '.pkl' for name in filenames]
   else:
+    print("Using all replays in", data_dir)
     filenames = sorted(os.listdir(data_dir))
+
+  print(f"Found {len(filenames)} replays.")
 
   # reproducible train/test split
   rng = random.Random()
+  rng.shuffle(filenames)
   test_files = rng.sample(filenames, int(test_ratio * len(filenames)))
   test_set = set(test_files)
   train_files = [f for f in filenames if f not in test_set]
@@ -124,6 +131,11 @@ def compress_repeated_actions(game, embed_controller, max_repeat):
   compressed_game = tree.map_structure(lambda a: a[indices], game)
   return compressed_game, counts
 
+def _charset(chars):
+  if chars is None:
+    chars = list(melee.Character)
+  return set(c.value for c in chars)
+
 class DataSource:
   def __init__(
       self,
@@ -134,6 +146,9 @@ class DataSource:
       max_action_repeat=15,
       # preprocesses (discretizes) actions before repeat detection
       embed_controller=None,
+      # Lists of melee.Character. None means all allowed.
+      allowed_characters=None,
+      allowed_opponents=None,
       ):
     self.filenames = filenames
     self.batch_size = batch_size
@@ -146,9 +161,14 @@ class DataSource:
         TrajectoryManager(trajectories)
         for _ in range(batch_size)]
 
+    self.allowed_characters = _charset(allowed_characters)
+    self.allowed_opponents = _charset(allowed_opponents)
+
   def produce_trajectories(self):
     raw_games = self.produce_raw_games()
-    yield from map(self.process_game, raw_games)
+    allowed_games = filter(self.is_allowed, raw_games)
+    processed_games = map(self.process_game, allowed_games)
+    yield from processed_games
 
   def process_game(self, game):
     return compress_repeated_actions(
@@ -164,6 +184,12 @@ class DataSource:
       game = pickle.loads(obj_bytes)
       yield game
       yield swap_players(game)
+
+  def is_allowed(self, game):
+    return (
+        game['player'][1]['character'][0] in self.allowed_characters
+        and
+        game['player'][2]['character'][0] in self.allowed_opponents)
 
   def __next__(self):
     return utils.batch_nest(
@@ -188,3 +214,33 @@ class DataSourceMP:
 
   def __next__(self):
     return self.batch_queue.get()
+
+_name_to_character = {c.name.lower(): c for c in melee.Character}
+
+def _chars_from_string(chars: str):
+  if chars == 'all':
+    return list(melee.Character)
+  chars = chars.split(',')
+  return [_name_to_character[c] for c in chars]
+
+CONFIG = dict(
+    batch_size=32,
+    unroll_length=64,
+    compressed=True,
+    max_action_repeat=15,
+    in_parallel=True,
+    # comma-separated lists of characters, or "all"
+    allowed_characters='fox',
+    allowed_opponents='fox',
+)
+
+def make_source(
+    allowed_characters: str,
+    allowed_opponents: str,
+    in_parallel: bool,
+    **kwargs):
+  constructor = DataSourceMP if in_parallel else DataSource
+  return constructor(
+      allowed_characters=_chars_from_string(allowed_characters),
+      allowed_opponents=_chars_from_string(allowed_opponents),
+      **kwargs)

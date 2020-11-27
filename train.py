@@ -37,12 +37,7 @@ def config():
       subset=None,  # Subset to train on. Defaults to all files.
       test_ratio=.1,  # Fraction of dataset for testing.
   )
-  data = dict(
-      batch_size=32,
-      unroll_length=64,
-      compressed=True,
-      max_action_repeat=15,
-  )
+  data = data.CONFIG
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
@@ -70,8 +65,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
 
   data_config = dict(_config['data'], embed_controller=embed_controller)
-  train_data = data.DataSourceMP(filenames=train_paths, **data_config)
-  test_data = data.DataSourceMP(filenames=test_paths, **data_config)
+  train_data = data.make_source(filenames=train_paths, **data_config)
+  test_data = data.make_source(filenames=test_paths, **data_config)
   test_batch = train_lib.sanitize_batch(next(test_data))
 
   assert test_batch[0][0]['player'][1]['jumps_left'].dtype == np.uint8

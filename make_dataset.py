@@ -15,12 +15,11 @@ import utils
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer('cores', 1, 'number of cores')
-flags.DEFINE_boolean('compress', False, 'Compress with zlib.')
-flags.DEFINE_enum('subset', stats.SUBSETS, 'fox_dittos', 'Subset of full dataset.')
-flags.DEFINE_string('dst_dir', paths.FOX_DITTO_PATH, 'Where to create the dataset.')
+flags.DEFINE_boolean('compress', True, 'Compress with zlib.')
+flags.DEFINE_enum('subset', None, stats.SUBSETS, 'Subset of full dataset.')
 
-def get_subset():
-  return stats.SUBSETS[FLAGS.subset]()
+flags.DEFINE_string('src_dir', paths.DATASET_PATH, 'Folder with slippi replays.')
+flags.DEFINE_string('dst_dir', paths.COMPRESSED_PATH, 'Where to create the dataset.')
 
 def read_gamestates(replay_path):
   print("Reading from ", replay_path)
@@ -50,6 +49,7 @@ def game_to_numpy(replay_path):
 
 def slp_to_pkl(src_dir, dst_dir, name, compress=False):
   src = os.path.join(src_dir, name)
+  assert os.path.isfile(src)
   dst = os.path.join(dst_dir, name + '.pkl')
   if os.path.isfile(dst): return
   obj = game_to_numpy(src)
@@ -62,10 +62,19 @@ def slp_to_pkl(src_dir, dst_dir, name, compress=False):
 def batch_slp_to_pkl(src_dir, dst_dir, names, compress=False, cores=1):
   os.makedirs(dst_dir, exist_ok=True)
 
+  dst_files = set(os.listdir(dst_dir))
+  def is_new(name):
+    return (name + '.pkl') not in dst_files
+  names = list(filter(is_new, names))
+  print(f"Converting {len(names)} replays.")
+
   # to see error messages
   if cores == 1:
     for name in names:
-      slp_to_pkl(src_dir, dst_dir, name, compress)
+      try:
+        slp_to_pkl(src_dir, dst_dir, name, compress)
+      except Exception:
+        print('Bad replay file', name)
     return
 
   with multiprocessing.Pool(cores) as pool:
@@ -77,14 +86,16 @@ def batch_slp_to_pkl(src_dir, dst_dir, names, compress=False, cores=1):
       r.wait()
 
 def main(_):
-  # print(len(get_fox_ditto_names()))
-  dst_dir = FLAGS.dst_dir
-  if FLAGS.compress:
-    dst_dir += "Compressed"
+  if FLAGS.subset:
+    subset = stats.get_subset(FLAGS.subset)
+  else:
+    subset = os.listdir(FLAGS.src_dir)
+    subset = set(subset) - stats.BAD_NAMES
+
   batch_slp_to_pkl(
-      paths.DATASET_PATH,
-      dst_dir,
-      get_subset(),
+      FLAGS.src_dir,
+      FLAGS.dst_dir,
+      subset,
       FLAGS.compress,
       FLAGS.cores)
 
