@@ -19,7 +19,7 @@ class Policy(snt.Module):
     self.initial_state = self.network.initial_state
 
   def loss(self, gamestate, initial_state):
-    gamestate, action_repeat = gamestate
+    gamestate, action_repeat, rewards = gamestate
     p1_controller = get_p1_controller(gamestate, action_repeat)
 
     p1_controller_embed = self.controller_head.embed_controller(p1_controller)
@@ -36,7 +36,7 @@ class Policy(snt.Module):
     return loss, final_state, distances
 
   def sample(self, gamestate, initial_state):
-    gamestate, action_repeat = gamestate
+    gamestate, action_repeat, rewards = gamestate
     p1_controller = get_p1_controller(gamestate, action_repeat)
 
     p1_controller_embed = self.controller_head.embed_controller(p1_controller)

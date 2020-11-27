@@ -156,7 +156,7 @@ class DebugLearner:
 
     # switch axes to time-major
     tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
-    gamestate, action_repeat = tm_gamestate
+    gamestate, action_repeat, rewards = tm_gamestate
 
     p1_controller = get_p1_controller(gamestate, action_repeat)
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
