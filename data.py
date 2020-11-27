@@ -16,13 +16,18 @@ import utils
 
 def train_test_split(data_dir, subset=None, test_ratio=.1):
   if subset:
-    filenames = stats.SUBSETS[subset]()
+    print("Using subset:", subset)
+    filenames = stats.get_subset(subset)
     filenames = [name + '.pkl' for name in filenames]
   else:
+    print("Using all replays in", data_dir)
     filenames = sorted(os.listdir(data_dir))
+
+  print(f"Found {len(filenames)} replays.")
 
   # reproducible train/test split
   rng = random.Random()
+  rng.shuffle(filenames)
   test_files = rng.sample(filenames, int(test_ratio * len(filenames)))
   test_set = set(test_files)
   train_files = [f for f in filenames if f not in test_set]
