@@ -11,6 +11,7 @@ import tree
 
 import melee
 
+import reward
 import stats
 import utils
 
@@ -121,7 +122,7 @@ def indices_and_counts(repeats, max_repeat=15):
 
   return np.array(indices), np.array(counts)
 
-def compress_repeated_actions(game, embed_controller, max_repeat):
+def compress_repeated_actions(game, rewards, embed_controller, max_repeat):
   controllers = game['player'][1]['controller_state']
   controllers = embed_controller.map(lambda e, a: e.preprocess(a), controllers)
 
@@ -129,7 +130,8 @@ def compress_repeated_actions(game, embed_controller, max_repeat):
   indices, counts = indices_and_counts(repeats, max_repeat)
 
   compressed_game = tree.map_structure(lambda a: a[indices], game)
-  return compressed_game, counts
+  sum_rewards = np.array([sum(rewards[idx-count:idx+1]) for idx, count in zip(indices, counts)])
+  return compressed_game, counts, sum_rewards
 
 def _charset(chars):
   if chars is None:
@@ -171,8 +173,9 @@ class DataSource:
     yield from processed_games
 
   def process_game(self, game):
+    rewards = reward.compute_rewards(game)
     return compress_repeated_actions(
-        game, self.embed_controller, self.max_action_repeat)
+        game, rewards, self.embed_controller, self.max_action_repeat)
 
   def produce_raw_games(self):
     """Raw games without post-processing."""

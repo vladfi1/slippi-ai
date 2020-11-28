@@ -24,9 +24,9 @@ embed_game = embed.make_game_embedding()
 
 def sanitize_game(game):
   """Casts inputs to the right dtype and discard unused inputs."""
-  gamestates, counts = game
+  gamestates, counts, rewards = game
   gamestates = embed_game.map(lambda e, a: a.astype(e.dtype), gamestates)
-  return gamestates, counts
+  return gamestates, counts, rewards
 
 def sanitize_batch(batch):
   game, restarting = batch
