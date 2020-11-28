@@ -102,11 +102,46 @@ class FrameStackingMLP(Network):
 
     return self._mlp(stacked_frames), final_state
 
+class LayerNorm(snt.Module):
+  """Normalize the mean (to 0) and standard deviation (to 1) of the last dimension.
+
+  We use our own instead of sonnet's because sonnet doesn't allow varying rank.
+  """
+
+  def __init__(self):
+    super().__init__(name='LayerNorm')
+
+  @snt.once
+  def _initialize(self, inputs):
+    feature_shape = inputs.shape[-1:]
+    self.scale = tf.Variable(
+        tf.ones(feature_shape, inputs.dtype),
+        name='scale')
+    self.bias = tf.Variable(
+        tf.zeros(feature_shape, inputs.dtype),
+        name='bias')
+
+  def __call__(self, inputs):
+    self._initialize(inputs)
+
+    mean = tf.reduce_mean(inputs, axis=-1, keepdims=True)
+    inputs -= mean
+
+    stddev = tf.sqrt(tf.reduce_mean(tf.square(inputs), axis=-1, keepdims=True))
+    inputs /= stddev
+
+    inputs *= self.scale
+    inputs += self.bias
+
+    return inputs
+
 class ResBlock(snt.Module):
 
   def __init__(self, residual_size, hidden_size=None, name='ResBlock'):
     super().__init__(name=name)
     self.block = snt.Sequential([
+        # https://openreview.net/forum?id=B1x8anVFPr recommends putting the layernorm here
+        LayerNorm(),
         snt.Linear(hidden_size or residual_size),
         tf.nn.relu,
         # initialize the resnet as the identity function
