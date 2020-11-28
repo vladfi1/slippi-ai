@@ -13,8 +13,8 @@ def get_all_names():
 
 def get_fox_ditto_names():
   table = TABLE
-  table = table[table.in_game_character_0 == melee.Character.FOX.value]
-  table = table[table.in_game_character_1 == melee.Character.FOX.value]
+  table = table[table.css_character_0 == melee.Character.FOX.value]
+  table = table[table.css_character_1 == melee.Character.FOX.value]
   return table.filename
 
 BAD_NAMES = set([
