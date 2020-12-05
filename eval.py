@@ -5,7 +5,6 @@ import time
 import signal
 
 from sacred import Experiment
-from sacred.observers import MongoObserver
 
 import numpy as np
 import sonnet as snt
@@ -19,7 +18,6 @@ LOG_INTERVAL = 10
 SAVE_INTERVAL = 300
 
 ex = Experiment('eval')
-ex.observers.append(MongoObserver())
 
 @ex.config
 def config():
@@ -94,7 +92,7 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
         repeats_left -= 1
         continue
 
-      embedded_game = embed_game.from_state(gamestate), action_repeat
+      embedded_game = embed_game.from_state(gamestate), action_repeat, 0.
       batched_game = tf.nest.map_structure(
           lambda a: np.expand_dims(a, 0), embedded_game)
       sampled_controller_with_repeat, hidden_state = sample(
