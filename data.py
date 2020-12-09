@@ -233,8 +233,8 @@ CONFIG = dict(
     max_action_repeat=15,
     in_parallel=True,
     # comma-separated lists of characters, or "all"
-    allowed_characters='fox',
-    allowed_opponents='fox',
+    allowed_characters='all',
+    allowed_opponents='all',
 )
 
 def make_source(
