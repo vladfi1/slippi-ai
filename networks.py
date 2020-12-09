@@ -186,6 +186,51 @@ class LSTM(Network):
     flat_inputs = self._resnet(flat_inputs)
     return utils.dynamic_rnn(self._lstm, flat_inputs, prev_state)
 
+
+class ResLSTMBlock(snt.RNNCore):
+
+  def __init__(self, residual_size, hidden_size=None, name='ResLSTMBlock'):
+    super().__init__(name=name)
+    self.layernorm = LayerNorm()
+    self.lstm = snt.LSTM(hidden_size or residual_size)
+    # initialize the resnet as the identity function
+    self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
+
+  def initial_state(self, batch_size):
+    return self.lstm.initial_state(batch_size)
+
+  def __call__(self, residual, prev_state):
+    x = residual
+    x = self.layernorm(x)
+    x, next_state = self.lstm(x, prev_state)
+    x = self.decoder(x)
+    return residual + x, next_state
+
+class DeepResLSTM(Network):
+  CONFIG=dict(
+      hidden_size=128,
+      num_layers=1,
+  )
+
+  def __init__(self, hidden_size, num_layers):
+    super().__init__(name='DeepResLSTM')
+    self.encoder = snt.Linear(hidden_size)
+    self.deep_rnn = snt.DeepRNN(
+        [ResLSTMBlock(hidden_size) for _ in range(num_layers)])
+
+  def initial_state(self, batch_size):
+    return self.deep_rnn.initial_state(batch_size)
+
+  def step(self, inputs, prev_state):
+    flat_inputs = process_inputs(inputs)
+    flat_inputs = self.encoder(flat_inputs)
+    return self.deep_rnn(flat_inputs, prev_state)
+
+  def unroll(self, inputs, prev_state):
+    flat_inputs = process_inputs(inputs)
+    flat_inputs = self.encoder(flat_inputs)
+    return utils.dynamic_rnn(self.deep_rnn, flat_inputs, prev_state)
+
 class GRU(Network):
   CONFIG=dict(hidden_size=128)
 
@@ -229,6 +274,7 @@ CONSTRUCTORS = dict(
     lstm=LSTM,
     gru=GRU,
     copier=Copier,
+    res_lstm=DeepResLSTM,
 )
 
 DEFAULT_CONFIG = dict(
@@ -238,6 +284,7 @@ DEFAULT_CONFIG = dict(
     lstm=LSTM.CONFIG,
     gru=GRU.CONFIG,
     copier=Copier.CONFIG,
+    res_lstm=DeepResLSTM.CONFIG,
 )
 
 def construct_network(name, **config):
