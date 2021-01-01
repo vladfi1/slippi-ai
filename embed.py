@@ -12,6 +12,8 @@ import tensorflow_probability as tfp
 
 from melee import enums
 
+import type_utils
+
 float_type = tf.float32
 
 class Embedding:
@@ -33,6 +35,9 @@ class Embedding:
   def preprocess(self, x):
     """Used by discretization."""
     return x
+
+  def get_type(self) -> type_utils.Type:
+    return type_utils.Base(self.dtype)
 
 class BoolEmbedding(Embedding):
   size = 1
@@ -174,6 +179,9 @@ class StructEmbedding(Embedding):
     for _, op in embedding:
       self.size += op.size
 
+  def get_type(self):
+    return type_utils.Dict([(k, e.get_type()) for k, e in self.embedding])
+
   def map(self, f, *args):
     return collections.OrderedDict(
         (k, e.map(f, *[x[k] for x in args]))
@@ -238,6 +246,9 @@ class ArrayEmbedding(Embedding):
     self.op = op
     self.permutation = permutation
     self.size = len(permutation) * op.size
+
+  def get_type(self):
+    return type_utils.Vector(self.op.get_type(), len(self.permutation))
 
   def map(self, f, *args):
     return [

@@ -11,9 +11,24 @@ import tree
 
 import melee
 
+import embed
 import reward
 import stats
+import type_utils
 import utils
+
+# defines the nested structures in a game
+embed_game = embed.make_game_embedding()
+game_type = embed_game.get_type()
+trajectory_type = type_utils.Tuple((
+    game_type,
+    type_utils.Base(np.int64),
+    type_utils.Base(np.float32),
+))
+chunk_type = type_utils.Tuple((
+    trajectory_type,
+    type_utils.Base(bool),
+))
 
 def train_test_split(data_dir, subset=None, test_ratio=.1):
   if subset:
@@ -60,11 +75,17 @@ class TrajectoryManager:
       self.find_game(n)
 
     new_frame = self.frame + n
-    slice = lambda a: a[self.frame:new_frame]
-    chunk = tree.map_structure(slice, self.game)
+    get_slice = lambda a: a[self.frame:new_frame]
+    # chunk = tree.map_structure(get_slice, self.game)
+    # chunk = trajectory_type.map(get_slice, self.game)
+    chunk = [get_slice(x) for x in self.game]
+
     self.frame = new_frame
 
-    return chunk, needs_reset
+    chunk.append(needs_reset)
+    return chunk
+
+    # return chunk, needs_reset
 
 def swap_players(game):
   old_players = game['player']
@@ -102,7 +123,7 @@ def indices_and_counts(repeats, max_repeat=15):
     max_repeat: Maximum number of consecutive repeated actions before a repeat
       is considered a non-repeat.
   Returns:
-    A tuple (indices, counts).
+    # A tuple (indices, counts).
   """
   indices = []
   counts = []
@@ -129,9 +150,20 @@ def compress_repeated_actions(game, rewards, embed_controller, max_repeat):
   repeats = detect_repeated_actions(controllers)
   indices, counts = indices_and_counts(repeats, max_repeat)
 
-  compressed_game = tree.map_structure(lambda a: a[indices], game)
-  sum_rewards = np.array([sum(rewards[idx-count:idx+1]) for idx, count in zip(indices, counts)])
-  return compressed_game, counts, sum_rewards
+  # use a flat game representation during processing for improved efficiency
+  compressed_game = [a[indices] for a in game_type.flatten(game)]
+
+  # rewards[i] represents the transition between frames (i-1) and i
+  # We include rewards[0] because all arrays must have the same time-dimension
+  # for chunking by the TrajectoryManager.
+  segments = np.zeros_like(indices)
+  segments[1:] = indices[:-1]
+  sum_rewards = np.add.reduceat(rewards, segments)
+
+  # appending to the flattened game_type lines up with the flattened trajectory_type
+  compressed_game.append(counts)
+  compressed_game.append(sum_rewards)
+  return compressed_game
 
 def _charset(chars):
   if chars is None:
@@ -195,8 +227,11 @@ class DataSource:
         game['player'][2]['character'][0] in self.allowed_opponents)
 
   def __next__(self):
-    return utils.batch_nest(
-        [m.grab_chunk(self.unroll_length) for m in self.managers])
+    chunks = [m.grab_chunk(self.unroll_length) for m in self.managers]
+    batched = map(np.stack, zip(*chunks))
+    return chunk_type.unflatten(batched)
+    # return chunk_type.map(lambda *xs: np.stack(xs), *chunks)
+    # return utils.batch_nest(chunks)
 
 def produce_batches(data_source_kwargs, batch_queue):
   data_source = DataSource(**data_source_kwargs)
