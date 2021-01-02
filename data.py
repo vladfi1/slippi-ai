@@ -242,8 +242,10 @@ class DataSourceMP:
   def __init__(self, buffer=4, **kwargs):
     for k, v in kwargs.items():
       setattr(self, k, v)
-    self.batch_queue = mp.Queue(buffer)
-    self.process = mp.Process(
+    # for compatibility, use "spawn" to match Windows behavior
+    ctx = mp.get_context("spawn")
+    self.batch_queue = ctx.Queue(buffer)
+    self.process = ctx.Process(
         target=produce_batches, args=(kwargs, self.batch_queue))
     self.process.start()
 

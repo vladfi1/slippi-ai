@@ -163,13 +163,16 @@ class EnumEmbedding(OneHotEmbedding):
   def from_state(self, obj):
     return self.dtype(self._map[obj])
 
+def getitem(d, k):
+  return d[k]
+
 class StructEmbedding(Embedding):
   def __init__(self, name: str, embedding: List[Tuple[object, Embedding]],
                is_dict=False, key_map=None):
     self.name = name
     self.embedding = embedding
     if is_dict:
-      self.getter = lambda d, k: d[k]
+      self.getter = getitem
     else:
       self.getter = getattr
 
