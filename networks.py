@@ -23,10 +23,24 @@ class Network(snt.Module):
     '''
       Returns outputs and next recurrent state.
       inputs: (batch_size, x_dim)
+      prev_state: (batch, state_dim)
+
+    Returns a tuple (outputs, final_state)
+      outputs: (batch, out_dim)
+      final_state: (batch, state_dim)
     '''
     raise NotImplementedError()
 
   def unroll(self, inputs, initial_state):
+    '''
+    Arguments:
+      inputs: (time, batch, x_dim)
+      initial_state: (batch, state_dim)
+
+    Returns a tuple (outputs, final_state)
+      outputs: (time, batch, out_dim)
+      final_state: (batch, state_dim)
+    '''
     return utils.dynamic_rnn(self.step, inputs, initial_state)
 
 class MLP(Network):
