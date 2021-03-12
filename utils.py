@@ -92,3 +92,10 @@ def with_flat_signature(fn, signature):
   def g(*flat_args):
     return fn(*tree.unflatten_as(signature, flat_args))
   return tf.function(g, input_signature=tree.flatten(signature))
+
+def snt_serialize(snt_obj):
+  return [v.numpy() for v in snt_obj.variables]
+
+def snt_restore(snt_obj, value):
+  for var, val in zip(snt_obj.variables, value):
+    var.assign(val)
