@@ -9,11 +9,13 @@ import tree
 
 import utils
 
+def get_experiment_tag():
+  today = datetime.date.today()
+  return f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
+
 def get_experiment_directory():
   # create directory for tf checkpoints and other experiment artifacts
-  today = datetime.date.today()
-  expt_tag = f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
-  expt_dir = f'experiments/{expt_tag}'
+  expt_dir = f'experiments/{get_experiment_tag()}'
   os.makedirs(expt_dir, exist_ok=True)
   return expt_dir
 

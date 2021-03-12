@@ -2,10 +2,12 @@
 
 import functools
 import os
+import pickle
 import time
 
-from sacred import Experiment
-from sacred.observers import MongoObserver
+import pymongo
+import sacred
+from sacred.observers import mongo
 
 import numpy as np
 import sonnet as snt
@@ -24,7 +26,24 @@ import stats
 import train_lib
 import utils
 
-ex = Experiment('imitation')
+# mongo_client = None
+
+@sacred.cli_option("-o", "--mongo_db")
+def mongo_db_option(args, run):
+    """Add a MongoDB Observer to the experiment.
+    The argument value is the database specification.
+    Should be in the form:
+    `[host:port:]db_name[.collection[:id]][!priority]`
+    """
+    # local mongo_client
+    # client = pymongo.MongoClient(_run.info['mongo_uri'])
+
+    kwargs = mongo.parse_mongo_db_arg(args)
+    run.observers.append(mongo.MongoObserver(**kwargs))
+    run.info['mongo_uri'] = kwargs['url']
+
+# ex = sacred.Experiment('imitation', additional_cli_options=[mongo_db_option])
+ex = sacred.Experiment('imitation')
 
 @ex.config
 def config():
@@ -42,9 +61,10 @@ def config():
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
+  tag = train_lib.get_experiment_tag()
 
 @ex.automain
-def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log):
+def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
   controller_head_config = dict(
@@ -52,12 +72,15 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       embed_controller=embed.get_controller_embedding_with_action_repeat(
           embed_controller,
           _config['data']['max_action_repeat']))
+
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
   learner = Learner(
       policy=policy,
       **_config['learner'])
+  snt_state = dict(policy=policy, optimizer=learner.optimizer)
+
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
 
@@ -78,15 +101,52 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   train_stats = train_manager.step()
   _log.info('loss initial: %f', train_stats['loss'].numpy())
 
+  # saving and restoring
+  def get_state():
+    return {k: utils.snt_serialize(v) for k, v in snt_state.items()}
+
+  def set_state(state):
+    for k, v in snt_state.items():
+      utils.snt_restore(v, state[k])
+
+  # pickle_path = os.path.join(expt_dir, 'latest.pkl')
+  tag = _config["tag"]
+  client = pymongo.MongoClient("192.168.1.5:27017")
+  state_collection = client.sacred.state
+
+  # def save():
+  #   _log.info('saving state to %s', pickle_path)
+  #   with open(pickle_path, 'wb') as f:
+  #     pickle.dump(get_state(), f)
+
+  def save():
+    _log.info('saving state to %s', tag)
+    pickled_state = pickle.dumps(get_state())
+    state_collection.save(dict(state=pickled_state, _id=tag))
+
+  save = utils.Periodically(save, save_interval)
+
   ckpt = tf.train.Checkpoint(
       step=tf.Variable(0, trainable=False),
       policy=policy,
       optimizer=learner.optimizer,
   )
-  manager = tf.train.CheckpointManager(
-      ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
-  manager.restore_or_initialize()
-  save = utils.Periodically(manager.save, save_interval)
+  # manager = tf.train.CheckpointManager(
+  #     ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
+  # manager.restore_or_initialize()
+  # save = utils.Periodically(manager.save, save_interval)
+
+  # if os.path.exists(pickle_path):
+  #   _log.info('restoring from %s', pickle_path)
+  #   with open(pickle_path, 'rb') as f:
+  #     pickled_state = pickle.load(f)
+  #   set_state(pickled_state)
+
+  obj = state_collection.find_one(dict(_id=tag))
+  if obj is not None:
+    _log.info('restoring from %s', tag)
+    set_state(pickle.loads(obj['state']))
+
   train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
 
