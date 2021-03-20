@@ -5,9 +5,11 @@ import os
 import pickle
 import time
 
-import pymongo
 import sacred
-from sacred.observers import mongo
+
+# for storing parameters
+import boto3
+from simplekv.net.boto3store import Boto3Store
 
 import numpy as np
 import sonnet as snt
@@ -62,6 +64,17 @@ def config():
   controller_head = controller_heads.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
+  # in access_key:secret_key format
+  s3_creds = None
+
+def get_store(s3_creds: str):
+  access_key, secret_key = s3_creds.split(':')
+
+  session = boto3.Session(access_key, secret_key)
+  s3 = session.resource('s3')
+  bucket = s3.Bucket('slippi-data')
+  store = Boto3Store(bucket)
+  return store
 
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
@@ -111,8 +124,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   # pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  client = pymongo.MongoClient("192.168.1.5:27017")
-  state_collection = client.sacred.state
+  store = get_store(_config["s3_creds"])
+  params_key = f"slippi-ai.params.{tag}"
 
   # def save():
   #   _log.info('saving state to %s', pickle_path)
@@ -120,9 +133,9 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   #     pickle.dump(get_state(), f)
 
   def save():
-    _log.info('saving state to %s', tag)
+    _log.info('saving state to %s', params_key)
     pickled_state = pickle.dumps(get_state())
-    state_collection.save(dict(state=pickled_state, _id=tag))
+    store.put(params_key, pickled_state)
 
   save = utils.Periodically(save, save_interval)
 
@@ -142,10 +155,12 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   #     pickled_state = pickle.load(f)
   #   set_state(pickled_state)
 
-  obj = state_collection.find_one(dict(_id=tag))
-  if obj is not None:
-    _log.info('restoring from %s', tag)
-    set_state(pickle.loads(obj['state']))
+  try:
+    obj = store.get(params_key)
+    _log.info('restoring from %s', params_key)
+    set_state(pickle.loads(obj))
+  except KeyError:
+    _log.info('no params found at %s', params_key)
 
   train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
