@@ -28,23 +28,6 @@ import stats
 import train_lib
 import utils
 
-# mongo_client = None
-
-@sacred.cli_option("-o", "--mongo_db")
-def mongo_db_option(args, run):
-    """Add a MongoDB Observer to the experiment.
-    The argument value is the database specification.
-    Should be in the form:
-    `[host:port:]db_name[.collection[:id]][!priority]`
-    """
-    # local mongo_client
-    # client = pymongo.MongoClient(_run.info['mongo_uri'])
-
-    kwargs = mongo.parse_mongo_db_arg(args)
-    run.observers.append(mongo.MongoObserver(**kwargs))
-    run.info['mongo_uri'] = kwargs['url']
-
-# ex = sacred.Experiment('imitation', additional_cli_options=[mongo_db_option])
 ex = sacred.Experiment('imitation')
 
 @ex.config
