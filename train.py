@@ -30,6 +30,9 @@ import utils
 
 ex = sacred.Experiment('imitation')
 
+# from sacred.observers import MongoObserver
+# ex.observers.append(MongoObserver())
+
 @ex.config
 def config():
   num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
@@ -47,10 +50,9 @@ def config():
   controller_head = controller_heads.DEFAULT_CONFIG
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
-  # in access_key:secret_key format
-  s3_creds = None
 
-def get_store(s3_creds: str):
+def get_store(s3_creds: str = None):
+  s3_creds = s3_creds or os.environ['S3_CREDS']
   access_key, secret_key = s3_creds.split(':')
 
   session = boto3.Session(access_key, secret_key)
@@ -107,7 +109,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   # pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  store = get_store(_config["s3_creds"])
+  store = get_store()
   params_key = f"slippi-ai.params.{tag}"
 
   # def save():
