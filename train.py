@@ -30,9 +30,6 @@ import utils
 
 ex = sacred.Experiment('imitation')
 
-# from sacred.observers import MongoObserver
-# ex.observers.append(MongoObserver())
-
 @ex.config
 def config():
   num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
@@ -77,7 +74,6 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   learner = Learner(
       policy=policy,
       **_config['learner'])
-  snt_state = dict(policy=policy, optimizer=learner.optimizer)
 
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
@@ -100,12 +96,18 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   _log.info('loss initial: %f', train_stats['loss'].numpy())
 
   # saving and restoring
+  tf_state = dict(
+    policy=policy.variables,
+    optimizer=learner.optimizer.variables,
+  )
+
   def get_state():
-    return {k: utils.snt_serialize(v) for k, v in snt_state.items()}
+    return tf.nest.map_structure(lambda v: v.numpy(), tf_state)
 
   def set_state(state):
-    for k, v in snt_state.items():
-      utils.snt_restore(v, state[k])
+    tf.nest.map_structure(
+      lambda var, val: var.assign(val),
+      tf_state, state)
 
   # pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
