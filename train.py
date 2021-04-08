@@ -45,6 +45,8 @@ def config():
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
+  plateau_detector = train_lib.PlateauDetector.DEFAULT_CONFIG
+
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
 
@@ -71,9 +73,12 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
+  
+  learning_rate = tf.Variable(
+      _config['learner']['learning_rate'], name='learning_rate')
   learner = Learner(
-      policy=policy,
-      **_config['learner'])
+      learning_rate=learning_rate,
+      policy=policy)
 
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
@@ -181,28 +186,35 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   saved_module.sample = utils.with_flat_signature(policy.sample, sample_signature)
 
   saved_model_path = os.path.join(expt_dir, 'saved_model')
-  save_model = utils.Periodically(functools.partial(
-      tf.saved_model.save, saved_module, saved_model_path), save_interval)
+  save_model = utils.Periodically(
+      functools.partial(tf.saved_model.save, saved_module, saved_model_path),
+      save_interval)
 
   total_steps = 0
   frames_per_batch = train_data.batch_size * train_data.unroll_length
+  plateau_detector = train_lib.PlateauDetector(**_config['plateau_detector'])
 
   for _ in range(num_epochs):
     start_time = time.perf_counter()
 
-    # ensure at least one step per epoch
-    train_stats = train_manager.step()
-    steps = 1
-
     # train for epoch_time seconds
+    steps = 0
     while True:
-      elapsed_time = time.perf_counter() - start_time
-      if elapsed_time > epoch_time: break
       train_stats = train_manager.step()
       steps += 1
+      plateau_detector.update(train_stats['loss'].numpy())
+
+      elapsed_time = time.perf_counter() - start_time
+      if elapsed_time > epoch_time: break
 
     ckpt.step.assign_add(steps)
     total_steps = ckpt.step.numpy()
+
+    # decrease learning rate on plateau
+    if plateau_detector.check():
+      new_lr = .5 * learning_rate.numpy()
+      _log.info('Plateau detected, reducing learning rate to %.1e', new_lr)
+      learning_rate.assign(new_lr)
 
     # now test
     test_stats = test_manager.step()
@@ -210,7 +222,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     train_loss = train_stats['loss'].numpy()
     test_loss = test_stats['loss'].numpy()
 
-    all_stats = dict(train=train_stats, test=test_stats)
+    all_stats = dict(
+        train=train_stats,
+        test=test_stats,
+        learning_rate=learning_rate.numpy(),
+    )
     train_lib.log_stats(ex, all_stats, total_steps)
 
     sps = steps / elapsed_time
