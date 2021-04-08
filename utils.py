@@ -82,6 +82,19 @@ class Periodically:
       self.last_call = now
       return self.f(*args, **kwargs)
 
+class EMA:
+  """Exponential moving average."""
+
+  def __init__(self, window: float):
+    self.decay = 1. / window
+    self.value = None
+
+  def update(self, value):
+    if self.value is None:
+      self.value = value
+    else:
+      self.value += self.decay * (value - self.value)
+
 def add_batch_dims(spec: tf.TensorSpec, num_dims: int):
   return tf.TensorSpec([None] * num_dims + spec.shape.as_list(), spec.dtype)
 

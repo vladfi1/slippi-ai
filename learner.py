@@ -9,6 +9,7 @@ def to_time_major(t):
   permutation[1] = 0
   return tf.transpose(t, permutation)
 
+# TODO: should this be a snt.Module?
 class Learner:
 
   DEFAULT_CONFIG = dict(
