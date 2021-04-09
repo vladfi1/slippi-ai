@@ -7,3 +7,4 @@ sacred
 git+https://github.com/mbr/simplekv.git
 boto3
 pymongo
+dnspython

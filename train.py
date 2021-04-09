@@ -30,6 +30,12 @@ import utils
 
 ex = sacred.Experiment('imitation')
 
+mongo_uri = os.environ.get('MONGO_URI')
+if mongo_uri:
+  from sacred.observers import MongoObserver
+  db_name = os.environ.get('MONGO_DB_NAME', 'sacred')
+  ex.observers.append(MongoObserver(url=mongo_uri, db_name=db_name))
+
 @ex.config
 def config():
   num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
