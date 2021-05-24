@@ -13,7 +13,7 @@ pip install --user -r requirements.txt
 A dataset of processed and compressed slippi replays is available at https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B. It is a tarball of zipped pickled slp files. Use
 
 ```bash
-gdown https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B data/
+gdown 'https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B' -O data/
 tar -xf data/AllCompressed.tar
 ```
 

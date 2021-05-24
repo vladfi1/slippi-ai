@@ -120,20 +120,21 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  # pickle_path = os.path.join(expt_dir, 'latest.pkl')
+  pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  store = get_store()
   params_key = f"slippi-ai.params.{tag}"
-
-  # def save():
-  #   _log.info('saving state to %s', pickle_path)
-  #   with open(pickle_path, 'wb') as f:
-  #     pickle.dump(get_state(), f)
-
+  
   def save():
-    _log.info('saving state to %s', params_key)
-    pickled_state = pickle.dumps(get_state())
-    store.put(params_key, pickled_state)
+    # Local Save
+    _log.info('saving state to %s', pickle_path)
+    with open(pickle_path, 'wb') as f:
+      pickle.dump(get_state(), f)
+    # S3 Bucket Save
+    if 'S3_CREDS' in os.environ:
+      store = get_store()
+      _log.info('saving state to %s', params_key)
+      pickled_state = pickle.dumps(get_state())
+      store.put(params_key, pickled_state)
 
   save = utils.Periodically(save, save_interval)
 
@@ -142,23 +143,26 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       policy=policy,
       optimizer=learner.optimizer,
   )
-  # manager = tf.train.CheckpointManager(
-  #     ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
-  # manager.restore_or_initialize()
-  # save = utils.Periodically(manager.save, save_interval)
+  
+  if 'S3_CREDS' in os.environ:
+    store = get_store()
+    try:
+      obj = store.get(params_key)
+      _log.info('restoring from %s', params_key)
+      set_state(pickle.loads(obj))
+    except KeyError:
+      _log.info('no params found at %s', params_key)
+  else:
+    manager = tf.train.CheckpointManager(
+        ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
+    manager.restore_or_initialize()
+    save = utils.Periodically(manager.save, save_interval)
 
-  # if os.path.exists(pickle_path):
-  #   _log.info('restoring from %s', pickle_path)
-  #   with open(pickle_path, 'rb') as f:
-  #     pickled_state = pickle.load(f)
-  #   set_state(pickled_state)
-
-  try:
-    obj = store.get(params_key)
-    _log.info('restoring from %s', params_key)
-    set_state(pickle.loads(obj))
-  except KeyError:
-    _log.info('no params found at %s', params_key)
+    if os.path.exists(pickle_path):
+      _log.info('restoring from %s', pickle_path)
+      with open(pickle_path, 'rb') as f:
+        pickled_state = pickle.load(f)
+      set_state(pickled_state)
 
   train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
