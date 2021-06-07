@@ -1,5 +1,6 @@
 import sonnet as snt
 import tensorflow as tf
+from tensorflow.python.ops.math_ops import scalar_mul
 
 from policies import Policy
 
@@ -20,10 +21,12 @@ class Learner:
       learning_rate: float,
       policy: Policy,
       optimizer=None,
+      decay_rate=1,
   ):
     self.policy = policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
     self.compiled_step = tf.function(self.step)
+    self.decay_rate = decay_rate
 
   def step(self, batch, initial_states, train=True):
     bm_gamestate, restarting = batch
@@ -51,4 +54,10 @@ class Learner:
       assert set(watched_names) == set(trainable_names)
       grads = tape.gradient(mean_loss, params)
       self.optimizer.apply(grads, params)
+      print("Pre decay params: %s" % (params[0]))
+      for param in params:
+        new_val = tf.math.scalar_mul(self.decay_rate, param)
+        updated = param.assign(new_val)
+      print("Post decay params: %s" % (params[0]))
+      # Multiply all weights by decay_rate
     return stats, final_states
