@@ -54,10 +54,10 @@ class Learner:
       assert set(watched_names) == set(trainable_names)
       grads = tape.gradient(mean_loss, params)
       self.optimizer.apply(grads, params)
+      # Multiply all weights by decay_rate
       print("Pre decay params: %s" % (params[0]))
       for param in params:
         new_val = tf.math.scalar_mul(self.decay_rate, param)
         updated = param.assign(new_val)
       print("Post decay params: %s" % (params[0]))
-      # Multiply all weights by decay_rate
     return stats, final_states
