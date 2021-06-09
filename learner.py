@@ -15,13 +15,14 @@ class Learner:
 
   DEFAULT_CONFIG = dict(
       learning_rate=1e-4,
+      decay_rate=0.999
   )
 
   def __init__(self,
       learning_rate: float,
       policy: Policy,
       optimizer=None,
-      decay_rate=1,
+      decay_rate=float,
   ):
     self.policy = policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
@@ -55,9 +56,6 @@ class Learner:
       grads = tape.gradient(mean_loss, params)
       self.optimizer.apply(grads, params)
       # Multiply all weights by decay_rate
-      print("Pre decay params: %s" % (params[0]))
       for param in params:
-        new_val = tf.math.scalar_mul(self.decay_rate, param)
-        updated = param.assign(new_val)
-      print("Post decay params: %s" % (params[0]))
+        param.assign(self.decay_rate * param)
     return stats, final_states

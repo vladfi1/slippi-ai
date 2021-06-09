@@ -82,10 +82,12 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   
   learning_rate = tf.Variable(
       _config['learner']['learning_rate'], name='learning_rate')
+  decay_rate = tf.Variable(
+      _config['learner']['decay_rate'], name='decay_rate')
   learner = Learner(
       learning_rate=learning_rate,
       policy=policy,
-      decay_rate=0.999)
+      decay_rate=decay_rate)
 
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
