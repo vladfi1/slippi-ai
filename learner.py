@@ -46,7 +46,10 @@ class Learner:
       loss, final_states, distances = self.policy.loss(
           tm_gamestate, initial_states)
       mean_loss = tf.reduce_mean(loss)
-    stats = dict(loss=mean_loss, distances=distances)
+    #stats = dict(loss=mean_loss, distances=distances)
+    # Temporary don't check in
+    # TODO pass this as a flag
+    stats = dict(loss=mean_loss)
 
     if train:
       params = tape.watched_variables()
