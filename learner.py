@@ -15,7 +15,7 @@ class Learner:
 
   DEFAULT_CONFIG = dict(
       learning_rate=1e-4,
-      decay_rate=0.999
+      decay_rate=1
   )
 
   def __init__(self,
