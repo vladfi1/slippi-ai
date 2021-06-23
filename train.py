@@ -225,7 +225,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
     # decrease learning rate on plateau
     if plateau_detector.check():
-      new_lr = .5 * learning_rate.numpy()
+      new_lr = plateau_detector.update_rate * learning_rate.numpy()
       _log.info('Plateau detected, reducing learning rate to %.1e', new_lr)
       learning_rate.assign(new_lr)
 
