@@ -5,6 +5,7 @@ import tensorflow as tf
 
 import embed
 import utils
+import networks
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]
@@ -55,6 +56,15 @@ class EmbedTest(unittest.TestCase):
     embed_game_unflat = embed_game.unflatten(embed_game_flat)
 
     self.assertEqual(embed_game_unflat, embed_game_struct)
+
+class Test_NetworksTransformers(unittest.TestCase):
+  def test_attention(self):
+    mhab = networks.MultiHeadAttentionBlock(8, 512)
+    # Shape grabbed from breakpoint of slippi
+    test_query = tf.ones([64, 32, 866]) # This should be the current position
+    test_keys = tf.ones([64, 32, 866]) # All in sequence
+    test_values = tf.ones([64, 32, 866]) # All in sequence
+    mhab(test_query, test_keys, test_values)
 
 if __name__ == '__main__':
   unittest.main(failfast=True)
