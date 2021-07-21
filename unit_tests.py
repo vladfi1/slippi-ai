@@ -61,10 +61,9 @@ class Test_Transformers(unittest.TestCase):
   def test_attention(self):
     mhab = transformers.MultiHeadAttentionBlock(8, 512)
     # Shape grabbed from breakpoint of slippi
-    test_query = tf.ones([64, 32, 866]) # This should be the current position
-    test_keys = tf.ones([64, 32, 866]) # All in sequence
-    test_values = tf.ones([64, 32, 866]) # All in sequence
-    mhab(test_query, test_keys, test_values)
+    test_inputs = tf.ones([64, 32, 866]) 
+    result = mhab(test_inputs)
+    assert result.shape == tf.TensorShape([64, 32, 512])
 
 if __name__ == '__main__':
   unittest.main(failfast=True)

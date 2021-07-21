@@ -45,12 +45,20 @@ class MultiHeadAttentionBlock(snt.Module):
   def initial_state(self, batch_size):
     raise NotImplementedError()
 
-  def __call__(self, queries, keys, values):
+  def __call__(self, inputs):
+    """
+    For each head, this block will project input into 3 spaces (keys, queries, values)
+    and subsequently run an attention block on each projection. The results of each heads are
+    combined (via concat) into the final output.
+
+    inputs: [B, S, D_m]
+    returns: [B, S, D_m]
+    """
     # MHA(Q, K, V) = Concat(head_1...head_h)W^O
     heads = []
     for i in range(self.num_heads):
       # head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)
-      head_i = attention(self.W_Q[i](queries), self.W_K[i](keys), self.W_V[i](values))
+      head_i = attention(self.W_Q[i](inputs), self.W_K[i](inputs), self.W_V[i](inputs)) # [B, S, D_m/h]
       heads.append(head_i)
-    multi_head = self.W_O(tf.concat(heads, -1))
+    multi_head = self.W_O(tf.concat(heads, -1))  # [B, S, D_m]
     return multi_head
