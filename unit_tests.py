@@ -65,5 +65,11 @@ class Test_Transformers(unittest.TestCase):
     result = mhab(test_inputs)
     assert result.shape == tf.TensorShape([64, 32, 512])
 
+  def test_pos_encoding(self):
+    pos = transformers.positional_encoding(5, 10, batch_size=32)
+    assert pos.shape == tf.TensorShape([32, 5, 10])
+    pos = transformers.positional_encoding(30, 512, batch_size=32)
+    assert pos.shape == [32, 30, 512]
+
 if __name__ == '__main__':
   unittest.main(failfast=True)
