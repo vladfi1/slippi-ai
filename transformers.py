@@ -12,7 +12,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     def encoding_angle(pos, i):
         pos = tf.cast(pos, tf.dtypes.float32)
         i = tf.cast(i, tf.dtypes.float32)
-        denom = tf.map_fn(fn=lambda t: tf.math.pow(10000, t//d_model), elems=i)
+        denom = tf.map_fn(fn=lambda t: tf.math.pow(10000, t/d_model), elems=i)
         return pos / denom
 
     i_tensor = tf.expand_dims(tf.range(0, d_model), 0) # [1, d_model]
@@ -20,7 +20,6 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     j_tensor = tf.expand_dims(tf.range(0, seq_len), 1)
     j_tensor = tf.broadcast_to(j_tensor, [seq_len, d_model])
     #pos_tensor = tf.stack(i_tensor, j_tensor)
-    # Double check these values for floating point error
     angles = encoding_angle(j_tensor, i_tensor)
 
     # Apply sin to even indices, cos to odd indices
@@ -29,7 +28,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     evens = tf.expand_dims(evens, -1) # [s, d, 1]
     odds = tf.math.cos(angles[:, 1::2])
     odds = tf.expand_dims(odds, -1) # [s, d, 1]
-    joined = tf.concat([odds, evens], -1) # [s, d, 2]
+    joined = tf.concat([evens, odds], -1) # [s, d, 2]
     encoding = tf.reshape(joined, [seq_len, d_model]) # [s, d]
 
     #Add in batch
