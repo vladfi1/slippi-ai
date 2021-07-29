@@ -17,8 +17,8 @@ def positional_encoding(seq_len, d_model, batch_size=1):
 
     i_tensor = tf.expand_dims(tf.range(0, d_model), 0) # [1, d_model]
     i_tensor = tf.repeat(i_tensor, [seq_len], axis=0) # [seq_len, d_model]
-    j_tensor = tf.expand_dims(tf.range(0, seq_len), 1)
-    j_tensor = tf.broadcast_to(j_tensor, [seq_len, d_model])
+    j_tensor = tf.expand_dims(tf.range(0, seq_len), 1) # [1 , d_model]
+    j_tensor = tf.broadcast_to(j_tensor, [seq_len, d_model]) # [seq_len, d_model]
     #pos_tensor = tf.stack(i_tensor, j_tensor)
     angles = encoding_angle(j_tensor, i_tensor)
 
@@ -36,7 +36,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     encoding = tf.repeat(encoding, [batch_size], axis=0) # [b, s, d]
     return encoding
 
-def attention(queries, keys, values):
+def attention(queries, keys, values, masked=True):
     """
     Returns the 'attention' between three sequences: keys, queries, and values
     Specifically this implementation uses 'scaled dot-product' attention.
@@ -55,8 +55,11 @@ def attention(queries, keys, values):
     assert keys.shape == queries.shape, "keys and values must have equivalent shapes"
     # compat [b, i, j] is the dot product of key i and query j (for batch # b)
     compat = tf.matmul(queries, tf.transpose(keys, [0, 2, 1])) # [B, S, S]
-    # TODO This needs to be masked along the diagnol
-    norm_compat = compat / math.sqrt(keys.shape[-1]) # [B, S, S]
+    mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0)
+    masked_compat = compat * mask
+    if not masked:
+      masked_compat = compat
+    norm_compat = masked_compat / math.sqrt(keys.shape[-1]) # [B, S, S]
     probs = tf.nn.softmax(norm_compat) # [B, S, S]
     att = tf.matmul(probs, values) # [B, S, D_V]
     return att
