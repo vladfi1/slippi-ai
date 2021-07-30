@@ -1,6 +1,5 @@
 import sonnet as snt
 import tensorflow as tf
-import math
 
 def positional_encoding(seq_len, d_model, batch_size=1):
     """
@@ -12,27 +11,22 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     def encoding_angle(pos, i):
         pos = tf.cast(pos, tf.dtypes.float32)
         i = tf.cast(i, tf.dtypes.float32)
-        denom = tf.map_fn(fn=lambda t: tf.math.pow(10000, t/d_model), elems=i)
+        denom = tf.math.pow(10000, i/d_model)
         return pos / denom
 
-    i_tensor = tf.expand_dims(tf.range(0, d_model), 0) # [1, d_model]
-    i_tensor = tf.repeat(i_tensor, [seq_len], axis=0) # [seq_len, d_model]
-    j_tensor = tf.expand_dims(tf.range(0, seq_len), 1) # [1 , d_model]
-    j_tensor = tf.broadcast_to(j_tensor, [seq_len, d_model]) # [seq_len, d_model]
-    #pos_tensor = tf.stack(i_tensor, j_tensor)
-    angles = encoding_angle(j_tensor, i_tensor)
+    i_tensor = tf.expand_dims(tf.range(0, d_model//2), 0) # [1, d_model/2]
+    i_tensor = tf.broadcast_to(i_tensor, [seq_len, d_model//2]) # [seq_len, d_model/2]
+    j_tensor = tf.expand_dims(tf.range(0, seq_len), 1) # [seq_len, 1]
+    j_tensor = tf.broadcast_to(j_tensor, [seq_len, d_model//2]) # [seq_len, d_model/2]
+    angles = encoding_angle(j_tensor, i_tensor) # [seq_len, d_model/2]
 
     # Apply sin to even indices, cos to odd indices
-    # TODO there's probably a fancy way to do this in place & save lots of memory
-    evens = tf.math.sin(angles[:, 0::2])
-    evens = tf.expand_dims(evens, -1) # [s, d, 1]
-    odds = tf.math.cos(angles[:, 1::2])
-    odds = tf.expand_dims(odds, -1) # [s, d, 1]
-    joined = tf.concat([evens, odds], -1) # [s, d, 2]
-    encoding = tf.reshape(joined, [seq_len, d_model]) # [s, d]
+    sins_angle = tf.math.sin(angles) # [seq_len, d_model/2]
+    coss_angles = tf.math.cos(angles) # [seq_len, d_model/2]
+    joined = tf.concat([sins_angle, coss_angles], -1) # [s, d]
 
     #Add in batch
-    encoding = tf.expand_dims(encoding, 0)
+    encoding = tf.expand_dims(joined, 0)
     encoding = tf.repeat(encoding, [batch_size], axis=0) # [b, s, d]
     return encoding
 
@@ -55,10 +49,10 @@ def attention(queries, keys, values, masked=True):
     assert keys.shape == queries.shape, "keys and values must have equivalent shapes"
     # compat [b, i, j] is the dot product of key i and query j (for batch # b)
     compat = tf.matmul(queries, tf.transpose(keys, [0, 2, 1])) # [B, S, S]
-    mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0)
+    mask = tf.ones((compat.shape))
+    if masked:
+      mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
     masked_compat = compat * mask
-    if not masked:
-      masked_compat = compat
     norm_compat = masked_compat / math.sqrt(keys.shape[-1]) # [B, S, S]
     probs = tf.nn.softmax(norm_compat) # [B, S, S]
     att = tf.matmul(probs, values) # [B, S, D_V]
