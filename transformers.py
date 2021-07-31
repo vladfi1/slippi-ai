@@ -1,5 +1,6 @@
 import sonnet as snt
 import tensorflow as tf
+import math
 
 def positional_encoding(seq_len, d_model, batch_size=1):
     """
@@ -96,17 +97,49 @@ class MultiHeadAttentionBlock(snt.Module):
     return multi_head
 
 class TransformerEncoderBlock(snt.Module):
-    def __init__(self, name: "EncoderTransformer"):
-        super(TransformerEncoderBlock, self).__init__()
+  def __init__(self, output_size, d_ff=2048, name="EncoderTransformerBlock"):
+      super(TransformerEncoderBlock, self).__init__()
+      self.output_size = output_size
+      self.d_ff = d_ff
+      self.attention = MultiHeadAttentionBlock(8, output_size)
+      self.feed_forward_in = snt.Linear(d_ff)
+      self.feed_forward_out = snt.Linear(output_size)
+      self.norm_1 = snt.LayerNorm(-1, False, False)
+      self.norm_2 = snt.LayerNorm(-1, False, False)
 
-    def initial_state(self, batch_size):
-        raise NotImplementedError()
+  def initial_state(self, batch_size):
+      raise NotImplementedError()
 
-    def __call__(self, inputs):
-        raise NotImplementedError()
-        # 1 positional encoding
-        # N encoder blocks
-            # MHA
-            # Add/Norm (w/ residual from inputs)
-            # Feed forward
-            # Add/Norm (w/ residual from output of prev Add/Norm)
+  def __call__(self, inputs):
+    # MHAB
+    att = self.attention(inputs)
+    # Add (res) + LayerNorm
+    res_norm_att = self.norm_1(att + inputs)
+    # Feed forward
+    feed_in = self.feed_forward_in(res_norm_att)
+    act = tf.nn.relu(feed_in)
+    feed_out = self.feed_forward_out(act)
+    # Add (res) + LayerNorm
+    output = self.norm_2(res_norm_att + feed_out)
+    return output
+
+class EncoderOnlyTransformer(snt.Module):
+  def __init__(self, output_size, num_blocks=6, name="EncoderTransformer"):
+    super(EncoderOnlyTransformer, self).__init__()
+    self.num_blocks = num_blocks
+    self.transformer_blocks = []
+    for _ in range(num_blocks):
+      t = TransformerEncoderBlock(output_size)
+      self.transformer_blocks.append(t)
+
+  def initial_state(self, batch_size):
+    raise NotImplementedError()
+
+  def __call__(self, inputs):
+    i_shape = inputs.shape
+    # This hardcoded shape smells.
+    encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
+    x = inputs + encoding
+    for t in self.transformer_blocks:
+      x = t(x)
+    return x

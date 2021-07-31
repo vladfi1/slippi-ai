@@ -70,6 +70,28 @@ class Test_Transformers(unittest.TestCase):
     assert pos.shape == tf.TensorShape([32, 5, 10])
     pos = transformers.positional_encoding(30, 512, batch_size=32)
     assert pos.shape == [32, 30, 512]
+  
+  def test_transformer_block(self):
+    test_inputs_nice = tf.ones([64, 32, 512]) 
+    tb = transformers.TransformerEncoderBlock(512)
+    output = tb(test_inputs_nice)
+    assert output.shape == test_inputs_nice.shape
+
+    # test_inputs_2 = tf.ones([64, 32, 866])
+    # tb = transformers.TransformerEncoderBlock(866)
+    # output_2 = tb(test_inputs_2)
+    # assert output_2.shape == test_inputs_2.shape
+
+  def test_transformer(self):
+    transformer = transformers.EncoderOnlyTransformer(512)
+    test_inputs_nice = tf.ones([64, 32, 512])
+    output = transformer(test_inputs_nice)
+    assert output.shape == test_inputs_nice.shape
+
+    # transformer = transformers.EncoderOnlyTransformer(866)
+    # test_inputs_2 = tf.ones([64, 32, 866])
+    # output_2 = transformer(test_inputs_2)
+    # assert output_2.shape == test_inputs_2.shape
 
 if __name__ == '__main__':
   unittest.main(failfast=True)
