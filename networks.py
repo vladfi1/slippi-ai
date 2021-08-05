@@ -287,10 +287,16 @@ class TransformerWrapper(Network):
   '''
     A Wrapper for the output of the Encoder-only transformer, implementation in transformers.py
   '''
-  CONFIG=dict()
+  CONFIG=dict(
+    output_size=128,
+    num_blocks=6,
+    ffw_size=512,
+    num_heads=4,
+  )
 
-  def __init__(self):
+  def __init__(self, output_size, num_blocks, ffw_size, num_heads):
     super().__init__(name='transformer')
+    self.transformer = EncoderOnlyTransformer(output_size, num_blocks, ffw_size, num_heads)
 
   def initial_state(self, batch_size):
     return ()
@@ -300,8 +306,7 @@ class TransformerWrapper(Network):
 
   def unroll(self, inputs, prev_state):
     flat_inputs = process_inputs(inputs)
-    transformer = EncoderOnlyTransformer(flat_inputs.shape[-1])
-    output = transformer(flat_inputs)
+    output = self.transformer(flat_inputs)
     return output, ()
 
 CONSTRUCTORS = dict(

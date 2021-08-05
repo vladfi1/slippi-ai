@@ -15,6 +15,8 @@ def positional_encoding(seq_len, d_model, batch_size=1):
         denom = tf.math.pow(10000, i/d_model)
         return pos / denom
 
+    # BUG: Fails to serialize these calls:
+    # "Failed to convert object of type <class 'list'> to Tensor. Contents: [None, 480]. Consider casting elements to a supported type."
     i_tensor = tf.expand_dims(tf.range(0, d_model//2), 0) # [1, d_model/2]
     i_tensor = tf.broadcast_to(i_tensor, [seq_len, d_model//2]) # [seq_len, d_model/2]
     j_tensor = tf.expand_dims(tf.range(0, seq_len), 1) # [seq_len, 1]
@@ -67,7 +69,7 @@ class MultiHeadAttentionBlock(snt.Module):
     self.W_V = []
     self.W_Q = []
     assert output_size%num_heads == 0, "output_size must be a multiple of num_heads"
-    projection_size = output_size/num_heads
+    projection_size = output_size//num_heads
     for _ in range(num_heads):
         # TODO there's a more efficient way to do this
       self.W_K.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
@@ -97,12 +99,12 @@ class MultiHeadAttentionBlock(snt.Module):
     return multi_head
 
 class TransformerEncoderBlock(snt.Module):
-  def __init__(self, output_size, d_ff=2048, name="EncoderTransformerBlock"):
+  def __init__(self, output_size, ffw_size, num_heads, name="EncoderTransformerBlock"):
       super(TransformerEncoderBlock, self).__init__()
       self.output_size = output_size
-      self.d_ff = d_ff
-      self.attention = MultiHeadAttentionBlock(8, output_size)
-      self.feed_forward_in = snt.Linear(d_ff)
+      self.ffw_size = ffw_size
+      self.attention = MultiHeadAttentionBlock(num_heads, output_size)
+      self.feed_forward_in = snt.Linear(ffw_size)
       self.feed_forward_out = snt.Linear(output_size)
       self.norm_1 = snt.LayerNorm(-1, False, False)
       self.norm_2 = snt.LayerNorm(-1, False, False)
@@ -124,22 +126,26 @@ class TransformerEncoderBlock(snt.Module):
     return output
 
 class EncoderOnlyTransformer(snt.Module):
-  def __init__(self, output_size, num_blocks=6, name="EncoderTransformer"):
+  def __init__(self, output_size, num_blocks, ffw_size, num_heads, name="EncoderTransformer"):
     super(EncoderOnlyTransformer, self).__init__()
     self.num_blocks = num_blocks
     self.transformer_blocks = []
     for _ in range(num_blocks):
-      t = TransformerEncoderBlock(output_size)
+      t = TransformerEncoderBlock(output_size, ffw_size, num_heads)
       self.transformer_blocks.append(t)
+    # maybe add assertion about attention size and output_size
+    self.shape_convert = snt.Linear(output_size)
 
   def initial_state(self, batch_size):
     raise NotImplementedError()
 
   def __call__(self, inputs):
+    inputs = self.shape_convert(inputs)
+    inputs = tf.transpose(inputs, [1, 0, 2])
     i_shape = inputs.shape
-    # This hardcoded shape smells.
     encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
     x = inputs + encoding
     for t in self.transformer_blocks:
       x = t(x)
+    x = tf.transpose(x, [1, 0, 2])
     return x
