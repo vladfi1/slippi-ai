@@ -14,16 +14,18 @@ class Learner:
 
   DEFAULT_CONFIG = dict(
       learning_rate=1e-4,
+      compile=True,
   )
 
   def __init__(self,
       learning_rate: float,
+      compile: bool,
       policy: Policy,
       optimizer=None,
   ):
     self.policy = policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
-    self.compiled_step = tf.function(self.step)
+    self.compiled_step = tf.function(self.step) if compile else self.step
 
   def step(self, batch, initial_states, train=True):
     bm_gamestate, restarting = batch

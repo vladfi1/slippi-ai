@@ -84,7 +84,9 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       _config['learner']['learning_rate'], name='learning_rate')
   learner = Learner(
       learning_rate=learning_rate,
-      policy=policy)
+      policy=policy,
+      compile=_config['learner']['compile'],
+  )
 
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
