@@ -41,6 +41,7 @@ def config():
   num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
   epoch_time = 10  # seconds between testing/logging
   save_interval = 300  # seconds between saving to disk
+  save_model = True  # serialize model with tf.saved_model
 
   dataset = dict(
       data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
@@ -169,38 +170,39 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
 
-  # signatures without batch dims
-  gamestate_signature = tf.nest.map_structure(
-      lambda t: tf.TensorSpec(t.shape[2:], t.dtype),
-      test_batch[0])
-  hidden_state_signature = tf.nest.map_structure(
-      lambda t: tf.TensorSpec(t.shape[1:], t.dtype),
-      test_manager.hidden_state)
+  if _config['save_model']:
+    # signatures without batch dims
+    gamestate_signature = tf.nest.map_structure(
+        lambda t: tf.TensorSpec(t.shape[2:], t.dtype),
+        test_batch[0])
+    hidden_state_signature = tf.nest.map_structure(
+        lambda t: tf.TensorSpec(t.shape[1:], t.dtype),
+        test_manager.hidden_state)
 
-  loss_signature = [
-      utils.nested_add_batch_dims(gamestate_signature, 2),
-      utils.nested_add_batch_dims(hidden_state_signature, 1),
-  ]
+    loss_signature = [
+        utils.nested_add_batch_dims(gamestate_signature, 2),
+        utils.nested_add_batch_dims(hidden_state_signature, 1),
+    ]
 
-  saved_module = snt.Module()
-  # with_flat_signature is a workaround for tf.function not supporting dicts
-  # with non-string keys in the input_signature. The solution is to change
-  # embed_players in embed.py to be an ArrayEmbedding, not a StructEmbedding.
-  saved_module.loss = utils.with_flat_signature(policy.loss, loss_signature)
-  saved_module.initial_state = tf.function(
-      policy.initial_state, input_signature=[tf.TensorSpec((), tf.int64)])
-  saved_module.all_variables = policy.variables
+    saved_module = snt.Module()
+    # with_flat_signature is a workaround for tf.function not supporting dicts
+    # with non-string keys in the input_signature. The solution is to change
+    # embed_players in embed.py to be an ArrayEmbedding, not a StructEmbedding.
+    saved_module.loss = utils.with_flat_signature(policy.loss, loss_signature)
+    saved_module.initial_state = tf.function(
+        policy.initial_state, input_signature=[tf.TensorSpec((), tf.int64)])
+    saved_module.all_variables = policy.variables
 
-  sample_signature = [
-      utils.nested_add_batch_dims(gamestate_signature, 1),
-      utils.nested_add_batch_dims(hidden_state_signature, 1),
-  ]
-  saved_module.sample = utils.with_flat_signature(policy.sample, sample_signature)
+    sample_signature = [
+        utils.nested_add_batch_dims(gamestate_signature, 1),
+        utils.nested_add_batch_dims(hidden_state_signature, 1),
+    ]
+    saved_module.sample = utils.with_flat_signature(policy.sample, sample_signature)
 
-  saved_model_path = os.path.join(expt_dir, 'saved_model')
-  save_model = utils.Periodically(
-      functools.partial(tf.saved_model.save, saved_module, saved_model_path),
-      save_interval)
+    saved_model_path = os.path.join(expt_dir, 'saved_model')
+    save_model = utils.Periodically(
+        functools.partial(tf.saved_model.save, saved_module, saved_model_path),
+        save_interval)
 
   total_steps = 0
   frames_per_batch = train_data.batch_size * train_data.unroll_length
@@ -256,4 +258,5 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     save_path = save()
     if save_path:
       _log.info('Saved network to %s', save_path)
-    save_model()
+    if _config['save_model']:
+      save_model()
