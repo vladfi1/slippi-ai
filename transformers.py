@@ -13,7 +13,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
         pos = tf.cast(pos, tf.dtypes.float32)
         i = tf.cast(i, tf.dtypes.float32)
         d = tf.cast(d_model, tf.dtypes.float32)
-        denom = tf.math.pow(10000., i/d)
+        denom = tf.math.pow(10000., 2. * i/d)
         return pos / denom
 
     # BUG: Fails to serialize these calls:
