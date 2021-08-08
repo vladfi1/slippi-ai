@@ -12,7 +12,8 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     def encoding_angle(pos, i):
         pos = tf.cast(pos, tf.dtypes.float32)
         i = tf.cast(i, tf.dtypes.float32)
-        denom = tf.math.pow(10000, i/d_model)
+        d = tf.cast(d_model, tf.dtypes.float32)
+        denom = tf.math.pow(10000., i/d)
         return pos / denom
 
     # BUG: Fails to serialize these calls:
