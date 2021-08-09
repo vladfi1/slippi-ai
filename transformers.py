@@ -1,6 +1,7 @@
 import sonnet as snt
 import tensorflow as tf
 import math
+import numpy as np
 
 def positional_encoding(seq_len, d_model, batch_size=1):
     """
@@ -54,11 +55,13 @@ def attention(queries, keys, values, masked=True):
     # compat [b, i, j] is the dot product of key i and query j (for batch # b)
     compat = tf.matmul(queries, keys, transpose_b=True) # [B, S, S]
     norm_compat = compat / math.sqrt(keys.shape[-1]) # [B, S, S]
-    probs = tf.nn.softmax(norm_compat) # [B, S, S]
     if masked:
-      mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
-      masked_probs = mask * probs
-      probs = masked_probs / tf.reduce_sum(masked_probs, -1, keepdims=True)
+      # mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
+      i = tf.expand_dims(tf.range(norm_compat.shape[-1]), 1)
+      j = tf.expand_dims(tf.range(norm_compat.shape[-2]), 0)
+      mask = i >= j
+      norm_compat = tf.where(mask, norm_compat, np.NINF)
+    probs = tf.nn.softmax(norm_compat) # [B, S, S]
     att = tf.matmul(probs, values) # [B, S, D_V]
     return att
 
