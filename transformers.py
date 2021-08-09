@@ -52,13 +52,13 @@ def attention(queries, keys, values, masked=True):
     """
     assert keys.shape == queries.shape, "keys and values must have equivalent shapes"
     # compat [b, i, j] is the dot product of key i and query j (for batch # b)
-    compat = tf.matmul(queries, tf.transpose(keys, [0, 2, 1])) # [B, S, S]
-    mask = tf.ones((compat.shape))
+    compat = tf.matmul(queries, keys, transpose_b=True) # [B, S, S]
+    norm_compat = compat / math.sqrt(keys.shape[-1]) # [B, S, S]
+    probs = tf.nn.softmax(norm_compat) # [B, S, S]
     if masked:
       mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
-    masked_compat = compat * mask
-    norm_compat = masked_compat / math.sqrt(keys.shape[-1]) # [B, S, S]
-    probs = tf.nn.softmax(norm_compat) # [B, S, S]
+      masked_probs = mask * probs
+      probs = masked_probs / tf.reduce_sum(masked_probs, -1, keepdims=True)
     att = tf.matmul(probs, values) # [B, S, D_V]
     return att
 
