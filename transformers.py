@@ -130,11 +130,11 @@ class TransformerEncoderBlock(snt.Module):
     return output
 
 class EncoderOnlyTransformer(snt.Module):
-  def __init__(self, output_size, num_blocks, ffw_size, num_heads, name="EncoderTransformer"):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, name="EncoderTransformer"):
     super(EncoderOnlyTransformer, self).__init__()
-    self.num_blocks = num_blocks
+    self.num_layers = num_layers
     self.transformer_blocks = []
-    for _ in range(num_blocks):
+    for _ in range(num_layers):
       t = TransformerEncoderBlock(output_size, ffw_size, num_heads)
       self.transformer_blocks.append(t)
     # maybe add assertion about attention size and output_size

@@ -291,12 +291,12 @@ class TransformerWrapper(Network):
     output_size=128,
     num_blocks=6,
     ffw_size=512,
-    num_heads=4,
+    num_layers=4,
   )
 
-  def __init__(self, output_size, num_blocks, ffw_size, num_heads):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads):
     super().__init__(name='transformer')
-    self.transformer = EncoderOnlyTransformer(output_size, num_blocks, ffw_size, num_heads)
+    self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads)
 
   def initial_state(self, batch_size):
     return ()
