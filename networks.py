@@ -288,10 +288,10 @@ class TransformerWrapper(Network):
     A Wrapper for the output of the Encoder-only transformer, implementation in transformers.py
   '''
   CONFIG=dict(
+    num_layers=6,
     output_size=128,
-    num_blocks=6,
+    num_heads=8,
     ffw_size=512,
-    num_layers=4,
   )
 
   def __init__(self, output_size, num_layers, ffw_size, num_heads):
