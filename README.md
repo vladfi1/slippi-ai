@@ -41,6 +41,8 @@ To try training a simple model, run
 python train.py
 ```
 
+To view the results, you can use [omniboard](https://github.com/vivekratnavel/omniboard), although several [other options](https://github.com/IDSIA/sacred#frontends) are available.
+
 ### Processing a preexisting dataset of raw slippi replay files
 
 An preexisting dataset of raw slippi replays is available at https://drive.google.com/file/d/1ab6ovA46tfiPZ2Y3a_yS1J3k3656yQ8f (27G, unzips to 200G). You can place this in the `data/` folder using `gdown <drive link> <destination>`.
