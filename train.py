@@ -4,6 +4,7 @@ import functools
 import os
 import pickle
 import time
+import io, tarfile
 
 import sacred
 
@@ -125,17 +126,23 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  params_key = f"slippi-ai.params.{tag}"
   
+  save_to_s3 = False
+  if 'S3_CREDS' in os.environ:
+    s3_store = get_store()
+    params_key = f"slippi-ai.params.{tag}"
+    saved_model_key = f"slippi-ai.experiments.{tag}.saved_model"
+    save_to_s3 = True
+
   def save():
     # Local Save
     _log.info('saving state to %s', pickle_path)
     with open(pickle_path, 'wb') as f:
       pickle.dump(get_state(), f)
-    # S3 Bucket Save
-    if 'S3_CREDS' in os.environ:
+
+    if save_to_s3:
       store = get_store()
-      _log.info('saving state to %s', params_key)
+      _log.info('saving state to S3: %s', params_key)
       pickled_state = pickle.dumps(get_state())
       store.put(params_key, pickled_state)
 
@@ -147,10 +154,9 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       optimizer=learner.optimizer,
   )
   
-  if 'S3_CREDS' in os.environ:
-    store = get_store()
+  if save_to_s3:
     try:
-      obj = store.get(params_key)
+      obj = s3_store.get(params_key)
       _log.info('restoring from %s', params_key)
       set_state(pickle.loads(obj))
     except KeyError:
@@ -200,9 +206,18 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     saved_module.sample = utils.with_flat_signature(policy.sample, sample_signature)
 
     saved_model_path = os.path.join(expt_dir, 'saved_model')
-    save_model = utils.Periodically(
-        functools.partial(tf.saved_model.save, saved_module, saved_model_path),
-        save_interval)
+
+    def save_model():
+      tf.saved_model.save(saved_module, saved_model_path)
+      saved_model_bytes = io.BytesIO()
+      with tarfile.open(fileobj=saved_model_bytes, mode='x') as tar:
+        tar.add(saved_model_path)
+
+      if save_to_s3:
+        _log.info('saving model to S3: %s', saved_model_key)
+        s3_store.put(saved_model_key, saved_model_bytes.getvalue())
+
+    save_model = utils.Periodically(save_model, save_interval)
 
   total_steps = 0
   frames_per_batch = train_data.batch_size * train_data.unroll_length
