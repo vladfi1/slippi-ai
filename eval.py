@@ -32,7 +32,11 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
   sample = lambda *structs: policy.sample(*tf.nest.flatten(structs))
   hidden_state = policy.initial_state(1)
 
-  console = melee.Console(path=dolphin_path)
+  console = melee.Console(
+      path=dolphin_path,
+      online_delay=0,
+      blocking_input=True,
+  )
 
   # This isn't necessary, but makes it so that Dolphin will get killed when you ^C
   def signal_handler(sig, frame):
