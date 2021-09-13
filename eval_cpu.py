@@ -6,16 +6,8 @@ import signal
 
 from sacred import Experiment
 
-import numpy as np
-import sonnet as snt
-import tensorflow as tf
-
 import melee
-
-import embed
-
-LOG_INTERVAL = 10
-SAVE_INTERVAL = 300
+import eval_lib
 
 ex = Experiment('eval')
 
@@ -24,14 +16,11 @@ def config():
   saved_model_path = None
   dolphin_path = None
   iso_path = None
+  cpu_level = 9
+  runtime = 300
 
 @ex.automain
-def main(saved_model_path, dolphin_path, iso_path, _log):
-  embed_game = embed.make_game_embedding()
-  policy = tf.saved_model.load(saved_model_path)
-  sample = lambda *structs: policy.sample(*tf.nest.flatten(structs))
-  hidden_state = policy.initial_state(1)
-
+def main(saved_model_path, dolphin_path, iso_path, _log, _config):
   console = melee.Console(
       path=dolphin_path,
       online_delay=0,
@@ -72,11 +61,17 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
         sys.exit(-1)
     print("Controller connected")
 
-  action_repeat = 0
-  repeats_left = 0
+  policy = eval_lib.SavedModelPolicy(
+      controller=controller,
+      opponent_port=2,
+      path=saved_model_path,
+  )
+
+  total_frames = 60 * _config["runtime"]
+  num_frames = 0
 
   # Main loop
-  while True:
+  while num_frames < total_frames:
     # "step" to the next frame
     gamestate = console.step()
     if gamestate is None:
@@ -92,32 +87,8 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
 
     # What menu are we in?
     if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-      if repeats_left > 0:
-        repeats_left -= 1
-        continue
-
-      embedded_game = embed_game.from_state(gamestate), action_repeat, 0.
-      batched_game = tf.nest.map_structure(
-          lambda a: np.expand_dims(a, 0), embedded_game)
-      sampled_controller_with_repeat, hidden_state = sample(
-          batched_game, hidden_state)
-      sampled_controller_with_repeat = tf.nest.map_structure(
-          lambda t: np.squeeze(t.numpy(), 0), sampled_controller_with_repeat)
-      sampled_controller = sampled_controller_with_repeat['controller']
-      action_repeat = sampled_controller_with_repeat['action_repeat']
-      repeats_left = action_repeat
-
-      for b in embed.LEGAL_BUTTONS:
-        if sampled_controller['button'][b.value]:
-          controller.press_button(b)
-        else:
-          controller.release_button(b)
-      main_stick = sampled_controller["main_stick"]
-      controller.tilt_analog(melee.Button.BUTTON_MAIN, *main_stick)
-      c_stick = sampled_controller["c_stick"]
-      controller.tilt_analog(melee.Button.BUTTON_C, *c_stick)
-      controller.press_shoulder(melee.Button.BUTTON_L, sampled_controller["l_shoulder"])
-      controller.press_shoulder(melee.Button.BUTTON_R, sampled_controller["r_shoulder"])
+      policy.step(gamestate)
+      num_frames += 1
     else:
       melee.MenuHelper.menu_helper_simple(gamestate,
                                           controller,
@@ -131,6 +102,8 @@ def main(saved_model_path, dolphin_path, iso_path, _log):
                                           melee.Character.FOX,
                                           melee.Stage.YOSHIS_STORY,
                                           connect_code=None,
-                                          cpu_level=9,
+                                          cpu_level=_config["cpu_level"],
                                           autostart=True,
                                           swag=False)
+
+  console.stop()
