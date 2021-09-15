@@ -34,6 +34,8 @@ def train_test_split(data_dir, subset=None, test_ratio=.1):
   train_files = [f for f in filenames if f not in test_set]
   train_paths = [os.path.join(data_dir, f) for f in train_files]
   test_paths = [os.path.join(data_dir, f) for f in test_files]
+  if not test_paths:
+    test_paths = train_paths
   return train_paths, test_paths
 
 def game_len(game):
