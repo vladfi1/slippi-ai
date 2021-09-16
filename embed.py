@@ -69,50 +69,39 @@ class FloatEmbedding(Embedding):
     self.upper = upper
     self.size = 1
 
-  def __call__(self, t, **_):
+  def encode(self, t):
     if t.dtype is not float_type:
       t = tf.cast(t, float_type)
-
     if self.bias is not None:
       t += self.bias
-
     if self.scale is not None:
       t *= self.scale
-
     if self.lower:
       t = tf.maximum(t, self.lower)
-
     if self.upper:
       t = tf.minimum(t, self.upper)
+    return t
 
-    return tf.expand_dims(t, -1)
+  def __call__(self, t, **_):
+    return tf.expand_dims(self.encode(t), -1)
 
   def extract(self, t):
     if self.scale:
       t /= self.scale
-
     if self.bias:
       t -= self.bias
-
     return tf.squeeze(t, [-1])
 
   def to_input(self, t):
     return t
 
   def distance(self, predicted, target):
-    if target.dtype is not float_type:
-      target = tf.cast(target, float_type)
-
-    if self.scale:
-      target *= self.scale
-
-    if self.bias:
-      target += self.bias
-
+    target = self.encode(target)
     predicted = tf.squeeze(predicted, [-1])
     return tf.square(predicted - target)
 
   def sample(self, t):
+    # TODO: make this an actual sample from a Gaussian
     return self.extract(t)
 
 embed_float = FloatEmbedding("float")
@@ -274,7 +263,7 @@ class ArrayEmbedding(Embedding):
     # only the bits that were embedded. oh well
     array = max(self.permutation) * [None]
 
-    ts = tf.split(axis=tf.rank(embedded)-1, num_or_size_splits=len(self.permutation), value=embedded)
+    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
 
     for i, t in zip(self.permutation, ts):
       array[i] = self.op.extract(t)
