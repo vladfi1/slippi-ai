@@ -409,3 +409,20 @@ def get_controller_embedding_with_action_repeat(embed_controller, max_repeat):
       ("controller", embed_controller),
       ("action_repeat", OneHotEmbedding('action_repeat', max_repeat+1)),
   ])
+
+def _stick_to_str(stick):
+  return f'({stick[0].item():.2f}, {stick[1].item():.2f})'
+
+def controller_to_str(controller):
+  """Pretty-prints a sampled controller."""
+  buttons = [b.value for b in LEGAL_BUTTONS if controller['button'][b.value].item()]
+
+  components = [
+      f'Main={_stick_to_str(controller["main_stick"])}',
+      f'C={_stick_to_str(controller["c_stick"])}',
+      ' '.join(buttons),
+      f'LS={controller["l_shoulder"].item():.2f}',
+      f'RS={controller["r_shoulder"].item():.2f}',
+  ]
+
+  return ' '.join(components)
