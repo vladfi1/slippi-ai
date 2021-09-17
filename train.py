@@ -50,7 +50,6 @@ def config():
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
-  plateau_detector = train_lib.PlateauDetector.DEFAULT_CONFIG
 
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
@@ -206,7 +205,6 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   total_steps = 0
   frames_per_batch = train_data.batch_size * train_data.unroll_length
-  plateau_detector = train_lib.PlateauDetector(**_config['plateau_detector'])
 
   for _ in range(num_epochs):
     start_time = time.perf_counter()
@@ -216,19 +214,12 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     while True:
       train_stats = train_manager.step()
       steps += 1
-      plateau_detector.update(train_stats['loss'].numpy())
 
       elapsed_time = time.perf_counter() - start_time
       if elapsed_time > epoch_time: break
 
     ckpt.step.assign_add(steps)
     total_steps = ckpt.step.numpy()
-
-    # decrease learning rate on plateau
-    if plateau_detector.check():
-      new_lr = .5 * learning_rate.numpy()
-      _log.info('Plateau detected, reducing learning rate to %.1e', new_lr)
-      learning_rate.assign(new_lr)
 
     # now test
     test_stats = test_manager.step()

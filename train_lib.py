@@ -63,38 +63,3 @@ def log_stats(ex, stats, step=None, sep='.'):
     key = sep.join(map(str, path))
     ex.log_scalar(key, value, step=step)
   tree.map_structure_with_path(log, stats)
-
-class PlateauDetector:
-
-  DEFAULT_CONFIG = dict(
-      check_interval=10,
-      threshold=1e-4,
-      ema_window=100,
-  )
-
-  def __init__(self, check_interval: int, threshold: float, ema_window: int):
-    self.check_interval = check_interval
-    self.threshold = threshold
-    self.steps = 0
-    self.last_ema = None
-    self.ema = utils.EMA(ema_window)
-  
-  def update(self, loss: float):
-    self.ema.update(loss)
-
-  def check(self) -> bool:
-    if self.last_ema is None:
-      self.last_ema = self.ema.value
-      return False
-
-    self.steps += 1
-    if self.steps < self.check_interval:
-      return False
-
-    loss_delta = self.last_ema - self.ema.value
-    plateau = loss_delta < self.threshold
-    # print(f'Loss decreased by {loss_delta}. Plateau? {plateau}.')
-
-    self.last_ema = self.ema.value
-    self.steps = 0
-    return plateau
