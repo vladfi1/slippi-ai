@@ -8,10 +8,6 @@ import io, tarfile
 
 import sacred
 
-# for storing parameters
-import boto3
-from simplekv.net.boto3store import Boto3Store
-
 import numpy as np
 import sonnet as snt
 import tensorflow as tf
@@ -25,6 +21,7 @@ from learner import Learner
 import networks
 import paths
 import policies
+import s3_lib
 import stats
 import train_lib
 import utils
@@ -57,16 +54,6 @@ def config():
 
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
-
-def get_store(s3_creds: str = None):
-  s3_creds = s3_creds or os.environ['S3_CREDS']
-  access_key, secret_key = s3_creds.split(':')
-
-  session = boto3.Session(access_key, secret_key)
-  s3 = session.resource('s3')
-  bucket = s3.Bucket('slippi-data')
-  store = Boto3Store(bucket)
-  return store
 
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
@@ -129,9 +116,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   
   save_to_s3 = False
   if 'S3_CREDS' in os.environ:
-    s3_store = get_store()
-    params_key = f"slippi-ai.params.{tag}"
-    saved_model_key = f"slippi-ai.experiments.{tag}.saved_model"
+    s3_store = s3_lib.get_store()
+    s3_keys = s3_lib.get_keys(tag)
     save_to_s3 = True
 
   def save():
@@ -141,10 +127,9 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       pickle.dump(get_state(), f)
 
     if save_to_s3:
-      store = get_store()
-      _log.info('saving state to S3: %s', params_key)
+      _log.info('saving state to S3: %s', s3_keys.params)
       pickled_state = pickle.dumps(get_state())
-      store.put(params_key, pickled_state)
+      s3_store.put(s3_keys.params, pickled_state)
 
   save = utils.Periodically(save, save_interval)
 
@@ -156,11 +141,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   
   if save_to_s3:
     try:
-      obj = s3_store.get(params_key)
-      _log.info('restoring from %s', params_key)
+      obj = s3_store.get(s3_keys.params)
+      _log.info('restoring from %s', s3_keys.params)
       set_state(pickle.loads(obj))
     except KeyError:
-      _log.info('no params found at %s', params_key)
+      _log.info('no params found at %s', s3_keys.params)
   else:
     manager = tf.train.CheckpointManager(
         ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
@@ -211,11 +196,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       tf.saved_model.save(saved_module, saved_model_path)
       saved_model_bytes = io.BytesIO()
       with tarfile.open(fileobj=saved_model_bytes, mode='x') as tar:
-        tar.add(saved_model_path)
+        tar.add(saved_model_path, arcname='.')
 
       if save_to_s3:
-        _log.info('saving model to S3: %s', saved_model_key)
-        s3_store.put(saved_model_key, saved_model_bytes.getvalue())
+        _log.info('saving model to S3: %s', s3_keys.saved_model)
+        s3_store.put(s3_keys.saved_model, saved_model_bytes.getvalue())
 
     save_model = utils.Periodically(save_model, save_interval)
 
