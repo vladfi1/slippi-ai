@@ -85,7 +85,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   data_config = dict(_config['data'], embed_controller=embed_controller)
   train_data = data.make_source(filenames=train_paths, **data_config)
   test_data = data.make_source(filenames=test_paths, **data_config)
-  test_batch = train_lib.sanitize_batch(next(test_data))
+  test_batch = train_lib.sanitize_batch(next(test_data)[0])
 
   assert test_batch[0][0]['player'][1]['jumps_left'].dtype == np.uint8
 
@@ -204,7 +204,6 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     save_model = utils.Periodically(save_model, save_interval)
 
   total_steps = 0
-  frames_per_batch = train_data.batch_size * train_data.unroll_length
 
   for _ in range(num_epochs):
     start_time = time.perf_counter()
@@ -226,6 +225,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
     train_loss = train_stats['loss'].numpy()
     test_loss = test_stats['loss'].numpy()
+    epoch = train_stats['epoch']
 
     all_stats = dict(
         train=train_stats,
@@ -235,11 +235,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     train_lib.log_stats(ex, all_stats, total_steps)
 
     sps = steps / elapsed_time
-    mps = sps * frames_per_batch / (60 * 60)
+    mps = train_manager.total_frames / (60 * 60 * elapsed_time)
     ex.log_scalar('sps', sps, total_steps)
     ex.log_scalar('mps', mps, total_steps)
 
-    print(f'batches={total_steps} sps={sps:.2f} mps={mps:.2f}')
+    print(f'steps={total_steps} sps={sps:.2f} mps={mps:.2f} epoch={epoch:.3f}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
           f' data={train_manager.data_profiler.mean_time():.3f}'

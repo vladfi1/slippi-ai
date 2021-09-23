@@ -4,6 +4,7 @@ import multiprocessing as mp
 import os
 import pickle
 import random
+from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
 import zlib
 
 import numpy as np
@@ -11,9 +12,23 @@ import tree
 
 import melee
 
+import embed
 import reward
 import stats
 import utils
+
+Nest = Any
+Controller = Nest
+Game = Nest
+
+class CompressedGame(NamedTuple):
+  states: Game
+  counts: Sequence[int]
+  rewards: Sequence[float]
+
+class Batch(NamedTuple):
+  game: CompressedGame
+  needs_reset: bool
 
 def train_test_split(data_dir, subset=None, test_ratio=.1):
   if subset:
@@ -38,15 +53,15 @@ def train_test_split(data_dir, subset=None, test_ratio=.1):
     test_paths = train_paths
   return train_paths, test_paths
 
-def game_len(game):
-  return len(game[1])
+def game_len(game: CompressedGame):
+  return len(game.counts)
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source):
+  def __init__(self, source: Iterator[CompressedGame]):
     self.source = source
-    self.game = None
+    self.game: CompressedGame = None
 
   def find_game(self, n):
     while True:
@@ -55,7 +70,7 @@ class TrajectoryManager:
     self.game = game
     self.frame = 0
 
-  def grab_chunk(self, n):
+  def grab_chunk(self, n) -> Tuple[CompressedGame, bool]:
     # TODO: write a unit test for this
     needs_reset = self.game is None or game_len(self.game) - self.frame < n
     if needs_reset:
@@ -66,16 +81,16 @@ class TrajectoryManager:
     chunk = tree.map_structure(slice, self.game)
     self.frame = new_frame
 
-    return chunk, needs_reset
+    return Batch(chunk, needs_reset)
 
-def swap_players(game):
+def swap_players(game: Game) -> Game:
   old_players = game['player']
   new_players = {1: old_players[2], 2: old_players[1]}
   new_game = game.copy()
   new_game['player'] = new_players
   return new_game
 
-def detect_repeated_actions(controllers):
+def detect_repeated_actions(controllers: Nest) -> Sequence[bool]:
   """Labels actions as repeated or not.
 
   Args:
@@ -90,7 +105,10 @@ def detect_repeated_actions(controllers):
   repeats = np.all(repeats, -1)
   return repeats
 
-def indices_and_counts(repeats, max_repeat=15):
+def indices_and_counts(
+    repeats: Sequence[bool],
+    max_repeat=15,
+  ) -> Tuple[Sequence[int], Sequence[int]]:
   """Finds the indices and counts of repeated actions.
 
   `repeats` is meant to be produced by `detect_repeated_actions`
@@ -124,7 +142,12 @@ def indices_and_counts(repeats, max_repeat=15):
 
   return np.array(indices), np.array(counts)
 
-def compress_repeated_actions(game, rewards, embed_controller, max_repeat):
+def compress_repeated_actions(
+    game: Game,
+    rewards: Sequence[float],
+    embed_controller: embed.Embedding,
+    max_repeat: int,
+  ) -> CompressedGame:
   controllers = game['player'][1]['controller_state']
   controllers = embed_controller.map(lambda e, a: e.preprocess(a), controllers)
 
@@ -133,9 +156,9 @@ def compress_repeated_actions(game, rewards, embed_controller, max_repeat):
 
   compressed_game = tree.map_structure(lambda a: a[indices], game)
   sum_rewards = np.array([sum(rewards[idx-count:idx+1]) for idx, count in zip(indices, counts)])
-  return compressed_game, counts, sum_rewards
+  return CompressedGame(compressed_game, counts, sum_rewards)
 
-def _charset(chars):
+def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   if chars is None:
     chars = list(melee.Character)
   return set(c.value for c in chars)
@@ -168,20 +191,22 @@ class DataSource:
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
 
-  def produce_trajectories(self):
+  def produce_trajectories(self) -> Iterator[CompressedGame]:
     raw_games = self.produce_raw_games()
     allowed_games = filter(self.is_allowed, raw_games)
     processed_games = map(self.process_game, allowed_games)
-    yield from processed_games
+    return processed_games
 
-  def process_game(self, game):
+  def process_game(self, game: Game) -> CompressedGame:
     rewards = reward.compute_rewards(game)
     return compress_repeated_actions(
         game, rewards, self.embed_controller, self.max_action_repeat)
 
-  def produce_raw_games(self):
+  def produce_raw_games(self) -> Iterator[Game]:
     """Raw games without post-processing."""
+    self.file_counter = 0
     for path in itertools.cycle(self.filenames):
+      self.file_counter += 1
       with open(path, 'rb') as f:
         obj_bytes = f.read()
       if self.compressed:
@@ -190,15 +215,17 @@ class DataSource:
       yield game
       yield swap_players(game)
 
-  def is_allowed(self, game):
+  def is_allowed(self, game: Game) -> bool:
     return (
         game['player'][1]['character'][0] in self.allowed_characters
         and
         game['player'][2]['character'][0] in self.allowed_opponents)
 
-  def __next__(self):
-    return utils.batch_nest(
+  def __next__(self) -> Tuple[Batch, float]:
+    next_batch = utils.batch_nest(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
+    epoch = self.file_counter / len(self.filenames)
+    return next_batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
   data_source = DataSource(**data_source_kwargs)
@@ -217,12 +244,12 @@ class DataSourceMP:
     atexit.register(self.batch_queue.close)
     atexit.register(self.process.terminate)
 
-  def __next__(self):
+  def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
 
 _name_to_character = {c.name.lower(): c for c in melee.Character}
 
-def _chars_from_string(chars: str):
+def _chars_from_string(chars: str) -> List[melee.Character]:
   if chars == 'all':
     return list(melee.Character)
   chars = chars.split(',')
