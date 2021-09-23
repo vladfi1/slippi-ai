@@ -17,8 +17,6 @@ def positional_encoding(seq_len, d_model, batch_size=1):
         denom = tf.math.pow(10000., 2. * i/d)
         return pos / denom
 
-    # BUG: Fails to serialize these calls:
-    # "Failed to convert object of type <class 'list'> to Tensor. Contents: [None, 480]. Consider casting elements to a supported type."
     i_tensor = tf.expand_dims(tf.range(0, d_model//2), 0) # [1, d_model/2]
     i_tensor = tf.broadcast_to(i_tensor, [seq_len, d_model//2]) # [seq_len, d_model/2]
     j_tensor = tf.expand_dims(tf.range(0, seq_len), 1) # [seq_len, 1]
@@ -51,15 +49,21 @@ def attention(queries, keys, values, masked=True):
     values: (batch, seq_len, D_v)
     returns: (batch, seq_len, D_v)
     """
-    assert keys.shape == queries.shape, "keys and values must have equivalent shapes"
+    tf.debugging.assert_shapes([
+        (keys, ('B', 'S', 'D_k')),
+        (queries, ('B', 'S', 'D_k')),
+        (values, ('B', 'S', 'D_v')),
+    ])
+    B, S, D_k = tf.unstack(tf.shape(keys))
+
     # compat [b, i, j] is the dot product of key i and query j (for batch # b)
     compat = tf.matmul(queries, keys, transpose_b=True) # [B, S, S]
-    norm_compat = compat / math.sqrt(keys.shape[-1]) # [B, S, S]
+    norm_compat = compat / tf.sqrt(tf.cast(D_k, compat.dtype)) # [B, S, S]
     if masked:
       # mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
-      i = tf.expand_dims(tf.range(norm_compat.shape[-1]), 1)
-      j = tf.expand_dims(tf.range(norm_compat.shape[-2]), 0)
-      mask = i >= j
+      i = tf.expand_dims(tf.range(S), 1)  # [S, 1]
+      j = tf.expand_dims(tf.range(S), 0)  # [1, S]
+      mask = i >= j  # [S, S], mask[i, j] == i >= j
       norm_compat = tf.where(mask, norm_compat, np.NINF)
     probs = tf.nn.softmax(norm_compat) # [B, S, S]
     att = tf.matmul(probs, values) # [B, S, D_V]
@@ -146,7 +150,7 @@ class EncoderOnlyTransformer(snt.Module):
   def __call__(self, inputs):
     inputs = self.shape_convert(inputs)
     inputs = tf.transpose(inputs, [1, 0, 2])
-    i_shape = inputs.shape
+    i_shape = tf.shape(inputs)
     encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
     x = inputs + encoding
     for t in self.transformer_blocks:
