@@ -5,6 +5,7 @@ import tensorflow as tf
 
 import embed
 import utils
+import transformers
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]
@@ -55,6 +56,42 @@ class EmbedTest(unittest.TestCase):
     embed_game_unflat = embed_game.unflatten(embed_game_flat)
 
     self.assertEqual(embed_game_unflat, embed_game_struct)
+
+class Test_Transformers(unittest.TestCase):
+  def test_attention(self):
+    mhab = transformers.MultiHeadAttentionBlock(8, 512)
+    # Shape grabbed from breakpoint of slippi
+    test_inputs = tf.ones([64, 32, 866]) 
+    result = mhab(test_inputs)
+    assert result.shape == tf.TensorShape([64, 32, 512])
+
+  def test_pos_encoding(self):
+    pos = transformers.positional_encoding(5, 10, batch_size=32)
+    assert pos.shape == tf.TensorShape([32, 5, 10])
+    pos = transformers.positional_encoding(30, 512, batch_size=32)
+    assert pos.shape == [32, 30, 512]
+  
+  def test_transformer_block(self):
+    test_inputs_nice = tf.ones([64, 32, 512]) 
+    tb = transformers.TransformerEncoderBlock(512)
+    output = tb(test_inputs_nice)
+    assert output.shape == test_inputs_nice.shape
+
+    # test_inputs_2 = tf.ones([64, 32, 866])
+    # tb = transformers.TransformerEncoderBlock(866)
+    # output_2 = tb(test_inputs_2)
+    # assert output_2.shape == test_inputs_2.shape
+
+  def test_transformer(self):
+    transformer = transformers.EncoderOnlyTransformer(512)
+    test_inputs_nice = tf.ones([64, 32, 512])
+    output = transformer(test_inputs_nice)
+    assert output.shape == test_inputs_nice.shape
+
+    # transformer = transformers.EncoderOnlyTransformer(866)
+    # test_inputs_2 = tf.ones([64, 32, 866])
+    # output_2 = transformer(test_inputs_2)
+    # assert output_2.shape == test_inputs_2.shape
 
 if __name__ == '__main__':
   unittest.main(failfast=True)

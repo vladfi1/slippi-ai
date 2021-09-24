@@ -1,3 +1,4 @@
+from transformers import EncoderOnlyTransformer
 import sonnet as snt
 import tensorflow as tf
 
@@ -282,6 +283,32 @@ class Copier(Network):
   def unroll(self, inputs, prev_state):
     return inputs[1], ()
 
+class TransformerWrapper(Network):
+  '''
+    A Wrapper for the output of the Encoder-only transformer, implementation in transformers.py
+  '''
+  CONFIG=dict(
+    num_layers=6,
+    output_size=128,
+    num_heads=8,
+    ffw_size=512,
+  )
+
+  def __init__(self, output_size, num_layers, ffw_size, num_heads):
+    super().__init__(name='transformer')
+    self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads)
+
+  def initial_state(self, batch_size):
+    return ()
+
+  def step(self, inputs, prev_state):
+    raise NotImplementedError()
+
+  def unroll(self, inputs, prev_state):
+    flat_inputs = process_inputs(inputs)
+    output = self.transformer(flat_inputs)
+    return output, ()
+
 CONSTRUCTORS = dict(
     mlp=MLP,
     frame_stack_mlp=FrameStackingMLP,
@@ -289,6 +316,7 @@ CONSTRUCTORS = dict(
     gru=GRU,
     copier=Copier,
     res_lstm=DeepResLSTM,
+    transformer=TransformerWrapper,
 )
 
 DEFAULT_CONFIG = dict(
@@ -299,6 +327,7 @@ DEFAULT_CONFIG = dict(
     gru=GRU.CONFIG,
     copier=Copier.CONFIG,
     res_lstm=DeepResLSTM.CONFIG,
+    transformer=TransformerWrapper.CONFIG,
 )
 
 def construct_network(name, **config):
