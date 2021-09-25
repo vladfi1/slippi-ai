@@ -55,8 +55,10 @@ class BoolEmbedding(Embedding):
         logits=tf.squeeze(predicted, [-1]),
         labels=tf.cast(target, float_type))
 
-  def sample(self, t):
+  def sample(self, t, temperature=None):
     t = tf.squeeze(t, -1)
+    if temperature is not None:
+      t = t / temperature
     dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
     return dist.sample()
   
@@ -107,7 +109,7 @@ class FloatEmbedding(Embedding):
     predicted = tf.squeeze(predicted, [-1])
     return tf.square(predicted - target)
 
-  def sample(self, t):
+  def sample(self, t, **_):
     # TODO: make this an actual sample from a Gaussian
     return self.extract(t)
 
@@ -142,8 +144,11 @@ class OneHotEmbedding(Embedding):
     target = self(target)
     return -tf.reduce_sum(logprobs * target, -1)
 
-  def sample(self, embedded):
-    return tfp.distributions.Categorical(logits=embedded).sample()
+  def sample(self, embedded, temperature=None):
+    logits = embedded
+    if temperature is not None:
+      logits = logits / temperature
+    return tfp.distributions.Categorical(logits=logits).sample()
 
 class EnumEmbedding(OneHotEmbedding):
   def __init__(self, enum_class, **kwargs):
@@ -223,11 +228,11 @@ class StructEmbedding(Embedding):
       distances[field] = op.distance(split[field], target[field])
     return distances
 
-  def sample(self, embedded):
+  def sample(self, embedded, **kwargs):
     samples = {}
     split = self.split(embedded)
     for field, op in self.embedding:
-      samples[field] = op.sample(split[field])
+      samples[field] = op.sample(split[field], **kwargs)
     return samples
 
   def dummy(self):
@@ -283,8 +288,8 @@ class ArrayEmbedding(Embedding):
     splits = self.split(embedded)
     return [self.op.distance(s, t) for s, t in zip(splits, target)]
 
-  def sample(self, embedded):
-    return [self.op.sample(s) for s in self.split(embedded)]
+  def sample(self, embedded, **kwargs):
+    return [self.op.sample(s, **kwargs) for s in self.split(embedded)]
 
   def dummy(self):
     return self.map(lambda e: e.dummy())
@@ -391,8 +396,8 @@ class DiscreteEmbedding(OneHotEmbedding):
   def distance(self, embedded, target):
     return super().distance(embedded, self.maybe_bucket(target))
 
-  def sample(self, embedded):
-    discrete = super().sample(embedded)
+  def sample(self, embedded, **kwargs):
+    discrete = super().sample(embedded, **kwargs)
     return tf.cast(discrete, tf.float32) / self.n
 
   def preprocess(self, a):

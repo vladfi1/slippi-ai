@@ -5,7 +5,7 @@ import embed
 
 class ControllerHead(snt.Module):
 
-  def sample(self, inputs, prev_controller_state):
+  def sample(self, inputs, prev_controller_state, temperature=None):
     """Sample a controller state given input features and previous state."""
 
   def distance(self, inputs, prev_controller_state, target_controller_state):
@@ -34,9 +34,10 @@ class Independent(ControllerHead):
       controller_prediction += self.residual_net(prev_controller_flat)
     return controller_prediction
 
-  def sample(self, inputs, prev_controller_state):
+  def sample(self, inputs, prev_controller_state, temperature=None):
     return self.embed_controller.sample(
-        self.controller_prediction(inputs, prev_controller_state))
+        self.controller_prediction(inputs, prev_controller_state),
+        temperature=temperature)
 
   def distance(self, inputs, prev_controller_state, target_controller_state):
     return self.embed_controller.distance(
@@ -55,14 +56,14 @@ class AutoRegressiveComponent(snt.Module):
     # has full expressive power over the output
     self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
 
-  def sample(self, residual, prev_raw):
+  def sample(self, residual, prev_raw, **kwargs):
     # directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw)
     input_ = tf.concat([residual, prev_embedding], -1)
     # project down to the size desired by the component
     input_ = self.encoder(input_)
     # sample the component
-    sample = self.embedder.sample(input_)
+    sample = self.embedder.sample(input_, **kwargs)
     # condition future components on the current sample
     sample_embedding = self.embedder(sample)
     residual += self.decoder(sample_embedding)
@@ -99,13 +100,13 @@ class AutoRegressive(ControllerHead):
         AutoRegressiveComponent(e, residual_size, component_depth)
         for e in self.embed_flat]
 
-  def sample(self, inputs, prev_controller_state):
+  def sample(self, inputs, prev_controller_state, temperature=None):
     residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
 
     samples = []
     for res_block, prev in zip(self.res_blocks, prev_controller_flat):
-      residual, sample = res_block.sample(residual, prev)
+      residual, sample = res_block.sample(residual, prev, temperature=temperature)
       samples.append(sample)
 
     return self.embed_controller.unflatten(iter(samples))

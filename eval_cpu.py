@@ -18,6 +18,7 @@ def config():
   iso_path = None
   cpu_level = 9
   runtime = 300
+  sample_temperature = 1.0
 
 @ex.automain
 def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
@@ -64,7 +65,8 @@ def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
   if saved_model_path:
     policy = eval_lib.Policy.from_saved_model(saved_model_path)
   elif tag:
-    policy = eval_lib.Policy.from_experiment(tag)
+    policy = eval_lib.Policy.from_experiment(
+      tag, sample_kwargs=dict(temperature=_config["sample_temperature"]))
   else:
     assert False
 

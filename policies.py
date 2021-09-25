@@ -56,6 +56,7 @@ class Policy(snt.Module):
       self,
       compressed: data.CompressedGame,
       initial_state: RecurrentState,
+      **kwargs,
   ) -> Tuple[ControllerWithRepeat, RecurrentState]:
     gamestates = compressed.states
     action_repeat = compressed.counts
@@ -66,5 +67,5 @@ class Policy(snt.Module):
     output, final_state = self.network.step(inputs, initial_state)
 
     controller_sample = self.controller_head.sample(
-        output, p1_controller)
+        output, p1_controller, **kwargs)
     return controller_sample, final_state

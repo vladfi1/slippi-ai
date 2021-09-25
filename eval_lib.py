@@ -1,3 +1,4 @@
+import functools
 from typing import Callable, NamedTuple, Tuple
 
 import numpy as np
@@ -25,10 +26,13 @@ class Policy(NamedTuple):
         initial_state=policy.initial_state)
 
   @staticmethod
-  def from_experiment(tag: str) -> "Policy":
+  def from_experiment(tag: str, sample_kwargs=None) -> "Policy":
     policy = saving.load_policy(tag)
+    sample_kwargs = sample_kwargs or {}
+    sample = functools.partial(policy.sample, **sample_kwargs)
     return Policy(
-        sample=tf.function(policy.sample),
+        sample=tf.function(sample),
+        # sample=sample,
         initial_state=policy.initial_state)
 
 class Agent:
