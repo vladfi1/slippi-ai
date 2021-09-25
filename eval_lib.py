@@ -1,30 +1,52 @@
-from typing import Optional
+from typing import Callable, NamedTuple, Tuple
 
 import numpy as np
 import tensorflow as tf
 
 import melee
 import embed
+import policies
+import data
+import saving
 
 expected_players = (1, 2)
 
-class SavedModelPolicy:
+class Policy(NamedTuple):
+  sample: Callable[
+      [data.CompressedGame, policies.RecurrentState],
+      Tuple[policies.ControllerWithRepeat, policies.RecurrentState]]
+  initial_state: Callable[[int], policies.RecurrentState]
+
+  @staticmethod
+  def from_saved_model(path: str) -> "Policy":
+    policy = tf.saved_model.load(path)
+    return Policy(
+        sample=lambda *structs: policy.sample(*tf.nest.flatten(structs)),
+        initial_state=policy.initial_state)
+
+  @staticmethod
+  def from_experiment(tag: str) -> "Policy":
+    policy = saving.load_policy(tag)
+    return Policy(
+        sample=tf.function(policy.sample),
+        initial_state=policy.initial_state)
+
+class Agent:
 
   def __init__(
       self,
       controller: melee.Controller,
       opponent_port: int,
-      policy = None,
-      path: Optional[str] = None,
+      policy: Policy,
   ):
     self._controller = controller
     self._port = controller.port
     self._opponent_port = opponent_port
     self._players = (self._port, opponent_port)
     self._embed_game = embed.make_game_embedding()
-    self._policy = policy or tf.saved_model.load(path)
-    self._sample = lambda *structs: self._policy.sample(*tf.nest.flatten(structs))
-    self._hidden_state = self._policy.initial_state(1)
+    self._policy = policy
+    self._sample = policy.sample
+    self._hidden_state = policy.initial_state(1)
     self._current_action_repeat = 0
     self._current_repeats_left = 0
 
@@ -39,7 +61,7 @@ class SavedModelPolicy:
       e: embedded_game['player'][p]
       for e, p in zip(expected_players, self._players)}
 
-    unbatched_input = embedded_game, self._current_action_repeat, 0.
+    unbatched_input = data.CompressedGame(embedded_game, self._current_action_repeat, 0.)
     batched_input = tf.nest.map_structure(
         lambda a: np.expand_dims(a, 0), unbatched_input)
     sampled_controller_with_repeat, self._hidden_state = self._sample(

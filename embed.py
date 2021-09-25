@@ -33,6 +33,10 @@ class Embedding:
   def preprocess(self, x):
     """Used by discretization."""
     return x
+  
+  def dummy(self):
+    """A dummy value."""
+    return self.dtype(0)
 
 class BoolEmbedding(Embedding):
   size = 1
@@ -55,6 +59,9 @@ class BoolEmbedding(Embedding):
     t = tf.squeeze(t, -1)
     dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
     return dist.sample()
+  
+  def dummy(self):
+    return False
 
 embed_bool = BoolEmbedding()
 
@@ -223,6 +230,8 @@ class StructEmbedding(Embedding):
       samples[field] = op.sample(split[field])
     return samples
 
+  def dummy(self):
+    return self.map(lambda e: e.dummy())
 
 class ArrayEmbedding(Embedding):
   def __init__(self, name: str, op: Embedding, permutation: List[int]):
@@ -276,6 +285,9 @@ class ArrayEmbedding(Embedding):
 
   def sample(self, embedded):
     return [self.op.sample(s) for s in self.split(embedded)]
+
+  def dummy(self):
+    return self.map(lambda e: e.dummy())
 
 embed_action = EnumEmbedding(enums.Action)
 embed_char = EnumEmbedding(enums.Character)

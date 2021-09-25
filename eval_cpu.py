@@ -1,7 +1,6 @@
 """Test a trained model."""
 
-import os
-import time
+import sys
 import signal
 
 from sacred import Experiment
@@ -14,13 +13,14 @@ ex = Experiment('eval')
 @ex.config
 def config():
   saved_model_path = None
+  tag = None
   dolphin_path = None
   iso_path = None
   cpu_level = 9
   runtime = 300
 
 @ex.automain
-def main(saved_model_path, dolphin_path, iso_path, _log, _config):
+def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
   console = melee.Console(
       path=dolphin_path,
       online_delay=0,
@@ -61,10 +61,17 @@ def main(saved_model_path, dolphin_path, iso_path, _log, _config):
         sys.exit(-1)
     print("Controller connected")
 
-  policy = eval_lib.SavedModelPolicy(
+  if saved_model_path:
+    policy = eval_lib.Policy.from_saved_model(saved_model_path)
+  elif tag:
+    policy = eval_lib.Policy.from_experiment(tag)
+  else:
+    assert False
+
+  agent = eval_lib.Agent(
       controller=controller,
       opponent_port=2,
-      path=saved_model_path,
+      policy=policy,
   )
 
   total_frames = 60 * _config["runtime"]
@@ -87,7 +94,7 @@ def main(saved_model_path, dolphin_path, iso_path, _log, _config):
 
     # What menu are we in?
     if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-      policy.step(gamestate)
+      agent.step(gamestate)
       num_frames += 1
     else:
       melee.MenuHelper.menu_helper_simple(gamestate,

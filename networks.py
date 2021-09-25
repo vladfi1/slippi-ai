@@ -1,25 +1,35 @@
+from typing import Any, Tuple
+
 import sonnet as snt
 import tensorflow as tf
 
 import embed
 import utils
+import data
+
+RecurrentState = Any
+Inputs = Tuple[data.Game, tf.Tensor]
 
 # don't use opponent's controller
 # our own will be exposed in the input
 embed_game = embed.make_game_embedding(
     player_config=dict(with_controller=False))
 
-def process_inputs(inputs):
+def process_inputs(inputs: Inputs) -> tf.Tensor:
   gamestate, p1_controller_embed = inputs
   gamestate_embed = embed_game(gamestate)
   return tf.concat([gamestate_embed, p1_controller_embed], -1)
 
 class Network(snt.Module):
 
-  def initial_state(self, batch_size):
+  def initial_state(self, batch_size: int):
     raise NotImplementedError()
 
-  def step(self, inputs, prev_state):
+  def step(
+      self,
+      inputs: Inputs,
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
     '''
       Returns outputs and next recurrent state.
       inputs: (batch_size, x_dim)
@@ -31,7 +41,11 @@ class Network(snt.Module):
     '''
     raise NotImplementedError()
 
-  def unroll(self, inputs, initial_state):
+  def unroll(
+      self,
+      inputs: Inputs,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
     '''
     Arguments:
       inputs: (time, batch, x_dim)
