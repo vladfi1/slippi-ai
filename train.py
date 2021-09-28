@@ -210,9 +210,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
     # train for epoch_time seconds
     steps = 0
+    num_frames = 0
     while True:
       train_stats = train_manager.step()
       steps += 1
+      num_frames += train_stats['num_frames']
 
       elapsed_time = time.perf_counter() - start_time
       if elapsed_time > epoch_time: break
@@ -235,7 +237,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     train_lib.log_stats(ex, all_stats, total_steps)
 
     sps = steps / elapsed_time
-    mps = train_manager.total_frames / (60 * 60 * elapsed_time)
+    mps = num_frames / (60 * 60 * elapsed_time)
     ex.log_scalar('sps', sps, total_steps)
     ex.log_scalar('mps', mps, total_steps)
 

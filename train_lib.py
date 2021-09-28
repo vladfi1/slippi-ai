@@ -58,9 +58,11 @@ class TrainManager:
     with self.step_profiler:
       stats, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
-    self.total_frames += np.sum(batch.game.counts + 1)
+    num_frames = np.sum(batch.game.counts + 1)
+    self.total_frames += num_frames
     stats.update(
         epoch=epoch,
+        num_frames=num_frames,
         total_frames=self.total_frames,
     )
     return stats
