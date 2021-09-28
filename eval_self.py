@@ -1,7 +1,6 @@
 """Test a trained model."""
 
-import os
-import time
+import sys
 import signal
 
 from sacred import Experiment
@@ -14,12 +13,14 @@ ex = Experiment('eval')
 @ex.config
 def config():
   saved_model_path = None
+  tag = None
   dolphin_path = None
   iso_path = None
   runtime = 300
+  sample_temperature = 1.0
 
 @ex.automain
-def main(saved_model_path, dolphin_path, iso_path, _log, _config):
+def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
   console = melee.Console(
       path=dolphin_path,
       online_delay=0,
@@ -61,15 +62,23 @@ def main(saved_model_path, dolphin_path, iso_path, _log, _config):
         sys.exit(-1)
     print("Controller connected")
 
-  policies = []
+  if saved_model_path:
+    policy = eval_lib.Policy.from_saved_model(saved_model_path)
+  elif tag:
+    policy = eval_lib.Policy.from_experiment(
+      tag, sample_kwargs=dict(temperature=_config["sample_temperature"]))
+  else:
+    assert False
+
+  agents = []
 
   for controller, opponent_port in zip(controllers, reversed(ports)):
-    policy = eval_lib.SavedModelPolicy(
+    agent = eval_lib.Agent(
         controller=controller,
         opponent_port=opponent_port,
-        path=saved_model_path,
+        policy=policy
     )
-    policies.append(policy)
+    agents.append(agent)
 
   total_frames = 60 * _config["runtime"]
   num_frames = 0
@@ -91,8 +100,8 @@ def main(saved_model_path, dolphin_path, iso_path, _log, _config):
 
     # What menu are we in?
     if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-      for policy in policies:
-        policy.step(gamestate)
+      for agent in agents:
+        agent.step(gamestate)
       num_frames += 1
     else:
       for i, controller in enumerate(controllers):
