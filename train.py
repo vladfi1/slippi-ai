@@ -22,7 +22,6 @@ import networks
 import paths
 import policies
 import s3_lib
-import stats
 import train_lib
 import utils
 
@@ -53,6 +52,8 @@ def config():
 
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
+  save_to_s3 = True
+  restore_tag = None
 
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
@@ -96,10 +97,14 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   train_stats = train_manager.step()
   _log.info('loss initial: %f', train_stats['loss'].numpy())
 
+  step = tf.Variable(0, trainable=False, name="step")
+
   # saving and restoring
   tf_state = dict(
+    step=step,
     policy=policy.variables,
     optimizer=learner.optimizer.variables,
+    # TODO: add in learning_rate?
   )
 
   def get_state():
@@ -113,49 +118,40 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
   
-  save_to_s3 = False
-  if 'S3_CREDS' in os.environ:
+  save_to_s3 = _config['save_to_s3'] and 'S3_CREDS' in os.environ
+  if save_to_s3:
     s3_store = s3_lib.get_store()
     s3_keys = s3_lib.get_keys(tag)
-    save_to_s3 = True
+    restore_s3_keys = s3_lib.get_keys(_config['restore_tag'] or tag)
 
   def save():
     # Local Save
+    state = get_state()
     _log.info('saving state to %s', pickle_path)
     with open(pickle_path, 'wb') as f:
-      pickle.dump(get_state(), f)
+      pickle.dump(state, f)
 
     if save_to_s3:
       _log.info('saving state to S3: %s', s3_keys.params)
-      pickled_state = pickle.dumps(get_state())
+      pickled_state = pickle.dumps(state)
       s3_store.put(s3_keys.params, pickled_state)
 
   save = utils.Periodically(save, save_interval)
 
-  ckpt = tf.train.Checkpoint(
-      step=tf.Variable(0, trainable=False),
-      policy=policy,
-      optimizer=learner.optimizer,
-  )
-  
+  # attempt to restore parameters
   if save_to_s3:
     try:
-      obj = s3_store.get(s3_keys.params)
-      _log.info('restoring from %s', s3_keys.params)
+      restore_params_key = restore_s3_keys.params
+      obj = s3_store.get(restore_params_key)
+      _log.info('restoring from %s', restore_params_key)
       set_state(pickle.loads(obj))
     except KeyError:
-      _log.info('no params found at %s', s3_keys.params)
-  else:
-    manager = tf.train.CheckpointManager(
-        ckpt, os.path.join(expt_dir, 'tf_ckpts'), max_to_keep=3)
-    manager.restore_or_initialize()
-    save = utils.Periodically(manager.save, save_interval)
-
-    if os.path.exists(pickle_path):
-      _log.info('restoring from %s', pickle_path)
-      with open(pickle_path, 'rb') as f:
-        pickled_state = pickle.load(f)
-      set_state(pickled_state)
+      _log.info('no params found at %s', restore_params_key)
+  elif os.path.exists(pickle_path):
+    _log.info('restoring from %s', pickle_path)
+    with open(pickle_path, 'rb') as f:
+      pickled_state = pickle.load(f)
+    set_state(pickled_state)
 
   train_loss = train_manager.step()['loss']
   _log.info('loss post-restore: %f', train_loss.numpy())
@@ -203,7 +199,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
     save_model = utils.Periodically(save_model, save_interval)
 
-  total_steps = 0
+  FRAMES_PER_MINUTE = 60 * 60
 
   for _ in range(num_epochs):
     start_time = time.perf_counter()
@@ -219,8 +215,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       elapsed_time = time.perf_counter() - start_time
       if elapsed_time > epoch_time: break
 
-    ckpt.step.assign_add(steps)
-    total_steps = ckpt.step.numpy()
+    step.assign_add(steps)
+    total_steps = step.numpy()
 
     # now test
     test_stats = test_manager.step()
@@ -237,7 +233,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     train_lib.log_stats(ex, all_stats, total_steps)
 
     sps = steps / elapsed_time
-    mps = num_frames / (60 * 60 * elapsed_time)
+    mps = num_frames / FRAMES_PER_MINUTE / elapsed_time
     ex.log_scalar('sps', sps, total_steps)
     ex.log_scalar('mps', mps, total_steps)
 
