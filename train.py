@@ -69,12 +69,13 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
   
+  learner_kwargs = _config['learner'].copy()
   learning_rate = tf.Variable(
-      _config['learner']['learning_rate'], name='learning_rate')
+      learner_kwargs['learning_rate'], name='learning_rate')
+  learner_kwargs.update(learning_rate=learning_rate)
   learner = Learner(
-      learning_rate=learning_rate,
       policy=policy,
-      compile=_config['learner']['compile'],
+      **learner_kwargs,
   )
 
   for comp in ['network', 'controller_head']:
