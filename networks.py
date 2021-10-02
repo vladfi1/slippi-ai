@@ -292,21 +292,54 @@ class TransformerWrapper(Network):
     output_size=128,
     num_heads=8,
     ffw_size=512,
+    step_seq_len=32
   )
 
-  def __init__(self, output_size, num_layers, ffw_size, num_heads):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, step_seq_len):
     super().__init__(name='transformer')
     self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads)
+    self.step_seq_len=32
 
   def initial_state(self, batch_size):
     return ()
 
   def step(self, inputs, prev_state):
-    raise NotImplementedError()
+    '''
+      Returns outputs and next recurrent state.
+      inputs: (batch_size, x_dim)
+      prev_state: (batch, state_dim)
+
+    Returns a tuple (outputs, next_state)
+      outputs: (batch, out_dim)
+      next_state: (batch, state_dim)
+    '''
+    flat_inputs = process_inputs(inputs) # [B, I]
+    T = self.step_seq_len
+    B = flat_inputs.shape[0]
+    S = flat_inputs.shape[-1]
+    I = S/T
+    # Build time out of prev_state dimension; S = I * T
+    prev_state_expand = tf.reshape(prev_state, [B, T, I])# [B, T, I]
+    prev_state_expand = tf.transpose(prev_state_expand, [1, 0 , 2]) # [T, B, I]
+    combined_input = tf.stack(prev_state, flat_inputs) # [T+1, B, I]
+    output = self.transformer(combined_input[1:]) # [T, B, O]
+    propogated_hidden = tf.transpose(combined_input[1:], [1, 0, 2]) # [B, T, I]
+    next_state = tf.reshape(propogated_hidden, [B, S]) # [B, T*I] === [B, S]
+    return (output[-1], next_state)
 
   def unroll(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    output = self.transformer(flat_inputs)
+    '''
+    Arguments:
+      inputs: (time, batch, x_dim)
+      initial_state: (batch, state_dim)
+
+    Returns a tuple (outputs, final_state)
+      outputs: (time, batch, out_dim)
+      final_state: (batch, state_dim)
+    '''
+    flat_inputs = process_inputs(inputs) # [T, B, I]
+    output = self.transformer(flat_inputs) # [T, B, O]
+    # Do I need to output final_state? What would it be in the case of transformers...
     return output, ()
 
 CONSTRUCTORS = dict(

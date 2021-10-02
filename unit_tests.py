@@ -6,6 +6,7 @@ import tensorflow as tf
 import embed
 import utils
 import transformers
+from networks import TransformerWrapper as tw
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]
@@ -77,21 +78,32 @@ class Test_Transformers(unittest.TestCase):
     output = tb(test_inputs_nice)
     assert output.shape == test_inputs_nice.shape
 
-    # test_inputs_2 = tf.ones([64, 32, 866])
-    # tb = transformers.TransformerEncoderBlock(866)
-    # output_2 = tb(test_inputs_2)
-    # assert output_2.shape == test_inputs_2.shape
+    test_inputs_2 = tf.ones([64, 32, 866])
+    tb = transformers.TransformerEncoderBlock(866)
+    output_2 = tb(test_inputs_2)
+    assert output_2.shape == test_inputs_2.shape
 
-  def test_transformer(self):
+  def test_transformer_call(self):
     transformer = transformers.EncoderOnlyTransformer(512)
     test_inputs_nice = tf.ones([64, 32, 512])
     output = transformer(test_inputs_nice)
     assert output.shape == test_inputs_nice.shape
 
-    # transformer = transformers.EncoderOnlyTransformer(866)
-    # test_inputs_2 = tf.ones([64, 32, 866])
-    # output_2 = transformer(test_inputs_2)
-    # assert output_2.shape == test_inputs_2.shape
+    transformer = transformers.EncoderOnlyTransformer(866)
+    test_inputs_2 = tf.ones([64, 32, 866])
+    output_2 = transformer(test_inputs_2)
+    assert output_2.shape == test_inputs_2.shape
+
+  def test_tranformer_wrap_unroll(self):
+    transformer_wrapper = tw(128, 2, 256, 8, 32)
+    test_inputs_nice = tf.ones([64, 32, 512])
+    transformer_wrapper.unroll(test_inputs_nice, ())
+
+  def test_tranformer_wrap_step(self):
+    transformer_wrapper = tw(128, 2, 256, 8, 32)
+    test_inputs_nice = tf.ones([64, 32, 512])
+    test_hidden = tf.ones([32, 512*32])
+    transformer_wrapper.step(test_inputs_nice, test_hidden)
 
 if __name__ == '__main__':
   unittest.main(failfast=True)

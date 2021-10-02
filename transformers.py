@@ -86,7 +86,8 @@ class MultiHeadAttentionBlock(snt.Module):
     """
     For each head, this block will project input into 3 spaces (keys, queries, values)
     and subsequently run an attention block on each projection. The results of each heads are
-    combined (via concat) into the final output.
+    combined (via concat) into the final output. For efficency these projections are held in
+    one combined across all spacesrank 4 tensor.
 
     inputs: [B, S, D_m]
     returns: [B, S, D_m]
@@ -152,12 +153,12 @@ class EncoderOnlyTransformer(snt.Module):
     raise NotImplementedError()
 
   def __call__(self, inputs):
-    inputs = self.shape_convert(inputs)
-    inputs = tf.transpose(inputs, [1, 0, 2])
+    inputs = self.shape_convert(inputs) # [T, B, O]
+    inputs = tf.transpose(inputs, [1, 0, 2]) # [B, T, O]
     i_shape = tf.shape(inputs)
     encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
-    x = inputs + encoding
+    x = inputs + encoding # [B, T, O]
     for t in self.transformer_blocks:
-      x = t(x)
-    x = tf.transpose(x, [1, 0, 2])
+      x = t(x) # [B, T, O]
+    x = tf.transpose(x, [1, 0, 2]) # [T, B, O]
     return x
