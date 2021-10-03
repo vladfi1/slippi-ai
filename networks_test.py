@@ -33,10 +33,10 @@ def default_data_source():
   )
 
 def get_inputs(data_source: data.DataSource):
-  batch = next(data_source)
+  batch = next(data_source)[0]
 
   # from Learner
-  bm_gamestate, restarting = batch
+  bm_gamestate = batch.game
   tm_gamestate = tf.nest.map_structure(learner.to_time_major, bm_gamestate)
 
   # from Policy
