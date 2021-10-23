@@ -1,14 +1,15 @@
 import pickle
-import numpy as np
 import tensorflow as tf
-
-import embed
-import policies
-import networks
-import controller_heads
-import s3_lib
-import data
 import tree
+
+from slippi_ai import (
+    embed,
+    policies,
+    networks,
+    controller_heads,
+    s3_lib,
+    data,
+)
 
 def build_policy(
   controller_head_config: dict,
