@@ -2,9 +2,8 @@ from typing import Any, Sequence, Tuple
 import sonnet as snt
 import tensorflow as tf
 
-from controller_heads import ControllerHead
-import data
-import networks
+from slippi_ai.controller_heads import ControllerHead
+from slippi_ai import data, networks
 
 RecurrentState = networks.RecurrentState
 ControllerWithRepeat = dict

@@ -139,3 +139,4 @@ run_scripts/
 
 secrets.sh
 .vscode
+saved_models/

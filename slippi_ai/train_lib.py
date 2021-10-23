@@ -1,6 +1,5 @@
 import datetime
 from typing import Iterator, Tuple
-import embed
 import os
 import secrets
 
@@ -8,9 +7,8 @@ import numpy as np
 import tensorflow as tf
 import tree
 
-import data
-from learner import Learner
-import utils
+from slippi_ai import data, utils, embed
+from slippi_ai.learner import Learner
 
 def get_experiment_tag():
   today = datetime.date.today()

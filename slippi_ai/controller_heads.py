@@ -1,7 +1,7 @@
 import sonnet as snt
 import tensorflow as tf
 
-import embed
+from slippi_ai import embed
 
 class ControllerHead(snt.Module):
 

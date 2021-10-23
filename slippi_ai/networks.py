@@ -3,9 +3,7 @@ from typing import Any, Tuple
 import sonnet as snt
 import tensorflow as tf
 
-import embed
-import utils
-import data
+from slippi_ai import embed, utils, data
 
 RecurrentState = Any
 Inputs = Tuple[data.Game, tf.Tensor]

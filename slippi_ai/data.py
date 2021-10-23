@@ -12,10 +12,7 @@ import tree
 
 import melee
 
-import embed
-import reward
-import stats
-import utils
+from slippi_ai import embed, reward, stats, utils
 
 Nest = Any
 Controller = Nest

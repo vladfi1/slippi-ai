@@ -12,18 +12,18 @@ import numpy as np
 import sonnet as snt
 import tensorflow as tf
 
-import melee
-
-import controller_heads
-import data
-import embed
-from learner import Learner
-import networks
-import paths
-import policies
-import s3_lib
-import train_lib
-import utils
+from slippi_ai import (
+    controller_heads,
+    data,
+    embed,
+    networks,
+    paths,
+    policies,
+    s3_lib,
+    train_lib,
+    utils,
+)
+from slippi_ai.learner import Learner
 
 ex = sacred.Experiment('imitation')
 

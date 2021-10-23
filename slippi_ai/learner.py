@@ -2,7 +2,7 @@ from typing import List, Optional
 import sonnet as snt
 import tensorflow as tf
 
-from policies import Policy
+from slippi_ai.policies import Policy
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))

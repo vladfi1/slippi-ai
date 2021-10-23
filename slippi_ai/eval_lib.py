@@ -5,10 +5,8 @@ import numpy as np
 import tensorflow as tf
 
 import melee
-import embed
-import policies
-import data
-import saving
+
+from slippi_ai import embed, policies, data, saving
 
 expected_players = (1, 2)
 

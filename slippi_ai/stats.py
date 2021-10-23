@@ -1,9 +1,8 @@
 import collections
-import os
 import pandas
 import sqlite3
 import melee
-import paths
+from slippi_ai import paths
 
 conn = sqlite3.connect(paths.DB_PATH)
 TABLE = pandas.read_sql_query("SELECT * from replays", conn)

@@ -3,7 +3,7 @@ import io, tarfile
 
 from absl import app, flags
 
-import s3_lib
+from slippi_ai import s3_lib
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('tag', None, 'experiment tag', required=True)
