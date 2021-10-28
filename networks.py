@@ -22,11 +22,12 @@ class Network(snt.Module):
 
   def step(self, inputs, prev_state):
     '''
-      Returns outputs and next recurrent state.
+      Given previous hidden state and new input, returns outputs and next recurrent state.
+    Inputs:
       inputs: (batch_size, x_dim)
       prev_state: (batch, state_dim)
 
-    Returns a tuple (outputs, final_state)
+    Returns: A tuple (outputs, final_state)
       outputs: (batch, out_dim)
       final_state: (batch, state_dim)
     '''
@@ -94,7 +95,7 @@ class FrameStackingMLP(Network):
 
   def step(self, inputs, prev_state):
     gamestate, p1_controller_embed = inputs
-    frames = prev_state + [embed_game(gamestate)]
+    frames = prev_state + [embed_game(gamestate)] # [N, S]
     next_state = frames[1:]
     stacked_frames = tf.concat(frames + [p1_controller_embed], -1)
     return self._mlp(stacked_frames), next_state
@@ -301,7 +302,10 @@ class TransformerWrapper(Network):
     self.step_seq_len=32
 
   def initial_state(self, batch_size):
-    return ()
+    return [
+        tf.zeros([batch_size, embed_game.size])
+        for _ in range(self.step_seq_len-1)
+    ]
 
   def step(self, inputs, prev_state):
     '''
@@ -313,18 +317,21 @@ class TransformerWrapper(Network):
       outputs: (batch, out_dim)
       next_state: (batch, state_dim)
     '''
-    flat_inputs = process_inputs(inputs) # [B, I]
+    # flat_inputs = process_inputs(inputs) # [B, I]
+    embed_inputs = embed_game(inputs[0])
     T = self.step_seq_len
-    B = flat_inputs.shape[0]
-    S = flat_inputs.shape[-1]
-    I = S/T
+    B = embed_inputs.shape[0]
+    S = embed_game.size
+    # assert prev_state.shape[1]=== S*T
     # Build time out of prev_state dimension; S = I * T
-    prev_state_expand = tf.reshape(prev_state, [B, T, I])# [B, T, I]
+    prev_state_expand = tf.reshape(prev_state, [B, T, S])# [B, T, I]
     prev_state_expand = tf.transpose(prev_state_expand, [1, 0 , 2]) # [T, B, I]
-    combined_input = tf.stack(prev_state, flat_inputs) # [T+1, B, I]
-    output = self.transformer(combined_input[1:]) # [T, B, O]
+    # Double check the stack, probably concat and expand_dims
+    flat_inputs = tf.expand_dims(embed_inputs, 0)
+    combined_input = tf.concat(prev_state, flat_inputs) # [T+1, B, I]
+    output = self.transformer(combined_input) # [T, B, O]
     propogated_hidden = tf.transpose(combined_input[1:], [1, 0, 2]) # [B, T, I]
-    next_state = tf.reshape(propogated_hidden, [B, S]) # [B, T*I] === [B, S]
+    next_state = tf.reshape(propogated_hidden, prev_state.shape) # [B, T*I] === [B, S]
     return (output[-1], next_state)
 
   def unroll(self, inputs, prev_state):
@@ -337,10 +344,13 @@ class TransformerWrapper(Network):
       outputs: (time, batch, out_dim)
       final_state: (batch, state_dim)
     '''
-    flat_inputs = process_inputs(inputs) # [T, B, I]
-    output = self.transformer(flat_inputs) # [T, B, O]
-    # Do I need to output final_state? What would it be in the case of transformers...
-    return output, ()
+    # TODO refactor to include P1 controller inputs
+    # Q: Should unroll use prev_state?
+    # flat_inputs = process_inputs(inputs) # [T, B, I]
+    embed_inputs = embed_game(inputs[0]) # [T, B, S]
+    output = self.transformer(embed_inputs) # [T, B, O]
+    # Q: should final state be a product of the transformer? Right now independent
+    return output, embed_inputs[-1]
 
 CONSTRUCTORS = dict(
     mlp=MLP,
