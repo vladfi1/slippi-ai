@@ -33,7 +33,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     encoding = tf.repeat(encoding, [batch_size], axis=0) # [b, s, d]
     return encoding
 
-def attention(queries, keys, values, masked=True):
+def attention(queries, keys, values, masked=True, window_size=None):
     """
     Returns the 'attention' between three sequences: keys, queries, and values
     Specifically this implementation uses 'scaled dot-product' attention.
@@ -47,6 +47,7 @@ def attention(queries, keys, values, masked=True):
     keys: (batch, seq_len, D_k)
     queries: (batch, seq_len, D_k)
     values: (batch, seq_len, D_v)
+    window_size: default is -1, when set to positive integer will only consider window_size prior elements for computation
     returns: (batch, seq_len, D_v)
     """
     tf.debugging.assert_shapes([
@@ -60,21 +61,25 @@ def attention(queries, keys, values, masked=True):
     compat = tf.matmul(queries, keys, transpose_b=True) # [B, S, S]
     norm_compat = compat / tf.sqrt(tf.cast(D_k, compat.dtype)) # [B, S, S]
     if masked:
-      # mask = tf.linalg.band_part(tf.ones((compat.shape)), -1, 0) # [B, S, S]
       i = tf.expand_dims(tf.range(S), 1)  # [S, 1]
       j = tf.expand_dims(tf.range(S), 0)  # [1, S]
-      mask = i >= j  # [S, S], mask[i, j] == i >= j
+      n = window_size
+      mask = i >= j # [S, S], mask[i, j] == i >= j
+      if n is not None:
+        b_mask = i <= (j + n)
+        mask = tf.math.logical_and(b_mask, mask)
       norm_compat = tf.where(mask, norm_compat, np.NINF)
     probs = tf.nn.softmax(norm_compat) # [B, S, S]
     att = tf.matmul(probs, values) # [B, S, D_V]
     return att
 
 class MultiHeadAttentionBlock(snt.Module):
-  def __init__(self, num_heads, output_size, name='MultiHeadAttentionBlock'):
+  def __init__(self, num_heads, output_size,  window_size=None, name='MultiHeadAttentionBlock'):
     super(MultiHeadAttentionBlock, self).__init__()
     self.num_heads = num_heads
     self.output_size = output_size
     assert output_size % num_heads == 0, "output_size must be a multiple of num_heads"
+    self.window_size = window_size
     self.projection_size = output_size // num_heads
     self.W_qkv = snt.Linear(3 * output_size)
     self.W_O = snt.Linear(output_size)
@@ -87,7 +92,7 @@ class MultiHeadAttentionBlock(snt.Module):
     For each head, this block will project input into 3 spaces (keys, queries, values)
     and subsequently run an attention block on each projection. The results of each heads are
     combined (via concat) into the final output. For efficency these projections are held in
-    one combined across all spacesrank 4 tensor.
+    one combined across all spaces-rank 4 tensor.
 
     inputs: [B, S, D_m]
     returns: [B, S, D_m]
@@ -103,7 +108,8 @@ class MultiHeadAttentionBlock(snt.Module):
     qkv = tf.reshape(qkv, [B * H, S, 3, P])  # merge heads into batch dim
 
     q, k, v = tf.unstack(qkv, axis=2)  # [B * H, S, P]
-    o = attention(q, k, v)  # [B * H, S, P]
+    # Change this to only attend on num_frame prior inputs per layer
+    o = attention(q, k, v, window_size=self.window_size)  # [B * H, S, P]
 
     o = tf.reshape(o, [B, H, S, P])  # unmerge heads from batch dim
     o = tf.transpose(o, [0, 2, 1, 3])  # [B, S, H, P]
@@ -112,11 +118,12 @@ class MultiHeadAttentionBlock(snt.Module):
     return o
 
 class TransformerEncoderBlock(snt.Module):
-  def __init__(self, output_size, ffw_size, num_heads, name="EncoderTransformerBlock"):
+  def __init__(self, output_size, ffw_size, num_heads, window_size=None, name="EncoderTransformerBlock"):
       super(TransformerEncoderBlock, self).__init__()
       self.output_size = output_size
       self.ffw_size = ffw_size
-      self.attention = MultiHeadAttentionBlock(num_heads, output_size)
+      self.window_size = window_size
+      self.attention = MultiHeadAttentionBlock(num_heads, output_size, window_size=self.window_size)
       self.feed_forward_in = snt.Linear(ffw_size)
       self.feed_forward_out = snt.Linear(output_size)
       self.norm_1 = snt.LayerNorm(-1, False, False)
@@ -139,12 +146,13 @@ class TransformerEncoderBlock(snt.Module):
     return output
 
 class EncoderOnlyTransformer(snt.Module):
-  def __init__(self, output_size, num_layers, ffw_size, num_heads, name="EncoderTransformer"):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, window_size=None, name="EncoderTransformer"):
     super(EncoderOnlyTransformer, self).__init__()
     self.num_layers = num_layers
     self.transformer_blocks = []
+    self.window_size = window_size
     for _ in range(num_layers):
-      t = TransformerEncoderBlock(output_size, ffw_size, num_heads)
+      t = TransformerEncoderBlock(output_size, ffw_size, num_heads, window_size=self.window_size)
       self.transformer_blocks.append(t)
     # maybe add assertion about attention size and output_size
     self.shape_convert = snt.Linear(output_size)
@@ -156,8 +164,10 @@ class EncoderOnlyTransformer(snt.Module):
     inputs = self.shape_convert(inputs) # [T, B, O]
     inputs = tf.transpose(inputs, [1, 0, 2]) # [B, T, O]
     i_shape = tf.shape(inputs)
-    encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
-    x = inputs + encoding # [B, T, O]
+    # HACKED FOR TESTING UNTIL RELATIVE ENCODING
+    #encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
+    #x = inputs + encoding # [B, T, O]
+    x = inputs
     for t in self.transformer_blocks:
       x = t(x) # [B, T, O]
     x = tf.transpose(x, [1, 0, 2]) # [T, B, O]

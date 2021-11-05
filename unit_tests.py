@@ -59,12 +59,27 @@ class EmbedTest(unittest.TestCase):
     self.assertEqual(embed_game_unflat, embed_game_struct)
 
 class Test_Transformers(unittest.TestCase):
-  def test_attention(self):
+  def test_attention_block(self):
     mhab = transformers.MultiHeadAttentionBlock(8, 512)
     # Shape grabbed from breakpoint of slippi
     test_inputs = tf.ones([64, 32, 866]) 
     result = mhab(test_inputs)
     assert result.shape == tf.TensorShape([64, 32, 512])
+
+  def test_limited_attention(self):
+    test_queries = tf.ones([64, 32, 32]) * 3
+    test_keys = tf.ones([64, 32, 32]) * 5
+    test_values = tf.ones([64, 32, 64]) * 10
+    l_attention = transformers.attention(test_queries, test_keys, test_values, window_size=1)
+    l_attention = transformers.attention(test_queries, test_keys, test_values, window_size=2)
+
+  def test_attention_limited_unset_is_att(self):
+    test_queries = tf.ones([64, 32, 32]) * 3
+    test_keys = tf.ones([64, 32, 32]) * 5
+    test_values = tf.ones([64, 32, 64]) * 10
+    l_attention = transformers.limited_attention(test_queries, test_keys, test_values, -1)
+    attention = transformers.attention(test_queries, test_keys, test_values)
+    np.testing.assert_allclose(l_attention.numpy(), attention.numpy())
 
   def test_pos_encoding(self):
     pos = transformers.positional_encoding(5, 10, batch_size=32)
