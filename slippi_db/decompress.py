@@ -48,19 +48,19 @@ def iter_7z(path: str) -> Iterator[Tuple[str, bytes]]:
 
   tmpdir.cleanup()
 
-def process_raw(regime: str, raw_key: str):
+def process_raw(env: str, raw_key: str):
   with upload_lib.Timer("raw_db"):
-    raw_db = upload_lib.get_db(regime, 'raw')
+    raw_db = upload_lib.get_db(env, 'raw')
     raw_info = raw_db.find_one({'key': raw_key})
     obj_type = raw_info['type']
     if obj_type not in ('zip', '7z'):
       raise ValueError('Unsupported obj_type={obj_type}.')
 
-  slp_db = upload_lib.get_db(regime, 'slp')
+  slp_db = upload_lib.get_db(env, 'slp')
   slp_keys = set(doc["key"] for doc in slp_db.find({}, ["key"]))
 
   tmp = tempfile.NamedTemporaryFile()
-  raw_s3_path = f'{regime}/raw/{raw_key}'
+  raw_s3_path = f'{env}/raw/{raw_key}'
   with upload_lib.Timer("download_fileobj"):
     bucket.download_fileobj(raw_s3_path, tmp)
 
@@ -73,7 +73,7 @@ def process_raw(regime: str, raw_key: str):
 
   for filename, slp_bytes in data:
     upload_slp(
-        regime=regime,
+        env=env,
         raw_key=raw_key,
         filename=filename,
         slp_bytes=slp_bytes, 
@@ -83,7 +83,7 @@ def process_raw(regime: str, raw_key: str):
   # TODO: set processed flag in raw_db
 
 def upload_slp(
-  regime: str,
+  env: str,
   raw_key: str,
   filename: str,
   slp_bytes: bytes,
@@ -99,14 +99,14 @@ def upload_slp(
   with upload_lib.Timer("zlib.compress"):
     compressed_slp_bytes = zlib.compress(slp_bytes)
 
-  slp_s3_path = f'{regime}/slp/{slp_key}'
+  slp_s3_path = f'{env}/slp/{slp_key}'
 
   with upload_lib.Timer("put_object"):
     bucket.put_object(
         Key=slp_s3_path,
         Body=compressed_slp_bytes)
   
-  slp_db = upload_lib.get_db(regime, 'slp')
+  slp_db = upload_lib.get_db(env, 'slp')
   slp_db.insert_one(dict(
       filename=filename,
       compression='zlib',
@@ -116,14 +116,14 @@ def upload_slp(
       stored_size=len(compressed_slp_bytes),
   ))
 
-def process_all(regime: str):
-  raw_db = upload_lib.get_db(regime, 'raw')
+def process_all(env: str):
+  raw_db = upload_lib.get_db(env, 'raw')
   raw_info = raw_db.find({})
   for doc in raw_info:
     if doc['type'] not in SUPPORTED_TYPES:
       print(f'Skipping {doc["filename"]} ({doc["description"]}).')
       continue
-    process_raw(regime, doc['key'])
+    process_raw(env, doc['key'])
 
 if __name__ == '__main__':
   process_all('test')
