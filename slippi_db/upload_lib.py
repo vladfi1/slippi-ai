@@ -20,7 +20,7 @@ DEFAULTS = dict(
 )
 
 # controls where stuff is stored
-REGIME = os.environ.get('REGIME', 'test')
+ENV = os.environ.get('SLIPPI_DB_ENV', 'test')
 
 class S3(NamedTuple):
   session: boto3.Session
@@ -39,9 +39,9 @@ def make_s3() -> S3:
 
 s3 = make_s3()
 
-def get_objects(regime, stage):
+def get_objects(env, stage):
   get_key = lambda path: path.split('/')[2]
-  paths = s3.store.iter_keys(prefix=f'{regime}/{stage}/')
+  paths = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   return {get_key(path): s3.bucket.Object(path) for path in paths}
 
 from pymongo import MongoClient
@@ -49,16 +49,16 @@ from pymongo import MongoClient
 client = MongoClient(os.environ['MONGO_URI'])
 db = client.slp_replays
 
-def get_db(regime: str, stage: str):
+def get_db(env: str, stage: str):
   assert stage in ('raw', 'slp')
-  return db.get_collection(regime + '-' + stage)
+  return db.get_collection(env + '-' + stage)
 
-def get_params(regime: str) -> dict:
+def get_params(env: str) -> dict:
   params_coll = db.params
-  found = params_coll.find_one({'regime': regime})
+  found = params_coll.find_one({'env': env})
   if found is None:
     # update params collection
-    params = dict(regime=regime, **DEFAULTS)
+    params = dict(env=env, **DEFAULTS)
     params_coll.insert_one(params)
     return params
   # update found with default params
@@ -67,9 +67,9 @@ def get_params(regime: str) -> dict:
       found[k] = v
   return found
 
-def create_params(regime: str, **kwargs):
-  assert db.params.find_one({'regime': regime}) is None
-  params = dict(regime=regime, **DEFAULTS)
+def create_params(env: str, **kwargs):
+  assert db.params.find_one({'env': env}) is None
+  params = dict(env=env, **DEFAULTS)
   params.update(kwargs)
   db.params.insert_one(params)
 
@@ -96,10 +96,10 @@ def iter_bytes(f, chunk_size=2 ** 16):
 
 class ReplayDB:
 
-  def __init__(self, regime: str = REGIME):
-    self.regime = regime
-    self.params = get_params(regime)
-    self.raw = db.get_collection(regime + '-raw')
+  def __init__(self, env: str = ENV):
+    self.env = env
+    self.params = get_params(env)
+    self.raw = db.get_collection(env + '-raw')
 
   def raw_size(self) -> int:
     total_size = 0
@@ -213,7 +213,7 @@ class ReplayDB:
     with Timer('store.put'):
       s3.bucket.upload_fileobj(
           Fileobj=f,
-          Key=self.name + '/raw/' + key,
+          Key=self.env + '/raw/' + key,
           # ContentLength=size,
           # ContentMD5=str(base64.encodebytes(digest.digest())),
       )
@@ -232,15 +232,15 @@ class ReplayDB:
     return f'{name}: upload successful'
 
   def delete(self, key: str):
-    s3_key = self.regime + '/raw/' + key
+    s3_key = self.env + '/raw/' + key
     s3.bucket.delete_objects(Delete=dict(Objects=[dict(Key=s3_key)]))
     # store.delete()
     self.raw.delete_one({'key': key})
 
-def nuke_replays(regime: str, stage: str):
-  db.drop_collection(regime + '-' + stage)
-  db.params.delete_many({'regime': regime + '-' + stage})
-  keys = s3.store.iter_keys(prefix=f'{regime}/{stage}/')
+def nuke_replays(env: str, stage: str):
+  db.drop_collection(env + '-' + stage)
+  db.params.delete_many({'env': env + '-' + stage})
+  keys = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   objects = [dict(Key=k) for k in keys]
   if not objects:
     print('No objects to delete.')
