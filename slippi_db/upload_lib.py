@@ -7,7 +7,6 @@ from typing import Any, BinaryIO, NamedTuple, Optional
 
 import boto3
 from simplekv.net.boto3store import Boto3Store
-import werkzeug.datastructures
 from pymongo import MongoClient
 
 from slippi_db.secrets import SECRETS
