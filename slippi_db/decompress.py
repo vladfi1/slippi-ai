@@ -4,7 +4,7 @@ import hashlib
 import os
 import subprocess
 import tempfile
-from typing import Iterator, Set, Tuple
+from typing import Iterator, List, Set, Tuple
 import zipfile
 import zlib
 
@@ -48,13 +48,21 @@ def iter_7z(path: str) -> Iterator[Tuple[str, bytes]]:
 
   tmpdir.cleanup()
 
-def process_raw(env: str, raw_key: str):
+def process_raw(
+    env: str,
+    raw_key: str,
+    skip_processed: bool = True,
+) -> List[Tuple[str, bool]]:
   with upload_lib.Timer("raw_db"):
     raw_db = upload_lib.get_db(env, 'raw')
     raw_info = raw_db.find_one({'key': raw_key})
     obj_type = raw_info['type']
     if obj_type not in ('zip', '7z'):
       raise ValueError('Unsupported obj_type={obj_type}.')
+
+    if skip_processed and raw_info.get('processed', False):
+      print(f'Skipping already-processed raw upload {raw_info["filename"]}')
+      return []
 
   slp_db = upload_lib.get_db(env, 'slp')
   slp_keys = set(doc["key"] for doc in slp_db.find({}, ["key"]))
@@ -71,16 +79,22 @@ def process_raw(env: str, raw_key: str):
   elif obj_type == '7z':
     data = iter_7z(tmp.name)
 
+  summary = []
+
   for filename, slp_bytes in data:
-    upload_slp(
+    uploaded = upload_slp(
         env=env,
         raw_key=raw_key,
         filename=filename,
         slp_bytes=slp_bytes, 
         slp_keys=slp_keys,
     )
+    summary.append((filename, uploaded))
 
-  # TODO: set processed flag in raw_db
+  # set processed flag in raw_db
+  raw_db.update_one({'key': raw_key}, {'$set': {'processed': True}})
+
+  return summary
 
 def upload_slp(
   env: str,
@@ -115,6 +129,8 @@ def upload_slp(
       original_size=len(slp_bytes),
       stored_size=len(compressed_slp_bytes),
   ))
+
+  return True
 
 def process_all(env: str):
   raw_db = upload_lib.get_db(env, 'raw')

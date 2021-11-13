@@ -71,7 +71,7 @@ available_node_types:
         # http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
         node_config:
             InstanceType: m5.large
-            ImageId: ami-019266bf7a55994a7 # Deep Learning AMI (Ubuntu) Version 23
+            ImageId: latest_dlami # Deep Learning AMI (Ubuntu)
             # You can provision additional disk space with a conf as follows
             BlockDeviceMappings:
                 - DeviceName: /dev/sda1
@@ -96,14 +96,19 @@ available_node_types:
         # For more documentation on available fields, see:
         # http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
         node_config:
-            InstanceType: m5.large
-            ImageId: ami-0a2363a9cff180a64 # Deep Learning AMI (Ubuntu) Version 30
+            InstanceType: m5.large # 2 CPU, 8 GB memory
+            ImageId: latest_dlami # Deep Learning AMI (Ubuntu)
+            # You can provision additional disk space with a conf as follows
+            BlockDeviceMappings:
+                - DeviceName: /dev/sda1
+                  Ebs:
+                      VolumeSize: 100
             # Run workers on spot by default. Comment this out to use on-demand.
             # NOTE: If relying on spot instances, it is best to specify multiple different instance
             # types to avoid interruption when one instance type is experiencing heightened demand.
             # Demand information can be found at https://aws.amazon.com/ec2/spot/instance-advisor/
-            InstanceMarketOptions:
-                MarketType: spot
+            # InstanceMarketOptions:
+            #     MarketType: spot
                 # Additional options can be found in the boto docs, e.g.
                 #   SpotOptions:
                 #       MaxPrice: MAX_HOURLY_PRICE
@@ -118,7 +123,7 @@ file_mounts: {
 #    "/path1/on/remote/machine": "/path1/on/local/machine",
 #    "/path2/on/remote/machine": "/path2/on/local/machine",
     "/home/slippi-ai": ".",
-    "/home/slippi-ai/secrets.sh": "secrets.sh"
+    "/home/ray/secrets.json": "secrets.json"
 }
 
 # Files or directories to copy from the head node to the worker nodes. The format is a
@@ -156,7 +161,8 @@ setup_commands:
     # that has the "nightly" (e.g. "rayproject/ray-ml:nightly-gpu") or uncomment the following line:
     # - pip install -U "ray[default] @ https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray-2.0.0.dev0-cp37-cp37m-manylinux2014_x86_64.whl"
     - pip install -e /home/slippi-ai
-    - source /home/slippi-ai/secrets.sh
+    - sudo apt install -y p7zip-full
+    # - source /home/slippi-ai/secrets.sh
 
 # Custom commands that will be run on the head node after common setup.
 head_setup_commands: []
