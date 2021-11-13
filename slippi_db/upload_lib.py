@@ -3,12 +3,14 @@ import hashlib
 import os
 import zlib
 import zipfile
-from typing import Any, NamedTuple, Optional
+from typing import Any, BinaryIO, NamedTuple, Optional
 
 import boto3
-from boto3 import resource, session
 from simplekv.net.boto3store import Boto3Store
 import werkzeug.datastructures
+from pymongo import MongoClient
+
+from slippi_db.secrets import SECRETS
 
 MB = 10 ** 6
 
@@ -29,7 +31,7 @@ class S3(NamedTuple):
   store: Boto3Store
 
 def make_s3() -> S3:
-  s3_creds = os.environ['S3_CREDS']
+  s3_creds = SECRETS['S3_CREDS']
   access_key, secret_key = s3_creds.split(':')
   session = boto3.Session(access_key, secret_key)
   resource = session.resource('s3')
@@ -44,9 +46,7 @@ def get_objects(env, stage):
   paths = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   return {get_key(path): s3.bucket.Object(path) for path in paths}
 
-from pymongo import MongoClient
-
-client = MongoClient(os.environ['MONGO_URI'])
+client = MongoClient(SECRETS['MONGO_URI'])
 db = client.slp_replays
 
 def get_db(env: str, stage: str):
@@ -187,18 +187,22 @@ class ReplayDB:
 
   def upload_raw(
     self,
-    uploaded: werkzeug.datastructures.FileStorage,
-    obj_type: str,
-    description: str,
+    name: str,
+    f: BinaryIO,
+    obj_type: Optional[str] = None,
+    check_max_size: bool = True,
+    **metadata,
   ):
-    name = uploaded.filename
-    f = uploaded.stream
+    if obj_type is None:
+      obj_type = name.split('.')[-1]
+
     size = f.seek(0, 2)
     f.seek(0)
 
-    max_bytes_left = self.max_db_size() - self.raw_size()
-    if size > max_bytes_left:
-      return f'{name}: exceeds {max_bytes_left} bytes'
+    if check_max_size:
+      max_bytes_left = self.max_db_size() - self.raw_size()
+      if size > max_bytes_left:
+        return f'{name}: exceeds {max_bytes_left} bytes'
 
     with Timer('md5'):
       digest = hashlib.md5()
@@ -210,7 +214,7 @@ class ReplayDB:
     if found is not None:
       return f'{name}: object with md5={key} already uploaded'
 
-    with Timer('store.put'):
+    with Timer('upload_fileobj'):
       s3.bucket.upload_fileobj(
           Fileobj=f,
           Key=self.env + '/raw/' + key,
@@ -225,9 +229,9 @@ class ReplayDB:
         key=key,
         hash_method="md5",
         type=obj_type,
-        description=description,
         stored_size=size,
         processed=False,
+        **metadata,
     ))
     return f'{name}: upload successful'
 

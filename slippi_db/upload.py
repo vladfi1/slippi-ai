@@ -40,7 +40,10 @@ def upload_file():
   if extension in RAW_EXTENSIONS:
     # return replay_db.upload_zip(f)
     return replay_db.upload_raw(
-      f, obj_type=extension, description=request.form['description'])
+      name=f.filename,
+      f=f.stream,
+      obj_type=extension,
+      description=request.form['description'])
   else:
     return f'{f.filename}: must be in {RAW_EXTENSIONS}'
 

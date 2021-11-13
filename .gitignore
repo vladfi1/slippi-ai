@@ -137,6 +137,9 @@ data/AllCompressed/
 # storage for b9 scripts
 run_scripts/
 
+# shhhhhhh
 secrets.sh
+secrets.json
+
 .vscode
 saved_models/
