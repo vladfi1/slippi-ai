@@ -1,3 +1,4 @@
+import io
 import tempfile
 
 from absl import app
@@ -9,13 +10,29 @@ from slippi_db.secrets import SECRETS
 from slippi_db import upload_lib
 
 _ENV = flags.DEFINE_string('env', 'test', 'production environment')
+_TO_DISK = flags.DEFINE_boolean('to_disk', False, 'Use disk instead of RAM.')
 
-def upload_to_raw(env: str):
+dbx = dropbox.Dropbox(SECRETS['DBOX_KEY'])
+
+def dbx_to_file(path: str) -> io.BytesIO:
+  tmp = tempfile.NamedTemporaryFile()
+
+  with upload_lib.Timer('dbx.download_to_file'):
+    dbx.files_download_to_file(tmp.name, path)
+
+  tmp.seek(0)
+  return tmp
+
+def dbx_to_ram(path: str) -> io.BytesIO:
+  with upload_lib.Timer('dbx.download'):
+    metadata, response = dbx.files_download(path)
+    return io.BytesIO(response.content)
+
+def upload_to_raw(env: str, to_disk: bool = False):
   db = upload_lib.ReplayDB(env)
   dbox_uploads = db.raw.find({'dropbox_id': {'$exists': True}}, ['dropbox_id'])
   dbox_ids = set(doc['dropbox_id'] for doc in dbox_uploads)
 
-  dbx = dropbox.Dropbox(SECRETS['DBOX_KEY'])
   results: dropbox.files.ListFolderResult
   results = dbx.files_list_folder('/SlippiDump')
 
@@ -34,29 +51,27 @@ def upload_to_raw(env: str):
 
     print(f'Uploading "{name}" of size {entry.size}.')
 
-    tmp = tempfile.NamedTemporaryFile()
-
-    with upload_lib.Timer('dbx.download'):
-      dbx.files_download_to_file(tmp.name, entry.path_display)
+    if to_disk:
+      data = dbx_to_file(entry.path_display)
+    else:
+      data = dbx_to_ram(entry.path_display)
 
     with upload_lib.Timer('db.upload_raw'):
-      tmp.seek(0)
       result = db.upload_raw(
           name=entry.name,
-          f=tmp,
+          f=data,
           description=entry.path_display,
           check_max_size=False,
           dropbox_id=entry.id,
           dropbox_hash=entry.content_hash,
       )
       print(result)
-    
-    tmp.close()
 
+  # TODO: handle this case
   assert not results.has_more  # max 1000
 
 def main(_):
-  upload_to_raw(_ENV.value)
+  upload_to_raw(_ENV.value, to_disk=_TO_DISK.value)
 
 if __name__ == '__main__':
   app.run(main)
