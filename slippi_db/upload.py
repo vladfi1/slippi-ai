@@ -4,8 +4,8 @@ from flask import app, Flask, request
 
 import upload_lib
 
-replay_db = upload_lib.ReplayDB(upload_lib.NAME)
-app = Flask(upload_lib.NAME)
+replay_db = upload_lib.ReplayDB(upload_lib.ENV)
+app = Flask(upload_lib.ENV)
 
 home_html = """
 <html>
@@ -30,7 +30,7 @@ def homepage():
   return home_html.format(
     extensions='/'.join(RAW_EXTENSIONS),
     num_mb=replay_db.raw_size() // upload_lib.MB,
-    db=upload_lib.NAME,
+    db=upload_lib.ENV,
   )
 
 @app.route('/upload', methods = ['POST'])
@@ -43,7 +43,9 @@ def upload_file():
       name=f.filename,
       f=f.stream,
       obj_type=extension,
-      description=request.form['description'])
+      description=request.form['description'],
+      check_max_size=False,
+    )
   else:
     return f'{f.filename}: must be in {RAW_EXTENSIONS}'
 
