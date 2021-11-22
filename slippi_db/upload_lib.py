@@ -74,15 +74,17 @@ def create_params(env: str, **kwargs):
 
 class Timer:
 
-  def __init__(self, name: str):
+  def __init__(self, name: str, verbose=True):
     self.name = name
+    self.verbose = verbose
   
   def __enter__(self):
     self.start = time.perf_counter()
   
   def __exit__(self, *_):
     self.duration = time.perf_counter() - self.start
-    print(f'{self.name}: {self.duration:.1f}')
+    if self.verbose:
+      print(f'{self.name}: {self.duration:.1f}')
 
 def iter_bytes(f, chunk_size=2 ** 16):
   while True:
