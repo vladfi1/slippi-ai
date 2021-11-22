@@ -22,7 +22,10 @@ def normalize_drive_url(url: str):
 def get_drive_file(url: str, in_memory: bool):
   tmpdir = tempfile.TemporaryDirectory(dir=_tmp_dir(in_memory))
   os.chdir(tmpdir.name)
-  filename = gdown.download(normalize_drive_url(url))
+  url = normalize_drive_url(url)
+  filename = gdown.download(url)
+  assert filename
+  print(f'Downloaded {filename} from {url}.')
 
   try:
     with open(os.path.join(tmpdir.name, filename), 'rb') as f:
@@ -74,12 +77,13 @@ FLAGS = flags.FLAGS
 
 def main(_):
   if FLAGS.id:
-    upload_multiple(FLAGS.env, FLAGS.desc, FLAGS.id)
+    upload_multiple(FLAGS.env, FLAGS.desc, FLAGS.id, FLAGS.in_memory)
   elif FLAGS.urls_file:
     with open(FLAGS.urls_file) as f:
-      lines = f.readlines()
+      text = f.read()
+    lines = text.split('\n')
     urls = [l for l in lines if l]
-    upload_multiple(FLAGS.env, FLAGS.desc, urls)
+    upload_multiple(FLAGS.env, FLAGS.desc, urls, FLAGS.in_memory)
 
 if __name__ == '__main__':
   app.run(main)
