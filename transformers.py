@@ -77,11 +77,16 @@ class MultiHeadAttentionBlock(snt.Module):
   def __init__(self, num_heads, output_size,  window_size=None, name='MultiHeadAttentionBlock'):
     super(MultiHeadAttentionBlock, self).__init__()
     self.num_heads = num_heads
-    self.output_size = output_size
-    assert output_size % num_heads == 0, "output_size must be a multiple of num_heads"
-    self.window_size = window_size
-    self.projection_size = output_size // num_heads
-    self.W_qkv = snt.Linear(3 * output_size)
+    self.W_K = []
+    self.W_V = []
+    self.W_Q = []
+    assert output_size%num_heads == 0, "output_size must be a multiple of num_heads"
+    projection_size = output_size//num_heads
+    for _ in range(num_heads):
+        # TODO there's a more efficient way to do this
+      self.W_K.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
+      self.W_V.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
+      self.W_Q.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
     self.W_O = snt.Linear(output_size)
 
   def initial_state(self, batch_size):
@@ -97,25 +102,14 @@ class MultiHeadAttentionBlock(snt.Module):
     inputs: [B, S, D_m]
     returns: [B, S, D_m]
     """
-    B, S, D_m = tf.unstack(tf.shape(inputs))
-    H = self.num_heads
-    P = self.projection_size
-    O = self.output_size
-
-    qkv = self.W_qkv(inputs)  # [B, S, 3 * O]
-    qkv = tf.reshape(qkv, [B, S, H, 3, P])  # unmerge heads, QKV, and projections
-    qkv = tf.transpose(qkv, [0, 2, 1, 3, 4])  # [B, H, S, 3, P]
-    qkv = tf.reshape(qkv, [B * H, S, 3, P])  # merge heads into batch dim
-
-    q, k, v = tf.unstack(qkv, axis=2)  # [B * H, S, P]
-    # Change this to only attend on num_frame prior inputs per layer
-    o = attention(q, k, v, window_size=self.window_size)  # [B * H, S, P]
-
-    o = tf.reshape(o, [B, H, S, P])  # unmerge heads from batch dim
-    o = tf.transpose(o, [0, 2, 1, 3])  # [B, S, H, P]
-    o = tf.reshape(o, [B, S, O])  # concat heads together
-
-    return o
+    # MHA(Q, K, V) = Concat(head_1...head_h)W^O
+    heads = []
+    for i in range(self.num_heads):
+      # head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)
+      head_i = attention(self.W_Q[i](inputs), self.W_K[i](inputs), self.W_V[i](inputs)) # [B, S, D_m/h]
+      heads.append(head_i)
+    multi_head = self.W_O(tf.concat(heads, -1))  # [B, S, D_m]
+    return multi_head
 
 class TransformerEncoderBlock(snt.Module):
   def __init__(self, output_size, ffw_size, num_heads, window_size=None, name="EncoderTransformerBlock"):
