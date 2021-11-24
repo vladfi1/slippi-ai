@@ -83,7 +83,7 @@ class MultiHeadAttentionBlock(snt.Module):
     assert output_size%num_heads == 0, "output_size must be a multiple of num_heads"
     projection_size = output_size//num_heads
     for _ in range(num_heads):
-        # TODO there's a more efficient way to do this
+        # TODO there's a more efficient way to do this https://github.com/wmcnicho/slippi-ai/pull/2/commits/3354fcb94aeb2c2354352eb893fb454ed2dab9e3
       self.W_K.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
       self.W_V.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
       self.W_Q.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
@@ -96,8 +96,7 @@ class MultiHeadAttentionBlock(snt.Module):
     """
     For each head, this block will project input into 3 spaces (keys, queries, values)
     and subsequently run an attention block on each projection. The results of each heads are
-    combined (via concat) into the final output. For efficency these projections are held in
-    one combined across all spaces-rank 4 tensor.
+    combined (via concat) into the final output.
 
     inputs: [B, S, D_m]
     returns: [B, S, D_m]
