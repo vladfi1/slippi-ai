@@ -33,7 +33,7 @@ def positional_encoding(seq_len, d_model, batch_size=1):
     encoding = tf.repeat(encoding, [batch_size], axis=0) # [b, s, d]
     return encoding
 
-def attention(queries, keys, values, masked=True, window_size=None):
+def attention(queries, keys, values, masked=True, mem_size=None):
     """
     Returns the 'attention' between three sequences: keys, queries, and values
     Specifically this implementation uses 'scaled dot-product' attention.
@@ -44,12 +44,19 @@ def attention(queries, keys, values, masked=True, window_size=None):
     Returns a tensor with the same shape as Values where [b, i ,j] represents the relative importance
     "attention" of element j in the sequence.
 
+    When masked is True, only the elements prior to current position in the sequence are considered for compatibility.
+
+    When mem_size is not None, only consider the mem_size prior elements for compatibility. Requires masked to be True
+
     keys: (batch, seq_len, D_k)
     queries: (batch, seq_len, D_k)
     values: (batch, seq_len, D_v)
-    window_size: default is -1, when set to positive integer will only consider window_size prior elements for computation
+    mem_size: default is None, when set to positive integer will only consider mem_size prior elements for computation
     returns: (batch, seq_len, D_v)
     """
+    if mem_size is not None:
+      # TODO change this assumption (low priority and probably not useful)
+      assert masked is True, "In order to use attention memory masked must be set to true"
     tf.debugging.assert_shapes([
         (keys, ('B', 'S', 'D_k')),
         (queries, ('B', 'S', 'D_k')),
@@ -63,10 +70,9 @@ def attention(queries, keys, values, masked=True, window_size=None):
     if masked:
       i = tf.expand_dims(tf.range(S), 1)  # [S, 1]
       j = tf.expand_dims(tf.range(S), 0)  # [1, S]
-      n = window_size
       mask = i >= j # [S, S], mask[i, j] == i >= j
-      if n is not None:
-        b_mask = i <= (j + n)
+      if mem_size is not None:
+        b_mask = i <= (j + mem_size)
         mask = tf.math.logical_and(b_mask, mask)
       norm_compat = tf.where(mask, norm_compat, np.NINF)
     probs = tf.nn.softmax(norm_compat) # [B, S, S]
@@ -74,9 +80,11 @@ def attention(queries, keys, values, masked=True, window_size=None):
     return att
 
 class MultiHeadAttentionBlock(snt.Module):
-  def __init__(self, num_heads, output_size,  window_size=None, name='MultiHeadAttentionBlock'):
+  def __init__(self, num_heads, output_size,  mem_size=None, name='MultiHeadAttentionBlock'):
     super(MultiHeadAttentionBlock, self).__init__()
     self.num_heads = num_heads
+    self.output_size = output_size
+    self.mem_size = mem_size
     self.W_K = []
     self.W_V = []
     self.W_Q = []
@@ -88,46 +96,61 @@ class MultiHeadAttentionBlock(snt.Module):
       self.W_V.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
       self.W_Q.append(snt.Linear(int(projection_size))) #output is d_model/num_heads
     self.W_O = snt.Linear(output_size)
+    self.l1_embed = snt.Linear(output_size)
 
   def initial_state(self, batch_size):
-    raise NotImplementedError()
+    if self.mem_size is None:
+      raise NotImplementedError()
+    else:
+      return tf.zeros([batch_size, self.mem_size, self.output_size])
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, prev_state):
     """
     For each head, this block will project input into 3 spaces (keys, queries, values)
     and subsequently run an attention block on each projection. The results of each heads are
     combined (via concat) into the final output.
 
+    prev_state: [B, M, D_m]
     inputs: [B, S, D_m]
-    returns: [B, S, D_m]
+    returns: (output: [B, S, D_m], next_state: [B, M, D_m])
     """
-    # MHA(Q, K, V) = Concat(head_1...head_h)W^O
+    if inputs.shape[-1] is not self.output_size:
+      # In the first layer we need to embed/project the input
+      # This is only hit during testing, could be removed
+      inputs = self.l1_embed(inputs)
     heads = []
     for i in range(self.num_heads):
-      # head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)
-      head_i = attention(self.W_Q[i](inputs), self.W_K[i](inputs), self.W_V[i](inputs)) # [B, S, D_m/h]
+      # head_i <- Attention(QW_i^Q, KW_i^K, VW_i^V)
+      # TODO technically we don't need to use queries: See https://github.com/vladfi1/slippi-ai/commit/bfaefd000279fb187f8e155c74a02f3a547e6154
+      queries = tf.concat([self.W_Q[i](prev_state), self.W_Q[i](inputs)], 1) # [B, M+S, D_m/h]
+      keys = tf.concat([self.W_K[i](prev_state), self.W_K[i](inputs)], 1) # [B, M+S, D_m/h]
+      values = tf.concat([self.W_V[i](prev_state), self.W_V[i](inputs)], 1) # [B, M+S, D_m/h]
+      head_i = attention(queries, keys, values, self.mem_size) # [B, M+S, D_m/h]
       heads.append(head_i)
-    multi_head = self.W_O(tf.concat(heads, -1))  # [B, S, D_m]
-    return multi_head
+    # MHA(Q, K, V) <- Concat(head_1...head_h)W^O
+    proj_heads = self.W_O(tf.concat(heads, -1))  # [B, M+S, D_m]
+    multi_head = proj_heads[:, self.mem_size:] # [B, S, D_m]
+    next_state = proj_heads[:,-self.mem_size:] # [B, M, D_m]
+    return multi_head, next_state
 
 class TransformerEncoderBlock(snt.Module):
-  def __init__(self, output_size, ffw_size, num_heads, window_size=None, name="EncoderTransformerBlock"):
+  def __init__(self, output_size, ffw_size, num_heads, mem_size, name="EncoderTransformerBlock"):
       super(TransformerEncoderBlock, self).__init__()
       self.output_size = output_size
       self.ffw_size = ffw_size
-      self.window_size = window_size
-      self.attention = MultiHeadAttentionBlock(num_heads, output_size, window_size=self.window_size)
+      self.mem_size = mem_size
+      self.attention = MultiHeadAttentionBlock(num_heads, output_size, mem_size)
       self.feed_forward_in = snt.Linear(ffw_size)
       self.feed_forward_out = snt.Linear(output_size)
       self.norm_1 = snt.LayerNorm(-1, False, False)
       self.norm_2 = snt.LayerNorm(-1, False, False)
 
   def initial_state(self, batch_size):
-      raise NotImplementedError()
+      return self.attention.initial_state(batch_size)
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, prev_state):
     # MHAB
-    att = self.attention(inputs)
+    att, next_state = self.attention(inputs, prev_state)
     # Add (res) + LayerNorm
     res_norm_att = self.norm_1(att + inputs)
     # Feed forward
@@ -136,24 +159,28 @@ class TransformerEncoderBlock(snt.Module):
     feed_out = self.feed_forward_out(act)
     # Add (res) + LayerNorm
     output = self.norm_2(res_norm_att + feed_out)
-    return output
+    return output, next_state
 
 class EncoderOnlyTransformer(snt.Module):
-  def __init__(self, output_size, num_layers, ffw_size, num_heads, window_size=None, name="EncoderTransformer"):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, mem_size, name="EncoderTransformer"):
     super(EncoderOnlyTransformer, self).__init__()
     self.num_layers = num_layers
     self.transformer_blocks = []
-    self.window_size = window_size
+    self.mem_size = mem_size
     for _ in range(num_layers):
-      t = TransformerEncoderBlock(output_size, ffw_size, num_heads, window_size=self.window_size)
+      t = TransformerEncoderBlock(output_size, ffw_size, num_heads, mem_size)
       self.transformer_blocks.append(t)
     # maybe add assertion about attention size and output_size
     self.shape_convert = snt.Linear(output_size)
 
   def initial_state(self, batch_size):
-    raise NotImplementedError()
+    return [t.initial_state(batch_size) for t in self.transformer_blocks]
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, prev_state):
+    """
+      inputs: [T, B, O]
+      prev_sate: [L, B, M, O]
+    """
     inputs = self.shape_convert(inputs) # [T, B, O]
     inputs = tf.transpose(inputs, [1, 0, 2]) # [B, T, O]
     i_shape = tf.shape(inputs)
@@ -161,7 +188,9 @@ class EncoderOnlyTransformer(snt.Module):
     #encoding = positional_encoding(i_shape[1], i_shape[2], batch_size=i_shape[0])
     #x = inputs + encoding # [B, T, O]
     x = inputs
-    for t in self.transformer_blocks:
-      x = t(x) # [B, T, O]
+    next_state = []
+    for t, p in zip(self.transformer_blocks, prev_state):
+      x,n = t(x, p) # [B, T, O]
+      next_state.append(n)
     x = tf.transpose(x, [1, 0, 2]) # [T, B, O]
-    return x
+    return x, next_state

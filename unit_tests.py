@@ -60,24 +60,27 @@ class EmbedTest(unittest.TestCase):
 
 class Test_Transformers(unittest.TestCase):
   def test_attention_block(self):
-    mhab = transformers.MultiHeadAttentionBlock(8, 512)
+    mhab = transformers.MultiHeadAttentionBlock(8, 512, mem_size=3)
     # Shape grabbed from breakpoint of slippi
-    test_inputs = tf.ones([64, 32, 866]) 
-    result = mhab(test_inputs)
+    test_inputs = tf.ones([64, 32, 866])
+    initial_state =  mhab.initial_state(64)
+    result, next_state = mhab(test_inputs, initial_state)
     assert result.shape == tf.TensorShape([64, 32, 512])
+    assert next_state.shape == tf.TensorShape([64, 3, 512])
+    tf.debugging.assert_equal(result[:,-1], next_state[:, -1])
 
   def test_limited_attention(self):
     test_queries = tf.ones([64, 32, 32]) * 3
     test_keys = tf.ones([64, 32, 32]) * 5
     test_values = tf.ones([64, 32, 64]) * 10
-    l_attention = transformers.attention(test_queries, test_keys, test_values, window_size=1)
-    l_attention = transformers.attention(test_queries, test_keys, test_values, window_size=2)
+    l_attention = transformers.attention(test_queries, test_keys, test_values, mem_size=1)
+    l_attention = transformers.attention(test_queries, test_keys, test_values, mem_size=2)
 
   def test_attention_limited_unset_is_att(self):
     test_queries = tf.ones([64, 32, 32]) * 3
     test_keys = tf.ones([64, 32, 32]) * 5
     test_values = tf.ones([64, 32, 64]) * 10
-    l_attention = transformers.limited_attention(test_queries, test_keys, test_values, -1)
+    l_attention = transformers.attention(test_queries, test_keys, test_values, mem_size=None)
     attention = transformers.attention(test_queries, test_keys, test_values)
     np.testing.assert_allclose(l_attention.numpy(), attention.numpy())
 
@@ -88,36 +91,36 @@ class Test_Transformers(unittest.TestCase):
     assert pos.shape == [32, 30, 512]
   
   def test_transformer_block(self):
-    test_inputs_nice = tf.ones([64, 32, 512]) 
-    tb = transformers.TransformerEncoderBlock(512)
-    output = tb(test_inputs_nice)
-    assert output.shape == test_inputs_nice.shape
-
-    test_inputs_2 = tf.ones([64, 32, 866])
-    tb = transformers.TransformerEncoderBlock(866)
-    output_2 = tb(test_inputs_2)
-    assert output_2.shape == test_inputs_2.shape
+    test_inputs_nice = tf.ones([32, 64, 128]) # batch major
+    tb = transformers.TransformerEncoderBlock(128, 512, 8, 12)
+    initial_state =  tb.initial_state(32)
+    output, next_state = tb(test_inputs_nice, initial_state)
+    assert output.shape == [32, 64, 128]
 
   def test_transformer_call(self):
-    transformer = transformers.EncoderOnlyTransformer(512)
-    test_inputs_nice = tf.ones([64, 32, 512])
-    output = transformer(test_inputs_nice)
-    assert output.shape == test_inputs_nice.shape
+    transformer = transformers.EncoderOnlyTransformer(128, 6, 512, 8, 3)
+    initial_state =  transformer.initial_state(32)
+    test_inputs_nice = tf.ones([64, 32, 322]) # time major
+    output, next_state = transformer(test_inputs_nice, initial_state)
+    assert output.shape == [64, 32, 128]
 
-    transformer = transformers.EncoderOnlyTransformer(866)
-    test_inputs_2 = tf.ones([64, 32, 866])
-    output_2 = transformer(test_inputs_2)
-    assert output_2.shape == test_inputs_2.shape
+    transformer = transformers.EncoderOnlyTransformer(128, 6, 512, 8, 3)
+    initial_state =  transformer.initial_state(32)
+    test_inputs_2 = tf.ones([64, 32, 866]) # time major
+    output_2, next_state = transformer(test_inputs_2, initial_state)
+    assert output_2.shape == [64, 32, 128]
 
   def test_tranformer_wrap_unroll(self):
-    transformer_wrapper = tw(128, 2, 256, 8, 32)
+    transformer_wrapper = tw(128, 2, 256, 8, 32, 12)
     test_inputs_nice = tf.ones([64, 32, 512])
-    transformer_wrapper.unroll(test_inputs_nice, ())
+    test_hidden = tf.ones([32, 12, 128])
+    transformer_wrapper.unroll(test_inputs_nice, test_hidden)
 
   def test_tranformer_wrap_step(self):
-    transformer_wrapper = tw(128, 2, 256, 8, 32)
+    transformer_wrapper = tw(128, 2, 256, 8, 32, 12)
+    # TODO this needs to be more nuanced to reflect state
     test_inputs_nice = tf.ones([64, 32, 512])
-    test_hidden = tf.ones([32, 512*32])
+    test_hidden = tf.ones([32, 12, 128])
     transformer_wrapper.step(test_inputs_nice, test_hidden)
 
 if __name__ == '__main__':

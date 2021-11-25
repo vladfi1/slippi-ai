@@ -293,18 +293,19 @@ class TransformerWrapper(Network):
     output_size=128,
     num_heads=8,
     ffw_size=512,
-    num_frames=10
+    num_frames=10,
+    mem_size=2,
   )
 
-  def __init__(self, output_size, num_layers, ffw_size, num_heads, num_frames):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, num_frames, mem_size):
     super().__init__(name='transformer')
-    self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads)
+    self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads, mem_size)
     # Should this just be the same as num_layers?
     self.num_frames=10
 
   def initial_state(self, batch_size):
     # Random initialize instead of 0's?
-    return tf.zeros([self.num_frames-1, batch_size, embed_game.size])
+    return self.transformer.initial_state(batch_size)
 
   def step(self, inputs, prev_state):
     '''
@@ -316,11 +317,9 @@ class TransformerWrapper(Network):
       outputs: (batch, out_dim)
       next_state: (num_frames, batch, state_dim)
     '''
-    # TODO incorporate controller information
-    embed_inputs = embed_game(inputs[0]) # [B, S]
-    combined_input = tf.concat([prev_state, tf.expand_dims(embed_inputs, 0)], 0) # [N, B, S]
-    next_state = combined_input[1:] # [N-1, B, S]
-    output = self.transformer(combined_input) # [T, B, O]
+    flat_inputs = process_inputs(inputs)
+    inputs = tf.expand_dims(flat_inputs, 0)
+    output, next_state = self.transformer(input, prev_state) # [T, B, O]
     return (output[-1], next_state)
 
   def unroll(self, inputs, prev_state):
@@ -333,18 +332,8 @@ class TransformerWrapper(Network):
       outputs: (time, batch, out_dim)
       final_state: (num_frames, batch, state_dim)
     '''
-    # TODO refactor to include P1 controller inputs
-    embed_inputs = embed_game(inputs[0]) # [T, B, S]
-    T = embed_inputs.shape[0]
-    combined_input = tf.concat([prev_state, embed_inputs], 0) # [N-1 + T, B, S]
-    n = self.num_frames - 1
-    # Q: should final/next state be a product of the transformer? Right now independent
-    next_state = combined_input[-n:] # [N-1, B, S]
-    # Attention should only depend on current and n previous inputs at each layer,
-    # But the next input depends on the previous
-    transform_output = self.transformer(combined_input) # [N-1 + T, B, O]
-    output = transform_output[-T:] # [T, B, O]
-    return output, next_state
+    flat_inputs = process_inputs(inputs)
+    return self.transformer(flat_inputs, prev_state)
 
 CONSTRUCTORS = dict(
     mlp=MLP,
