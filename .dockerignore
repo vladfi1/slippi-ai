@@ -3,3 +3,4 @@
 
 # allow only these
 !requirements.txt
+!docker/

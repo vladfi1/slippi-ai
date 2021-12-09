@@ -7,12 +7,16 @@ import math
 from typing import List, Tuple
 
 import numpy as np
-import tensorflow as tf
-import tensorflow_probability as tfp
+
+# allow using this file without tensorflow
+try:
+  import tensorflow as tf
+  import tensorflow_probability as tfp
+  float_type = tf.float32
+except ModuleNotFoundError:
+  print('WARNING: tensorflow not found, some functions will fail')
 
 from melee import enums
-
-float_type = tf.float32
 
 class Embedding:
   def from_state(self, state):
@@ -117,7 +121,7 @@ embed_float = FloatEmbedding("float")
 
 class OneHotEmbedding(Embedding):
 
-  def __init__(self, name, size, dtype=np.int64):
+  def __init__(self, name, size, dtype=np.int32):
     self.name = name
     self.size = size
     self.input_size = size
@@ -137,7 +141,7 @@ class OneHotEmbedding(Embedding):
 
   def extract(self, embedded):
     # TODO: pick a random sample?
-    return tf.argmax(t, -1)
+    return tf.argmax(embedded, -1, output_type=self.dtype)
 
   def distance(self, embedded, target):
     logprobs = tf.nn.log_softmax(embedded)
@@ -151,13 +155,15 @@ class OneHotEmbedding(Embedding):
     return tfp.distributions.Categorical(logits=logits).sample()
 
 class EnumEmbedding(OneHotEmbedding):
-  def __init__(self, enum_class, **kwargs):
-    super().__init__(str(enum_class), len(enum_class), **kwargs)
+  def __init__(self, enum_class: type, **kwargs):
+    super().__init__(str(enum_class), **kwargs)
     self._class = enum_class
-    self._map = {obj: i for i, obj in enumerate(enum_class)}
 
   def from_state(self, obj):
-    return self.dtype(self._map[obj])
+    assert isinstance(obj, self._class)
+    x = self.dtype(obj.value)
+    assert x >= 0 and x < self.size
+    return x
 
 def get_dict(d, k):
   return d[k]
@@ -246,10 +252,10 @@ class ArrayEmbedding(Embedding):
     self.size = len(permutation) * op.size
 
   def map(self, f, *args):
-    return [
+    return tuple(
         self.op.map(f, *[x[i] for x in args])
         for i in range(len(self.permutation))
-    ]
+    )
 
   def flatten(self, array):
     assert len(array) == len(self.permutation)
@@ -260,10 +266,10 @@ class ArrayEmbedding(Embedding):
     return [self.op.unflatten(seq) for _ in self.permutation]
 
   def from_state(self, state):
-    return [self.op.from_state(state[i]) for i in self.permutation]
+    return tuple(self.op.from_state(state[i]) for i in self.permutation)
 
   def input_signature(self):
-    return [self.op.input_signature()] * len(self.permutation)
+    return (self.op.input_signature(),) * len(self.permutation)
 
   def __call__(self, array, **kwargs):
     return tf.concat(
@@ -294,8 +300,11 @@ class ArrayEmbedding(Embedding):
   def dummy(self):
     return self.map(lambda e: e.dummy())
 
-embed_action = EnumEmbedding(enums.Action)
-embed_char = EnumEmbedding(enums.Character)
+# one larger than KIRBY_STONE_UNFORMING
+embed_action = EnumEmbedding(enums.Action, size=0x18F, dtype=np.uint16)
+
+# one larger than SANDBAG
+embed_char = EnumEmbedding(enums.Character, size=0x21, dtype=np.uint8)
 
 # puff and kirby have 6 jumps
 embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
@@ -308,16 +317,19 @@ def make_player_embedding(
     with_controller: bool = True,
     ):
     embed_xy = FloatEmbedding("xy", scale=xy_scale)
+    embed_position = StructEmbedding("position", [
+        ('x', embed_xy),
+        ('y', embed_xy),
+    ])
 
     embedding = [
       ("percent", FloatEmbedding("percent", scale=0.01)),
       ("facing", BoolEmbedding("facing", off=-1.)),
-      ("x", embed_xy),
-      ("y", embed_xy),
+      ('position', embed_position),
       ("action", embed_action),
       # ("action_frame", FloatEmbedding("action_frame", scale=0.02)),
       ("character", embed_char),
-      ("invulnerable", embed_bool),
+      # ("invulnerable", embed_bool),
       # ("hitlag_frames_left", embedFrame),
       # ("hitstun_frames_left", embedFrame),
       ("jumps_left", embed_jumps_left),
@@ -342,7 +354,8 @@ def make_player_embedding(
 
     return StructEmbedding("player", embedding)
 
-embed_stage = EnumEmbedding(enums.Stage)
+# future proof in case we want to play on wacky stages
+embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
 
 def make_game_embedding(player_config={}, players=(1, 2), ports=None):
   embed_player = make_player_embedding(**player_config)
@@ -356,7 +369,7 @@ def make_game_embedding(player_config={}, players=(1, 2), ports=None):
 
   embedding = [
     ('stage', embed_stage),
-    ('player', embed_players),
+    ('players', embed_players),
   ]
 
   return StructEmbedding("game", embedding)
@@ -418,7 +431,7 @@ def get_controller_embedding(discrete_axis_spacing=0):
       ("main_stick", embed_stick),
       ("c_stick", embed_stick),
       ("l_shoulder", embed_float),
-      ("r_shoulder", embed_float),
+      # ("r_shoulder", embed_float),
   ])
 
 embed_controller_default = get_controller_embedding()  # continuous sticks

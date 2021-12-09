@@ -5,7 +5,16 @@ RUN pip install ray[default]
 RUN apt update
 RUN apt install -y p7zip-full rsync
 
+# RUN pip install tensorflow
+
+# slippi-specific
+
 WORKDIR /install
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-RUN pip install peppi-py
+
+# RUN pip install peppi-py
+ARG PEPPI_PY_WHL=peppi_py-0.4.3-cp39-abi3-linux_x86_64.whl
+COPY docker/$PEPPI_PY_WHL .
+RUN pip install $PEPPI_PY_WHL
+

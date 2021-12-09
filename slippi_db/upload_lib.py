@@ -1,6 +1,9 @@
-import time
+import functools
 import hashlib
+import io
 import os
+import tempfile
+import time
 import zlib
 import zipfile
 from typing import Any, BinaryIO, NamedTuple, Optional
@@ -22,6 +25,11 @@ DEFAULTS = dict(
 
 # controls where stuff is stored
 ENV = os.environ.get('SLIPPI_DB_ENV', 'test')
+
+Stage = str
+RAW: Stage = 'raw'
+SLP: Stage = 'slp'
+META: Stage = 'meta'
 
 class S3(NamedTuple):
   session: boto3.Session
@@ -45,15 +53,19 @@ def get_objects(env, stage):
   paths = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   return {get_key(path): s3.bucket.Object(path) for path in paths}
 
-client = MongoClient(SECRETS['MONGO_URI'])
-db = client.slp_replays
+@functools.lru_cache()
+def get_main_db(mongo_uri=None):
+  mongo_uri = mongo_uri or SECRETS['MONGO_URI']
+  client = MongoClient(mongo_uri)
+  return client.slp_replays
 
+@functools.lru_cache()
 def get_db(env: str, stage: str):
-  assert stage in ('raw', 'slp')
-  return db.get_collection(env + '-' + stage)
+  # assert stage in (RAW, SLP, META)
+  return get_main_db().get_collection(env + '-' + stage)
 
 def get_params(env: str) -> dict:
-  params_coll = db.params
+  params_coll = get_main_db().params
   found = params_coll.find_one({'env': env})
   if found is None:
     # update params collection
@@ -67,20 +79,20 @@ def get_params(env: str) -> dict:
   return found
 
 def create_params(env: str, **kwargs):
-  assert db.params.find_one({'env': env}) is None
+  assert get_main_db().params.find_one({'env': env}) is None
   params = dict(env=env, **DEFAULTS)
   params.update(kwargs)
-  db.params.insert_one(params)
+  get_main_db().params.insert_one(params)
 
 class Timer:
 
   def __init__(self, name: str, verbose=True):
     self.name = name
     self.verbose = verbose
-  
+
   def __enter__(self):
     self.start = time.perf_counter()
-  
+
   def __exit__(self, *_):
     self.duration = time.perf_counter() - self.start
     if self.verbose:
@@ -100,7 +112,7 @@ class ReplayDB:
   def __init__(self, env: str = ENV):
     self.env = env
     self.params = get_params(env)
-    self.raw = db.get_collection(env + '-raw')
+    self.raw = get_main_db().get_collection(env + '-raw')
 
   def raw_size(self) -> int:
     total_size = 0
@@ -129,7 +141,7 @@ class ReplayDB:
     #   return f'DB full, already have {max_files} uploads.'
     if not name.endswith('.slp'):
       return f'{name}: not a .slp'
-    
+
     max_size = self.params['max_size_per_file']
     if len(content) > max_size:
       return f'{name}: exceeds {max_size} bytes.'
@@ -180,7 +192,7 @@ class ReplayDB:
           error = self.upload_slp(name, f.read())
           if error:
             errors.append(error)
-    
+
     uploaded.close()
     if errors:
       return '\n'.join(errors)
@@ -243,8 +255,8 @@ class ReplayDB:
     self.raw.delete_one({'key': key})
 
 def nuke_replays(env: str, stage: str):
-  db.drop_collection(env + '-' + stage)
-  db.params.delete_many({'env': env + '-' + stage})
+  get_main_db().drop_collection(env + '-' + stage)
+  get_main_db().params.delete_many({'env': env + '-' + stage})
   keys = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   objects = [dict(Key=k) for k in keys]
   if not objects:
@@ -252,3 +264,36 @@ def nuke_replays(env: str, stage: str):
     return
   response = s3.bucket.delete_objects(Delete=dict(Objects=objects))
   print(f'Deleted {len(response["Deleted"])} objects.')
+
+
+shm_dir = '/dev/shm'
+bucket = s3.bucket
+
+def download_slp(env: str, key: str) -> bytes:
+  compressed_bytes = io.BytesIO()
+
+  slp_s3_path = f'{env}/slp/{key}'
+  # with upload_lib.Timer(f"download {raw_name}", verbose=False):
+  bucket.download_fileobj(slp_s3_path, compressed_bytes)
+
+  return zlib.decompress(compressed_bytes.getvalue())
+
+def to_file(data: bytes) -> BinaryIO:
+  tmp_file = tempfile.NamedTemporaryFile(dir=shm_dir, delete=False)
+  tmp_file.write(data)
+  tmp_file.close()
+  return tmp_file
+
+def download_slp_to_file(env: str, key: str) -> BinaryIO:
+  slp_bytes = download_slp(env, key)
+  return to_file(slp_bytes)
+
+def download_slp_locally(env: str, key: str, dir='.') -> str:
+  slp_bytes = download_slp(env, key)
+  slp_db = get_db(env, 'slp')
+  doc = slp_db.find_one({'key': key})
+  path = os.path.join(dir, doc['filename'].replace('/', '_'))
+  with open(path, 'wb') as f:
+    f.write(slp_bytes)
+  print(f'Downloaded slp to {path}')
+  return path
