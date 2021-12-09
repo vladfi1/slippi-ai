@@ -198,6 +198,7 @@ def upload_files_mp(
 # TODO: use a Protocol
 Uploader = Callable[[str, Files, Set[str]], UploadResults]
 
+# TODO: handle duplicates when calling multiple process_raw in parallel
 def process_raw(
     env: str,
     raw_key: str,
@@ -276,7 +277,7 @@ def print_timings(results: List[UploadResults]):
 
   if not timings:
     return
-  
+
   for key in timings[0]:
     values = [t[key] for t in timings]
     total = sum(values)

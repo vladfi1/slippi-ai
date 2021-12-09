@@ -1,16 +1,24 @@
+"""Decompress raw uploads into individual (zlib-compressed) slp files.
+
+Run remotely with
+
+ray submit --start slippi_db/parsing_cluster.yaml \
+  slippi_db/generate_metadata.py --env test
+"""
+
 import time
-from typing import List, Set
+from typing import List
 
 from absl import app
 from absl import flags
 import ray
 
 from slippi_db import decompress, upload_lib
-from slippi_db.decompress import Files, UploadResults, upload_files
 
 FLAGS = flags.FLAGS
 flags.DEFINE_boolean('local', False, 'run locally')
 # flags.DEFINE_string('ray_address', 'auto', 'ray address')
+# see decompress.py for more flags
 
 # using mp for distributed uploading of slps within a raw
 @ray.remote(resources=dict(host=1))
@@ -34,7 +42,7 @@ def process_all(env: str, in_memory: bool, skip_processed: bool = True):
     elif skip_processed and doc.get('processed', False):
       skip = True
       reason = 'already processed'
-    
+
     if skip:
       print(f'Skipping {doc["filename"]} ({doc["description"]}): {reason}')
       continue
