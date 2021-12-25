@@ -52,7 +52,7 @@ def config():
 
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
-  save_to_s3 = True
+  save_to_s3 = False
   restore_tag = None
 
 @ex.automain
