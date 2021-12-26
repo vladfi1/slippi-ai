@@ -68,7 +68,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
-  
+
   learner_kwargs = _config['learner'].copy()
   learning_rate = tf.Variable(
       learner_kwargs['learning_rate'], name='learning_rate')

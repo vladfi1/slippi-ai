@@ -6,7 +6,7 @@ import signal
 from sacred import Experiment
 
 import melee
-import eval_lib
+from slippi_ai import eval_lib
 
 ex = Experiment('eval')
 

@@ -154,7 +154,13 @@ def compress_repeated_actions(
   compressed_game = tree.map_structure(lambda a: a[indices], game)
   reward_indices = np.concatenate([[0], indices[:-1]])
   compressed_rewards = np.add.reduceat(rewards, reward_indices)
-  return CompressedGame(compressed_game, counts, compressed_rewards)
+  compressed_game = CompressedGame(compressed_game, counts, compressed_rewards)
+
+  shapes = [x.shape for x in tree.flatten(compressed_game)]
+  for s in shapes:
+    assert s == shapes[0]
+  
+  return compressed_game
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   if chars is None:

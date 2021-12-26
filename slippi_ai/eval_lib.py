@@ -43,9 +43,8 @@ class Agent:
   ):
     self._controller = controller
     self._port = controller.port
-    self._opponent_port = opponent_port
     self._players = (self._port, opponent_port)
-    self._embed_game = embed.make_game_embedding()
+    self._embed_game = embed.make_game_embedding(players=self._players)
     self._policy = policy
     self._sample = policy.sample
     self._hidden_state = policy.initial_state(1)
@@ -57,8 +56,8 @@ class Agent:
       self._current_repeats_left -= 1
       return None
 
-    # put the players in the expected positions
     embedded_game = self._embed_game.from_state(gamestate)
+    # put the players in the expected positions
     embedded_game['player'] = {
       e: embedded_game['player'][p]
       for e, p in zip(expected_players, self._players)}

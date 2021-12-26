@@ -52,7 +52,7 @@ dummy_game = embed_game.dummy()
 dummy_compressed_game = data.CompressedGame(
     states=tree.map_structure(lambda x: tf.constant([x]), dummy_game),
     counts=[0],
-    rewards=[],
+    rewards=[0],
 )
 
 def load_policy(tag: str) -> policies.Policy:
