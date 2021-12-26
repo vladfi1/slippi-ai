@@ -22,7 +22,7 @@ def compute_rewards(game, enemies=[2], allies=[1], damage_ratio=0.01):
       allies: List of controller ports for our team
       damage_ratio: How much damage (percent) counts relative to stocks
     Returns:
-      A length T np.array of rewards
+      A length (T-1) np.array of rewards
   '''
   pids = enemies + allies
 

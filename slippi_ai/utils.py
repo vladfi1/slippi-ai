@@ -4,11 +4,11 @@ import numpy as np
 import tensorflow as tf
 import tree
 
-def np_array(*vals):
-  return np.array(vals)
+def stack(*vals):
+  return np.stack(vals)
 
 def batch_nest(nests):
-  return tf.nest.map_structure(np_array, *nests)
+  return tf.nest.map_structure(stack, *nests)
 
 def dynamic_rnn(core, inputs, initial_state):
   """Dynamically unrolls an rnn core.
