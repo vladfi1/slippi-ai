@@ -1,6 +1,7 @@
 from typing import List, Optional
 import sonnet as snt
 import tensorflow as tf
+from slippi_ai.data import Batch
 
 from slippi_ai.policies import Policy
 
@@ -31,7 +32,7 @@ class Learner:
     self.decay_rate = decay_rate
     self.compiled_step = tf.function(self.step) if compile else self.step
 
-  def step(self, batch, initial_states, train=True):
+  def step(self, batch: Batch, initial_states, train=True):
     bm_gamestate, restarting = batch
 
     # reset initial_states where necessary
@@ -48,7 +49,16 @@ class Learner:
       loss, final_states, distances = self.policy.loss(
           tm_gamestate, initial_states)
       mean_loss = tf.reduce_mean(loss)
-    stats = dict(loss=mean_loss, distances=distances)
+
+      # maybe do this in the Policy?
+      counts = tf.cast(tm_gamestate.counts[1:] + 1, tf.float32)
+      weighted_loss = tf.reduce_sum(loss) / tf.reduce_sum(counts)
+
+    stats = dict(
+        loss=mean_loss,
+        weighted_loss=weighted_loss,
+        distances=distances,
+    )
 
     if train:
       params: List[tf.Variable] = tape.watched_variables()
