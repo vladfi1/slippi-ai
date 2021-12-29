@@ -1,6 +1,6 @@
 pandas
 dm-sonnet
-git+https://github.com/altf4/libmelee.git@adf80a360234143eec32cd3124a63b32169151fb
+melee
 gdown
 tensorflow_probability==0.11
 sacred
