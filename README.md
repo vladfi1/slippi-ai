@@ -38,7 +38,7 @@ sudo systemctl enable mongod.service
 To try training a simple model, run
 
 ```bash
-python train.py
+python scripts/train.py
 ```
 
 To view the results, you can use [omniboard](https://github.com/vivekratnavel/omniboard), although several [other options](https://github.com/IDSIA/sacred#frontends) are available.
@@ -56,7 +56,7 @@ For updates on this raw slippi replay dataset, the sql database, or the dataset 
 Example command configurations:
 
 ```bash
-python train.py with dataset.subset=fox_dittos network.name=frame_stack_mlp
+python scripts/train.py with dataset.subset=fox_dittos network.name=frame_stack_mlp
 ```
 
 These are some available options:
