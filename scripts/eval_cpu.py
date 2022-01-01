@@ -1,14 +1,11 @@
 """Test a trained model."""
 
-import sys
-import signal
-
 from sacred import Experiment
 
-import melee
 from slippi_ai import eval_lib
+from slippi_ai import dolphin as dolphin_lib
 
-ex = Experiment('eval')
+ex = Experiment('eval_cpu')
 
 @ex.config
 def config():
@@ -21,13 +18,13 @@ def config():
   sample_temperature = 1.0
 
 @ex.automain
-def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
+def main(saved_model_path, tag, dolphin_path, iso_path, _config):
   players = {
-      1: eval_lib.AI(),
-      2: eval_lib.CPU(),
+      1: dolphin_lib.AI(),
+      2: dolphin_lib.CPU(),
   }
 
-  dolphin = eval_lib.Dolphin(dolphin_path, iso_path, players)
+  dolphin = dolphin_lib.Dolphin(dolphin_path, iso_path, players)
 
   if saved_model_path:
     policy = eval_lib.Policy.from_saved_model(saved_model_path)

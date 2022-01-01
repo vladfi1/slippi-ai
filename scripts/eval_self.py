@@ -3,8 +3,9 @@
 from sacred import Experiment
 
 from slippi_ai import eval_lib
+from slippi_ai import dolphin as dolphin_lib
 
-ex = Experiment('eval')
+ex = Experiment('eval_self')
 
 @ex.config
 def config():
@@ -16,11 +17,11 @@ def config():
   sample_temperature = 1.0
 
 @ex.automain
-def main(saved_model_path, tag, dolphin_path, iso_path, _log, _config):
+def main(saved_model_path, tag, dolphin_path, iso_path, _config):
   ports = [1, 2]
-  players = {p: eval_lib.AI() for p in ports}
+  players = {p: dolphin_lib.AI() for p in ports}
 
-  dolphin = eval_lib.Dolphin(dolphin_path, iso_path, players)
+  dolphin = dolphin_lib.Dolphin(dolphin_path, iso_path, players)
 
   if saved_model_path:
     policy = eval_lib.Policy.from_saved_model(saved_model_path)
