@@ -1,6 +1,5 @@
 """Train (and test) a network via imitation learning."""
 
-import functools
 import os
 import pickle
 import time
@@ -23,7 +22,7 @@ from slippi_ai import (
     train_lib,
     utils,
 )
-from slippi_ai.learner import Learner
+from slippi_ai.learner import OfflineVTraceLearner as Learner
 
 ex = sacred.Experiment('imitation')
 
@@ -55,6 +54,9 @@ def config():
   save_to_s3 = False
   restore_tag = None
 
+def _get_loss(stats: dict):
+  return stats['total_loss'].numpy().mean()
+
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
   embed_controller = embed.embed_controller_discrete  # TODO: configure
@@ -65,6 +67,10 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
           embed_controller,
           _config['data']['max_action_repeat']))
 
+  behavior_policy = policies.Policy(
+      networks.construct_network(**_config['network']),
+      controller_heads.construct(**controller_head_config))
+
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
@@ -74,7 +80,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       learner_kwargs['learning_rate'], name='learning_rate')
   learner_kwargs.update(learning_rate=learning_rate)
   learner = Learner(
-      policy=policy,
+      target_policy=policy,
+      behavior_policy=behavior_policy,
       **learner_kwargs,
   )
 
@@ -96,7 +103,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   # initialize variables
   train_stats = train_manager.step()
-  _log.info('loss initial: %f', train_stats['loss'].numpy())
+  _log.info('loss initial: %f', _get_loss(train_stats))
 
   step = tf.Variable(0, trainable=False, name="step")
 
@@ -104,6 +111,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   tf_state = dict(
     step=step,
     policy=policy.variables,
+    behavior_policy=behavior_policy.variables,
     optimizer=learner.optimizer.variables,
     # TODO: add in learning_rate?
   )
@@ -118,7 +126,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  
+
   save_to_s3 = _config['save_to_s3'] and 'S3_CREDS' in os.environ
   if save_to_s3:
     s3_store = s3_lib.get_store()
@@ -154,8 +162,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       pickled_state = pickle.load(f)
     set_state(pickled_state)
 
-  train_loss = train_manager.step()['loss']
-  _log.info('loss post-restore: %f', train_loss.numpy())
+  train_loss = _get_loss(train_manager.step())
+  _log.info('loss post-restore: %f', train_loss)
 
   if _config['save_model']:
     # signatures without batch dims
@@ -222,8 +230,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     # now test
     test_stats = test_manager.step()
 
-    train_loss = train_stats['loss'].numpy()
-    test_loss = test_stats['loss'].numpy()
+    train_loss = _get_loss(train_stats)
+    test_loss = _get_loss(test_stats)
     epoch = train_stats['epoch']
 
     all_stats = dict(
