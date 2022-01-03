@@ -1,7 +1,8 @@
 from typing import List, Optional
 import sonnet as snt
 import tensorflow as tf
-from slippi_ai.data import Batch
+import slippi_ai.vtrace as vtrace
+from slippi_ai.data import Batch, CompressedGame
 
 from slippi_ai.policies import Policy
 
@@ -10,6 +11,17 @@ def to_time_major(t):
   permutation[0] = 1
   permutation[1] = 0
   return tf.transpose(t, permutation)
+
+def compute_baseline_loss(advantages):
+  # Loss for the baseline, summed over the time dimension.
+  # Multiply by 0.5 to match the standard update rule:
+  # d(loss) / d(baseline) = advantage
+  return .5 * tf.reduce_mean(tf.square(advantages))
+
+def compute_policy_gradient_loss(action_logprobs, advantages):
+  advantages = tf.stop_gradient(advantages)
+  policy_gradient_loss_per_timestep = -action_logprobs * advantages
+  return tf.reduce_mean(policy_gradient_loss_per_timestep)
 
 # TODO: should this be a snt.Module?
 class Learner:
@@ -20,52 +32,104 @@ class Learner:
       decay_rate=0.,
       value_cost=0.5,
       reward_halflife=2,  # measured in seconds
+      teacher_cost=0.00025,
   )
 
   def __init__(self,
       learning_rate: float,
       compile: bool,
-      policy: Policy,
       value_cost: float,
       reward_halflife: float,
+      teacher_cost: float,
+      target_policy: Policy,
+      behavior_policy: Policy,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
   ):
-    self.policy = policy
+    self.policy = target_policy
+    self.behavior_policy = behavior_policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
     self.decay_rate = decay_rate
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / reward_halflife * 60)
+    self.teacher_cost = teacher_cost
     self.compiled_step = tf.function(self.step) if compile else self.step
+
+  def initial_state(self, batch_size: int):
+    return (
+      self.policy.initial_state(batch_size),
+      self.behavior_policy.initial_state(batch_size),
+    )
 
   def step(self, batch: Batch, initial_states, train=True):
     bm_gamestate, restarting = batch
 
     # reset initial_states where necessary
     restarting = tf.expand_dims(restarting, -1)
+
     initial_states = tf.nest.map_structure(
         lambda x, y: tf.where(restarting, x, y),
-        self.policy.initial_state(restarting.shape[0]),
+        self.initial_state(restarting.shape[0]),
         initial_states)
+    target_initial, behavior_initial = initial_states
 
     # switch axes to time-major
     tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
 
+    rewards = tm_gamestate.rewards[1:]
+    discounts = tf.constant(self.discount, tf.float32, rewards.shape)
+    num_frames = tf.cast(tm_gamestate.counts[1:] + 1, tf.float32)
+    discounts = tf.pow(tf.cast(self.discount, tf.float32), num_frames)
+
     with tf.GradientTape() as tape:
-      loss, final_states, metrics = self.policy.loss(
-          tm_gamestate, initial_states,
-          self.value_cost, self.discount)
+
+      target_logprobs, baseline, target_final = self.policy.run(
+          tm_gamestate, target_initial)
+      behavior_logprobs, _, behavior_final = self.behavior_policy.run(
+          tm_gamestate, behavior_initial)
+
+      log_rhos = target_logprobs - tf.stop_gradient(behavior_logprobs)
+      values = baseline[:-1]
+      bootstrap_value = baseline[-1]
+
+      # with tf.device('/cpu'):
+      vtrace_returns = vtrace.from_importance_weights(
+          log_rhos=log_rhos,
+          discounts=discounts,
+          rewards=rewards,
+          values=values,
+          bootstrap_value=bootstrap_value,
+      )
+
+      total_loss = compute_policy_gradient_loss(
+          target_logprobs,
+          vtrace_returns.pg_advantages)
+
+      value_loss = compute_baseline_loss(vtrace_returns.vs - values)
+      total_loss += self.value_cost * value_loss
+
+      teacher_loss = -tf.reduce_mean(log_rhos)
+      total_loss += self.teacher_cost * teacher_loss
+
+    final_states = (target_final, behavior_final)
+
+    stats = dict(
+        total_loss=total_loss,
+        value_loss=value_loss,
+        teacher_loss=teacher_loss,
+    )
 
     if train:
       params: List[tf.Variable] = tape.watched_variables()
       watched_names = [p.name for p in params]
       trainable_names = [v.name for v in self.policy.trainable_variables]
+      # print(set(watched_names).difference(set(trainable_names)))
       assert set(watched_names) == set(trainable_names)
-      grads = tape.gradient(loss, params)
+      grads = tape.gradient(total_loss, params)
       self.optimizer.apply(grads, params)
 
       if self.decay_rate:
         for param in params:
           param.assign((1 - self.decay_rate) * param)
 
-    return metrics, final_states
+    return stats, final_states

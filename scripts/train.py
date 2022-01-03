@@ -1,6 +1,5 @@
 """Train (and test) a network via imitation learning."""
 
-import functools
 import os
 import pickle
 import time
@@ -68,6 +67,10 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
           embed_controller,
           _config['data']['max_action_repeat']))
 
+  behavior_policy = policies.Policy(
+      networks.construct_network(**_config['network']),
+      controller_heads.construct(**controller_head_config))
+
   policy = policies.Policy(
       networks.construct_network(**_config['network']),
       controller_heads.construct(**controller_head_config))
@@ -77,7 +80,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       learner_kwargs['learning_rate'], name='learning_rate')
   learner_kwargs.update(learning_rate=learning_rate)
   learner = Learner(
-      policy=policy,
+      target_policy=policy,
+      behavior_policy=behavior_policy,
       **learner_kwargs,
   )
 
@@ -107,6 +111,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   tf_state = dict(
     step=step,
     policy=policy.variables,
+    behavior_policy=behavior_policy.variables,
     optimizer=learner.optimizer.variables,
     # TODO: add in learning_rate?
   )

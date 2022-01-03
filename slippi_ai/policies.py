@@ -86,6 +86,30 @@ class Policy(snt.Module):
 
     return total_loss, final_state, metrics
 
+  def run(
+      self,
+      compressed: data.CompressedGame,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, tf.Tensor, RecurrentState]:
+    gamestates = compressed.states
+    action_repeat = compressed.counts
+    p1_controller = get_p1_controller(gamestates, action_repeat)
+
+    p1_controller_embed = self.controller_head.embed_controller(p1_controller)
+    inputs = (gamestates, p1_controller_embed)
+    outputs, final_state = self.network.unroll(inputs, initial_state)
+
+    prev_action = tf.nest.map_structure(lambda t: t[:-1], p1_controller)
+    next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
+
+    distances = self.controller_head.distance(
+        outputs[:-1], prev_action, next_action)
+    logprobs = -tf.add_n(tf.nest.flatten(distances))
+
+    baseline = tf.squeeze(self.value_head(outputs), axis=-1)
+
+    return logprobs, baseline, final_state
+
   def sample(
       self,
       compressed: data.CompressedGame,
