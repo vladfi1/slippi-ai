@@ -155,6 +155,7 @@ class Dolphin:
         path=dolphin_path,
         online_delay=online_delay,
         blocking_input=blocking_input,
+        copy_home_directory=False,
     )
     atexit.register(console.stop)
     self.console = console
