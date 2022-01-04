@@ -45,7 +45,7 @@ def main(saved_model_path, tag, dolphin_path, iso_path, _config):
   # Main loop
   for _ in range(total_frames):
     # "step" to the next frame
-    gamestate, _ = dolphin.step()
+    gamestate = dolphin.step()
 
     # if gamestate.frame == -123: # initial frame
     #   controller.release_all()

@@ -49,15 +49,16 @@ def get_policy_params_from_s3(tag: str):
 
 embed_game = embed.make_game_embedding()
 dummy_game = embed_game.dummy()
-dummy_compressed_game = data.CompressedGame(
-    states=tree.map_structure(lambda x: tf.constant([x]), dummy_game),
-    counts=[0],
-    rewards=[0],
-)
 
 def load_policy(tag: str) -> policies.Policy:
   policy = build_policy_from_sacred(tag)
   params = get_policy_params_from_s3(tag)
+
+  dummy_compressed_game = data.CompressedGame(
+      states=tree.map_structure(lambda x: tf.constant([x]), dummy_game),
+      counts=tf.constant([0]),
+      rewards=tf.constant([0], dtype=tf.float32),
+  )
 
   initial_state = policy.initial_state(1)
   policy.sample(dummy_compressed_game, initial_state)  # init params

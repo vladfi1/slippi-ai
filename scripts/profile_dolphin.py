@@ -32,6 +32,7 @@ def main(_):
         save_replays=False,
         use_exi_inputs=True,
         enable_ffw=FLAGS.enable_ffw,
+        env_vars=dict(vblank_mode='0'),
     ))
 
   def sync_step():

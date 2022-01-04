@@ -344,12 +344,15 @@ def make_player_embedding(
 
 embed_stage = EnumEmbedding(enums.Stage)
 
-def make_game_embedding(player_config={}, players=(1, 2)):
+def make_game_embedding(player_config={}, players=(1, 2), ports=None):
   embed_player = make_player_embedding(**player_config)
+  key_map = dict(zip(players, ports)) if ports else None
   embed_players = StructEmbedding(
       "players",
       [(i, embed_player) for i in players],
-      is_dict=True)
+      is_dict=True,
+      key_map=key_map,
+  )
 
   embedding = [
     ('stage', embed_stage),

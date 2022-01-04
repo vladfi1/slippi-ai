@@ -2,6 +2,7 @@ import abc
 import atexit
 from dataclasses import dataclass
 import logging
+import shutil
 from typing import Dict, Mapping, Tuple
 
 import melee
@@ -22,7 +23,7 @@ class Human(Player):
 
   def controller_type(self) -> melee.ControllerType:
     return melee.ControllerType.GCN_ADAPTER
-  
+
   def menuing_kwargs(self) -> Dict:
       return {}
 
@@ -63,6 +64,8 @@ class Dolphin:
       blocking_input=True,
       slippi_port=51441,
       render=True,
+      save_replays=False,
+      env_vars=None,
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -76,6 +79,7 @@ class Dolphin:
         gfx_backend='' if render else 'Null',
         copy_home_directory=False,
         setup_gecko_codes=True,
+        save_replays=save_replays,
         **console_kwargs,
     )
     atexit.register(console.stop)
@@ -96,7 +100,7 @@ class Dolphin:
 
     console.run(
         iso_path=iso_path,
-        environment_vars=dict(vblank_mode='0'),
+        environment_vars=env_vars,
     )
 
     logging.info('Connecting to console...')
@@ -113,13 +117,13 @@ class Dolphin:
       gamestate = self.console.step()
     return gamestate
 
-  def step(self) -> Tuple[melee.GameState, bool]:
+  def step(self) -> melee.GameState:
     gamestate = self.next_gamestate()
 
     # The console object keeps track of how long your bot is taking to process frames
     #   And can warn you if it's taking too long
-    if self.console.processingtime * 1000 > 12:
-        print("WARNING: Last frame took " + str(self.console.processingtime*1000) + "ms to process.")
+    # if self.console.processingtime * 1000 > 12:
+    #     print("WARNING: Last frame took " + str(self.console.processingtime*1000) + "ms to process.")
 
     menu_frames = 0
     while _is_menu_state(gamestate):
@@ -137,8 +141,7 @@ class Dolphin:
       gamestate = self.next_gamestate()
       menu_frames += 1
 
-    new_game = gamestate.frame == -123
-    return gamestate, new_game
+    return gamestate
 
   def stop(self):
     self.console.stop()
