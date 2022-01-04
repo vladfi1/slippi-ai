@@ -96,8 +96,6 @@ class Learner:
     discounts = tf.ones(tf.shape(clipped_rewards),dtype=tf.dtypes.float32) * self.discounting
 
     with tf.GradientTape() as tape:
-      loss, final_states, distances = self.policy.loss(
-          tm_gamestate, initial_states)
 
       target_logits, baseline, actions = self.policy.run(tm_gamestate, initial_states)
       behavior_logits, _,_ = self.behavior_policy.run(tm_gamestate, initial_states)
