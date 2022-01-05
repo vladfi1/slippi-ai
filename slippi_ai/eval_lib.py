@@ -156,6 +156,7 @@ class Dolphin:
         online_delay=online_delay,
         blocking_input=blocking_input,
         copy_home_directory=False,
+        setup_gecko_codes=True,
     )
     atexit.register(console.stop)
     self.console = console
