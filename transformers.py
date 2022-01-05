@@ -115,6 +115,7 @@ class MultiHeadAttentionBlock(snt.Module):
     returns: (output: [B, S, D_m], next_state: [B, M, D_m])
     """
     if inputs.shape[-1] is not self.output_size:
+      # TODO update the unit tests and clear this out
       # In the first layer we need to embed/project the input
       # This is only hit during testing, could be removed
       inputs = self.l1_embed(inputs)

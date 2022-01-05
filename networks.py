@@ -293,15 +293,12 @@ class TransformerWrapper(Network):
     output_size=128,
     num_heads=8,
     ffw_size=512,
-    num_frames=10,
-    mem_size=2,
+    mem_size=3,
   )
 
-  def __init__(self, output_size, num_layers, ffw_size, num_heads, num_frames, mem_size):
+  def __init__(self, output_size, num_layers, ffw_size, num_heads, mem_size):
     super().__init__(name='transformer')
     self.transformer = EncoderOnlyTransformer(output_size, num_layers, ffw_size, num_heads, mem_size)
-    # Should this just be the same as num_layers?
-    self.num_frames=10
 
   def initial_state(self, batch_size):
     # Random initialize instead of 0's?
@@ -311,29 +308,33 @@ class TransformerWrapper(Network):
     '''
       Returns outputs and next recurrent state.
       inputs: (batch_size, x_dim)
-      prev_state: (num_frames, batch, state_dim)
+      prev_state: (mem_size, batch, state_dim) x num_layers
 
     Returns a tuple (outputs, next_state)
       outputs: (batch, out_dim)
-      next_state: (num_frames, batch, state_dim)
+      next_state: (mem_size, batch, state_dim) x num_layers
     '''
-    flat_inputs = process_inputs(inputs)
+    # TODO refactor to include P1 controller inputs
+    flat_inputs = embed_game(inputs[0])
     inputs = tf.expand_dims(flat_inputs, 0)
-    output, next_state = self.transformer(input, prev_state) # [T, B, O]
+    output, next_state = self.transformer(inputs, prev_state) # [T, B, O]
     return (output[-1], next_state)
 
   def unroll(self, inputs, prev_state):
     '''
     Arguments:
       inputs: (time, batch, x_dim)
-      initial_state: (num_frames, batch, state_dim)
+      initial_state: (mem_size, batch, state_dim)
+      prev_state: (mem_size, batch, state_dim) x num_layers
 
     Returns a tuple (outputs, final_state)
       outputs: (time, batch, out_dim)
-      final_state: (num_frames, batch, state_dim)
+      final_state: (mem_size, batch, state_dim) x num_layers
     '''
-    flat_inputs = process_inputs(inputs)
-    return self.transformer(flat_inputs, prev_state)
+    # TODO refactor to include P1 controller inputs
+    #flat_inputs = process_inputs(inputs)
+    inputs = embed_game(inputs[0])
+    return self.transformer(inputs, prev_state)
 
 CONSTRUCTORS = dict(
     mlp=MLP,
