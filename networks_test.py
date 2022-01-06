@@ -80,9 +80,19 @@ class NetworksTest(unittest.TestCase):
       self.unroll_vs_step_helper(network, batch_size=B, sequence_length=S)
 
     with self.subTest('deep'):
-      test_tfm(3, 20, 3, 1, 0, 1, 8)
+      print("Running no memory network")
+      test_tfm(O=3, L=20, F=3, H=1, M=0, B=1, S=8)
+
+    with self.subTest('1 mem'):
+      print("Running small network with mem_size: 1")
+      test_tfm(O=1, L=1, F=8, H=1, M=1, B=1, S=4)
+
+    with self.subTest('middle'):
+      print("Running mid-sized network with mem_size: 3")
+      test_tfm(O=12, L=3, F=8, H=4, M=3, B=2, S=32)
     
     with self.subTest('serious'):
+      print("Running big network with mem_size: 16")
       test_tfm(O=20, L=10, F=30, H=5, M=16, B=3, S=32)
 
 if __name__ == '__main__':

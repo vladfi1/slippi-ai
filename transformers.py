@@ -115,6 +115,7 @@ class MultiHeadAttentionBlock(snt.Module):
     returns: (output: [B, S, D_m], next_state: [B, M, D_m])
     """
     B, S, D_m = tf.unstack(tf.shape(inputs))
+    M = self.mem_size
     if inputs.shape[-1] is not self.output_size:
       # TODO update the unit tests and clear this out
       # In the first layer we need to embed/project the input
@@ -129,12 +130,12 @@ class MultiHeadAttentionBlock(snt.Module):
       queries = self.W_Q[i](combined_input) # [B, M+S, D_m/h]
       keys = self.W_K[i](combined_input) # [B, M+S, D_m/h]
       values = self.W_V[i](combined_input) # [B, M+S, D_m/h]
-      head_i = attention(queries, keys, values, mem_size=self.mem_size) # [B, M+S, D_m/h]
+      head_i = attention(queries, keys, values, mem_size=M) # [B, M+S, D_m/h]
       heads.append(head_i)
     # MHA(Q, K, V) <- Concat(head_1...head_h)W^O
     proj_heads = self.W_O(tf.concat(heads, -1))  # [B, M+S, D_m]
-    multi_head = proj_heads[:, self.mem_size:] # [B, S, D_m]
-    next_state = proj_heads[:,S:] # [B, M, D_m]
+    multi_head = proj_heads[:, M:] # [B, S, D_m]
+    next_state = combined_input[:,S:] # [B, M, D_m]
     return multi_head, next_state
 
 class TransformerEncoderBlock(snt.Module):
