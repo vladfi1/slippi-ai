@@ -55,6 +55,9 @@ def config():
   save_to_s3 = False
   restore_tag = None
 
+def _get_loss(stats: dict):
+  return stats['total_loss'].numpy().mean()
+
 @ex.automain
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
   embed_controller = embed.embed_controller_discrete  # TODO: configure
@@ -96,7 +99,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   # initialize variables
   train_stats = train_manager.step()
-  _log.info('loss initial: %f', train_stats['loss'].numpy())
+  _log.info('loss initial: %f', _get_loss(train_stats))
 
   step = tf.Variable(0, trainable=False, name="step")
 
@@ -154,8 +157,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
       pickled_state = pickle.load(f)
     set_state(pickled_state)
 
-  train_loss = train_manager.step()['loss']
-  _log.info('loss post-restore: %f', train_loss.numpy())
+  train_loss = _get_loss(train_manager.step())
+  _log.info('loss post-restore: %f', train_loss)
 
   if _config['save_model']:
     # signatures without batch dims
@@ -222,8 +225,8 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     # now test
     test_stats = test_manager.step()
 
-    train_loss = train_stats['loss'].numpy()
-    test_loss = test_stats['loss'].numpy()
+    train_loss = _get_loss(train_stats)
+    test_loss = _get_loss(test_stats)
     epoch = train_stats['epoch']
 
     all_stats = dict(
