@@ -96,6 +96,7 @@ class OfflineVTraceLearner:
       value_cost=0.5,
       reward_halflife=2,  # measured in seconds
       teacher_cost=0.00025,
+      train_behavior_policy=True,
   )
 
   def __init__(self,
@@ -106,6 +107,7 @@ class OfflineVTraceLearner:
       teacher_cost: float,
       target_policy: Policy,
       behavior_policy: Policy,
+      train_behavior_policy: bool,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
   ):
@@ -116,6 +118,7 @@ class OfflineVTraceLearner:
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / reward_halflife * 60)
     self.teacher_cost = teacher_cost
+    self.train_behavior_policy = train_behavior_policy
     self.compiled_step = tf.function(self.step) if compile else self.step
 
   def initial_state(self, batch_size: int):
@@ -174,13 +177,19 @@ class OfflineVTraceLearner:
       teacher_loss = -tf.reduce_mean(log_rhos)
       total_loss += self.teacher_cost * teacher_loss
 
+      behavior_loss = -behavior_logprobs
+      if self.train_behavior_policy:
+        total_loss += behavior_loss
+
     final_states = (target_final, behavior_final)
 
     stats = dict(
         total_loss=total_loss,
         value_loss=value_loss,
         teacher_loss=teacher_loss,
+        behavior_loss=behavior_loss,
     )
+    stats = tf.nest.map_structure(tf.reduce_mean, stats)
 
     if train:
       params: List[tf.Variable] = tape.watched_variables()
