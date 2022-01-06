@@ -114,24 +114,27 @@ class MultiHeadAttentionBlock(snt.Module):
     inputs: [B, S, D_m]
     returns: (output: [B, S, D_m], next_state: [B, M, D_m])
     """
+    B, S, D_m = tf.unstack(tf.shape(inputs))
     if inputs.shape[-1] is not self.output_size:
       # TODO update the unit tests and clear this out
       # In the first layer we need to embed/project the input
       # This is only hit during testing, could be removed
       inputs = self.l1_embed(inputs)
     heads = []
+    combined_input = tf.concat([prev_state, inputs], 1) # [B, M+S, D_m]
     for i in range(self.num_heads):
       # head_i <- Attention(QW_i^Q, KW_i^K, VW_i^V)
-      # TODO technically we don't need to use queries: See https://github.com/vladfi1/slippi-ai/commit/bfaefd000279fb187f8e155c74a02f3a547e6154
-      queries = tf.concat([self.W_Q[i](prev_state), self.W_Q[i](inputs)], 1) # [B, M+S, D_m/h]
-      keys = tf.concat([self.W_K[i](prev_state), self.W_K[i](inputs)], 1) # [B, M+S, D_m/h]
-      values = tf.concat([self.W_V[i](prev_state), self.W_V[i](inputs)], 1) # [B, M+S, D_m/h]
-      head_i = attention(queries, keys, values, self.mem_size) # [B, M+S, D_m/h]
+      # TODO technically we don't need to use queries:  
+      # See https://github.com/vladfi1/slippi-ai/commit/bfaefd000279fb187f8e155c74a02f3a547e6154
+      queries = self.W_Q[i](combined_input) # [B, M+S, D_m/h]
+      keys = self.W_K[i](combined_input) # [B, M+S, D_m/h]
+      values = self.W_V[i](combined_input) # [B, M+S, D_m/h]
+      head_i = attention(queries, keys, values, mem_size=self.mem_size) # [B, M+S, D_m/h]
       heads.append(head_i)
     # MHA(Q, K, V) <- Concat(head_1...head_h)W^O
     proj_heads = self.W_O(tf.concat(heads, -1))  # [B, M+S, D_m]
     multi_head = proj_heads[:, self.mem_size:] # [B, S, D_m]
-    next_state = proj_heads[:,-self.mem_size:] # [B, M, D_m]
+    next_state = proj_heads[:,S:] # [B, M, D_m]
     return multi_head, next_state
 
 class TransformerEncoderBlock(snt.Module):
