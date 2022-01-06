@@ -1,3 +1,4 @@
+import functools
 import pickle
 import numpy as np
 import tree
@@ -10,6 +11,14 @@ from slippi_ai import (
     s3_lib,
     data,
 )
+
+@functools.lru_cache()
+def get_config_from_sacred(tag: str) -> dict:
+  db = s3_lib.get_sacred_db()
+  run = db.runs.find_one({'config.tag': tag}, ['config'])
+  if run is None:
+    raise ValueError(f"Tag {tag} not found in db.")
+  return run['config']
 
 def build_policy(
   controller_head_config: dict,
@@ -28,11 +37,7 @@ def build_policy(
       controller_heads.construct(**controller_head_config))
 
 def build_policy_from_sacred(tag: str) -> policies.Policy:
-  db = s3_lib.get_sacred_db()
-  run = db.runs.find_one({'config.tag': tag}, ['config'])
-  if run is None:
-    raise ValueError(f"Tag {tag} not found in db.")
-  config = run['config']
+  config = get_config_from_sacred(tag)
 
   return build_policy(
       controller_head_config=config['controller_head'],
@@ -40,6 +45,7 @@ def build_policy_from_sacred(tag: str) -> policies.Policy:
       network_config=config['network'],
   )
 
+@functools.lru_cache()
 def get_policy_params_from_s3(tag: str):
   params_key = s3_lib.get_keys(tag).params
   store = s3_lib.get_store()
