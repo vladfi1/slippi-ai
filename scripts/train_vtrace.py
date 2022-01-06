@@ -19,6 +19,7 @@ from slippi_ai import (
     paths,
     policies,
     s3_lib,
+    saving,
     train_lib,
     utils,
 )
@@ -54,6 +55,8 @@ def config():
   save_to_s3 = False
   restore_tag = None
 
+  init_tag = None  # initialize behavior and target policies
+
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
 
@@ -61,19 +64,30 @@ def _get_loss(stats: dict):
 def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log, _run):
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
-  controller_head_config = dict(
-      _config['controller_head'],
-      embed_controller=embed.get_controller_embedding_with_action_repeat(
-          embed_controller,
-          _config['data']['max_action_repeat']))
+  data_config = dict(_config['data'], embed_controller=embed_controller)
 
-  behavior_policy = policies.Policy(
-      networks.construct_network(**_config['network']),
-      controller_heads.construct(**controller_head_config))
+  init_tag = _config['init_tag']
 
-  policy = policies.Policy(
-      networks.construct_network(**_config['network']),
-      controller_heads.construct(**controller_head_config))
+  if init_tag:
+    behavior_policy = saving.load_policy(init_tag)
+    policy = saving.load_policy(init_tag)
+    init_config = saving.get_config_from_sacred(init_tag)
+    data_config['max_action_repeat'] = init_config['data']['max_action_repeat']
+    # TODO: initialize optimizer state?
+  else:
+    controller_head_config = dict(
+        _config['controller_head'],
+        embed_controller=embed.get_controller_embedding_with_action_repeat(
+            embed_controller,
+            _config['data']['max_action_repeat']))
+
+    behavior_policy = policies.Policy(
+        networks.construct_network(**_config['network']),
+        controller_heads.construct(**controller_head_config))
+
+    policy = policies.Policy(
+        networks.construct_network(**_config['network']),
+        controller_heads.construct(**controller_head_config))
 
   learner_kwargs = _config['learner'].copy()
   learning_rate = tf.Variable(
@@ -91,7 +105,6 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   train_paths, test_paths = data.train_test_split(**dataset)
   print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
 
-  data_config = dict(_config['data'], embed_controller=embed_controller)
   train_data = data.make_source(filenames=train_paths, **data_config)
   test_data = data.make_source(filenames=test_paths, **data_config)
   test_batch = train_lib.sanitize_batch(next(test_data)[0])
@@ -172,7 +185,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
         test_batch[0])
     hidden_state_signature = tf.nest.map_structure(
         lambda t: tf.TensorSpec(t.shape[1:], t.dtype),
-        test_manager.hidden_state)
+        policy.initial_state(1))
 
     loss_signature = [
         utils.nested_add_batch_dims(gamestate_signature, 2),
