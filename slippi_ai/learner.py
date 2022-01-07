@@ -143,7 +143,6 @@ class OfflineVTraceLearner:
     tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
 
     rewards = tm_gamestate.rewards[1:]
-    discounts = tf.constant(self.discount, tf.float32, rewards.shape)
     num_frames = tf.cast(tm_gamestate.counts[1:] + 1, tf.float32)
     discounts = tf.pow(tf.cast(self.discount, tf.float32), num_frames)
 
