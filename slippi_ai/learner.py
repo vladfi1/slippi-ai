@@ -56,7 +56,7 @@ class Learner:
     self.discount = 0.5 ** (1 / reward_halflife * 60)
     self.teacher_cost = teacher_cost
     self.train_behavior_policy = train_behavior_policy
-    self.compiled_step = tf.function(self.step) if compile else self.step
+    self.compiled_step = tf.function(jit_compile=None)(self.step) if compile else self.step
 
   def initial_state(self, batch_size: int):
     return (

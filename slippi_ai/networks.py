@@ -256,6 +256,7 @@ class DeepResLSTM(Network):
     flat_inputs = process_inputs(inputs)
     flat_inputs = self.encoder(flat_inputs)
     return utils.dynamic_rnn(self.deep_rnn, flat_inputs, prev_state)
+    # return utils.static_rnn(self.deep_rnn, flat_inputs, prev_state)
 
 class GRU(Network):
   CONFIG=dict(hidden_size=128)

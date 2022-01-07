@@ -229,13 +229,14 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
     # train for epoch_time seconds
     steps = 0
     num_frames = 0
-    while True:
-      train_stats = train_manager.step()
-      steps += 1
-      num_frames += train_stats['num_frames']
+    with tf.profiler.experimental.Profile('logdir'):
+      while True:
+        train_stats = train_manager.step()
+        steps += 1
+        num_frames += train_stats['num_frames']
 
-      elapsed_time = time.perf_counter() - start_time
-      if elapsed_time > epoch_time: break
+        elapsed_time = time.perf_counter() - start_time
+        if elapsed_time > epoch_time: break
 
     step.assign_add(steps)
     total_steps = step.numpy()

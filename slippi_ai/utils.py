@@ -1,14 +1,60 @@
 import time
 
 import numpy as np
+import sonnet as snt
 import tensorflow as tf
 import tree
 
 def stack(*vals):
   return np.stack(vals)
 
+def tf_stack(*vals):
+  return tf.stack(vals)
+
 def batch_nest(nests):
   return tf.nest.map_structure(stack, *nests)
+
+def static_rnn(core, inputs, initial_state):
+  outputs = []
+
+  hidden_state = initial_state
+  for input in tf.unstack(inputs):
+    output, hidden_state = core(input, hidden_state)
+    outputs.append(output)
+
+  outputs = tree.map_structure(tf_stack, *outputs)
+  return outputs, hidden_state
+
+def dynamic_rnn_batch(core, inputs, initial_state):
+  unroll_length = tf.nest.flatten(inputs)[0].shape[0]
+
+  def add_batch_dim(x: tf.Tensor):
+    return tf.broadcast_to(x, [unroll_length] + x.shape.as_list())
+  
+  initial_states = tf.nest.map_structure(add_batch_dim, initial_state)
+  outputs, final_states = snt.BatchApply(core)(inputs, initial_states)
+  return outputs, initial_state
+
+def dynamic_rnn_map(core, inputs, initial_state):
+
+  def map_fn(input):
+    output, _ = core(input, initial_state)
+    return output
+  
+  outputs = tf.map_fn(map_fn, inputs)
+  return outputs, initial_state
+
+def dynamic_rnn_scan(core, inputs, initial_state):
+  initial_inputs = tf.nest.map_structure(lambda x: x[0], inputs)
+
+  def scan_fn(acc, input):
+    unused_output, prev_state = acc
+    return core(input, prev_state)
+
+  outputs, states = tf.scan(scan_fn, inputs, (initial_inputs, initial_state))
+  final_state = tf.nest.map_structure(lambda x: x[-1], states)
+  return outputs, final_state
+
 
 def dynamic_rnn(core, inputs, initial_state):
   """Dynamically unrolls an rnn core.
@@ -29,7 +75,7 @@ def dynamic_rnn(core, inputs, initial_state):
   Returns:
     A tuple (outputs, final_state).
   """
-  unroll_length = tf.shape(tf.nest.flatten(inputs)[0])[0]
+  unroll_length = tf.nest.flatten(inputs)[0].shape[0]
 
   def get_input(index):
     return tf.nest.map_structure(lambda t: t[index], inputs)
