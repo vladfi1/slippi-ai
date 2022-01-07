@@ -390,7 +390,7 @@ class DiscreteEmbedding(OneHotEmbedding):
 
   def maybe_bucket(self, t):
     if t.dtype == tf.float32:
-      t = tf.cast(t * self.n + 0.5, tf.int32)
+      t = tf.cast(t * self.n + 0.5, self.dtype)
     return t
 
   def __call__(self, t):

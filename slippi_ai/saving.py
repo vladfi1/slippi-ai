@@ -1,6 +1,7 @@
 import functools
 import pickle
 import numpy as np
+import tensorflow as tf
 import tree
 
 from slippi_ai import (
@@ -69,7 +70,8 @@ def load_policy(tag: str) -> policies.Policy:
   params = get_policy_params_from_s3(tag)
 
   initial_state = policy.initial_state(1)
-  policy.loss(dummy_loss_batch, initial_state)  # init params
+  tf_loss_batch = tree.map_structure(tf.constant, dummy_loss_batch)
+  policy.loss(tf_loss_batch, initial_state)  # init params
   tree.map_structure(
       lambda var, val: var.assign(val),
       policy.variables, params)
