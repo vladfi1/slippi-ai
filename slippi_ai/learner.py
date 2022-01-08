@@ -171,6 +171,7 @@ class OfflineVTraceLearner:
           vtrace_returns.pg_advantages)
 
       value_loss = compute_baseline_loss(vtrace_returns.vs - values)
+      value_stddev = tf.sqrt(tf.reduce_mean(value_loss))
       total_loss += self.value_cost * value_loss
 
       teacher_loss = -tf.reduce_mean(log_rhos)
@@ -185,6 +186,7 @@ class OfflineVTraceLearner:
     stats = dict(
         total_loss=total_loss,
         value_loss=value_loss,
+        value_stddev=value_stddev,
         teacher_loss=teacher_loss,
         behavior_loss=behavior_loss,
     )
