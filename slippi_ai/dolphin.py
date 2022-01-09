@@ -112,9 +112,8 @@ class Dolphin:
         raise RuntimeError("Failed to connect the controller.")
 
   def next_gamestate(self) -> melee.GameState:
-    gamestate = None
-    while gamestate is None:
-      gamestate = self.console.step()
+    gamestate = self.console.step()
+    assert gamestate is not None
     return gamestate
 
   def step(self) -> melee.GameState:
