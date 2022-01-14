@@ -45,18 +45,18 @@ flags.DEFINE_integer('runtime', 300, 'Running time, in seconds.')
 FLAGS = flags.FLAGS
 
 
+def get_player(port: int) -> dolphin_lib.Player:
+  player_flags = PLAYER_FLAGS[port].value
+  player_type = player_flags['type']
+  if player_type == 'ai':
+    return dolphin_lib.AI(player_flags['character'])
+  elif player_type == 'human':
+    return dolphin_lib.Human()
+  elif player_type == 'cpu':
+    return dolphin_lib.CPU(player_flags['character'], player_flags['level'])
+
 def main(_):
-  players = {}
-  for port in PORTS:
-    player_flags = PLAYER_FLAGS[port].value
-    player_type = player_flags['type']
-    if player_type == 'ai':
-      players[port] = dolphin_lib.AI(player_flags['character'])
-    elif player_type == 'human':
-      players[port] = dolphin_lib.Human()
-    elif player_type == 'cpu':
-      players[port] = dolphin_lib.CPU(
-          player_flags['character'], player_flags['level'])
+  players = {p: get_player(p) for p in PORTS}
 
   dolphin = dolphin_lib.Dolphin(
       FLAGS.dolphin_path,
