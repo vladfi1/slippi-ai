@@ -213,8 +213,11 @@ class DataSource:
       self.file_counter += 1
       with open(path, 'rb') as f:
         obj_bytes = f.read()
-      if self.compressed:
-        obj_bytes = zlib.decompress(obj_bytes)
+      try:
+        if self.compressed:
+          obj_bytes = zlib.decompress(obj_bytes)
+      except zlib.error:
+        continue
       game = pickle.loads(obj_bytes)
       yield game
       yield swap_players(game)
