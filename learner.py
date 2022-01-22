@@ -32,6 +32,8 @@ class Learner:
 
     # reset initial_states where necessary
     restarting = tf.expand_dims(restarting, -1)
+    # This is a hack, what's the general solution?
+    restarting = tf.expand_dims(restarting, -1)
     initial_states = tf.nest.map_structure(
         lambda x, y: tf.where(restarting, x, y),
         self.policy.initial_state(restarting.shape[0]),
