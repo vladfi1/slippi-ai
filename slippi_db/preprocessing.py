@@ -7,6 +7,7 @@ import numpy as np
 import pyarrow as pa
 import tree
 
+from melee import enums, Character
 import peppi_py
 
 from slippi_db import parse_libmelee
@@ -154,3 +155,44 @@ def get_metadata_safe(path: str) -> dict:
 #       stage=game['stage'][0],
 #       num_frames=len(game['stage']),
 #   )
+
+
+BANNED_CHARACTERS = set([
+    # Kirby's actions aren't fully mapped out yet
+    Character.KIRBY.value,
+    # peppi-py bug with ICs
+    # Character.NANA.value,
+    # Character.POPO.value,
+])
+
+MIN_SLP_VERSION = [2, 0, 0]
+
+MIN_TIME = 60 * 60  # one minute
+
+def is_training_replay(meta_dict: dict) -> bool:
+  if meta_dict.get('invalid', False):
+    return False
+
+  del meta_dict['_id']
+  meta = Metadata.from_dict(meta_dict)
+
+  if meta.num_players != 2:
+    return False
+
+  if meta.slippi_version < MIN_SLP_VERSION:
+    return False
+
+  for player in meta.players:
+    if player.type != 0:
+      return False
+
+    if player.character in BANNED_CHARACTERS:
+      return False
+
+  if meta.lastFrame < MIN_TIME:
+    return False
+
+  if enums.to_internal_stage(meta.stage) == enums.Stage.NO_STAGE:
+    return False
+
+  return True
