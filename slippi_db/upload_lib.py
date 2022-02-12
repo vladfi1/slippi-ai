@@ -27,9 +27,12 @@ DEFAULTS = dict(
 ENV = os.environ.get('SLIPPI_DB_ENV', 'test')
 
 Stage = str
-RAW: Stage = 'raw'
-SLP: Stage = 'slp'
-META: Stage = 'meta'
+RAW: Stage = 'raw'  # uploaded zipped directories
+SLP: Stage = 'slp'  # individual slippi files
+META: Stage = 'meta'  # per-file metadata
+DATASET_META: Stage = 'data_meta'  # metadata for various dataset runs
+PQ: Stage = 'pq'  # parquet files, one per slp
+
 
 class S3(NamedTuple):
   session: boto3.Session
@@ -52,6 +55,9 @@ def get_objects(env, stage):
   get_key = lambda path: path.split('/')[2]
   paths = s3.store.iter_keys(prefix=f'{env}/{stage}/')
   return {get_key(path): s3.bucket.Object(path) for path in paths}
+
+def s3_path(env: str, stage: Stage, key: str):
+  return '/'.join([env, stage, key])
 
 @functools.lru_cache()
 def get_main_db(mongo_uri=None):
@@ -230,7 +236,7 @@ class ReplayDB:
     with Timer('upload_fileobj'):
       s3.bucket.upload_fileobj(
           Fileobj=f,
-          Key=self.env + '/raw/' + key,
+          Key=s3_path(self.env, RAW, key),
           # ContentLength=size,
           # ContentMD5=str(base64.encodebytes(digest.digest())),
       )
@@ -265,6 +271,9 @@ def nuke_replays(env: str, stage: str):
   response = s3.bucket.delete_objects(Delete=dict(Objects=objects))
   print(f'Deleted {len(response["Deleted"])} objects.')
 
+def nuke_stages(env: str):
+  for stage in [RAW, SLP, META, DATASET_META, PQ]:
+    nuke_replays(env, stage)
 
 shm_dir = '/dev/shm'
 bucket = s3.bucket

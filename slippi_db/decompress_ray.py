@@ -2,8 +2,8 @@
 
 Run remotely with
 
-ray submit --start slippi_db/parsing_cluster.yaml \
-  slippi_db/generate_metadata.py --env test
+ray submit --start slippi_db/decompression_cluster.yaml \
+  slippi_db/decompress_ray.py --env test
 """
 
 import time
