@@ -35,6 +35,7 @@ def check_multiple(env: str, num: int):
   start_time = time.perf_counter()
   singles_infos = test_peppi.get_singles_info(env)
 
+  # TODO: get better coverage, e.g. across characters and stages
   to_test = random.choices(singles_infos, k=num)
   keys = [d['key'] for d in to_test]
 
