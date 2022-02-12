@@ -8,7 +8,6 @@ ray submit --start slippi_db/parsing_cluster.yaml \
 
 import os
 import time
-import traceback
 from typing import List
 
 from absl import app
