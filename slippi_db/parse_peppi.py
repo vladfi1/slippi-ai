@@ -53,7 +53,7 @@ def get_player(player: pa.StructArray) -> ArrayNest:
       x=position.field('x'),
       y=position.field('y'),
       action=get_post('state'),
-      # invulnerable=get_post('hurtbox_state') != 0,  # libmelee does extra processing
+      invulnerable=get_post('hurtbox_state') != 0,  # libmelee does extra processing
       character=get_post('character'),  # uint8
       jumps_left=get_post('jumps'),  # uint8
       shield_strength=get_post('shield'),  # float

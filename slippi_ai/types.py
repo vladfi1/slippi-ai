@@ -92,7 +92,7 @@ PLAYER_TYPE = pa.struct([
     ('x', pa.float32()),
     ('y', pa.float32()),
     ('action', pa.uint16()),
-    # invulnerable=get_post('hurtbox_state') != 0,  # libmelee does extra processing
+    ('invulnerable', pa.bool_()),  # needs v2.0.1
     ('character', pa.uint8()),
     ('jumps_left', pa.uint8()),
     ('shield_strength', pa.float32()),
