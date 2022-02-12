@@ -3,7 +3,8 @@ cluster_name: slippi-parse
 
 # The maximum number of workers nodes to launch in addition to the head
 # node.
-max_workers: 1000
+# Max vCPUs is 512: https://console.aws.amazon.com/ec2/v2/home?region=us-east-1#Limits
+max_workers: 255
 
 # The autoscaler will scale up the cluster faster with higher upscaling speed.
 # E.g., if the task requires adding more nodes then autoscaler will gradually
@@ -47,8 +48,6 @@ provider:
     # availability_zone: us-west-2a,us-west-2b
     # Whether to allow node reuse. If set to False, nodes will be terminated
     # instead of stopped. If not present, the default is True.
-    # We need to set this to false to work around the __pycache__ issue:
-    # https://ray-distributed.slack.com/archives/CN2RGCHRR/p1638582892031600
     cache_stopped_nodes: False
 
 # How Ray will authenticate with newly launched nodes.
@@ -97,7 +96,7 @@ available_node_types:
         # You can also set custom resources.
         # For example, to mark a node type as having 1 CPU, 1 GPU, and 5 units of a resource called "custom", set
         # resources: {"CPU": 1, "GPU": 1, "custom": 5}
-        resources: {"mem": 512}
+        resources: {"mem": 512, "workers": 2}
         # Provider-specific config for this node type, e.g. instance type. By default
         # Ray will auto-configure unspecified fields such as SubnetId and KeyName.
         # For more documentation on available fields, see:
@@ -171,13 +170,10 @@ initialization_commands: []
 
 # List of shell commands to run to set up nodes.
 setup_commands:
-    # Note: if you're developing Ray, you probably want to create a Docker image that
-    # has your Ray repo pre-cloned. Then, you can replace the pip installs
-    # below with a git checkout <your_sha> (and possibly a recompile).
-    # To run the nightly version of ray (as opposed to the latest), either use a rayproject docker image
-    # that has the "nightly" (e.g. "rayproject/ray-ml:nightly-gpu") or uncomment the following line:
-    # - pip install -U "ray[default] @ https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray-2.0.0.dev0-cp37-cp37m-manylinux2014_x86_64.whl"
-    - pip install -e /slippi-ai
+    # We need to move things out of / to work around a __pycache__ issue:
+    # https://ray-distributed.slack.com/archives/CN2RGCHRR/p1638582892031600
+    - rm -rf $HOME/slippi-ai && cp -r /slippi-ai $HOME/slippi-ai
+    - pip install -e $HOME/slippi-ai
 
 # Custom commands that will be run on the head node after common setup.
 head_setup_commands: []
