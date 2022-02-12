@@ -44,6 +44,14 @@ def get_player(player: melee.PlayerState) -> dict:
       shield_strength=player.shield_strength,
       on_ground=player.on_ground,
       controller=get_controller(player.controller_state),
+      # v2.1.0
+      invulnerable=player.invulnerable,
+      # v3.5.0
+      # player.speed_air_x_self,
+      # player.speed_ground_x_self,
+      # player.speed_x_attack,
+      # player.speed_y_attack,
+      # player.speed_y_self,
   )
   # return pa.scalar(val, type=PLAYER_TYPE)
   return val
