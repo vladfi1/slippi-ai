@@ -142,7 +142,6 @@ class Dolphin:
 
     return gamestate
 
-
   def stop(self):
     self.console.stop()
 
