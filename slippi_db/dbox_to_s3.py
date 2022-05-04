@@ -70,6 +70,48 @@ def upload_to_raw(env: str, to_disk: bool = False):
   # TODO: handle this case
   assert not results.has_more  # max 1000
 
+# from https://gist.github.com/barbietunnie/d670d5601151129cbc02fbac3800e399
+def upload_to_dbx(
+    access_token,
+    file_path,
+    target_path,
+    timeout=900,
+    chunk_size=4 * 1024 * 1024,
+):
+    dbx = dropbox.Dropbox(access_token, timeout=timeout)
+    with open(file_path, "rb") as f:
+        file_size = os.path.getsize(file_path)
+        chunk_size = 4 * 1024 * 1024
+        if file_size <= chunk_size:
+            print(dbx.files_upload(f.read(), target_path))
+        else:
+            with tqdm(total=file_size, desc="Uploaded") as pbar:
+                upload_session_start_result = dbx.files_upload_session_start(
+                    f.read(chunk_size)
+                )
+                pbar.update(chunk_size)
+                cursor = dropbox.files.UploadSessionCursor(
+                    session_id=upload_session_start_result.session_id,
+                    offset=f.tell(),
+                )
+                commit = dropbox.files.CommitInfo(path=target_path)
+                while f.tell() < file_size:
+                    if (file_size - f.tell()) <= chunk_size:
+                        print(
+                            dbx.files_upload_session_finish(
+                                f.read(chunk_size), cursor, commit
+                            )
+                        )
+                    else:
+                        dbx.files_upload_session_append(
+                            f.read(chunk_size),
+                            cursor.session_id,
+                            cursor.offset,
+                        )
+                        cursor.offset = f.tell()
+                    pbar.update(chunk_size)
+
+
 def main(_):
   upload_to_raw(_ENV.value, to_disk=_TO_DISK.value)
 

@@ -1,7 +1,7 @@
 from absl import app
 import ray
 
-from slippi_db.make_dataset import (
+from slippi_db.run_parsing import (
   CLUSTER, ENV, WIPE, SERIAL, PARSER,
   CompressionType,
   process_all,
