@@ -27,7 +27,6 @@ def check_slp(env: str, key: str) -> Tuple[bool, str]:
   return passed, message
 
 def get_singles_info(env: str):
-  meta_db = upload_lib.get_db(env, 'meta')
-  metas = meta_db.find()
+  metas = upload_lib.get_db(env, upload_lib.META).find()
   metas = filter(preprocessing.is_training_replay, metas)
   return list(metas)
