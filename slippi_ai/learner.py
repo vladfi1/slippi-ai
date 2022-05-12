@@ -1,9 +1,10 @@
 from typing import List, Optional
 import sonnet as snt
 import tensorflow as tf
-from slippi_ai.data import Batch
 
+from slippi_ai.data import Batch
 from slippi_ai.policies import Policy
+from slippi_ai import embed
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -49,7 +50,8 @@ class Learner:
         initial_states)
 
     # switch axes to time-major
-    tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
+    tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
+        to_time_major, bm_gamestate)
 
     with tf.GradientTape() as tape:
       loss, final_states, metrics = self.policy.loss(

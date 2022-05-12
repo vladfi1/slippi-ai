@@ -11,17 +11,13 @@ import tree
 
 import melee
 
-from slippi_ai import embed, reward, stats, utils, networks
-from slippi_ai.types import Game, Nest, game_array_to_nt
+from slippi_ai import embed, reward, stats, utils
+from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
 
-class CompressedGame(NamedTuple):
-  states: Nest[np.ndarray]
-  actions: Nest[np.ndarray]
-  counts: Sequence[int]
-  rewards: Sequence[float]
+from slippi_ai.embed import StateActionReward
 
 class Batch(NamedTuple):
-  game: CompressedGame
+  game: StateActionReward
   needs_reset: bool
 
 def train_test_split(data_dir, subset=None, test_ratio=.1):
@@ -47,15 +43,16 @@ def train_test_split(data_dir, subset=None, test_ratio=.1):
     test_paths = train_paths
   return train_paths, test_paths
 
-def game_len(game: CompressedGame):
-  return len(game.counts)
+def game_len(game: StateActionReward):
+  return len(game.reward)
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source: Iterator[CompressedGame]):
+  def __init__(self, source: Iterator[StateActionReward]):
     self.source = source
-    self.game: CompressedGame = None
+    self.game: StateActionReward = None
+    self.frame = None
 
   def find_game(self, n):
     while True:
@@ -64,14 +61,19 @@ class TrajectoryManager:
     self.game = game
     self.frame = 0
 
-  def grab_chunk(self, n) -> Tuple[CompressedGame, bool]:
+  def grab_chunk(self, n) -> Tuple[StateActionReward, bool]:
+    """Grabs a chunk from a trajectory.
+
+    Subsequent trajectories overlap by a single frame.
+    """
     # TODO: write a unit test for this
-    needs_reset = self.game is None or game_len(self.game) - self.frame < n
+    needs_reset = self.game is None or self.frame + n >= game_len(self.game)
+
     if needs_reset:
       self.find_game(n)
 
     new_frame = self.frame + n
-    slice = lambda a: a[self.frame:new_frame]
+    slice = lambda a: a[self.frame:new_frame+1]
     chunk = tree.map_structure(slice, self.game)
     self.frame = new_frame
 
@@ -135,20 +137,26 @@ def indices_and_counts(
 def compress_repeated_actions(
     game: Game,
     rewards: Sequence[float],
-    embed_controller: embed.Embedding,
+    embed_controller: embed.Embedding[Controller, Any],
     max_repeat: int,
-  ) -> CompressedGame:
+    embed_game=embed.default_embed_game,
+  ) -> StateActionReward:
   controllers = embed_controller.from_state(game.p0.controller)
 
   repeats = detect_repeated_actions(controllers)
   indices, counts = indices_and_counts(repeats, max_repeat)
 
   compressed_states = tree.map_structure(lambda a: a[indices], game)
-  compressed_states = networks.embed_game.from_state(compressed_states)
+  compressed_states = embed_game.from_state(compressed_states)
   actions = tree.map_structure(lambda a: a[indices], controllers)
   reward_indices = np.concatenate([[0], indices[:-1]])
   compressed_rewards = np.add.reduceat(rewards, reward_indices)
-  compressed_game = CompressedGame(compressed_states, actions, counts, compressed_rewards)
+  compressed_game = StateActionReward(
+      state=compressed_states,
+      action=embed.ActionWithRepeat(
+          action=actions,
+          repeat=counts),
+      reward=compressed_rewards)
 
   shapes = [x.shape for x in tree.flatten(compressed_game)]
   for s in shapes:
@@ -189,13 +197,13 @@ class DataSource:
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
 
-  def produce_trajectories(self) -> Iterator[CompressedGame]:
+  def produce_trajectories(self) -> Iterator[StateActionReward]:
     raw_games = self.produce_raw_games()
     allowed_games = filter(self.is_allowed, raw_games)
     processed_games = map(self.process_game, allowed_games)
     return processed_games
 
-  def process_game(self, game: Game) -> CompressedGame:
+  def process_game(self, game: Game) -> StateActionReward:
     rewards = reward.compute_rewards(game)
     return compress_repeated_actions(
         game, rewards, self.embed_controller, self.max_action_repeat)

@@ -1,18 +1,13 @@
-from typing import Any, Sequence, Tuple
+from typing import Any, Tuple
 import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai.controller_heads import ControllerHead
-from slippi_ai import data, networks
+from slippi_ai import networks, types
 from slippi_ai.rl_lib import discounted_returns
+from slippi_ai import networks, embed
 
 RecurrentState = networks.RecurrentState
-ControllerWithRepeat = dict
-
-def get_p1_controller(game: data.CompressedGame) -> ControllerWithRepeat:
-  return dict(
-      controller=game.actions,
-      action_repeat=game.counts)
 
 class Policy(snt.Module):
 
@@ -20,31 +15,28 @@ class Policy(snt.Module):
       self,
       network: networks.Network,
       controller_head: ControllerHead,
+      embed_state_action: embed.StructEmbedding[embed.StateActionReward],
   ):
     super().__init__(name='Policy')
     self.network = network
     self.controller_head = controller_head
+    self.embed_state_action = embed_state_action
     self.initial_state = self.network.initial_state
     self.value_head = snt.Linear(1, name='value_head')
 
   def loss(
       self,
-      compressed: data.CompressedGame,
+      state_action: embed.StateActionReward,
       initial_state: RecurrentState,
       value_cost: float = 0.5,
       discount: float = 0.99,
   ) -> Tuple[tf.Tensor, RecurrentState, dict]:
-    gamestates = compressed.states
-
-    # compute policy loss
-    p1_controller = get_p1_controller(compressed)
-
-    p1_controller_embed = self.controller_head.embed_controller(p1_controller)
-    inputs = (gamestates, p1_controller_embed)
+    inputs = self.embed_state_action(state_action)
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
-    prev_action = tf.nest.map_structure(lambda t: t[:-1], p1_controller)
-    next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
+    action = state_action.action
+    prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
+    next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
     distances = self.controller_head.distance(
         outputs[:-1], prev_action, next_action)
@@ -52,10 +44,10 @@ class Policy(snt.Module):
 
     # compute value loss
     values = tf.squeeze(self.value_head(outputs), -1)
-    num_frames = tf.cast(compressed.counts[1:] + 1, tf.float32)
+    num_frames = tf.cast(state_action.action.repeat[1:] + 1, tf.float32)
     discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
     value_targets = discounted_returns(
-        rewards=tf.cast(compressed.rewards[1:], tf.float32),
+        rewards=tf.cast(state_action.reward[1:], tf.float32),
         discounts=discounts,
         bootstrap=values[-1])
     value_targets = tf.stop_gradient(value_targets)
@@ -68,7 +60,7 @@ class Policy(snt.Module):
 
     metrics = dict(
         policy=dict(
-            distances,
+            types.nt_to_nest(distances),
             loss=policy_loss,
         ),
         value=dict(
@@ -83,17 +75,14 @@ class Policy(snt.Module):
 
   def sample(
       self,
-      compressed: data.CompressedGame,
+      state_action: embed.StateActionReward,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> Tuple[ControllerWithRepeat, RecurrentState]:
-    gamestates = compressed.states
-    p1_controller = get_p1_controller(compressed)
+  ) -> Tuple[embed.Action, RecurrentState]:
+    input = self.embed_state_action(state_action)
+    output, final_state = self.network.unroll(input, initial_state)
 
-    p1_controller_embed = self.controller_head.embed_controller(p1_controller)
-    inputs = (gamestates, p1_controller_embed)
-    output, final_state = self.network.step(inputs, initial_state)
-
-    controller_sample = self.controller_head.sample(
-        output, p1_controller, **kwargs)
-    return controller_sample, final_state
+    prev_action = state_action.action
+    next_action = self.controller_head.sample(
+        output, prev_action, **kwargs)
+    return next_action, final_state

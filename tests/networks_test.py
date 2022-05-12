@@ -4,13 +4,10 @@ from parameterized import parameterized
 import numpy as np
 import tensorflow as tf
 
-import learner
-import networks
 import data
-import paths
-import utils
-import embed
-from policies import get_p1_controller
+from slippi_ai import (
+    learner, networks, paths, data, utils, embed, policies
+)
 
 def assert_tensors_close(t1, t2):
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
@@ -42,7 +39,7 @@ def get_inputs(data_source: data.DataSource):
   # from Policy
   gamestate, action_repeat, rewards = tm_gamestate
   del rewards
-  p1_controller = get_p1_controller(gamestate, action_repeat)
+  p1_controller = policies.get_p1_controller(gamestate, action_repeat)
   p1_controller_embed = embed_controller_with_repeat(p1_controller)
   return (gamestate, p1_controller_embed)
 

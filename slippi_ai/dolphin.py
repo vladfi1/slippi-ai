@@ -2,8 +2,7 @@ import abc
 import atexit
 from dataclasses import dataclass
 import logging
-import shutil
-from typing import Dict, Mapping, Tuple
+from typing import Dict, Mapping
 
 import melee
 
@@ -56,10 +55,10 @@ class Dolphin:
 
   def __init__(
       self,
-      dolphin_path: str,
-      iso_path: str,
+      path: str,
+      iso: str,
       players: Mapping[int, Player],
-      stage: melee.Stage = melee.Stage.YOSHIS_STORY,
+      stage: melee.Stage = melee.Stage.FINAL_DESTINATION,
       online_delay=0,
       blocking_input=True,
       slippi_port=51441,
@@ -72,7 +71,7 @@ class Dolphin:
     self._stage = stage
 
     console = melee.Console(
-        path=dolphin_path,
+        path=path,
         online_delay=online_delay,
         blocking_input=blocking_input,
         slippi_port=slippi_port,
@@ -99,7 +98,7 @@ class Dolphin:
         self._menuing_controllers.append((controller, player))
 
     console.run(
-        iso_path=iso_path,
+        iso_path=iso,
         environment_vars=env_vars,
     )
 
