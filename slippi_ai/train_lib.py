@@ -52,7 +52,7 @@ class TrainManager:
   def step(self) -> dict:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
-      batch = sanitize_batch(batch)
+      # batch = sanitize_batch(batch)
     with self.step_profiler:
       stats, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)

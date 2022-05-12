@@ -87,9 +87,11 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
   data_config = dict(_config['data'], embed_controller=embed_controller)
   train_data = data.make_source(filenames=train_paths, **data_config)
   test_data = data.make_source(filenames=test_paths, **data_config)
-  test_batch = train_lib.sanitize_batch(next(test_data)[0])
+  # test_batch = train_lib.sanitize_batch(next(test_data)[0])
+  test_batch = next(test_data)[0]
 
-  assert test_batch[0][0]['player'][1]['jumps_left'].dtype == np.uint8
+  # assert test_batch.game.states.p0.jumps_left.dtype == np.uint8
+  # assert test_batch[0][0]['player'][1]['jumps_left'].dtype == np.uint8
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
@@ -118,7 +120,7 @@ def main(dataset, expt_dir, num_epochs, epoch_time, save_interval, _config, _log
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
-  
+
   save_to_s3 = _config['save_to_s3'] and 'S3_CREDS' in os.environ
   if save_to_s3:
     s3_store = s3_lib.get_store()

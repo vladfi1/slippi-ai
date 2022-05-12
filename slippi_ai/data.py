@@ -2,24 +2,21 @@ import atexit
 import itertools
 import multiprocessing as mp
 import os
-import pickle
 import random
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
-import zlib
 
 import numpy as np
+import pyarrow.parquet as pq
 import tree
 
 import melee
 
-from slippi_ai import embed, reward, stats, utils
-
-Nest = Any
-Controller = Nest
-Game = Nest
+from slippi_ai import embed, reward, stats, utils, networks
+from slippi_ai.types import Game, Nest, game_array_to_nt
 
 class CompressedGame(NamedTuple):
-  states: Game
+  states: Nest[np.ndarray]
+  actions: Nest[np.ndarray]
   counts: Sequence[int]
   rewards: Sequence[float]
 
@@ -81,13 +78,9 @@ class TrajectoryManager:
     return Batch(chunk, needs_reset)
 
 def swap_players(game: Game) -> Game:
-  old_players = game['player']
-  new_players = {1: old_players[2], 2: old_players[1]}
-  new_game = game.copy()
-  new_game['player'] = new_players
-  return new_game
+  return game._replace(p0=game.p1, p1=game.p0)
 
-def detect_repeated_actions(controllers: Nest) -> Sequence[bool]:
+def detect_repeated_actions(controllers: Nest[np.ndarray]) -> Sequence[bool]:
   """Labels actions as repeated or not.
 
   Args:
@@ -145,21 +138,22 @@ def compress_repeated_actions(
     embed_controller: embed.Embedding,
     max_repeat: int,
   ) -> CompressedGame:
-  controllers = game['player'][1]['controller_state']
-  controllers = embed_controller.map(lambda e, a: e.preprocess(a), controllers)
+  controllers = embed_controller.from_state(game.p0.controller)
 
   repeats = detect_repeated_actions(controllers)
   indices, counts = indices_and_counts(repeats, max_repeat)
 
-  compressed_game = tree.map_structure(lambda a: a[indices], game)
+  compressed_states = tree.map_structure(lambda a: a[indices], game)
+  compressed_states = networks.embed_game.from_state(compressed_states)
+  actions = tree.map_structure(lambda a: a[indices], controllers)
   reward_indices = np.concatenate([[0], indices[:-1]])
   compressed_rewards = np.add.reduceat(rewards, reward_indices)
-  compressed_game = CompressedGame(compressed_game, counts, compressed_rewards)
+  compressed_game = CompressedGame(compressed_states, actions, counts, compressed_rewards)
 
   shapes = [x.shape for x in tree.flatten(compressed_game)]
   for s in shapes:
     assert s == shapes[0]
-  
+
   return compressed_game
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
@@ -211,19 +205,18 @@ class DataSource:
     self.file_counter = 0
     for path in itertools.cycle(self.filenames):
       self.file_counter += 1
-      with open(path, 'rb') as f:
-        obj_bytes = f.read()
-      if self.compressed:
-        obj_bytes = zlib.decompress(obj_bytes)
-      game = pickle.loads(obj_bytes)
+      table = pq.read_table(path)
+      game_struct = table['root'].combine_chunks()
+      game = game_array_to_nt(game_struct)
       yield game
       yield swap_players(game)
 
   def is_allowed(self, game: Game) -> bool:
+    # TODO: handle Zelda/Sheik transformation
     return (
-        game['player'][1]['character'][0] in self.allowed_characters
+        game.p0.character[0] in self.allowed_characters
         and
-        game['player'][2]['character'][0] in self.allowed_opponents)
+        game.p1.character[0] in self.allowed_opponents)
 
   def __next__(self) -> Tuple[Batch, float]:
     next_batch = utils.batch_nest(

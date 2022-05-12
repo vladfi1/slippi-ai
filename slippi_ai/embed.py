@@ -2,30 +2,36 @@
 Converts SSBM types to Tensorflow types.
 """
 
+import abc
 import collections
 import math
-from typing import List, Tuple
+from typing import Generic, List, Tuple, TypeVar
 
 import numpy as np
 
-# allow using this file without tensorflow
-try:
-  import tensorflow as tf
-  import tensorflow_probability as tfp
-  float_type = tf.float32
-except ModuleNotFoundError:
-  print('WARNING: tensorflow not found, some functions will fail')
+import tensorflow as tf
+import tensorflow_probability as tfp
 
 from melee import enums
 
-class Embedding:
-  def from_state(self, state):
+from slippi_ai.types import Controller, Nest, Player
+
+float_type = tf.float32
+In = TypeVar('In')
+Out = TypeVar('Out')
+
+class Embedding(Generic[In, Out], abc.ABC):
+  """Embeds game type (In) into tf-ready type Out."""
+
+  def from_state(self, state: In) -> Out:
+    """Takes a parsed state and returns"""
     return self.dtype(state)
 
-  def input_signature(self):
-    return tf.TensorSpec((), self.dtype)
+  @abc.abstractmethod
+  def __call__(self, x: Out) -> tf.Tensor:
+    """Embed the input state as a flat tensor."""
 
-  def map(self, f, *args):
+  def map(self, f, *args: Out) -> Out:
     return f(self, *args)
 
   def flatten(self, struct):
@@ -34,17 +40,17 @@ class Embedding:
   def unflatten(self, seq):
     return next(seq)
 
-  def preprocess(self, x):
-    """Used by discretization."""
-    return x
-  
-  def dummy(self):
-    """A dummy value."""
-    return self.dtype(0)
+  # def preprocess(self, x: In):
+  #   """Used by discretization."""
+  #   return x
 
-class BoolEmbedding(Embedding):
+  # def dummy(self):
+  #   """A dummy value."""
+  #   return self.dtype(0)
+
+class BoolEmbedding(Embedding[bool, np.bool_]):
   size = 1
-  dtype = bool
+  dtype = np.bool_
 
   def __init__(self, name='bool', on=1., off=0.):
     self.name = name
@@ -65,13 +71,13 @@ class BoolEmbedding(Embedding):
       t = t / temperature
     dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
     return dist.sample()
-  
+
   def dummy(self):
     return False
 
 embed_bool = BoolEmbedding()
 
-class FloatEmbedding(Embedding):
+class FloatEmbedding(Embedding[float, np.float32]):
   dtype = np.float32
 
   def __init__(self, name, scale=None, bias=None, lower=-10., upper=10.):
@@ -114,12 +120,11 @@ class FloatEmbedding(Embedding):
     return tf.square(predicted - target)
 
   def sample(self, t, **_):
-    # TODO: make this an actual sample from a Gaussian
-    return self.extract(t)
+    raise NotImplementedError("Can't sample floats yet.")
 
 embed_float = FloatEmbedding("float")
 
-class OneHotEmbedding(Embedding):
+class OneHotEmbedding(Embedding[int, int]):
 
   def __init__(self, name, size, dtype=np.int32):
     self.name = name
@@ -128,7 +133,7 @@ class OneHotEmbedding(Embedding):
     self.dtype = dtype
 
   def __call__(self, t, residual=False, **_):
-    one_hot = tf.one_hot(t, self.size, 1., 0.)
+    one_hot = tf.one_hot(t, self.size)
 
     if residual:
       logits = math.log(self.size * 10) * one_hot
@@ -154,22 +159,11 @@ class OneHotEmbedding(Embedding):
       logits = logits / temperature
     return tfp.distributions.Categorical(logits=logits).sample()
 
-class EnumEmbedding(OneHotEmbedding):
-  def __init__(self, enum_class: type, **kwargs):
-    super().__init__(str(enum_class), **kwargs)
-    self._class = enum_class
-
-  def from_state(self, obj):
-    assert isinstance(obj, self._class)
-    x = self.dtype(obj.value)
-    assert x >= 0 and x < self.size
-    return x
-
 def get_dict(d, k):
   return d[k]
 
-class StructEmbedding(Embedding):
-  def __init__(self, name: str, embedding: List[Tuple[object, Embedding]],
+class StructEmbedding(Embedding[In, Nest]):
+  def __init__(self, name: str, embedding: List[Tuple[str, Embedding]],
                is_dict=False, key_map=None):
     self.name = name
     self.embedding = embedding
@@ -189,14 +183,14 @@ class StructEmbedding(Embedding):
         (k, e.map(f, *[x[k] for x in args]))
         for k, e in self.embedding)
 
-  def flatten(self, struct):
+  def flatten(self, struct: dict):
     for k, e in self.embedding:
       yield from e.flatten(struct[k])
 
   def unflatten(self, seq):
     return {k: e.unflatten(seq) for k, e in self.embedding}
 
-  def from_state(self, state) -> dict:
+  def from_state(self, state: In) -> dict:
     struct = {}
     for field, op in self.embedding:
       key = self.key_map.get(field, field)
@@ -221,20 +215,20 @@ class StructEmbedding(Embedding):
       embed.append(t)
     return tf.concat(axis=rank-1, values=embed)
 
-  def split(self, embedded):
+  def split(self, embedded: tf.Tensor):
     fields, ops = zip(*self.embedding)
     sizes = [op.size for op in ops]
     splits = tf.split(embedded, sizes, -1)
     return dict(zip(fields, splits))
 
-  def distance(self, embedded, target):
+  def distance(self, embedded: tf.Tensor, target: Nest[tf.Tensor]) -> Nest[tf.Tensor]:
     distances = {}
     split = self.split(embedded)
     for field, op in self.embedding:
       distances[field] = op.distance(split[field], target[field])
     return distances
 
-  def sample(self, embedded, **kwargs):
+  def sample(self, embedded: tf.Tensor, **kwargs):
     samples = {}
     split = self.split(embedded)
     for field, op in self.embedding:
@@ -244,67 +238,13 @@ class StructEmbedding(Embedding):
   def dummy(self):
     return self.map(lambda e: e.dummy())
 
-class ArrayEmbedding(Embedding):
-  def __init__(self, name: str, op: Embedding, permutation: List[int]):
-    self.name = name
-    self.op = op
-    self.permutation = permutation
-    self.size = len(permutation) * op.size
-
-  def map(self, f, *args):
-    return tuple(
-        self.op.map(f, *[x[i] for x in args])
-        for i in range(len(self.permutation))
-    )
-
-  def flatten(self, array):
-    assert len(array) == len(self.permutation)
-    for a in array:
-      yield from self.op.flatten(a)
-
-  def unflatten(self, seq):
-    return [self.op.unflatten(seq) for _ in self.permutation]
-
-  def from_state(self, state):
-    return tuple(self.op.from_state(state[i]) for i in self.permutation)
-
-  def input_signature(self):
-    return (self.op.input_signature(),) * len(self.permutation)
-
-  def __call__(self, array, **kwargs):
-    return tf.concat(
-        [self.op(array[i], **kwargs) for i in self.permutation], axis=-1)
-
-  def split(self, embedded):
-    return tf.split(embedded, len(self.permutation), -1)
-
-  def extract(self, embedded):
-    # a bit suspect here, we can't recreate the original array,
-    # only the bits that were embedded. oh well
-    array = max(self.permutation) * [None]
-
-    ts = tf.split(embedded, num_or_size_splits=len(self.permutation), axis=-1)
-
-    for i, t in zip(self.permutation, ts):
-      array[i] = self.op.extract(t)
-
-    return array
-
-  def distance(self, embedded, target):
-    splits = self.split(embedded)
-    return [self.op.distance(s, t) for s, t in zip(splits, target)]
-
-  def sample(self, embedded, **kwargs):
-    return [self.op.sample(s, **kwargs) for s in self.split(embedded)]
-
-  def dummy(self):
-    return self.map(lambda e: e.dummy())
-
 # one larger than KIRBY_STONE_UNFORMING
-embed_action = EnumEmbedding(enums.Action, size=0x18F, dtype=np.uint16)
+# embed_action = EnumEmbedding(enums.Action, size=0x18F, dtype=np.int16)
+embed_action = OneHotEmbedding('Action', size=0x18F, dtype=np.int32)
 
 # one larger than SANDBAG
-embed_char = EnumEmbedding(enums.Character, size=0x21, dtype=np.uint8)
+# embed_char = EnumEmbedding(enums.Character, size=0x21, dtype=np.uint8)
+embed_char = OneHotEmbedding('Character', size=0x21, dtype=np.uint8)
 
 # puff and kirby have 6 jumps
 embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
@@ -315,21 +255,18 @@ def make_player_embedding(
     speed_scale: float = 0.5,
     with_speeds: bool = False,
     with_controller: bool = True,
-    ):
+) -> StructEmbedding[Player, Nest]:
     embed_xy = FloatEmbedding("xy", scale=xy_scale)
-    embed_position = StructEmbedding("position", [
-        ('x', embed_xy),
-        ('y', embed_xy),
-    ])
 
     embedding = [
       ("percent", FloatEmbedding("percent", scale=0.01)),
       ("facing", BoolEmbedding("facing", off=-1.)),
-      ('position', embed_position),
+      ('x', embed_xy),
+      ('y', embed_xy),
       ("action", embed_action),
       # ("action_frame", FloatEmbedding("action_frame", scale=0.02)),
       ("character", embed_char),
-      # ("invulnerable", embed_bool),
+      ("invulnerable", embed_bool),
       # ("hitlag_frames_left", embedFrame),
       # ("hitstun_frames_left", embedFrame),
       ("jumps_left", embed_jumps_left),
@@ -355,22 +292,19 @@ def make_player_embedding(
     return StructEmbedding("player", embedding)
 
 # future proof in case we want to play on wacky stages
-embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
+# embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
+embed_stage = OneHotEmbedding('Stage', size=64, dtype=np.uint8)
 
-def make_game_embedding(player_config={}, players=(1, 2), ports=None):
+_PORTS = (0, 1)
+_PLAYERS = tuple(f'p{p}' for p in _PORTS)
+# _SWAP_MAP = dict(zip(_PLAYERS, reversed(_PLAYERS)))
+
+def make_game_embedding(player_config={}):
   embed_player = make_player_embedding(**player_config)
-  key_map = dict(zip(players, ports)) if ports else None
-  embed_players = StructEmbedding(
-      "players",
-      [(i, embed_player) for i in players],
-      is_dict=True,
-      key_map=key_map,
-  )
 
   embedding = [
     ('stage', embed_stage),
-    ('players', embed_players),
-  ]
+  ] + [(p, embed_player) for p in _PLAYERS]
 
   return StructEmbedding("game", embedding)
 
@@ -390,48 +324,43 @@ LEGAL_BUTTONS = [
 embed_buttons = StructEmbedding(
     "buttons",
     [(b.value, BoolEmbedding(name=b.value)) for b in LEGAL_BUTTONS],
-    is_dict=True,
-    key_map={b.value: b for b in LEGAL_BUTTONS},
 )
 
 class DiscreteEmbedding(OneHotEmbedding):
   """Buckets float inputs in [0, 1]."""
 
   def __init__(self, n=16):
-    super().__init__('DiscreteEmbedding', n+1)
+    super().__init__('DiscreteEmbedding', n+1, dtype=np.uint8)
     self.n = n
 
-  def maybe_bucket(self, t):
-    if t.dtype == tf.float32:
-      t = tf.cast(t * self.n + 0.5, tf.int32)
-    return t
+  # def sample(self, embedded, **kwargs):
+  #   discrete = super().sample(embedded, **kwargs)
+  #   return tf.cast(discrete, tf.float32) / self.n
 
-  def __call__(self, t):
-    return super().__call__(self.maybe_bucket(t))
-
-  def distance(self, embedded, target):
-    return super().distance(embedded, self.maybe_bucket(target))
-
-  def sample(self, embedded, **kwargs):
-    discrete = super().sample(embedded, **kwargs)
-    return tf.cast(discrete, tf.float32) / self.n
-
-  def preprocess(self, a):
+  def from_state(self, a):
     return (a * self.n + 0.5).astype(self.dtype)
 
-def get_controller_embedding(discrete_axis_spacing=0):
+  def decode(self, a):
+    return np.array(a, np.float32) / self.n
+
+embed_shoulder = DiscreteEmbedding(4)
+
+def get_controller_embedding(
+    discrete_axis_spacing: int = 0,
+) -> StructEmbedding[Controller, Nest]:
   if discrete_axis_spacing:
     embed_axis = DiscreteEmbedding(discrete_axis_spacing)
   else:
     embed_axis = embed_float
-  embed_stick = ArrayEmbedding("stick", embed_axis, [0, 1])
+
+  embed_stick = StructEmbedding(
+      "stick", [('x', embed_axis), ('y', embed_axis)])
 
   return StructEmbedding("controller", [
-      ("button", embed_buttons),
+      ("buttons", embed_buttons),
       ("main_stick", embed_stick),
       ("c_stick", embed_stick),
-      ("l_shoulder", embed_float),
-      # ("r_shoulder", embed_float),
+      ("shoulder", embed_shoulder),
   ])
 
 embed_controller_default = get_controller_embedding()  # continuous sticks
