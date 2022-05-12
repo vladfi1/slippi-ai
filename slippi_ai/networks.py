@@ -3,10 +3,10 @@ from typing import Any, Tuple
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai import embed, utils, data
+from slippi_ai import embed, utils, types
 
 RecurrentState = Any
-Inputs = Tuple[data.Game, tf.Tensor]
+Inputs = Tuple[types.Nest[tf.Tensor], tf.Tensor]
 
 # don't use opponent's controller
 # our own will be exposed in the input

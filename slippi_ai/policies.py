@@ -9,14 +9,10 @@ from slippi_ai.rl_lib import discounted_returns
 RecurrentState = networks.RecurrentState
 ControllerWithRepeat = dict
 
-def get_p1_controller(
-    gamestates: data.Game,
-    action_repeat: Sequence[int],
-) -> ControllerWithRepeat:
-  p1_controller = gamestates['player'][1]['controller_state']
+def get_p1_controller(game: data.CompressedGame) -> ControllerWithRepeat:
   return dict(
-      controller=p1_controller,
-      action_repeat=action_repeat)
+      controller=game.actions,
+      action_repeat=game.counts)
 
 class Policy(snt.Module):
 
@@ -39,11 +35,9 @@ class Policy(snt.Module):
       discount: float = 0.99,
   ) -> Tuple[tf.Tensor, RecurrentState, dict]:
     gamestates = compressed.states
-    action_repeat = compressed.counts
-    num_frames = tf.cast(action_repeat[1:] + 1, tf.float32)
 
     # compute policy loss
-    p1_controller = get_p1_controller(gamestates, action_repeat)
+    p1_controller = get_p1_controller(compressed)
 
     p1_controller_embed = self.controller_head.embed_controller(p1_controller)
     inputs = (gamestates, p1_controller_embed)
@@ -58,6 +52,7 @@ class Policy(snt.Module):
 
     # compute value loss
     values = tf.squeeze(self.value_head(outputs), -1)
+    num_frames = tf.cast(compressed.counts[1:] + 1, tf.float32)
     discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
     value_targets = discounted_returns(
         rewards=tf.cast(compressed.rewards[1:], tf.float32),
@@ -93,8 +88,7 @@ class Policy(snt.Module):
       **kwargs,
   ) -> Tuple[ControllerWithRepeat, RecurrentState]:
     gamestates = compressed.states
-    action_repeat = compressed.counts
-    p1_controller = get_p1_controller(gamestates, action_repeat)
+    p1_controller = get_p1_controller(compressed)
 
     p1_controller_embed = self.controller_head.embed_controller(p1_controller)
     inputs = (gamestates, p1_controller_embed)

@@ -133,6 +133,7 @@ experiments/
 
 # don't track replays
 data/AllCompressed/
+data/untracked/
 
 # storage for b9 scripts
 run_scripts/

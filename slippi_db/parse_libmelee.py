@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pyarrow as pa
@@ -6,34 +6,39 @@ import pyarrow as pa
 import melee
 
 from slippi_ai.types import (
-  BUTTONS,
-  CONTROLLER_TYPE,
-  PLAYER_TYPE,
   GAME_TYPE,
-  STICK_TYPE,
+  LIBMELEE_BUTTONS,
+  Buttons,
+  Controller,
+  Game,
   InvalidGameError,
+  Player,
+  Stick,
+  nt_to_nest,
 )
 
-def get_stick(stick: Tuple[np.float32]) -> dict:
-  val = dict(x=stick[0], y=stick[1])
-  # return pa.scalar(val, type=STICK_TYPE)
-  return val
+def get_stick(stick: Tuple[np.float32]) -> Stick:
+  return Stick(x=stick[0], y=stick[1])
 
-def get_controller(cs: melee.ControllerState) -> dict:
-  val = dict(
+def get_buttons(button: Dict[melee.Button, bool]) -> Buttons:
+  return Buttons(**{
+      name: button[lm_button]
+      for name, lm_button in LIBMELEE_BUTTONS.items()
+  })
+
+def get_controller(cs: melee.ControllerState) -> Controller:
+  return Controller(
       main_stick=get_stick(cs.main_stick),
       c_stick=get_stick(cs.c_stick),
       shoulder=cs.l_shoulder,
-      buttons={b.value: cs.button[b] for b in BUTTONS},
+      buttons=get_buttons(cs.button),
   )
-  # return pa.scalar(val, type=CONTROLLER_TYPE)
-  return val
 
-def get_player(player: melee.PlayerState) -> dict:
+def get_player(player: melee.PlayerState) -> Player:
   if player.action == melee.Action.UNKNOWN_ANIMATION:
     raise InvalidGameError('UNKNOWN_ANIMATION')
 
-  val = dict(
+  return Player(
       percent=player.percent,
       facing=player.facing,
       x=player.position.x,
@@ -53,21 +58,17 @@ def get_player(player: melee.PlayerState) -> dict:
       # player.speed_y_attack,
       # player.speed_y_self,
   )
-  # return pa.scalar(val, type=PLAYER_TYPE)
-  return val
 
-def get_game(game: melee.GameState) -> dict:
+def get_game(game: melee.GameState) -> Game:
   ports = sorted(game.players)
   assert len(ports) == 2
   players = {
       f'p{i}': get_player(game.players[p])
       for i, p in enumerate(ports)}
-  val = dict(
+  return Game(
       players,
       stage=game.stage.value,
   )
-  # return pa.scalar(val, type=GAME_TYPE)
-  return val
 
 def get_slp(path: str) -> pa.StructArray:
   """Processes a slippi replay file."""
@@ -86,7 +87,8 @@ def get_slp(path: str) -> pa.StructArray:
   while gamestate:
     if sorted(gamestate.player) != ports:
       raise InvalidGameError(f'Ports changed on frame {len(frames)}')
-    frames.append(get_game(gamestate))
+    game = get_game(gamestate)
+    frames.append(nt_to_nest(game))
     gamestate = console.step()
 
   return pa.array(frames, type=GAME_TYPE)

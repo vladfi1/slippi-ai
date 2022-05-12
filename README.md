@@ -73,8 +73,8 @@ print(df.columns)
 To access the game files, you can unzip the tar, or mount it directly using [ratarmount](https://github.com/mxmlnkn/ratarmount). The tar is a flat directory with filenames equal to the md5 hash of the original .slp replay, corresponding to the "key" column in the metadata. Each file is a gzip-compressed parquet table with a single column called "root".
 
 ```python
-import pyarrow as pa
-table = pa.parquet.read_table(game_path)
+import pyarrow.parquet as pq
+table = pq.read_table(game_path)
 game = table['root'].combine_chunks()  # pyarrow.StructArray
 game[0].as_py()  # nested python dictionary representing the first frame
 ```
