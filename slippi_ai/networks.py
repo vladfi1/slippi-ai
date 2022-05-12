@@ -6,17 +6,10 @@ import tensorflow as tf
 from slippi_ai import embed, utils, types
 
 RecurrentState = Any
-Inputs = Tuple[types.Nest[tf.Tensor], tf.Tensor]
+Inputs = tf.Tensor
 
-# don't use opponent's controller
-# our own will be exposed in the input
-embed_game = embed.make_game_embedding(
-    player_config=dict(with_controller=False))
-
-def process_inputs(inputs: Inputs) -> tf.Tensor:
-  gamestate, p1_controller_embed = inputs
-  gamestate_embed = embed_game(gamestate)
-  return tf.concat([gamestate_embed, p1_controller_embed], -1)
+# TODO: make configurable
+INPUT_SIZE = embed.default_embed_game.size
 
 class Network(snt.Module):
 
@@ -73,13 +66,11 @@ class MLP(Network):
 
   def step(self, inputs, prev_state):
     del prev_state
-    flat_inputs = process_inputs(inputs)
-    return self._mlp(flat_inputs), ()
+    return self._mlp(inputs), ()
 
   def unroll(self, inputs, initial_state):
     del initial_state
-    flat_inputs = process_inputs(inputs)
-    return self._mlp(flat_inputs), ()
+    return self._mlp(inputs), ()
 
 class FrameStackingMLP(Network):
 
@@ -99,30 +90,26 @@ class FrameStackingMLP(Network):
 
   def initial_state(self, batch_size):
     return [
-        tf.zeros([batch_size, embed_game.size])
+        tf.zeros([batch_size, INPUT_SIZE])
         for _ in range(self._num_frames-1)
     ]
 
   def step(self, inputs, prev_state):
-    gamestate, p1_controller_embed = inputs
-    frames = prev_state + [embed_game(gamestate)]
+    frames = prev_state + [inputs]
     next_state = frames[1:]
-    stacked_frames = tf.concat(frames + [p1_controller_embed], -1)
+    stacked_frames = tf.concat(frames, -1)
     return self._mlp(stacked_frames), next_state
 
   def unroll(self, inputs, initial_state):
-    gamestate, p1_controller_embed = inputs
-    gamestate_embed = embed_game(gamestate)  # [T, B, ...]
-
     past_frames = tf.stack(initial_state)  # [N-1, B, ...]
-    all_frames = tf.concat([past_frames, gamestate_embed], 0)  # [N-1 + T, B, ...]
+    all_frames = tf.concat([past_frames, inputs], 0)  # [N-1 + T, B, ...]
 
     n = self._num_frames - 1
 
     # slices has N tensors of dimension [T, B, ...]
     slices = [all_frames[i:i-n] for i in range(n)]
     slices.append(all_frames[n:])
-    stacked_frames = tf.concat(slices + [p1_controller_embed], -1)
+    stacked_frames = tf.concat(slices, -1)
 
     final_state = [all_frames[i] for i in range(-n, 0)]
 
@@ -203,14 +190,12 @@ class LSTM(Network):
     return self._lstm.initial_state(batch_size)
 
   def step(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    flat_inputs = self._resnet(flat_inputs)
-    return self._lstm(flat_inputs, prev_state)
+    inputs = self._resnet(inputs)
+    return self._lstm(inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    flat_inputs = self._resnet(flat_inputs)
-    return utils.dynamic_rnn(self._lstm, flat_inputs, prev_state)
+    inputs = self._resnet(inputs)
+    return utils.dynamic_rnn(self._lstm, inputs, prev_state)
 
 
 class ResLSTMBlock(snt.RNNCore):
@@ -248,14 +233,12 @@ class DeepResLSTM(Network):
     return self.deep_rnn.initial_state(batch_size)
 
   def step(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    flat_inputs = self.encoder(flat_inputs)
-    return self.deep_rnn(flat_inputs, prev_state)
+    inputs = self.encoder(inputs)
+    return self.deep_rnn(inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    flat_inputs = self.encoder(flat_inputs)
-    return utils.dynamic_rnn(self.deep_rnn, flat_inputs, prev_state)
+    inputs = self.encoder(inputs)
+    return utils.dynamic_rnn(self.deep_rnn, inputs, prev_state)
 
 class GRU(Network):
   CONFIG=dict(hidden_size=128)
@@ -269,12 +252,10 @@ class GRU(Network):
     return self._gru.initial_state(batch_size)
 
   def step(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    return self._gru(flat_inputs, prev_state)
+    return self._gru(inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
-    flat_inputs = process_inputs(inputs)
-    return utils.dynamic_rnn(self._gru, flat_inputs, prev_state)
+    return utils.dynamic_rnn(self._gru, inputs, prev_state)
 
 class Copier(Network):
   '''

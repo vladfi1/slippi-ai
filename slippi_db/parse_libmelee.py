@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import pyarrow as pa
@@ -17,8 +17,8 @@ from slippi_ai.types import (
   nt_to_nest,
 )
 
-def get_stick(stick: Tuple[np.float32]) -> Stick:
-  return Stick(x=stick[0], y=stick[1])
+def get_stick(stick: Tuple[float]) -> Stick:
+  return Stick(*map(np.float32, stick))
 
 def get_buttons(button: Dict[melee.Button, bool]) -> Buttons:
   return Buttons(**{
@@ -59,15 +59,18 @@ def get_player(player: melee.PlayerState) -> Player:
       # player.speed_y_self,
   )
 
-def get_game(game: melee.GameState) -> Game:
-  ports = sorted(game.players)
+def get_game(
+    game: melee.GameState,
+    ports: Optional[Sequence[int]] = None,
+) -> Game:
+  ports = ports or sorted(game.players)
   assert len(ports) == 2
   players = {
       f'p{i}': get_player(game.players[p])
       for i, p in enumerate(ports)}
   return Game(
-      players,
       stage=game.stage.value,
+      **players,
   )
 
 def get_slp(path: str) -> pa.StructArray:

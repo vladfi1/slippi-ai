@@ -9,14 +9,15 @@ from pymongo import MongoClient
 import gridfs
 
 class S3Keys(typing.NamedTuple):
-  params: str
-  saved_model: str
+  combined: str  # currently used for both config and params
+  # saved_model: str  # no longer used
 
-def get_keys(tag: str):
-  return S3Keys(
-      params=f"slippi-ai.params.{tag}",
-      saved_model=f"slippi-ai.experiments.{tag}.saved_model",
-  )
+SEP = "."
+S3_PREFIX = SEP.join(["slippi-ai", "experiments"])
+
+def get_keys(tag: str) -> S3Keys:
+  keys = {key: SEP.join([S3_PREFIX, tag, key]) for key in S3Keys._fields}
+  return S3Keys(**keys)
 
 @functools.lru_cache()
 def get_store(s3_creds: str = None) -> Boto3Store:

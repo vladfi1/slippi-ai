@@ -18,7 +18,7 @@ class Independent(ControllerHead):
       residual=False,
   )
 
-  def __init__(self, residual, embed_controller):
+  def __init__(self, residual: bool, embed_controller: embed.Embedding):
     super().__init__(name='IndependentControllerHead')
     self.embed_controller = embed_controller
     self.to_controller_input = snt.Linear(self.embed_controller.size)
@@ -90,7 +90,12 @@ class AutoRegressive(ControllerHead):
       component_depth=0,
   )
 
-  def __init__(self, embed_controller, residual_size, component_depth):
+  def __init__(
+      self,
+      embed_controller: embed.Embedding,
+      residual_size: int,
+      component_depth: int,
+  ):
     super().__init__(name='AutoRegressive')
     self.embed_controller = embed_controller
     self.to_residual = snt.Linear(residual_size)
