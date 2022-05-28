@@ -2,6 +2,7 @@
 
 import numpy as np
 
+import melee
 from slippi_ai.types import Game, Player
 
 def is_dying(player_action: np.ndarray):
@@ -31,3 +32,24 @@ def compute_rewards(game: Game, damage_ratio=0.01):
     return - (deaths + damage)
 
   return player_reward(game.p0) - player_reward(game.p1)
+
+# TODO: test that the two ways of getting reward yield the same results
+def get_reward(
+    prev_state: melee.GameState,
+    next_state: melee.GameState,
+    own_port: int,
+    opponent_port: int,
+    damage_ratio: float = 0.01,
+) -> float:
+  """Reward implemented directly on gamestates."""
+
+  def player_reward(port: int):
+    players = [prev_state.players[port], next_state.players[port]]
+    actions = np.array([p.action for p in players])
+    deaths = process_deaths(actions).astype(np.float32).item()
+
+    percents = np.array([p.percent for p in players])
+    damage = damage_ratio * process_damages(percents).item()
+    return - (deaths + damage)
+
+  return player_reward(own_port) - player_reward(opponent_port)

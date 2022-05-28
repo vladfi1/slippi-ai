@@ -10,7 +10,7 @@ from typing import (
 )
 
 import numpy as np
-
+from gym import spaces
 import tensorflow as tf
 import tensorflow_probability as tfp
 
@@ -45,17 +45,23 @@ class Embedding(Generic[In, Out], abc.ABC):
   def decode(self, out: Out) -> Out:
     return out
 
-  # def preprocess(self, x: In):
-  #   """Used by discretization."""
-  #   return x
-
   def dummy(self, shape: Sequence[int] = ()) -> Out:
     """A dummy value."""
     return np.zeros(shape, self.dtype)
 
-class BoolEmbedding(Embedding[bool, np.bool_]):
+  def space(self) -> spaces.Space:
+    raise NotImplementedError()
+
+  def from_nest(self, nest: Nest[Any]) -> Out:
+    return self.dtype(nest)
+
+  def to_nest(self, x: Out) -> Nest:
+    return x
+
+# we don't use np.bool_ because it isn't accepted by spaces.Discrete
+class BoolEmbedding(Embedding[bool, np.uint8]):
   size = 1
-  dtype = np.bool_
+  dtype = np.uint8
 
   def __init__(self, name='bool', on=1., off=0.):
     self.name = name
@@ -68,7 +74,7 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
   def distance(self, predicted, target):
     return tf.nn.sigmoid_cross_entropy_with_logits(
         logits=tf.squeeze(predicted, [-1]),
-        labels=tf.cast(target, float_type))
+        labels=tf.cast(target, predicted.dtype))
 
   def sample(self, t, temperature=None):
     t = tf.squeeze(t, -1)
@@ -77,30 +83,31 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
     dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
     return dist.sample()
 
+  def space(self) -> spaces.Space:
+    return spaces.Discrete(2)
+
 embed_bool = BoolEmbedding()
+
 
 class FloatEmbedding(Embedding[float, np.float32]):
   dtype = np.float32
   size = 1
 
-  def __init__(self, name, scale=None, bias=None, lower=-10., upper=10.):
+  def __init__(self, name, scale=None, bias=None, lower=None, upper=None):
     self.name = name
     self.scale = scale
     self.bias = bias
-    self.lower = lower
-    self.upper = upper
+    self.lower = -np.inf if lower is None else lower
+    self.upper = np.inf if upper is None else upper
 
   def encode(self, t):
     if t.dtype is not float_type:
       t = tf.cast(t, float_type)
+    t = tf.clip_by_value(t, self.lower, self.upper)
     if self.bias is not None:
       t += self.bias
     if self.scale is not None:
       t *= self.scale
-    if self.lower:
-      t = tf.maximum(t, self.lower)
-    if self.upper:
-      t = tf.minimum(t, self.upper)
     return t
 
   def __call__(self, t, **_):
@@ -123,6 +130,9 @@ class FloatEmbedding(Embedding[float, np.float32]):
 
   def sample(self, t, **_):
     raise NotImplementedError("Can't sample floats yet.")
+
+  def space(self):
+    return spaces.Box(self.lower, self.upper, shape=(), dtype=self.dtype)
 
 embed_float = FloatEmbedding("float")
 
@@ -162,6 +172,9 @@ class OneHotEmbedding(Embedding[int, np.int32]):
       logits = logits / temperature
     dist = tfp.distributions.Categorical(logits=logits, dtype=self.tf_dtype)
     return dist.sample()
+
+  def space(self) -> spaces.Space:
+    return spaces.Discrete(self.size)
 
 class NullEmbedding(Embedding[In, None]):
   size = 0
@@ -277,6 +290,16 @@ class StructEmbedding(Embedding[NT, NT]):
   def decode(self, struct: NT) -> NT:
     return self.map(lambda e, x: e.decode(x), struct)
 
+  def space(self) -> spaces.Space:
+    return spaces.Dict({k: e.space() for k, e in self.embedding})
+
+  def from_nest(self, nest: Nest) -> NT:
+    result = {k: e.from_nest(nest[k]) for k, e in self.embedding}
+    return self.builder(result)
+
+  def to_nest(self, nt: NT) -> Nest:
+    return {k: e.to_nest(self.getter(nt, k)) for k, e in self.embedding}
+
 T = TypeVar("T")
 
 # use this because lambdas can't be properly pickled :(
@@ -298,7 +321,6 @@ def struct_embedding_from_nt(name: str, nt: NT) -> StructEmbedding[NT]:
       getter=getattr,
   )
 
-# annoyingly, type inference doesn't work here
 def ordered_struct_embedding(
     name: str,
     embedding: Sequence[Tuple[str, Embedding]],
@@ -349,14 +371,12 @@ embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
 def make_player_embedding(
     xy_scale: float = 0.05,
     shield_scale: float = 0.01,
-    speed_scale: float = 0.5,
-    with_speeds: bool = False,
     with_controller: bool = True,
 ) -> StructEmbedding[Player]:
-    embed_xy = FloatEmbedding("xy", scale=xy_scale)
+    embed_xy = FloatEmbedding("xy", scale=xy_scale, lower=-300, upper=300)
 
     embedding = [
-      ("percent", FloatEmbedding("percent", scale=0.01)),
+      ("percent", FloatEmbedding("percent", scale=0.01, lower=0, upper=999)),
       ("facing", BoolEmbedding("facing", off=-1.)),
       ('x', embed_xy),
       ('y', embed_xy),
@@ -368,23 +388,13 @@ def make_player_embedding(
       # ("hitstun_frames_left", embedFrame),
       ("jumps_left", embed_jumps_left),
       # ("charging_smash", embedFloat),
-      ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale)),
+      ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale, lower=0, upper=60)),
       ("on_ground", embed_bool),
     ]
 
     if with_controller:
       # TODO: make this configurable
       embedding.append(('controller', embed_controller_default))
-
-    if with_speeds:
-      embed_speed = FloatEmbedding("speed", scale=speed_scale)
-      embedding.extend([
-          ('speed_air_x_self', embed_speed),
-          ('speed_ground_x_self', embed_speed),
-          ('speed_y_self', embed_speed),
-          ('speed_x_attack', embed_speed),
-          ('speed_y_attack', embed_speed),
-      ])
 
     return ordered_struct_embedding("player", embedding, Player)
 

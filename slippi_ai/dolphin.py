@@ -2,7 +2,10 @@ import abc
 import atexit
 from dataclasses import dataclass
 import logging
-from typing import Dict, Mapping
+import time
+from typing import Dict, Mapping, Optional
+import socket
+from contextlib import closing
 
 import melee
 
@@ -50,6 +53,12 @@ class AI(Player):
 def _is_menu_state(gamestate: melee.GameState) -> bool:
   return gamestate.menu_state not in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]
 
+# https://stackoverflow.com/questions/1365265/on-localhost-how-do-i-pick-a-free-port-number
+def find_free_port():
+  with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    s.bind(('localhost', 0))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    return s.getsockname()[1]
 
 class Dolphin:
 
@@ -61,7 +70,7 @@ class Dolphin:
       stage: melee.Stage = melee.Stage.FINAL_DESTINATION,
       online_delay=0,
       blocking_input=True,
-      slippi_port=51441,
+      slippi_port: Optional[int] = None,
       render=True,
       save_replays=False,
       env_vars=None,
@@ -83,7 +92,7 @@ class Dolphin:
         path=path,
         online_delay=online_delay,
         blocking_input=blocking_input,
-        slippi_port=slippi_port,
+        slippi_port=slippi_port or find_free_port(),
         gfx_backend='' if render else 'Null',
         copy_home_directory=False,
         setup_gecko_codes=True,
@@ -120,6 +129,12 @@ class Dolphin:
         raise RuntimeError("Failed to connect the controller.")
 
   def next_gamestate(self) -> melee.GameState:
+    # while True:
+    #   gamestate = self.console.step()
+    #   if gamestate is not None:
+    #     return gamestate
+    #   time.sleep(1e-3)
+
     gamestate = self.console.step()
     assert gamestate is not None
     return gamestate
