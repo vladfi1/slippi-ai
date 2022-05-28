@@ -11,7 +11,7 @@ import tree
 
 import melee
 
-from slippi_ai import embed, reward, stats, utils
+from slippi_ai import embed, reward, utils
 from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
 
 from slippi_ai.embed import StateActionReward
@@ -20,14 +20,9 @@ class Batch(NamedTuple):
   game: StateActionReward
   needs_reset: bool
 
-def train_test_split(data_dir, subset=None, test_ratio=.1):
-  if subset:
-    print("Using subset:", subset)
-    filenames = stats.get_subset(subset)
-    filenames = [name + '.pkl' for name in filenames]
-  else:
-    print("Using all replays in", data_dir)
-    filenames = sorted(os.listdir(data_dir))
+def train_test_split(data_dir, test_ratio=.1):
+  print("Using all replays in", data_dir)
+  filenames = sorted(os.listdir(data_dir))
 
   print(f"Found {len(filenames)} replays.")
 
@@ -264,7 +259,7 @@ CONFIG = dict(
     batch_size=32,
     unroll_length=64,
     compressed=True,
-    max_action_repeat=15,
+    max_action_repeat=0,
     in_parallel=True,
     # comma-separated lists of characters, or "all"
     allowed_characters='all',

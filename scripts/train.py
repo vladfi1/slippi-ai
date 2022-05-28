@@ -37,7 +37,6 @@ def config():
 
   dataset = dict(
       data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
-      subset=None,  # Subset to train on. Defaults to all files.
       test_ratio=.1,  # Fraction of dataset for testing.
   )
   data = data.CONFIG

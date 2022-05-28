@@ -5,10 +5,9 @@ Converts SSBM types to Tensorflow types.
 import abc
 import math
 from typing import (
-    Any, Callable, Dict, Generic, Iterator, NamedTuple, Optional, Sequence,
+    Any, Callable, Dict, Generic, Iterator, Mapping, NamedTuple, Optional, Sequence,
     Tuple, Type, TypeVar, Union
 )
-from bson import Mapping
 
 import numpy as np
 
