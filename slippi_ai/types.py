@@ -1,5 +1,5 @@
 import functools
-from typing import Mapping, NamedTuple, Sequence, Tuple, TypeVar, Union
+from typing import Mapping, NamedTuple, TypeVar, Union
 import numpy as np
 
 import pyarrow as pa
@@ -58,7 +58,7 @@ class Game(NamedTuple):
 # maps pyarrow types back to NamedTuples
 PA_TO_NT = {}
 
-@functools.cache
+@functools.lru_cache
 def nt_to_pa(nt: type) -> pa.StructType:
   """Convert and register a NamedTuple (or numpy) type."""
 
