@@ -46,7 +46,7 @@ class Policy(snt.Module):
       **kwargs,
   ) -> Tuple[embed.Action, RecurrentState]:
     input = self.embed_state_action(state_action)
-    output, final_state = self.network.unroll(input, initial_state)
+    output, final_state = self.network.step(input, initial_state)
 
     prev_action = state_action.action
     next_action = self.controller_head.sample(
