@@ -33,7 +33,6 @@ def config():
   num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
   epoch_time = 10  # seconds between testing/logging
   save_interval = 300  # seconds between saving to disk
-  save_model = True  # serialize model with tf.saved_model
 
   dataset = dict(
       data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
@@ -110,15 +109,13 @@ def main(dataset, expt_dir, _config, _log):
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
   tag = _config["tag"]
 
-  save_to_s3 = False
-  if _config['save_to_s3']:
+  save_to_s3 = _config['save_to_s3']
+  if save_to_s3 or _config['restore_tag']:
     if 'S3_CREDS' not in os.environ:
       raise ValueError('must set the S3_CREDS environment variable')
-    save_to_s3 = True
 
     s3_store = s3_lib.get_store()
     s3_keys = s3_lib.get_keys(tag)
-    restore_s3_keys = s3_lib.get_keys(_config['restore_tag'] or tag)
 
   def save():
     # Local Save
@@ -141,25 +138,39 @@ def main(dataset, expt_dir, _config, _log):
 
   save = utils.Periodically(save, _config['save_interval'])
 
+  if _config['restore_tag']:
+    restore_s3_keys = s3_lib.get_keys(_config['restore_tag'])
+  elif save_to_s3:
+    restore_s3_keys = s3_keys
+  else:
+    restore_s3_keys = None
+
   # attempt to restore parameters
-  if save_to_s3:
+  restored = False
+  if restore_s3_keys is not None:
     try:
       restore_key = restore_s3_keys.combined
       obj = s3_store.get(restore_key)
       _log.info('restoring from %s', restore_key)
       combined_state = pickle.loads(obj)
-      set_tf_state(obj['state'])
+      set_tf_state(combined_state['state'])
+      restored = True
       # TODO: do some config compatibility validation
     except KeyError:
+      # TODO: re-raise if user specified restore_tag
       _log.info('no params found at %s', restore_key)
   elif os.path.exists(pickle_path):
     _log.info('restoring from %s', pickle_path)
     with open(pickle_path, 'rb') as f:
       combined_state = pickle.load(f)
     set_tf_state(combined_state['state'])
+    restored = True
+  else:
+    _log.info('not restoring any params')
 
-  train_loss = _get_loss(train_manager.step())
-  _log.info('loss post-restore: %f', train_loss)
+  if restored:
+    train_loss = _get_loss(train_manager.step())
+    _log.info('loss post-restore: %f', train_loss.numpy())
 
   FRAMES_PER_MINUTE = 60 * 60
 
