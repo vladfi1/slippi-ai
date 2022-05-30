@@ -62,13 +62,13 @@ class TrajectoryManager:
     Subsequent trajectories overlap by a single frame.
     """
     # TODO: write a unit test for this
-    needs_reset = self.game is None or self.frame + n >= game_len(self.game)
+    needs_reset = self.game is None or self.frame + n > game_len(self.game)
 
     if needs_reset:
       self.find_game(n)
 
     new_frame = self.frame + n
-    slice = lambda a: a[self.frame:new_frame+1]
+    slice = lambda a: a[self.frame:new_frame]
     chunk = tree.map_structure(slice, self.game)
     self.frame = new_frame
 
