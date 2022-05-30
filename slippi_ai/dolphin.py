@@ -65,10 +65,19 @@ class Dolphin:
       render=True,
       save_replays=False,
       env_vars=None,
+      headless=False,
       **console_kwargs,
   ) -> None:
     self._players = players
     self._stage = stage
+
+    if headless:
+      render = False
+      console_kwargs.update(
+          disable_audio=True,
+          use_exi_inputs=True,
+          enable_ffw=True,
+      )
 
     console = melee.Console(
         path=path,
