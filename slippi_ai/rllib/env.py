@@ -69,8 +69,8 @@ class MeleeEnv(rllib.BaseEnv):
     return result
 
   def try_reset(self, env_id: EnvID = None) -> MultiEnvDict:
-    obs = self.poll()[0]
-    return obs if env_id is None else obs[env_id]
+    assert env_id in (None, _ENV_ID)
+    return self.poll()[0]
 
   def send_actions(self, action_dict: dict):
     # print('send_actions')

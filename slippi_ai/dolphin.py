@@ -58,7 +58,9 @@ def find_free_port():
   with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
     s.bind(('localhost', 0))
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    return s.getsockname()[1]
+    port = s.getsockname()[1]
+    print('Using free port:', port)
+    return port
 
 class Dolphin:
 
@@ -129,12 +131,6 @@ class Dolphin:
         raise RuntimeError("Failed to connect the controller.")
 
   def next_gamestate(self) -> melee.GameState:
-    # while True:
-    #   gamestate = self.console.step()
-    #   if gamestate is not None:
-    #     return gamestate
-    #   time.sleep(1e-3)
-
     gamestate = self.console.step()
     assert gamestate is not None
     return gamestate
