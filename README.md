@@ -62,7 +62,7 @@ The old data format had a few issues:
 - It used nests of numpy arrays, lacking any structure or specification.
 - Being based on pickle, it was tied to the python language.
 
-The new data format is based on the language-agnostic [Arrow](https://arrow.apache.org/) library and serialization via [Parquet](https://parquet.apache.org/). You can download the new dataset [here](https://slp-replays.s3.amazonaws.com/prod/datasets/pq/games.tar) as a tar archive. It contains 195536 files filtered to be valid singles replays; see `slippi_db.preprocessing.is_training_replay` for what that means. An associated metadata file, also in parquet format, is available [here](https://slp-replays.s3.amazonaws.com/prod/datasets/pq/games.tar). The metadata file can be loaded as a pandas DataFrame:
+The new data format is based on the language-agnostic [Arrow](https://arrow.apache.org/) library and serialization via [Parquet](https://parquet.apache.org/). You can download the new dataset [here](https://slp-replays.s3.amazonaws.com/prod/datasets/pq/games.tar) as a tar archive. It contains 195536 files filtered to be valid singles replays; see `slippi_db.preprocessing.is_training_replay` for what that means. An associated metadata file, also in parquet format, is available [here](https://slp-replays.s3.amazonaws.com/prod/datasets/pq/meta.pq). The metadata file can be loaded as a pandas DataFrame:
 
 ```python
 import pandas as pd
@@ -86,15 +86,11 @@ See `slippi_ai/types.py` for utility functions that can manipulate pyarrow objec
 Example command configurations:
 
 ```bash
-python scripts/train.py with dataset.subset=fox_dittos network.name=frame_stack_mlp
+python scripts/train.py with network.name=frame_stack_mlp
 ```
 
 These are some available options:
 ```
-dataset.subset=
-    all (default)
-    fox_dittos
-
 network.name=
     mlp (default)
     frame_stack_mlp

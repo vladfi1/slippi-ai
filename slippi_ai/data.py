@@ -6,6 +6,7 @@ import random
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
 
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 import tree
 
@@ -20,23 +21,76 @@ class Batch(NamedTuple):
   game: StateActionReward
   needs_reset: bool
 
-def train_test_split(data_dir, test_ratio=.1):
-  print("Using all replays in", data_dir)
-  filenames = sorted(os.listdir(data_dir))
+class ReplayInfo(NamedTuple):
+  path: str
+  swap: bool
 
-  print(f"Found {len(filenames)} replays.")
+def _get_keys(
+    df: pd.DataFrame,
+    allowed_p0: Iterable[int],
+    allowed_p1: Iterable[int],
+) -> Iterable[str]:
+  df = df[df['p0.character'].isin(allowed_p0)]
+  df = df[df['p1.character'].isin(allowed_p1)]
+  return df['key']
+
+def train_test_split(
+    data_dir: str,
+    meta_path: str,
+    test_ratio: float = 0.1,
+    # None means all allowed.
+    allowed_characters: Optional[List[melee.Character]] = None,
+    allowed_opponents: Optional[List[melee.Character]] = None,
+    seed: int = 0,
+) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
+  df = pd.read_parquet(meta_path)
+
+  # check that we have the right metadata
+  filenames = sorted(os.listdir(data_dir))
+  assert sorted(df['key']) == filenames
+  print(f"Found {len(filenames)} files.")
+
+  allowed_characters = _charset(allowed_characters)
+  allowed_opponents = _charset(allowed_opponents)
+
+  unswapped = _get_keys(df, allowed_characters, allowed_opponents)
+  swapped = _get_keys(df, allowed_opponents, allowed_characters)
+
+  replays = []
+  for key in unswapped:
+    path = os.path.join(data_dir, key)
+    replays.append(ReplayInfo(path, False))
+  for key in swapped:
+    path = os.path.join(data_dir, key)
+    replays.append(ReplayInfo(path, True))
 
   # reproducible train/test split
-  rng = random.Random()
-  rng.shuffle(filenames)
-  test_files = rng.sample(filenames, int(test_ratio * len(filenames)))
-  test_set = set(test_files)
-  train_files = [f for f in filenames if f not in test_set]
-  train_paths = [os.path.join(data_dir, f) for f in train_files]
-  test_paths = [os.path.join(data_dir, f) for f in test_files]
-  if not test_paths:
-    test_paths = train_paths
-  return train_paths, test_paths
+  rng = random.Random(seed)
+  rng.shuffle(replays)
+  num_test = int(test_ratio * len(replays))
+
+  train_replays = replays[num_test:]
+  test_replays = replays[:num_test]
+
+  return train_replays, test_replays
+
+DATASET_CONFIG = dict(
+    data_dir=None,
+    meta_path=None,
+    test_ratio=0.1,
+    # comma-separated lists of characters, or "all"
+    allowed_characters='all',
+    allowed_opponents='all',
+)
+
+_name_to_character = {c.name.lower(): c for c in melee.Character}
+
+def chars_from_string(chars: str) -> List[melee.Character]:
+  if chars == 'all':
+    return list(melee.Character)
+  chars = chars.split(',')
+  return [_name_to_character[c] for c in chars]
+
 
 def game_len(game: StateActionReward):
   return len(game.reward)
@@ -167,7 +221,7 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
 class DataSource:
   def __init__(
       self,
-      filenames,
+      replays: List[ReplayInfo],
       compressed=True,
       batch_size=64,
       unroll_length=64,
@@ -177,8 +231,8 @@ class DataSource:
       # Lists of melee.Character. None means all allowed.
       allowed_characters=None,
       allowed_opponents=None,
-      ):
-    self.filenames = filenames
+  ):
+    self.replays = replays
     self.batch_size = batch_size
     self.unroll_length = unroll_length
     self.compressed = compressed
@@ -193,10 +247,10 @@ class DataSource:
     self.allowed_opponents = _charset(allowed_opponents)
 
   def produce_trajectories(self) -> Iterator[StateActionReward]:
-    raw_games = self.produce_raw_games()
-    allowed_games = filter(self.is_allowed, raw_games)
-    processed_games = map(self.process_game, allowed_games)
-    return processed_games
+    games = self.produce_raw_games()
+    # games = filter(self.is_allowed, games)
+    games = map(self.process_game, games)
+    return games
 
   def process_game(self, game: Game) -> StateActionReward:
     rewards = reward.compute_rewards(game)
@@ -205,14 +259,16 @@ class DataSource:
 
   def produce_raw_games(self) -> Iterator[Game]:
     """Raw games without post-processing."""
-    self.file_counter = 0
-    for path in itertools.cycle(self.filenames):
-      self.file_counter += 1
-      table = pq.read_table(path)
+    self.replay_counter = 0
+    for replay in itertools.cycle(self.replays):
+      self.replay_counter += 1
+      table = pq.read_table(replay.path)
       game_struct = table['root'].combine_chunks()
       game = game_array_to_nt(game_struct)
+      if replay.swap:
+        game = swap_players(game)
+      assert self.is_allowed(game)
       yield game
-      yield swap_players(game)
 
   def is_allowed(self, game: Game) -> bool:
     # TODO: handle Zelda/Sheik transformation
@@ -224,7 +280,7 @@ class DataSource:
   def __next__(self) -> Tuple[Batch, float]:
     next_batch = utils.batch_nest(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
-    epoch = self.file_counter / len(self.filenames)
+    epoch = self.replay_counter / len(self.replays)
     return next_batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
@@ -247,32 +303,16 @@ class DataSourceMP:
   def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
 
-_name_to_character = {c.name.lower(): c for c in melee.Character}
-
-def _chars_from_string(chars: str) -> List[melee.Character]:
-  if chars == 'all':
-    return list(melee.Character)
-  chars = chars.split(',')
-  return [_name_to_character[c] for c in chars]
-
 CONFIG = dict(
     batch_size=32,
     unroll_length=64,
     compressed=True,
     max_action_repeat=0,
     in_parallel=True,
-    # comma-separated lists of characters, or "all"
-    allowed_characters='all',
-    allowed_opponents='all',
 )
 
 def make_source(
-    allowed_characters: str,
-    allowed_opponents: str,
     in_parallel: bool,
     **kwargs):
   constructor = DataSourceMP if in_parallel else DataSource
-  return constructor(
-      allowed_characters=_chars_from_string(allowed_characters),
-      allowed_opponents=_chars_from_string(allowed_opponents),
-      **kwargs)
+  return constructor(**kwargs)
