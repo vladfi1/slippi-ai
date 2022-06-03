@@ -10,15 +10,14 @@ import tensorflow as tf
 
 from slippi_ai import (
     controller_heads,
-    data,
     embed,
     networks,
-    paths,
     s3_lib,
     train_lib,
     utils,
 )
 from slippi_ai.learner import Learner
+from slippi_ai import data as data_lib
 
 ex = sacred.Experiment('imitation')
 
@@ -34,11 +33,8 @@ def config():
   epoch_time = 10  # seconds between testing/logging
   save_interval = 300  # seconds between saving to disk
 
-  dataset = dict(
-      data_dir=paths.COMPRESSED_PATH,  # Path to pickled dataset.
-      test_ratio=.1,  # Fraction of dataset for testing.
-  )
-  data = data.CONFIG
+  dataset = data_lib.DATASET_CONFIG
+  data = data_lib.CONFIG
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
@@ -52,7 +48,7 @@ def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
 
 @ex.automain
-def main(dataset, expt_dir, _config, _log):
+def main(expt_dir, _config, _log):
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
   policy = train_lib.build_policy(
@@ -74,12 +70,24 @@ def main(dataset, expt_dir, _config, _log):
   for comp in ['network', 'controller_head']:
     print(f'\nUsing {comp}: {_config[comp]["name"]}')
 
-  train_paths, test_paths = data.train_test_split(**dataset)
-  print(f'Training on {len(train_paths)} replays, testing on {len(test_paths)}')
+  dataset_config = _config['dataset'].copy()
 
-  data_config = dict(_config['data'], embed_controller=embed_controller)
-  train_data = data.make_source(filenames=train_paths, **data_config)
-  test_data = data.make_source(filenames=test_paths, **data_config)
+  char_filters = {
+      k: data_lib.chars_from_string(dataset_config[k])
+      for k in ['allowed_characters', 'allowed_opponents']
+  }
+  dataset_config.update(char_filters)
+
+  train_replays, test_replays = data_lib.train_test_split(**dataset_config)
+  print(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+
+  data_config = dict(
+      _config['data'],
+      embed_controller=embed_controller,
+      **char_filters,
+  )
+  train_data = data_lib.make_source(replays=train_replays, **data_config)
+  test_data = data_lib.make_source(replays=test_replays, **data_config)
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
