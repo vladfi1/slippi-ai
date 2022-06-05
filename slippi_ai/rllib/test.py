@@ -66,6 +66,11 @@ def _get_flags_from_default(default) -> tp.Optional[ff.Item]:
 CONFIG = ff.DEFINE_dict(
     'config', **_get_flags_from_default(_DEFAULT_CONFIG))
 
+TUNE = ff.DEFINE_dict(
+    'tune',
+    restore=ff.String(None, 'path to checkpoint to restore from'),
+)
+
 class AdaptorEnv(MeleeEnv):
   def __init__(self, config):
     dolphin = dolphin_lib.Dolphin(**config)
@@ -103,6 +108,11 @@ def main(_):
       "PPO",
       stop={"episode_reward_mean": 1},
       config=config,
+      checkpoint_freq=20,
+      keep_checkpoints_num=3,
+      checkpoint_at_end=True,
+      # resume="AUTO",
+      **TUNE.value,
   )
 
 if __name__ == '__main__':
