@@ -1,11 +1,13 @@
 import functools
 import typing as tp
 
+from absl import logging
 import gym
 from gym import spaces
 from ray import rllib
 from ray.rllib.utils.typing import EnvType, AgentID, EnvID, MultiEnvDict
 
+from melee.slippstream import EnetDisconnected
 from slippi_ai import eval_lib, embed, reward
 from slippi_ai import dolphin as dolphin_lib
 from slippi_db import parse_libmelee
@@ -21,11 +23,12 @@ class MeleeEnv(rllib.BaseEnv):
 
   def __init__(
       self,
-      dolphin: dolphin_lib.Dolphin,
+      dolphin_fn: tp.Callable[[], dolphin_lib.Dolphin],
   ):
-    self._dolphin = dolphin
+    self._dolphin_fn = dolphin_fn
+    self._dolphin = dolphin_fn()
 
-    players = dolphin._players
+    players = self._dolphin._players
     assert len(players) == 2
 
     self._agents: tp.Dict[int, AgentInfo] = {}
@@ -38,12 +41,23 @@ class MeleeEnv(rllib.BaseEnv):
 
     self._prev_gamestate = None
 
+  def _step(self, num_retries=3):
+    """Steps dolphin, possibly creating a new instance if we disconnect."""
+    for _ in range(num_retries):
+      try:
+        return self._dolphin.step()
+      except EnetDisconnected:
+        logging.warn('EnetDisconnected, restarting dolphin.')
+        self._dolphin.stop()
+        self._dolphin = self._dolphin_fn()
+    return self._dolphin.step()
+
   def poll(
       self,
   ) -> tp.Tuple[MultiEnvDict, MultiEnvDict, MultiEnvDict, MultiEnvDict, MultiEnvDict]:
     if self._prev_gamestate is None:
-      self._prev_gamestate = self._dolphin.step()
-    gamestate = self._dolphin.step()
+      self._prev_gamestate = self._step()
+    gamestate = self._step()
 
     observations = {}
     rewards = {}
