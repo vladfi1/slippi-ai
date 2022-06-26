@@ -1,3 +1,4 @@
+import functools
 import typing as tp
 
 from absl import app
@@ -73,8 +74,8 @@ TUNE = ff.DEFINE_dict(
 
 class AdaptorEnv(MeleeEnv):
   def __init__(self, config):
-    dolphin = dolphin_lib.Dolphin(**config)
-    super().__init__(dolphin)
+    dolphin_fn = functools.partial(dolphin_lib.Dolphin, **config)
+    super().__init__(dolphin_fn)
 
 players = {
     1: dolphin_lib.AI(),
