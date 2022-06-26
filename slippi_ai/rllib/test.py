@@ -69,7 +69,17 @@ CONFIG = ff.DEFINE_dict(
 
 TUNE = ff.DEFINE_dict(
     'tune',
+    checkpoint_freq=ff.Integer(20),
+    keep_checkpoints_num=ff.Integer(3),
+    checkpoint_at_end=ff.Boolean(True),
     restore=ff.String(None, 'path to checkpoint to restore from'),
+    resume=ff.Enum(None, ["LOCAL", "REMOTE", "PROMPT", "ERRORED_ONLY", "AUTO"]),
+    sync_config=dict(
+        upload_dir=ff.String(None, 'Path to local or remote folder.'),
+        syncer=ff.String('auto'),
+        sync_on_checkpoint=ff.Boolean(True),
+        sync_period=ff.Integer(300),
+    ),
 )
 
 class AdaptorEnv(MeleeEnv):
@@ -105,15 +115,14 @@ def main(_):
   }
   _update_dicts(config, updates)
 
+  tune_config = TUNE.value
+  tune_config['sync_config'] = tune.SyncConfig(**tune_config['sync_config'])
+
   tune.run(
       "PPO",
       stop={"episode_reward_mean": 1},
       config=config,
-      checkpoint_freq=20,
-      keep_checkpoints_num=3,
-      checkpoint_at_end=True,
-      # resume="AUTO",
-      **TUNE.value,
+      **tune_config,
   )
 
 if __name__ == '__main__':
