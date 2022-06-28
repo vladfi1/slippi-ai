@@ -62,6 +62,8 @@ def find_free_port():
     print('Using free port:', port)
     return port
 
+VALID_PORTS = (1, 2, 3, 4)
+
 class Dolphin:
 
   def __init__(
@@ -79,6 +81,10 @@ class Dolphin:
       headless=False,
       **console_kwargs,
   ) -> None:
+    for port in players:
+      if port not in VALID_PORTS:
+        raise ValueError(f'Invalid port: {port}')
+
     self._players = players
     self._stage = stage
 
