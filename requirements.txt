@@ -10,5 +10,4 @@ pymongo
 dnspython
 fancyflags
 pyarrow
-gym==0.22  # rllibcompatible
 ray[rllib]
