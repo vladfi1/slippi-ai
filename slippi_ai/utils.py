@@ -1,8 +1,11 @@
 import time
+import typing as tp
 
+import fancyflags as ff
 import numpy as np
 import tensorflow as tf
 import tree
+
 
 def stack(*vals):
   return np.stack(vals)
@@ -105,3 +108,24 @@ def with_flat_signature(fn, signature):
   def g(*flat_args):
     return fn(*tree.unflatten_as(signature, flat_args))
   return tf.function(g, input_signature=tree.flatten(signature))
+
+
+def get_flags_from_default(default) -> tp.Optional[ff.Item]:
+  if isinstance(default, dict):
+    result = {}
+    for k, v in default.items():
+      flag = get_flags_from_default(v)
+      if flag is not None:
+        result[k] = flag
+    return result
+  elif isinstance(default, bool):
+    return ff.Boolean(default)
+  elif isinstance(default, int):
+    return ff.Integer(default)
+  elif isinstance(default, str):
+    return ff.String(default)
+  elif isinstance(default, float):
+    return ff.Float(default)
+  elif isinstance(default, list):
+    return ff.Sequence(default)
+  return None

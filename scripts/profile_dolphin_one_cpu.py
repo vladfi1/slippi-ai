@@ -21,8 +21,11 @@ flags.DEFINE_integer('runtime', 5, 'Running time, in seconds.')
 
 FLAGS = flags.FLAGS
 
-def run(n: int, runtime: float):
+def run(n: int, runtime: float, cpu: int = 0):
   players = {1: dolphin_lib.AI(), 2: dolphin_lib.CPU()}
+
+  main_proc = psutil.Process()
+  main_proc.cpu_affinity([cpu])
 
   dolphins = [
       dolphin_lib.Dolphin(players=players, **DOLPHIN.value)
@@ -30,13 +33,16 @@ def run(n: int, runtime: float):
 
   for d in dolphins:
     proc = psutil.Process(d.console._process.pid)
-    proc.cpu_affinity([0])
+    proc.cpu_affinity([cpu])
 
   def step():
+    # intentionally serial
     for d in dolphins:
       d.step()
 
-  step()  # warmup
+  print('Warmup step.')
+  step()
+  print('Warmup done, starting profiling.')
 
   start_time = time.perf_counter()
 
@@ -59,10 +65,13 @@ def run(n: int, runtime: float):
 
 def main(_):
   ns = FLAGS.n
-  stats = [run(n, FLAGS.runtime) for n in FLAGS.n]
+  stats = [run(n, FLAGS.runtime) for n in ns]
 
-  for n, (fps, sps) in zip(FLAGS.n, stats):
+  for n, (fps, sps) in zip(ns, stats):
     print(f'{n:03d}: fps: {fps:.1f}, sps: {sps:.1f}')
+
+  for n, (fps, sps) in zip(ns, stats):
+    print(f'{n} {fps:.1f} {sps:.1f}')
 
 if __name__ == '__main__':
   app.run(main)
