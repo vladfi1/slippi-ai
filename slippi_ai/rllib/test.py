@@ -9,7 +9,7 @@ from ray import tune
 from ray.rllib.policy.policy import PolicySpec
 from ray.rllib.agents import ppo
 
-from slippi_ai import eval_lib, embed
+from slippi_ai import eval_lib, embed, utils
 from slippi_ai import dolphin as dolphin_lib
 from slippi_ai.rllib.env import MeleeEnv
 
@@ -42,30 +42,8 @@ def _update_dicts(original, updates):
 
 _update_dicts(_DEFAULT_CONFIG, _OVERRIDES)
 
-
-def _get_flags_from_default(default) -> tp.Optional[ff.Item]:
-  if isinstance(default, dict):
-    result = {}
-    for k, v in default.items():
-      flag = _get_flags_from_default(v)
-      if flag is not None:
-        result[k] = flag
-    return result
-  elif isinstance(default, bool):
-    return ff.Boolean(default)
-  elif isinstance(default, int):
-    return ff.Integer(default)
-  elif isinstance(default, str):
-    return ff.String(default)
-  # elif isinstance(default, list):
-  #   if default:
-  #     elem = default[0]
-  #     if isinstance(elem, int):
-  #       return ff.Sequence()
-  return None
-
 CONFIG = ff.DEFINE_dict(
-    'config', **_get_flags_from_default(_DEFAULT_CONFIG))
+    'config', **utils.get_flags_from_default(_DEFAULT_CONFIG))
 
 TUNE = ff.DEFINE_dict(
     'tune',
