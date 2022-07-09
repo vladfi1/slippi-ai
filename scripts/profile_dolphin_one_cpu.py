@@ -9,69 +9,56 @@ import time
 from absl import app
 from absl import flags
 import fancyflags as ff
-import psutil
+import ray
 
-from slippi_ai import eval_lib
-from slippi_ai import dolphin as dolphin_lib
+from slippi_ai import eval_lib, profiling_utils
 
 DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
 
-flags.DEFINE_multi_integer('n', [1], 'number of dolphin instances')
+flags.DEFINE_multi_integer('n', [1], 'dolphins per core')
+flags.DEFINE_integer('cpus', 1, 'number of cpu cores')
+flags.DEFINE_bool('set_affinity', True, 'set cpu affinity')
 flags.DEFINE_integer('runtime', 5, 'Running time, in seconds.')
 
 FLAGS = flags.FLAGS
 
-def run(n: int, runtime: float, cpu: int = 0):
-  players = {1: dolphin_lib.AI(), 2: dolphin_lib.CPU()}
 
-  main_proc = psutil.Process()
-  main_proc.cpu_affinity([cpu])
+def run(runtime: int, n: int, cpus: int):
+  env = profiling_utils.RayMultiSerialEnv(
+      n, cpus, FLAGS.set_affinity, DOLPHIN.value)
 
-  dolphins = [
-      dolphin_lib.Dolphin(players=players, **DOLPHIN.value)
-      for _ in range(n)]
-
-  for d in dolphins:
-    proc = psutil.Process(d.console._process.pid)
-    proc.cpu_affinity([cpu])
-
-  def step():
-    # intentionally serial
-    for d in dolphins:
-      d.step()
-
+  # warmup gets through menus
   print('Warmup step.')
-  step()
-  print('Warmup done, starting profiling.')
+  env.step()
+  print('Warmup done.')
 
   start_time = time.perf_counter()
-
+  run_time = 0.
   count = 0
-  while True:
-    step()
+
+  while run_time < runtime:
+    env.step()
     count += 1
-
     run_time = time.perf_counter() - start_time
-    if run_time > runtime:
-      break
 
-  for d in dolphins:
-    d.stop()
+  env.stop()
 
-  fps = count / run_time
-  sps = n * fps
-  print(f'{n:03d}: fps: {fps:.1f}, sps: {sps:.1f}')
-  return fps, sps
+  sps = count / run_time
+  tot = n * cpus * sps
+  print(f'{n:03d}: sps: {sps:.1f}, tot: {tot:.1f}')
+  return sps, tot
 
 def main(_):
+  ray.init()  # necessary for RayMultiSerialEnv
+
   ns = FLAGS.n
-  stats = [run(n, FLAGS.runtime) for n in ns]
+  stats = [run(FLAGS.runtime, n, FLAGS.cpus) for n in ns]
 
-  for n, (fps, sps) in zip(ns, stats):
-    print(f'{n:03d}: fps: {fps:.1f}, sps: {sps:.1f}')
+  for n, (sps, tot) in zip(ns, stats):
+    print(f'{n:03d}: sps: {sps:.1f}, tot: {tot:.1f}')
 
-  for n, (fps, sps) in zip(ns, stats):
-    print(f'{n} {fps:.1f} {sps:.1f}')
+  for n, (sps, tot) in zip(ns, stats):
+    print(f'{n} {sps:.1f} {tot:.1f}')
 
 if __name__ == '__main__':
   app.run(main)
