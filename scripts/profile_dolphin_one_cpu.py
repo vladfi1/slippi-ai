@@ -25,11 +25,16 @@ FLAGS = flags.FLAGS
 
 
 def run(runtime: int, n: int, cpus: int):
-  env_class = (
-    profiling_utils.RayMultiSerialEnv if FLAGS.ray else
-    profiling_utils.MultiSerialEnv)
+  if cpus == 0:
+    env = profiling_utils.SerialEnv(
+      n, DOLPHIN.value, cpu=0 if FLAGS.set_affinity else None)
+    cpus = 1
+  else:
+    env_class = (
+      profiling_utils.RayMultiSerialEnv if FLAGS.ray else
+      profiling_utils.MultiSerialEnv)
 
-  env = env_class(n, cpus, FLAGS.set_affinity, DOLPHIN.value)
+    env = env_class(n, cpus, FLAGS.set_affinity, DOLPHIN.value)
 
   # warmup gets through menus
   print('Warmup step.')
