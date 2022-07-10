@@ -24,7 +24,7 @@ FLAGS = flags.FLAGS
 
 
 def run(runtime: int, n: int, cpus: int):
-  env = profiling_utils.RayMultiSerialEnv(
+  env = profiling_utils.MultiSerialEnv(
       n, cpus, FLAGS.set_affinity, DOLPHIN.value)
 
   # warmup gets through menus
@@ -49,7 +49,7 @@ def run(runtime: int, n: int, cpus: int):
   return sps, tot
 
 def main(_):
-  ray.init()  # necessary for RayMultiSerialEnv
+  # ray.init()  # necessary for RayMultiSerialEnv
 
   ns = FLAGS.n
   stats = [run(FLAGS.runtime, n, FLAGS.cpus) for n in ns]
