@@ -1,4 +1,5 @@
 import functools
+import logging
 import typing as tp
 
 from absl import app
@@ -6,6 +7,7 @@ from absl import flags
 import fancyflags as ff
 
 from ray import tune
+from ray.air.callbacks.wandb import WandbLoggerCallback
 from ray.rllib.policy.policy import PolicySpec
 from ray.rllib.agents import ppo
 
@@ -58,6 +60,15 @@ TUNE = ff.DEFINE_dict(
         sync_on_checkpoint=ff.Boolean(True),
         sync_period=ff.Integer(300),
     ),
+    verbose=ff.Integer(3),
+)
+
+WANDB = ff.DEFINE_dict(
+    use=ff.Boolean(False),
+    project=ff.String('slippi-ai'),
+    api_key_file=ff.String("~/.wandb"),
+    log_config=ff.Boolean(False),
+    save_checkpoints=ff.Boolean(False),
 )
 
 class AdaptorEnv(MeleeEnv):
@@ -96,10 +107,18 @@ def main(_):
   tune_config = TUNE.value
   tune_config['sync_config'] = tune.SyncConfig(**tune_config['sync_config'])
 
+  callbacks = []
+
+  wandb_config = WANDB.value.copy()
+  if wandb_config.pop('use'):
+    wandb_callback = WandbLoggerCallback(**wandb_config)
+    callbacks.append(wandb_callback)
+
   tune.run(
       "PPO",
       stop={"episode_reward_mean": 1},
       config=config,
+      callbacks=callbacks,
       **tune_config,
   )
 
