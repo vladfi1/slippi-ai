@@ -44,18 +44,15 @@ class SerialEnv:
       # main_proc.cpu_affinity([cpu])
 
       # for d in self._dolphins:
+      #   # let slippstream workers be on a different thread
+
       #   proc = psutil.Process(d.console._process.pid)
       #   proc.cpu_affinity([cpu])
 
       #   for pthread in proc.threads():
-      #     logging.info(pthread.id)
       #     psutil.Process(pthread.id).cpu_affinity([cpu])
 
   def step(self):
-    # start_time = time.perf_counter()
-    # while time.perf_counter() - start_time < 100:
-    #   [d.step() for d in self._dolphins]
-
     # intentionally serial
     return [d.step() for d in self._dolphins]
 

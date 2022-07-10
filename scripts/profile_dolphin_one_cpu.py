@@ -19,13 +19,17 @@ flags.DEFINE_multi_integer('n', [1], 'dolphins per core')
 flags.DEFINE_integer('cpus', 1, 'number of cpu cores')
 flags.DEFINE_bool('set_affinity', True, 'set cpu affinity')
 flags.DEFINE_integer('runtime', 5, 'Running time, in seconds.')
+flags.DEFINE_boolean('ray', False, 'Use ray for multiprocessing.')
 
 FLAGS = flags.FLAGS
 
 
 def run(runtime: int, n: int, cpus: int):
-  env = profiling_utils.MultiSerialEnv(
-      n, cpus, FLAGS.set_affinity, DOLPHIN.value)
+  env_class = (
+    profiling_utils.RayMultiSerialEnv if FLAGS.ray else
+    profiling_utils.MultiSerialEnv)
+
+  env = env_class(n, cpus, FLAGS.set_affinity, DOLPHIN.value)
 
   # warmup gets through menus
   print('Warmup step.')
@@ -49,7 +53,8 @@ def run(runtime: int, n: int, cpus: int):
   return sps, tot
 
 def main(_):
-  # ray.init()  # necessary for RayMultiSerialEnv
+  if FLAGS.ray:
+    ray.init()  # necessary for RayMultiSerialEnv
 
   ns = FLAGS.n
   stats = [run(FLAGS.runtime, n, FLAGS.cpus) for n in ns]
