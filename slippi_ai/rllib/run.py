@@ -11,7 +11,7 @@ import ray
 from ray.air.callbacks.wandb import WandbLoggerCallback
 # from ray.tune.integration.wandb import WandbLoggerCallback
 from ray.rllib.policy.policy import PolicySpec
-from ray.rllib.agents import ppo
+from ray.rllib.algorithms import registry
 
 from slippi_ai import eval_lib, embed, utils
 from slippi_ai import dolphin as dolphin_lib
@@ -19,7 +19,13 @@ from slippi_ai.rllib.env import MeleeEnv
 
 DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
 
-_DEFAULT_CONFIG = ppo.PPOConfig().to_dict()
+ALGORITHM_NAMES = "ppo", "a2c", "impala"
+
+ALGORITHMS = {
+    name: registry.get_algorithm_class(
+        name.upper(), return_config=True)
+    for name in ALGORITHM_NAMES
+}
 
 _OVERRIDES = {
   "rollout_fragment_length": 2 * 60,
@@ -44,10 +50,17 @@ def _update_dicts(original, updates):
   else:
     return updates
 
-_update_dicts(_DEFAULT_CONFIG, _OVERRIDES)
+def _get_flags_for_algo(name: str) -> dict:
+  _, default_config = ALGORITHMS[name]
+  _update_dicts(default_config, _OVERRIDES)
+  return utils.get_flags_from_default(default_config)
 
-CONFIG = ff.DEFINE_dict(
-    'config', **utils.get_flags_from_default(_DEFAULT_CONFIG))
+_ALGO = flags.DEFINE_enum('algo', 'ppo', ALGORITHM_NAMES, 'RL algorithm')
+
+_ALGO_CONFIGS = {
+    name: ff.DEFINE_dict(name, **_get_flags_for_algo(name))
+    for name in ALGORITHM_NAMES
+}
 
 TUNE = ff.DEFINE_dict(
     'tune',
@@ -102,7 +115,8 @@ def main(_):
   if RAY_INIT.value:
     ray.init('auto')
 
-  config = CONFIG.value.copy()
+  algo = _ALGO.value
+  config = _ALGO_CONFIGS[algo].value.copy()
 
   # non-flags
   updates = {
@@ -139,7 +153,7 @@ def main(_):
     callbacks.append(wandb_callback)
 
   tune.run(
-      "PPO",
+      algo.upper(),
       stop={"episode_reward_mean": 1},
       config=config,
       callbacks=callbacks,

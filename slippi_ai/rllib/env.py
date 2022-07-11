@@ -122,7 +122,8 @@ class MeleeEnv(rllib.BaseEnv):
       return self._dolphins
 
   def stop(self):
-    self._dolphin.stop()
+    for d in self._dolphins:
+      d.stop()
 
   @functools.cached_property
   def observation_space(self) -> gym.Space:
