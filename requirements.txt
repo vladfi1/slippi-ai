@@ -11,3 +11,4 @@ dnspython
 fancyflags
 pyarrow
 ray[rllib]
+wandb

@@ -7,7 +7,9 @@ from absl import flags
 import fancyflags as ff
 
 from ray import tune
+import ray
 from ray.air.callbacks.wandb import WandbLoggerCallback
+# from ray.tune.integration.wandb import WandbLoggerCallback
 from ray.rllib.policy.policy import PolicySpec
 from ray.rllib.agents import ppo
 
@@ -51,7 +53,7 @@ TUNE = ff.DEFINE_dict(
     'tune',
     checkpoint_freq=ff.Integer(20),
     keep_checkpoints_num=ff.Integer(3),
-    checkpoint_at_end=ff.Boolean(True),
+    checkpoint_at_end=ff.Boolean(False),
     restore=ff.String(None, 'path to checkpoint to restore from'),
     resume=ff.Enum(None, ["LOCAL", "REMOTE", "PROMPT", "ERRORED_ONLY", "AUTO"]),
     sync_config=dict(
@@ -64,6 +66,7 @@ TUNE = ff.DEFINE_dict(
 )
 
 WANDB = ff.DEFINE_dict(
+    'wandb',
     use=ff.Boolean(False),
     project=ff.String('slippi-ai'),
     api_key_file=ff.String("~/.wandb"),
@@ -71,10 +74,24 @@ WANDB = ff.DEFINE_dict(
     save_checkpoints=ff.Boolean(False),
 )
 
+ENV = ff.DEFINE_dict(
+    'env',
+    num_envs=ff.Integer(1),
+)
+
+RAY_INIT = flags.DEFINE_boolean('ray_init', False, 'init ray')
+
 class AdaptorEnv(MeleeEnv):
   def __init__(self, config):
-    dolphin_fn = functools.partial(dolphin_lib.Dolphin, **config)
-    super().__init__(dolphin_fn)
+    # tune converts integer keys to strings when checkpointing
+    # we convert them back here in case we're resuming
+    dolphin_cfg = config['dolphin']
+    dolphin_cfg['players'] = {
+        int(k): v for k, v in dolphin_cfg['players'].items()}
+
+    dolphin_fn = functools.partial(
+        dolphin_lib.Dolphin, **dolphin_cfg)
+    super().__init__(dolphin_fn, **config['env'])
 
 players = {
     1: dolphin_lib.AI(),
@@ -82,6 +99,8 @@ players = {
 }
 
 def main(_):
+  if RAY_INIT.value:
+    ray.init('auto')
 
   config = CONFIG.value.copy()
 
@@ -89,8 +108,10 @@ def main(_):
   updates = {
       "env": AdaptorEnv,
       "env_config": dict(
-          players=players,
-          **DOLPHIN.value,
+          dolphin=dict(
+              players=players,
+              **DOLPHIN.value),
+          env=ENV.value,
       ),
 
       "multiagent": {
@@ -101,6 +122,9 @@ def main(_):
               )
           }
       },
+
+      # force
+      "custom_resources_per_worker": {"worker": 1},
   }
   _update_dicts(config, updates)
 
