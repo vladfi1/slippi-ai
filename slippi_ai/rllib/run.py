@@ -14,7 +14,9 @@ from ray.rllib.policy.policy import PolicySpec
 from ray.rllib.algorithms import registry
 
 from slippi_ai import eval_lib, embed, utils
+from slippi_ai import networks, controller_heads
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai.rllib import model
 from slippi_ai.rllib.env import MeleeEnv
 
 DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
@@ -92,6 +94,16 @@ ENV = ff.DEFINE_dict(
     num_envs=ff.Integer(1),
 )
 
+NETWORK = ff.DEFINE_dict(
+    'network',
+    **utils.get_flags_from_default(networks.DEFAULT_CONFIG)
+)
+
+CONTROLLER_HEAD = ff.DEFINE_dict(
+    'controller_head',
+    **utils.get_flags_from_default(controller_heads.DEFAULT_CONFIG)
+)
+
 RAY_INIT = flags.DEFINE_boolean('ray_init', False, 'init ray')
 
 class AdaptorEnv(MeleeEnv):
@@ -115,6 +127,8 @@ def main(_):
   if RAY_INIT.value:
     ray.init('auto')
 
+  model.register()
+
   algo = _ALGO.value
   config = _ALGO_CONFIGS[algo].value.copy()
 
@@ -136,6 +150,16 @@ def main(_):
               )
           }
       },
+
+      "model": {
+          "custom_model": "slippi",
+          "custom_model_config": {
+              "network": NETWORK.value,
+              "controller_head": CONTROLLER_HEAD.value,
+          },
+          "_disable_preprocessor_api": True,
+      },
+      "_disable_preprocessor_api": True,
 
       # force
       "custom_resources_per_worker": {"worker": 1},
