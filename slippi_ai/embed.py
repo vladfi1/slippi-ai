@@ -69,6 +69,7 @@ class BoolEmbedding(Embedding[bool, np.uint8]):
     self.off = off
 
   def __call__(self, t):
+    t = tf.cast(t, tf.bool)
     return tf.expand_dims(tf.where(t, self.on, self.off), -1)
 
   def distance(self, predicted, target):
