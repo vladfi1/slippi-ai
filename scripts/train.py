@@ -12,6 +12,8 @@ from slippi_ai import (
     controller_heads,
     embed,
     networks,
+    policies,
+    saving,
     s3_lib,
     train_lib,
     utils,
@@ -38,6 +40,7 @@ def config():
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
+  policy = policies.DEFAULT_CONFIG
 
   expt_dir = train_lib.get_experiment_directory()
   tag = train_lib.get_experiment_tag()
@@ -56,6 +59,7 @@ def main(expt_dir, _config, _log):
       max_action_repeat=_config['data']['max_action_repeat'],
       network_config=_config['network'],
       embed_controller=embed_controller,
+      **_config['policy'],
   )
 
   learner_kwargs = _config['learner'].copy()
@@ -132,7 +136,7 @@ def main(expt_dir, _config, _log):
     # easier to always bundle the config with the state
     combined_state = dict(
         state=tf_state,
-        config=_config,
+        config=dict(_config, version=saving.VERSION),
     )
     pickled_state = pickle.dumps(combined_state)
 

@@ -83,7 +83,7 @@ ArrayNest = Nest[np.ndarray]
 
 def nt_to_nest(val: Union[tuple, T]) -> Nest[T]:
   """ Converts a NamedTuple to a Nest."""
-  if isinstance(val, tuple):
+  if isinstance(val, tuple) and hasattr(val, '_fields'):
     return {k: nt_to_nest(v) for k, v in zip(val._fields, val)}
   return val
 

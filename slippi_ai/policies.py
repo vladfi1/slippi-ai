@@ -3,9 +3,8 @@ import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai.controller_heads import ControllerHead
-from slippi_ai import networks, types
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import networks, embed
+from slippi_ai import networks, embed, types
 
 RecurrentState = networks.RecurrentState
 
@@ -16,13 +15,17 @@ class Policy(snt.Module):
       network: networks.Network,
       controller_head: ControllerHead,
       embed_state_action: embed.StructEmbedding[embed.StateActionReward],
+      train_value_head: bool = True,
   ):
     super().__init__(name='Policy')
     self.network = network
     self.controller_head = controller_head
     self.embed_state_action = embed_state_action
     self.initial_state = self.network.initial_state
-    self.value_head = snt.Linear(1, name='value_head')
+    self.train_value_head = train_value_head
+
+    if train_value_head:
+      self.value_head = snt.Linear(1, name='value_head')
 
   def loss(
       self,
@@ -41,32 +44,40 @@ class Policy(snt.Module):
     distances = self.controller_head.distance(
         outputs[:-1], prev_action, next_action)
     policy_loss = tf.add_n(tf.nest.flatten(distances))
-
-    # compute value loss
-    values = tf.squeeze(self.value_head(outputs), -1)
-    num_frames = tf.cast(state_action.action.repeat[1:] + 1, tf.float32)
-    discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
-    value_targets = discounted_returns(
-        rewards=tf.cast(state_action.reward[1:], tf.float32),
-        discounts=discounts,
-        bootstrap=values[-1])
-    value_targets = tf.stop_gradient(value_targets)
-    value_loss = tf.square(value_targets - values[:-1])
-    value_stddev = tf.sqrt(tf.reduce_mean(value_loss))
-
-    # compute metrics
-    total_loss = policy_loss + value_cost * value_loss
-    weighted_loss = tf.reduce_sum(total_loss) / tf.reduce_sum(num_frames)
+    total_loss = policy_loss
 
     metrics = dict(
         policy=dict(
             types.nt_to_nest(distances),
             loss=policy_loss,
-        ),
-        value=dict(
-            stddev=value_stddev,
-            loss=value_loss,
-        ),
+        )
+    )
+
+    num_frames = tf.cast(action.repeat[1:] + 1, tf.float32)
+
+    # compute value loss
+    if self.train_value_head:
+      values = tf.squeeze(self.value_head(outputs), -1)
+      discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
+      value_targets = discounted_returns(
+          rewards=tf.cast(state_action.reward[1:], tf.float32),
+          discounts=discounts,
+          bootstrap=values[-1])
+      value_targets = tf.stop_gradient(value_targets)
+      value_loss = tf.square(value_targets - values[:-1])
+      value_stddev = tf.sqrt(tf.reduce_mean(value_loss))
+
+      metrics['value'] = dict(
+          stddev=value_stddev,
+          loss=value_loss,
+      )
+
+      total_loss += value_cost * value_loss
+
+    # compute metrics
+    weighted_loss = tf.reduce_sum(total_loss) / tf.reduce_sum(num_frames)
+
+    metrics.update(
         total_loss=total_loss,
         weighted_loss=weighted_loss,
     )
@@ -86,3 +97,7 @@ class Policy(snt.Module):
     next_action = self.controller_head.sample(
         output, prev_action, **kwargs)
     return next_action, final_state
+
+DEFAULT_CONFIG = dict(
+    train_value_head=True,
+)

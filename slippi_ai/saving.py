@@ -7,12 +7,31 @@ from slippi_ai import (
     train_lib,
 )
 
+VERSION = 1
+
+def upgrade_config(config: dict):
+  """Upgrades a config to the latest version."""
+  config = dict(config)  # config may be a Sacred ReadOnlyDict
+  version = config.get('version')
+
+  if version is None:
+    assert 'policy' not in config
+    config['policy'] = dict(
+      train_value_head=False,
+    )
+    config['version'] = 1
+  
+  assert config['version'] == VERSION
+  return config
+
 def policy_from_config(config: dict) -> policies.Policy:
   # TODO: set embed_controller here
+  config = upgrade_config(config)
   return train_lib.build_policy(
       controller_head_config=config['controller_head'],
       max_action_repeat=config['data']['max_action_repeat'],
       network_config=config['network'],
+      **config['policy'],
   )
 
 def build_policy_from_sacred(tag: str) -> policies.Policy:

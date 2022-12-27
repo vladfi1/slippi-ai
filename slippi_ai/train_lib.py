@@ -34,6 +34,7 @@ def build_policy(
   max_action_repeat: int,
   network_config: dict,
   embed_controller: embed.Embedding = embed.embed_controller_discrete,
+  **policy_kwargs,
 ) -> policies.Policy:
   embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat(
       embed_controller,
@@ -52,6 +53,7 @@ def build_policy(
       networks.construct_network(**network_config),
       controller_heads.construct(**controller_head_config),
       embed_state_action=embed_state_action,
+      **policy_kwargs,
   )
 
 
