@@ -257,30 +257,11 @@ class GRU(Network):
   def unroll(self, inputs, prev_state):
     return utils.dynamic_rnn(self._gru, inputs, prev_state)
 
-class Copier(Network):
-  '''
-    No parameters - simply returns the previous controller state.
-  '''
-  CONFIG=dict()
-
-  def __init__(self):
-    super().__init__(name='Copier')
-
-  def initial_state(self, batch_size):
-    return ()
-
-  def step(self, inputs, prev_state):
-    return inputs[1], ()
-
-  def unroll(self, inputs, prev_state):
-    return inputs[1], ()
-
 CONSTRUCTORS = dict(
     mlp=MLP,
     frame_stack_mlp=FrameStackingMLP,
     lstm=LSTM,
     gru=GRU,
-    copier=Copier,
     res_lstm=DeepResLSTM,
 )
 
@@ -290,7 +271,6 @@ DEFAULT_CONFIG = dict(
     frame_stack_mlp=FrameStackingMLP.CONFIG,
     lstm=LSTM.CONFIG,
     gru=GRU.CONFIG,
-    copier=Copier.CONFIG,
     res_lstm=DeepResLSTM.CONFIG,
 )
 

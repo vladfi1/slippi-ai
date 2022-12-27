@@ -222,12 +222,12 @@ class DataSource:
   def __init__(
       self,
       replays: List[ReplayInfo],
+      # preprocesses (discretizes) actions before repeat detection
+      embed_controller: embed.Embedding[Controller, Any],
       compressed=True,
       batch_size=64,
       unroll_length=64,
       max_action_repeat=15,
-      # preprocesses (discretizes) actions before repeat detection
-      embed_controller=None,
       # Lists of melee.Character. None means all allowed.
       allowed_characters=None,
       allowed_opponents=None,

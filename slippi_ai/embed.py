@@ -304,7 +304,7 @@ def ordered_struct_embedding(
     embedding: Sequence[Tuple[str, Embedding]],
     nt_type: Type[NT],
 ) -> StructEmbedding[NT]:
-  """Supports missing fields, which will appear as None."""
+  """Supports missing fields, which will appear as ()."""
   existing_fields = set(k for k, _ in embedding)
   missing_fields = set(nt_type._fields) - existing_fields
   missing_kwargs = {k: () for k in missing_fields}
