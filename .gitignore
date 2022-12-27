@@ -144,3 +144,4 @@ secrets.json
 
 .vscode
 saved_models/
+pickled_models/
