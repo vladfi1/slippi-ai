@@ -26,7 +26,12 @@ def process_raw_mp(*args, **kwargs):
   return decompress.process_raw(
     *args, uploader=decompress.upload_files_mp, **kwargs)
 
-def process_all(env: str, in_memory: bool, skip_processed: bool = True):
+def process_all(
+    env: str,
+    in_memory: bool,
+    skip_processed: bool = True,
+    dry_run: bool = False,
+) -> int:
   start_time = time.perf_counter()
 
   raw_db = upload_lib.get_db(env, 'raw')
@@ -50,9 +55,11 @@ def process_all(env: str, in_memory: bool, skip_processed: bool = True):
     print(f'Processing {doc["filename"]} ({doc["description"]}).')
     results.append(
       process_raw_mp.remote(
-        env, doc['key'],
-        in_memory=in_memory,
-        skip_processed=skip_processed))
+          env, doc['key'],
+          in_memory=in_memory,
+          skip_processed=skip_processed,
+          dry_run=dry_run,
+      ))
 
   results: List[decompress.UploadResults] = ray.get(results)
   uploads = []
@@ -78,9 +85,11 @@ def main(_):
 
   # flags defined in decompress.py
   process_all(
-    FLAGS.env,
-    in_memory=FLAGS.in_memory,
-    skip_processed=not FLAGS.processed)
+      FLAGS.env,
+      in_memory=FLAGS.in_memory,
+      skip_processed=not FLAGS.processed,
+      dry_run=decompress.DRY_RUN.value,
+  )
 
 if __name__ == '__main__':
   app.run(main)

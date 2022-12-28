@@ -12,13 +12,14 @@ import zlib
 from absl import app
 from absl import flags
 
-from slippi_db import upload_lib
+from slippi_db import upload_lib, fix_zip
 
 flags.DEFINE_string('env', 'test', 'production environment')
 flags.DEFINE_bool('mp', False, 'Run in parallel with multiprocessing.')
 flags.DEFINE_bool('in_memory', True, 'Use ram instead of disk.')
 flags.DEFINE_bool(
     'processed', False, 'Decompress already-processed uploads.')
+DRY_RUN = flags.DEFINE_bool('dry_run', False, 'Don\'t upload anything.')
 
 FLAGS = flags.FLAGS
 
@@ -205,6 +206,7 @@ def process_raw(
     uploader: Uploader = upload_files_mp,
     skip_processed: bool = True,
     in_memory: bool = False,
+    dry_run: bool = False,
 ) -> UploadResults:
   start_time = time.perf_counter()
 
@@ -217,9 +219,12 @@ def process_raw(
   raw_name = raw_info["filename"]
   if skip_processed and raw_info.get('processed', False):
     print(f'Skipping already-processed raw upload: {raw_name}')
-    return []
+    return UploadResults.empty()
   else:
     print(f'Processing {raw_name}')
+  
+  if dry_run:
+    return UploadResults.empty()
 
   slp_db = upload_lib.get_db(env, 'slp')
   slp_keys = set(doc["key"] for doc in slp_db.find({}, ["key"]))
@@ -237,6 +242,9 @@ def process_raw(
 
   try:
     if obj_type == 'zip':
+      if raw_info['stored_size'] >= 2 ** 32:
+        # Fix zip64 files generated on Windows.
+        fix_zip.fix_zip(raw_file.name)
       extract_zip(raw_file.name, unzip_dir.name)
     elif obj_type == '7z':
       extract_7z(raw_file.name, unzip_dir.name)
@@ -289,6 +297,7 @@ def process_all(
   uploader: Uploader,
   in_memory: bool,
   skip_processed: bool = True,
+  dry_run: bool = False,
 ) -> List[UploadResults]:
   results = []
 
@@ -304,7 +313,9 @@ def process_all(
         raw_key=doc['key'],
         uploader=uploader,
         in_memory=in_memory,
-        skip_processed=skip_processed)
+        skip_processed=skip_processed,
+        dry_run=dry_run,
+      )
     results.append(result)
 
   print_timings(results)
@@ -315,7 +326,9 @@ def main(_):
       env=FLAGS.env,
       uploader=upload_files_mp if FLAGS.mp else upload_files,
       in_memory=FLAGS.in_memory,
-      skip_processed=not FLAGS.processed)
+      skip_processed=not FLAGS.processed,
+      dry_run=DRY_RUN.value,
+  )
 
 if __name__ == '__main__':
   app.run(main)
