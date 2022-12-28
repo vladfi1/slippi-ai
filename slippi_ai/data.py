@@ -36,25 +36,32 @@ def _get_keys(
 
 def train_test_split(
     data_dir: str,
-    meta_path: str,
+    meta_path: Optional[str],
     test_ratio: float = 0.1,
     # None means all allowed.
-    allowed_characters: Optional[List[melee.Character]] = None,
-    allowed_opponents: Optional[List[melee.Character]] = None,
+    allowed_characters: Optional[Iterable[melee.Character]] = None,
+    allowed_opponents: Optional[Iterable[melee.Character]] = None,
     seed: int = 0,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
-  df = pd.read_parquet(meta_path)
-
-  # check that we have the right metadata
   filenames = sorted(os.listdir(data_dir))
-  assert sorted(df['key']) == filenames
   print(f"Found {len(filenames)} files.")
 
-  allowed_characters = _charset(allowed_characters)
-  allowed_opponents = _charset(allowed_opponents)
+  if meta_path is not None:
+    df = pd.read_parquet(meta_path)
+    # check that we have the right metadata
+    assert sorted(df['key']) == filenames
 
-  unswapped = _get_keys(df, allowed_characters, allowed_opponents)
-  swapped = _get_keys(df, allowed_opponents, allowed_characters)
+    allowed_characters = _charset(allowed_characters)
+    allowed_opponents = _charset(allowed_opponents)
+
+    unswapped = _get_keys(df, allowed_characters, allowed_opponents)
+    swapped = _get_keys(df, allowed_opponents, allowed_characters)
+  else:
+    assert allowed_characters is None
+    assert allowed_opponents is None
+
+    swapped = filenames
+    unswapped = filenames
 
   replays = []
   for key in unswapped:
@@ -85,9 +92,9 @@ DATASET_CONFIG = dict(
 
 _name_to_character = {c.name.lower(): c for c in melee.Character}
 
-def chars_from_string(chars: str) -> List[melee.Character]:
+def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   if chars == 'all':
-    return list(melee.Character)
+    return None
   chars = chars.split(',')
   return [_name_to_character[c] for c in chars]
 
@@ -198,8 +205,10 @@ def compress_repeated_actions(
   compressed_states = tree.map_structure(lambda a: a[indices], game)
   compressed_states = embed_game.from_state(compressed_states)
   actions = tree.map_structure(lambda a: a[indices], controllers)
-  reward_indices = np.concatenate([[0], indices[:-1]])
-  compressed_rewards = np.add.reduceat(rewards, reward_indices)
+  compressed_rewards = np.concatenate([
+      np.zeros([1], dtype=np.float32),
+      np.add.reduceat(rewards, indices[:-1]),
+  ])
   compressed_game = StateActionReward(
       state=compressed_states,
       action=embed.ActionWithRepeat(
