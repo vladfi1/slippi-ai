@@ -11,71 +11,79 @@ set -e -x
 ROOT=$(pwd)
 USR=$ROOT/usr
 SLIPPI=$USR/slippi-ai
-AllCompressed=$ROOT/AllCompressed
+DATA_ROOT=$USR/data
+DATA_DIR=$DATA_ROOT/games
+META_PATH=$DATA_ROOT
 
 # get code from github
 
-export BRANCH=main
-
 rm -rf $SLIPPI
-if [ -z "$(ls -A $SLIPPI)" ]; then
- git clone --branch $BRANCH https://github.com/vladfi1/slippi-ai $SLIPPI
+
+# export BRANCH=main
+export BRANCH=slippi_db
+if [ ! -d $SLIPPI ]; then
+  git clone --branch $BRANCH https://github.com/vladfi1/slippi-ai $SLIPPI
 else
- pushd $SLIPPI ; git fetch origin; git switch $BRANCH ; git pull ; popd
+  pushd $SLIPPI ; git switch $BRANCH ; git pull ; popd
 fi
 
-# get data from gdrive
+# get data from s3
 
-# rm -r $AllCompressed
+# rm -rf $DATA_ROOT ;
 
-if [ ! -d $AllCompressed ]; then
- pip install gdown
+if [ ! -d $DATA_DIR ]; then
+  mkdir -p $DATA_ROOT
 
- ACT=AllCompressed.tar
- DATESET_URL="https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B"
+  # download dataset
+  DATASET_VERSION=prod
+  DATASET_URL="https://slp-replays.s3.amazonaws.com/$DATASET_VERSION/datasets/pq/games.tar"
+  GAMES_TAR=$DATA_ROOT/games.tar
+  curl $DATASET_URL -o $GAMES_TAR
 
- gdown $DATESET_URL -O $ACT
- tar xvf $ACT
- rm $ACT
+  # extract games
+  mkdir $DATA_DIR
+  tar xf $GAMES_TAR -C $DATA_DIR
+  rm $GAMES_TAR
+fi
+
+# download meta df
+if [ ! -f $META_PATH ]; then
+  META_URL="https://slp-replays.s3.amazonaws.com/$DATASET_VERSION/datasets/pq/meta.pq"
+  curl $META_URL -o $META_PATH
 fi
 
 # install additional environment, if not already here
 
 # use virtualenv from python2, lightweight
 # set pip dependencies wheel cache in persistent dir
-export XDG_CACHE_HOME=$USR
+# export XDG_CACHE_HOME=$USR
 VENV=venv
 
 pushd $USR
-# rm -rf $VENV  # purge old versions of e.g. libmelee
 pip install virtualenv
-if [ -z "$(ls -A $VENV/bin/activate)" ]; then
- virtualenv --system-site-packages --app-data ./$VENV/venv-cache $VENV
+if [ ! -d $VENV ]; then
+  virtualenv --system-site-packages --app-data ./$VENV/venv-cache $VENV
 fi
 source $VENV/bin/activate
 pip install -r $SLIPPI/requirements.txt
 pip install -e $SLIPPI
 popd
 
-
 # execute task
 
 # local: 192.168.1.5
 
-# S3 bucket for saving parameters, can leave blank
-# export S3_CREDS=
+# S3 bucket for saving parameters
+#export S3_CREDS=
 
-# mongodb for experiment logging
-export MONGO_URI=
+# managed mongodb for experiment logging
+#export MONGO_URI=
 
-python $SLIPPI/scripts/train.py with \
- data.max_action_repeat=0 \
- data.batch_size=512 \
- data.unroll_length=64 \
- network.name=res_lstm \
- network.res_lstm.num_layers=3 network.res_lstm.hidden_size=512 \
- controller_head.name=autoregressive \
- controller_head.autoregressive.component_depth=1 \
- data.allowed_characters=fox data.allowed_opponents=all \
- dataset.data_dir=$AllCompressed \
- epoch_time=300 num_epochs=864 save_interval=3600 save_to_s3=True
+python -u $SLIPPI/scripts/train.py with \
+  tag=dataset_v2_vf \
+  data.batch_size=512 \
+  network.name=res_lstm network.res_lstm.num_layers=3 network.res_lstm.hidden_size=512 \
+  controller_head.name=autoregressive controller_head.autoregressive.component_depth=2 \
+  data.allowed_characters=fox data.allowed_opponents=all \
+  dataset.data_dir=$DATA_DIR \
+  epoch_time=300 num_epochs=864 save_interval=300 save_to_s3=False
