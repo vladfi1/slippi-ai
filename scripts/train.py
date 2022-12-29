@@ -1,5 +1,6 @@
 """Train (and test) a network via imitation learning."""
 
+import dataclasses
 import os
 import pickle
 import time
@@ -29,11 +30,18 @@ if mongo_uri:
   db_name = os.environ.get('MONGO_DB_NAME', 'sacred')
   ex.observers.append(MongoObserver(url=mongo_uri, db_name=db_name))
 
+@dataclasses.dataclass
+class RuntimeConfig:
+  max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  log_interval: int = 10  # seconds between logging
+  save_interval = 300  # seconds between saving to disk
+
+  eval_every_n: int = 100  # number of training steps between evaluations
+  num_eval_steps: int = 10  # number of batches per evaluation
+
 @ex.config
 def config():
-  num_epochs = 1000  # an "epoch" is just "epoch_time" seconds
-  epoch_time = 10  # seconds between testing/logging
-  save_interval = 300  # seconds between saving to disk
+  runtime = dataclasses.asdict(RuntimeConfig())
 
   dataset = data_lib.DATASET_CONFIG
   data = data_lib.CONFIG
@@ -52,6 +60,8 @@ def _get_loss(stats: dict):
 
 @ex.automain
 def main(expt_dir, _config, _log):
+  runtime = RuntimeConfig(**_config['runtime'])
+
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
   policy = train_lib.build_policy(
@@ -148,7 +158,7 @@ def main(expt_dir, _config, _log):
       _log.info('saving state to S3: %s', s3_keys.combined)
       s3_store.put(s3_keys.combined, pickled_state)
 
-  save = utils.Periodically(save, _config['save_interval'])
+  save = utils.Periodically(save, runtime.save_interval)
 
   if _config['restore_tag']:
     restore_s3_keys = s3_lib.get_keys(_config['restore_tag'])
@@ -185,49 +195,62 @@ def main(expt_dir, _config, _log):
     _log.info('loss post-restore: %f', train_loss.numpy())
 
   FRAMES_PER_MINUTE = 60 * 60
+  start_time = time.time()
 
-  for _ in range(_config['num_epochs']):
-    start_time = time.perf_counter()
+  step_tracker = utils.Tracker(step.numpy())
+  epoch_tracker = utils.Tracker(train_stats['epoch'])
+  log_tracker = utils.Tracker(time.time())
 
-    # train for epoch_time seconds
-    steps = 0
-    num_frames = 0
-    while True:
-      train_stats = train_manager.step()
-      steps += 1
-      num_frames += train_stats['num_frames']
-
-      elapsed_time = time.perf_counter() - start_time
-      if elapsed_time > _config['epoch_time']: break
-
-    step.assign_add(steps)
-    total_steps = step.numpy()
-
-    # now test
+  @utils.periodically(runtime.log_interval)
+  def maybe_log(train_stats: dict):
+    """Do a test step, then log both train and test stats."""
     test_stats = test_manager.step()
 
-    train_loss = _get_loss(train_stats)
-    test_loss = _get_loss(test_stats)
+    elapsed_time = log_tracker.update(time.time())
+    total_steps = step.numpy()
+    steps = step_tracker.update(total_steps)
+    # assume num_frames is constant per step
+    num_frames = steps * train_stats['num_frames']
+
     epoch = train_stats['epoch']
+    delta_epoch = epoch_tracker.update(epoch)
+
+    sps = steps / elapsed_time
+    mps = num_frames / FRAMES_PER_MINUTE / elapsed_time
+    eph = delta_epoch / elapsed_time * 60 * 60
+    data_time = train_manager.data_profiler.mean_time()
+    step_time = train_manager.step_profiler.mean_time()
+
+    timings = dict(
+        sps=sps,
+        mps=mps,
+        eps=eph,
+        data=data_time,
+        step=step_time,
+    )
 
     all_stats = dict(
         train=train_stats,
         test=test_stats,
-        learning_rate=learning_rate.numpy(),
+        timings=timings,
     )
     train_lib.log_stats(ex, all_stats, total_steps)
 
-    sps = steps / elapsed_time
-    mps = num_frames / FRAMES_PER_MINUTE / elapsed_time
-    ex.log_scalar('sps', sps, total_steps)
-    ex.log_scalar('mps', mps, total_steps)
+    train_loss = _get_loss(train_stats)
+    test_loss = _get_loss(test_stats)
 
-    print(f'steps={total_steps} sps={sps:.2f} mps={mps:.2f} epoch={epoch:.3f}')
+    print(f'step={total_steps} epoch={epoch:.3f}')
+    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
-          f' data={train_manager.data_profiler.mean_time():.3f}'
-          f' step={train_manager.step_profiler.mean_time():.3f}')
+          f' data={data_time:.3f}'
+          f' step={step_time:.3f}')
     print()
+
+  while time.perf_counter() - start_time < runtime.max_runtime:
+    train_stats = train_manager.step()
+    step.assign_add(1)
+    maybe_log(train_stats)
 
     save_path = save()
     if save_path:

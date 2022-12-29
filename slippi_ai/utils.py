@@ -1,4 +1,6 @@
+import functools
 import time
+import typing as tp
 
 import numpy as np
 import tensorflow as tf
@@ -81,6 +83,23 @@ class Periodically:
     if self.last_call is None or now - self.last_call > self.interval:
       self.last_call = now
       return self.f(*args, **kwargs)
+
+def periodically(interval: int):
+  def wrap(f):
+    return Periodically(f, interval)
+  return wrap
+
+T = tp.TypeVar('T')
+
+class Tracker(tp.Generic[T]):
+
+  def __init__(self, initial: T):
+    self.last = initial
+
+  def update(self, latest: T) -> T:
+    delta = latest - self.last
+    self.last = latest
+    return delta
 
 class EMA:
   """Exponential moving average."""
