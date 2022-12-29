@@ -79,7 +79,19 @@ CONTROLLER_TYPE = nt_to_pa(Controller)
 PLAYER_TYPE = nt_to_pa(Player)
 GAME_TYPE = nt_to_pa(Game)
 
-ArrayNest = Nest[np.ndarray]
+def array_from_nest(val: Nest[np.ndarray]) -> pa.StructArray:
+  if isinstance(val, Mapping):
+    values = [array_from_nest(v) for v in val.values()]
+    return pa.StructArray.from_arrays(values, names=val.keys())
+  else:
+    return val
+
+def array_from_nt(val: Union[tuple, np.ndarray]) -> pa.StructArray:
+  if isinstance(val, tuple):
+    values = [array_from_nt(v) for v in val]
+    return pa.StructArray.from_arrays(values, names=val._fields)
+  else:
+    return val
 
 def nt_to_nest(val: Union[tuple, T]) -> Nest[T]:
   """ Converts a NamedTuple to a Nest."""

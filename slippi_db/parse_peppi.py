@@ -5,7 +5,7 @@ import melee
 from melee import Button
 import peppi_py
 
-from slippi_ai.types import ArrayNest, Buttons, Nest, array_from_nest
+from slippi_ai import types
 
 BUTTON_MASKS = {
     Button.BUTTON_A: 0x0100,
@@ -22,24 +22,24 @@ BUTTON_MASKS = {
     Button.BUTTON_D_UP: 0x0008,
 }
 
-def get_buttons(button_bits: np.ndarray) -> Nest[np.ndarray]:
-  return {
+def get_buttons(button_bits: np.ndarray) -> types.Buttons:
+  return types.Buttons(**{
       b.value: np.asarray(
           np.bitwise_and(button_bits, BUTTON_MASKS[b]),
           dtype=bool)
       for b in BUTTON_MASKS
-  }
+  })
 
 def to_libmelee_stick(raw_stick: np.ndarray) -> np.ndarray:
   return (raw_stick / 2.) + 0.5
 
-def get_stick(stick):
-  return dict(
+def get_stick(stick) -> types.Stick:
+  return types.Stick(
       x=to_libmelee_stick(stick.field('x').to_numpy()),
       y=to_libmelee_stick(stick.field('y').to_numpy()),
   )
 
-def get_player(player: pa.StructArray) -> ArrayNest:
+def get_player(player: pa.StructArray) -> types.Player:
   leader = player.field('leader')
 
   post = leader.field('post')
@@ -47,7 +47,7 @@ def get_player(player: pa.StructArray) -> ArrayNest:
   position = post.field('position')
   pre = leader.field('pre')
 
-  return dict(
+  return types.Player(
       percent=np.asarray(get_post('damage'), dtype=np.uint16),
       facing=np.asarray(get_post('direction').to_numpy(), dtype=bool),
       x=position.field('x'),
@@ -57,7 +57,7 @@ def get_player(player: pa.StructArray) -> ArrayNest:
       character=get_post('character'),  # uint8
       jumps_left=get_post('jumps'),  # uint8
       shield_strength=get_post('shield'),  # float
-      controller=dict(
+      controller=types.Controller(
           main_stick=get_stick(pre.field('joystick')),
           c_stick=get_stick(pre.field('cstick')),
           # libmelee reads the logical value and assigns it to both l/r
@@ -68,10 +68,10 @@ def get_player(player: pa.StructArray) -> ArrayNest:
           post.field('airborne').to_numpy(zero_copy_only=False)),
   )
 
-def get_players(ports: pa.StructArray) -> ArrayNest:
+def get_players(ports: pa.StructArray) -> dict[str, types.Player]:
   return {f'p{i}': get_player(ports.field(str(i))) for i in range(2)}
 
-def get_slp(path: str) -> pa.StructArray:
+def get_slp(path: str) -> types.GAME_TYPE:
   game = peppi_py.game(path, rollbacks=True)
   frames = game['frames']
 
@@ -80,8 +80,8 @@ def get_slp(path: str) -> pa.StructArray:
   stage = melee.enums.to_internal_stage(game['start']['stage'])
   stage = np.full([len(frames)], stage.value, dtype=np.uint8)
 
-  game = dict(players, stage=stage)
-  game_array = array_from_nest(game)
+  game = types.Game(stage=stage, **players)
+  game_array = types.array_from_nt(game)
 
   index = frames.field('index').to_numpy()
   first_indices = []
