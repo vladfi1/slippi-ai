@@ -73,6 +73,8 @@ def generate_all(env: str, wipe=False, local=False):
   to_generate = [key for key in all_keys if key not in existing]
   skipped = len(all_keys) - len(to_generate)
 
+  print(f'todo: {len(to_generate)}, skip: {skipped}')
+
   if local:
     metadata = generate_many(env, to_generate)
   else:

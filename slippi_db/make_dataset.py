@@ -1,4 +1,7 @@
-"""Create tar file with parsed parquet files and metadata DataFrame."""
+"""Create tar file with parsed parquet files and metadata DataFrame.
+
+ray submit --start slippi_db/submit_cluster slippi_db/make_dataset.py
+"""
 
 import io
 import tarfile
