@@ -141,6 +141,7 @@ run_scripts/
 secrets.sh
 secrets.json
 setup.sh
+**/client_secrets.json
 
 .vscode
 saved_models/
