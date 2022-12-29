@@ -17,6 +17,14 @@ def upload_file(db: upload_lib.ReplayDB, path: str, desc: str) -> str:
         description=desc,
     )
 
+def traverse(path: str) -> Iterable[str]:
+  if os.path.isfile(path):
+    yield path
+  else:
+    for dirname, _, filenames in os.walk(path):
+      for filename in filenames:
+        yield os.path.join(dirname, filename)
+
 def upload_multiple(
     env: str,
     desc: str,
@@ -25,8 +33,9 @@ def upload_multiple(
   db = upload_lib.ReplayDB(env)
 
   for path in paths:
-    result = upload_file(db, path, desc)
-    print(result)
+    for subpath in traverse(path):
+      result = upload_file(db, subpath, desc)
+      print(result)
 
 flags.DEFINE_string('env', None, 'production environment')
 flags.DEFINE_string('desc', '', 'description')
