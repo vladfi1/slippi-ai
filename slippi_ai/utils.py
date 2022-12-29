@@ -129,3 +129,8 @@ def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.TensorSpec]:
   mean = tf.reduce_mean(xs)
   variance = tf.reduce_mean(tf.square(xs - mean))
   return mean, variance
+
+def to_numpy(x) -> np.ndarray:
+  if isinstance(x, tf.Tensor):
+    return x.numpy()
+  return x

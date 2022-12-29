@@ -6,7 +6,6 @@ import pickle
 import time
 
 import sacred
-
 import tensorflow as tf
 
 from slippi_ai import (
@@ -247,10 +246,23 @@ def main(expt_dir, _config, _log):
           f' step={step_time:.3f}')
     print()
 
+  def maybe_eval():
+    total_steps = step.numpy()
+    if total_steps % runtime.eval_every_n != 0:
+      return
+    
+    eval_stats = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    eval_stats = tf.nest.map_structure(utils.to_numpy, eval_stats)
+    eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
+
+    to_log = dict(eval=eval_stats)
+    train_lib.log_stats(ex, to_log, total_steps)
+
   while time.perf_counter() - start_time < runtime.max_runtime:
     train_stats = train_manager.step()
     step.assign_add(1)
     maybe_log(train_stats)
+    maybe_eval()
 
     save_path = save()
     if save_path:

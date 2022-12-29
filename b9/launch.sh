@@ -74,10 +74,13 @@ popd
 # local: 192.168.1.5
 
 # S3 bucket for saving parameters
-#export S3_CREDS=
+export S3_CREDS=
 
 # managed mongodb for experiment logging
-#export MONGO_URI=
+export MONGO_URI=
+
+NUM_DAYS=3
+RUNTIME=$(($NUM_DAYS * 24 * 60 * 60))
 
 python -u $SLIPPI/scripts/train.py with \
   tag=dataset_v2_vf \
@@ -86,4 +89,8 @@ python -u $SLIPPI/scripts/train.py with \
   controller_head.name=autoregressive controller_head.autoregressive.component_depth=2 \
   data.allowed_characters=fox data.allowed_opponents=all \
   dataset.data_dir=$DATA_DIR \
-  epoch_time=300 num_epochs=864 save_interval=300 save_to_s3=False
+  dataset.meta_path=$META_PATH \
+  runtime.max_runtime=$RUNTIME \
+  runtime.log_interval=300 \
+  runtime.save_interval=600 \
+  save_to_s3=True
