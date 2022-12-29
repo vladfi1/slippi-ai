@@ -82,7 +82,8 @@ def upload_slp(
         Body=compressed_slp_bytes)
 
   result = dict(
-      filename=filename,
+      # filenames may have bogus unicode characters
+      filename=filename.encode('utf-8', 'ignore'),
       compression='zlib',
       key=slp_key,
       original_size=len(slp_bytes),
@@ -260,7 +261,10 @@ def process_raw(
   for d in results.uploads:
     d.update(raw_key=raw_key)
   if results.uploads:
-    slp_db.insert_many(results.uploads)
+    try:
+      slp_db.insert_many(results.uploads)
+    except UnicodeError as e:
+      raise RuntimeError(f'DB upload failed for {raw_name} ({raw_key})') from e
 
   # set processed flag in raw_db
   raw_db.update_one({'key': raw_key}, {'$set': {'processed': True}})
