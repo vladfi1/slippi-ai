@@ -36,27 +36,6 @@ To view the results, you can use [omniboard](https://github.com/vivekratnavel/om
 
 ## Training Data
 
-### Old Format
-
-A dataset of processed and compressed slippi replays is available at https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B. It is a tarball of zipped pickled slp files. Use
-
-```bash
-gdown 'https://drive.google.com/u/0/uc?id=1O6Njx85-2Te7VAZP6zP51EHa1oIFmS1B' -O data/
-tar -xf data/AllCompressed.tar
-```
-
-to expand it. The folder `data/AllCompressed/` will now contain many zipped pickled and formatted slippi replay files. Another useful dataset is https://drive.google.com/uc?id=1ZIfDgkdQdu-ldCx_34e-VxYJwQCpV-i3 which only contains fox dittos.
-
-### Processing a preexisting dataset of raw slippi replay files
-
-An preexisting dataset of raw slippi replays is available at https://drive.google.com/file/d/1ab6ovA46tfiPZ2Y3a_yS1J3k3656yQ8f (27G, unzips to 200G). You can place this in the `data/` folder using `gdown <drive link> <destination>`.
-
-The code relies on a small (~3 MB) sql database which is 'melee_public_slp_dataset.sqlite3' in the `data/` folder.
-
-For updates on this raw slippi replay dataset, the sql database, or the dataset of processed and compressed slippi replays, check the ai channel of the Slippi discord.
-
-### New Format
-
 The old data format had a few issues:
 - It was potentially insecure due to the use of pickle.
 - It used nests of numpy arrays, lacking any structure or specification.
