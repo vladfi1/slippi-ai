@@ -4,7 +4,7 @@ import tensorflow as tf
 
 from slippi_ai.controller_heads import ControllerHead
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import networks, embed, types
+from slippi_ai import networks, embed, types, utils
 
 RecurrentState = networks.RecurrentState
 
@@ -65,12 +65,25 @@ class Policy(snt.Module):
           bootstrap=values[-1])
       value_targets = tf.stop_gradient(value_targets)
       value_loss = tf.square(value_targets - values[:-1])
-      value_stddev = tf.sqrt(tf.reduce_mean(value_loss))
 
-      metrics['value'] = dict(
-          stddev=value_stddev,
-          loss=value_loss,
-      )
+      _, value_variance = utils.mean_and_variance(value_targets)
+      uev = value_loss / (value_variance + 1e-8)
+
+      reward_mean, reward_variance = utils.mean_and_variance(
+          state_action.reward)
+
+      metrics['value'] = {
+          'reward': dict(
+              mean=reward_mean,
+              variance=reward_variance,
+              max=tf.reduce_max(state_action.reward),
+              min=tf.reduce_min(state_action.reward),
+          ),
+          'return': value_targets,
+          'loss': value_loss,
+          'variance': value_variance,
+          'uev': uev,  # unexplained variance
+      }
 
       total_loss += value_cost * value_loss
 

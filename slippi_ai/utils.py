@@ -124,3 +124,8 @@ def with_flat_signature(fn, signature):
   def g(*flat_args):
     return fn(*tree.unflatten_as(signature, flat_args))
   return tf.function(g, input_signature=tree.flatten(signature))
+
+def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.TensorSpec]:
+  mean = tf.reduce_mean(xs)
+  variance = tf.reduce_mean(tf.square(xs - mean))
+  return mean, variance
