@@ -33,7 +33,7 @@ if mongo_uri:
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
-  save_interval = 300  # seconds between saving to disk
+  save_interval: int = 300  # seconds between saving to disk
 
   eval_every_n: int = 100  # number of training steps between evaluations
   num_eval_steps: int = 10  # number of batches per evaluation
