@@ -10,7 +10,6 @@ Nest = Union[Mapping[str, 'Nest'], T]
 
 # we define NamedTuples for python typechecking and IDE integration
 
-# TODO: remove START and D-pad (except UP)
 class Buttons(NamedTuple):
   A: np.bool_
   B: np.bool_
@@ -19,11 +18,7 @@ class Buttons(NamedTuple):
   Z: np.bool_
   L: np.bool_
   R: np.bool_
-  START: np.bool_
   D_UP: np.bool_
-  D_DOWN: np.bool_
-  D_LEFT: np.bool_
-  D_RIGHT: np.bool_
 
 LIBMELEE_BUTTONS = {name: Button(name) for name in Buttons._fields}
 
