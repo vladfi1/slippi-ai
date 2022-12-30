@@ -194,7 +194,6 @@ def main(expt_dir, _config, _log):
     _log.info('loss post-restore: %f', train_loss.numpy())
 
   FRAMES_PER_MINUTE = 60 * 60
-  start_time = time.time()
 
   step_tracker = utils.Tracker(step.numpy())
   epoch_tracker = utils.Tracker(train_stats['epoch'])
@@ -250,7 +249,7 @@ def main(expt_dir, _config, _log):
     total_steps = step.numpy()
     if total_steps % runtime.eval_every_n != 0:
       return
-    
+
     eval_stats = [test_manager.step() for _ in range(runtime.num_eval_steps)]
     eval_stats = tf.nest.map_structure(utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
@@ -258,7 +257,9 @@ def main(expt_dir, _config, _log):
     to_log = dict(eval=eval_stats)
     train_lib.log_stats(ex, to_log, total_steps)
 
-  while time.perf_counter() - start_time < runtime.max_runtime:
+  start_time = time.time()
+
+  while time.time() - start_time < runtime.max_runtime:
     train_stats = train_manager.step()
     step.assign_add(1)
     maybe_log(train_stats)
