@@ -9,7 +9,7 @@ python scripts/train.py with \
   data.compressed=False \
   runtime.log_interval=4 \
   runtime.max_runtime=10 \
-  runtime.eval_every_n=2 \
-  runtime.num_eval_steps=1 \
+  evaluation.eval_every_n=2 \
+  evaluation.num_eval_steps=1 \
   network.mlp.depth=1 \
   network.mlp.width=1

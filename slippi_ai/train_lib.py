@@ -1,6 +1,8 @@
 import datetime
 from typing import Iterator, Tuple
+import typing as tp
 import os
+import sacred
 import secrets
 
 import numpy as np
@@ -8,10 +10,6 @@ import tensorflow as tf
 import tree
 
 from slippi_ai import (
-    embed,
-    policies,
-    networks,
-    controller_heads,
     data,
     utils,
 )
@@ -61,7 +59,12 @@ class TrainManager:
     )
     return stats
 
-def log_stats(ex, stats, step=None, sep='.'):
+def log_stats(
+    ex: sacred.Experiment,
+    stats: tree.Structure,
+    step: tp.Optional[int] = None,
+    sep: str = '.',
+):
   def log(path, value):
     if isinstance(value, tf.Tensor):
       value = value.numpy()

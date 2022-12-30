@@ -316,6 +316,9 @@ class DataSource:
         [m.grab_chunk(self.unroll_length) for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
     return next_batch, epoch
+  
+  def close(self):
+    pass
 
 def produce_batches(data_source_kwargs, batch_queue):
   data_source = DataSource(**data_source_kwargs)
@@ -336,6 +339,10 @@ class DataSourceMP:
 
   def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
+  
+  def close(self):
+    self.batch_queue.close()
+    self.process.terminate()
 
 CONFIG = dict(
     batch_size=32,

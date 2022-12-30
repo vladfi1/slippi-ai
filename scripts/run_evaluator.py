@@ -4,6 +4,8 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
+import ray
+
 from slippi_ai import eval_lib, dolphin, paths
 from slippi_ai import evaluators
 
@@ -15,6 +17,37 @@ ROLLOUT_LENGTH = flags.DEFINE_integer(
 AGENT = ff.DEFINE_dict('agent',
     path=ff.String(str(paths.DEMO_CHECKPOINT), 'path to agent checkpoint'),
 )
+
+USE_RAY = flags.DEFINE_bool('use_ray', False, 'run "remotely" with ray')
+
+
+def run(evaluator_kwargs, variables):
+  evaluator = evaluators.SerializableRolloutWorker(**evaluator_kwargs)
+
+  stats = evaluator.rollout({})
+  print('uninitialized:', stats)
+
+  stats = evaluator.rollout({1: variables})
+  print('initialized:', stats)
+
+  evaluator.stop()
+
+
+def run_ray(evaluator_kwargs, variables):
+  evaluator = evaluators.RayRolloutWorker.remote(**evaluator_kwargs)
+
+  # fire off two asynchronous evaluations
+  pre = evaluator.rollout.remote({})
+  post = evaluator.rollout.remote({1: variables})
+
+  print('Evaluations started.')
+  pre, post = ray.get([pre, post])
+
+  print('uninitialized:', pre)
+  print('initialized:', post)
+
+  ray.wait([evaluator.stop.remote()])
+
 
 def main(_):
   players = {
@@ -33,17 +66,14 @@ def main(_):
   config = state['config']
   variables = state['state']['policy']
 
-  evaluator = evaluators.RemoteEvaluator(
+  evaluator_kwargs = dict(
       policy_configs={1: config},
       env_kwargs=env_kwargs,
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
   )
 
-  stats = evaluator.rollout({})
-  print('uninitialized:', stats)
-
-  stats = evaluator.rollout({1: variables})
-  print('initialized:', stats)
+  run_fn = run_ray if USE_RAY.value else run
+  run_fn(evaluator_kwargs, variables)
 
 if __name__ == '__main__':
   app.run(main)

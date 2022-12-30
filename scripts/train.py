@@ -9,9 +9,12 @@ import typing as tp
 import sacred
 import tensorflow as tf
 
+import melee
+
 from slippi_ai import (
     controller_heads,
     embed,
+    evaluators,
     networks,
     policies,
     saving,
@@ -22,6 +25,7 @@ from slippi_ai import (
 from slippi_ai.learner import Learner
 from slippi_ai import data as data_lib
 from slippi_ai.file_cache import FileCache
+from slippi_ai import dolphin as dolphin_lib
 
 ex = sacred.Experiment('imitation')
 
@@ -33,12 +37,31 @@ if mongo_uri:
 
 @dataclasses.dataclass
 class RuntimeConfig:
+  max_step: int = 1_000_000  # maximum training step
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
+@dataclasses.dataclass
+class DolphinConfig:
+  """Configure dolphin for evaluation."""
+  path: str = None  # Path to folder containing the dolphin executable
+  iso: str = None  # Path to melee 1.02 iso.
+  stage: str = melee.Stage.FINAL_DESTINATION  # Which stage to play on.
+  online_delay: int = 0  # Simulate online delay.
+  blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  save_replays: bool = False  # Save slippi replays to the usual location.
+  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+
+@dataclasses.dataclass
+class EvaluationConfig:
   eval_every_n: int = 100  # number of training steps between evaluations
   num_eval_steps: int = 10  # number of batches per evaluation
+  run_rl: bool = False  # run RL evaluation
+  rollout_length: int = 2 * 60 * 60  # two minutes in-game time
+
 
 @dataclasses.dataclass
 class FileCacheConfig:
@@ -47,9 +70,12 @@ class FileCacheConfig:
   wipe: bool = False
   version: str = 'test'
 
+
 @ex.config
 def config():
   runtime = dataclasses.asdict(RuntimeConfig())
+  evaluation = dataclasses.asdict(EvaluationConfig())
+  dolphin = dataclasses.asdict(DolphinConfig())
 
   file_cache = dataclasses.asdict(FileCacheConfig())
   dataset = dataclasses.asdict(data_lib.DatasetConfig())
@@ -70,17 +96,14 @@ def _get_loss(stats: dict):
 
 @ex.automain
 def main(expt_dir, _config, _log):
+  _config = dict(_config, version=saving.VERSION)
+
   runtime = RuntimeConfig(**_config['runtime'])
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
-  policy = saving.build_policy(
-      controller_head_config=_config['controller_head'],
-      max_action_repeat=_config['data']['max_action_repeat'],
-      network_config=_config['network'],
-      embed_controller=embed_controller,
-      **_config['policy'],
-  )
+  # TODO: configure embed_controller
+  policy = saving.policy_from_config(_config, embed_controller)
 
   learner_kwargs = _config['learner'].copy()
   learning_rate = tf.Variable(
@@ -173,7 +196,7 @@ def main(expt_dir, _config, _log):
     # easier to always bundle the config with the state
     combined_state = dict(
         state=tf_state,
-        config=dict(_config, version=saving.VERSION),
+        config=_config,
     )
     pickled_state = pickle.dumps(combined_state)
 
@@ -273,17 +296,52 @@ def main(expt_dir, _config, _log):
           f' step={step_time:.3f}')
     print()
 
+  evaluation_config: EvaluationConfig = EvaluationConfig(**_config['evaluation'])
+
+  def log_data(data: dict):
+    train_lib.log_stats(ex, data, step=step.numpy())
+
+  if evaluation_config.run_rl:
+    # TODO: configure character and opponent
+    env_kwargs = dict(
+        players={
+            1: dolphin_lib.AI(),
+            2: dolphin_lib.CPU(),
+        },
+        **_config['dolphin'],
+    )
+
+    def rl_log(data: evaluators.RolloutMetrics, step):
+      train_lib.log_stats(ex, dict(rl=data), step=step)
+      formatted = tf.nest.map_structure(
+          lambda x: f'{x:.2e}' if isinstance(x, float) else x,
+          data)
+      _log.info(formatted)
+
+    rl_evaluator = evaluators.RemoteEvaluator(
+        logger=rl_log,
+        policy_configs={1: _config},
+        env_kwargs=env_kwargs,
+        num_steps_per_rollout=evaluation_config.rollout_length,
+    )
+
+    def maybe_rl_eval():
+      policy_vars = [v.numpy() for v in policy.variables]
+      return rl_evaluator.rollout(step.numpy(), policy_vars={1: policy_vars})
+
   def maybe_eval():
     total_steps = step.numpy()
-    if total_steps % runtime.eval_every_n != 0:
+    if total_steps % evaluation_config.eval_every_n != 0:
       return
 
-    eval_stats = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    if evaluation_config.run_rl:
+      maybe_rl_eval()
+
+    eval_stats = [test_manager.step() for _ in range(evaluation_config.num_eval_steps)]
     eval_stats = tf.nest.map_structure(utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
-    to_log = dict(eval=eval_stats)
-    train_lib.log_stats(ex, to_log, total_steps)
+    log_data(dict(eval=eval_stats))
 
   start_time = time.time()
 
@@ -296,3 +354,12 @@ def main(expt_dir, _config, _log):
     save_path = save()
     if save_path:
       _log.info('Saved network to %s', save_path)
+
+    if step.numpy() >= runtime.max_step:
+      break
+
+  train_data.close()
+  test_data.close()
+
+  if evaluation_config.run_rl:
+    rl_evaluator.stop()

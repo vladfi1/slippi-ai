@@ -32,7 +32,7 @@ def build_policy(
   controller_head_config: dict,
   max_action_repeat: int,
   network_config: dict,
-  embed_controller: embed.Embedding = embed.embed_controller_discrete,
+  embed_controller: embed.Embedding,
   **policy_kwargs,
 ) -> policies.Policy:
   embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat(
@@ -55,13 +55,16 @@ def build_policy(
       **policy_kwargs,
   )
 
-def policy_from_config(config: dict) -> policies.Policy:
-  # TODO: set embed_controller here
+def policy_from_config(
+    config: dict,
+    embed_controller: embed.Embedding = embed.embed_controller_discrete,
+) -> policies.Policy:
   config = upgrade_config(config)
   return build_policy(
       controller_head_config=config['controller_head'],
       max_action_repeat=config['data']['max_action_repeat'],
       network_config=config['network'],
+      embed_controller=embed_controller,
       **config['policy'],
   )
 
@@ -72,13 +75,15 @@ def build_policy_from_sacred(tag: str) -> policies.Policy:
     raise ValueError(f"Tag {tag} not found in db.")
   return policy_from_config(run['config'])
 
-def load_policy_from_state(state: dict) -> policies.Policy:
-  policy = policy_from_config(state['config'])
-
-  # create tensorflow Variables
+def init_variables(policy: policies.Policy):
   dummy_state_action = policy.embed_state_action.dummy([1, 1])
   initial_state = policy.initial_state(1)
   policy.loss(dummy_state_action, initial_state)
+
+def load_policy_from_state(state: dict) -> policies.Policy:
+  policy = policy_from_config(state['config'])
+
+  init_variables(policy)
 
   # assign using saved params
   params = state['state']['policy']
