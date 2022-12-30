@@ -1,4 +1,8 @@
-"""Create a Parquet dataset for machine learning."""
+"""Create a Parquet dataset for machine learning.
+
+ray submit --start slippi_db/parsing_cluster.yaml \
+  slippi_db/run_parsing.py --env test
+"""
 
 import concurrent.futures
 import enum
@@ -34,6 +38,8 @@ class Parser(enum.Enum):
       return parse_peppi.get_slp(path)
 
 class CompressionType(enum.Enum):
+  # zlib compresses parquet file itself
+  # we don't have a way to read it yet
   ZLIB = 'zlib'
   SNAPPY = 'snappy'
   GZIP = 'gzip'
@@ -82,6 +88,7 @@ def process_slp(
     key: str,
     parser: Parser,
     dataset: str,
+    compression: CompressionType,
     **kwargs,
 ) -> Tuple[dict, dict]:
   timers = {
@@ -93,7 +100,10 @@ def process_slp(
     slp_file = upload_lib.download_slp_to_file(env, key)
   with timers['parse_slp']:
     try:
-      pq_bytes = convert_slp(slp_file.name, parser, **kwargs)
+      pq_bytes = convert_slp(
+        slp_file.name, parser,
+        compression=compression,
+        **kwargs)
     finally:
       os.remove(slp_file.name)
 
@@ -106,6 +116,7 @@ def process_slp(
   result = dict(
       key=key,
       size=len(pq_bytes),
+      compression=compression.value,
   )
 
   timing = {k: t.duration for k, t in timers.items()}
@@ -231,14 +242,23 @@ def process_all(
   """
   start_time = time.perf_counter()
 
+  dataset_meta_db = upload_lib.get_db(env, upload_lib.DATASET_META)
+  parsed_db = upload_lib.get_db(env, dataset)
+
+  if wipe:
+    dataset_meta_db.delete_many({'name': dataset})
+    parsed_db.delete_many({})
+
+  # Check compression types.
+  prev_dataset_meta = dataset_meta_db.find_one({'name': dataset})
+  if prev_dataset_meta is not None:
+    new = process_kwargs['compression'].value
+    old = prev_dataset_meta['compression']
+    if new != old:
+      raise ValueError(f'Mixing compression types {new} and {old}')
+
   # only parse valid training replays
   metas = get_singles_info(env)
-
-  dataset_meta_db = upload_lib.get_db(env, upload_lib.DATASET_META)
-
-  parsed_db = upload_lib.get_db(env, dataset)
-  if wipe:
-    parsed_db.delete_many({})
 
   all_keys = [meta['key'] for meta in metas]
   existing = set(doc['key'] for doc in parsed_db.find({}, ['key']))
@@ -272,7 +292,6 @@ def process_all(
 
   _, timings = zip(*results_and_timings)
 
-  dataset_meta_db.delete_many({'name': dataset})
   meta_data = dict(
       name=dataset,
       parser=process_kwargs['parser'].value,

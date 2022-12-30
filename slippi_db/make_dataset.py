@@ -40,6 +40,9 @@ def make_df(env: str, dataset: str) -> pd.DataFrame:
     if info['failed'] and info['key'] in key_to_meta:
       del key_to_meta[info['key']]
 
+  if not key_to_meta:
+    raise ValueError('No replays left. Maybe all parses failed?')
+
   return pd.DataFrame(map(_to_row, key_to_meta.values()))
 
 def make_tar(env: str, dataset: str, keys: Iterable[str]):

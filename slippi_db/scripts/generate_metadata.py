@@ -3,7 +3,7 @@
 Run remotely with
 
 ray submit --start slippi_db/parsing_cluster.yaml \
-  slippi_db/generate_metadata.py --env test
+  slippi_db/scripts/generate_metadata.py --env test
 """
 
 import os
