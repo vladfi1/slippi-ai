@@ -63,7 +63,7 @@ def main(expt_dir, _config, _log):
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
-  policy = train_lib.build_policy(
+  policy = saving.build_policy(
       controller_head_config=_config['controller_head'],
       max_action_repeat=_config['data']['max_action_repeat'],
       network_config=_config['network'],
