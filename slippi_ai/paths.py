@@ -5,4 +5,7 @@ PRJ_PATH = _PATHS_PATH.parent.parent
 DATA_PATH = PRJ_PATH / 'data'
 
 # A demo game.
-DEMO_PATH = DATA_PATH / 'pq/demo'
+DEMO_PQ_REPLAY = DATA_PATH / 'pq/demo'
+
+# A tiny demo checkpoint.
+DEMO_CHECKPOINT = DATA_PATH / 'checkpoints/demo'

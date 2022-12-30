@@ -21,7 +21,7 @@ embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat
 
 def default_data_source():
   return data.DataSource(
-      [data.ReplayInfo(paths.DEMO_PATH, False)],
+      [data.ReplayInfo(paths.DEMO_PQ_REPLAY, False)],
       batch_size=1,
       unroll_length=8,
       embed_controller=embed_controller,
