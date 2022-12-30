@@ -8,9 +8,8 @@ import tensorflow as tf
 import melee
 
 from slippi_ai import embed, policies, dolphin, saving
-from slippi_ai.types import Controller, Game
+from slippi_ai.types import Controller
 from slippi_db.parse_libmelee import get_game
-
 
 def disable_gpus():
   tf.config.set_visible_devices([], 'GPU')
@@ -74,7 +73,7 @@ class Agent:
   def reset_state(self):
     self._hidden_state = self._policy.initial_state(1)
 
-  def step(self, gamestate: melee.GameState):
+  def step(self, gamestate: melee.GameState) -> embed.StateAction:
     if gamestate.frame == -123:
       self.reset_state()
 
@@ -102,7 +101,8 @@ class Agent:
     delayed_controller = self._controller_queue.pop()
     send_controller(self._controller, delayed_controller)
 
-    return delayed_controller
+    # Return the action actually taken, in decoded form.
+    return embed.StateAction(game, delayed_controller)
 
 
 AGENT_FLAGS = dict(
@@ -177,60 +177,3 @@ def get_player(
 name_to_character = {
     char.name.lower(): char for char in melee.Character
 }
-
-class Environment(dolphin.Dolphin):
-
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-
-    assert len(self._players) == 2
-
-    self._player_to_ports = {}
-    ports = list(self._players)
-
-    for port, opponent_port in zip(ports, reversed(ports)):
-      if isinstance(self._players[port], dolphin.AI):
-        self._player_to_ports[port] = (port, opponent_port)
-
-  def step(self, controllers: Mapping[int, dict]) -> Mapping[int, Game]:
-    for port, controller in controllers.items():
-      send_controller(self.controllers[port], controller)
-
-    gamestate = super().step()
-
-    return {
-        p: get_game(gamestate, self._player_to_ports[p])
-        for p in self._players
-    }
-
-
-def run_env(init_kwargs, conn):
-  env = Environment(**init_kwargs)
-
-  while True:
-    controllers = conn.recv()
-    if controllers is None:
-      break
-
-    conn.send(env.step(controllers))
-
-  env.stop()
-  conn.close()
-
-class AsyncEnv:
-
-  def __init__(self, **kwargs):
-    self._parent_conn, child_conn = mp.Pipe()
-    self._process = mp.Process(target=run_env, args=(kwargs, child_conn))
-    self._process.start()
-
-  def stop(self):
-    self._parent_conn.send(None)
-    self._process.join()
-    self._parent_conn.close()
-
-  def send(self, controllers):
-    self._parent_conn.send(controllers)
-
-  def recv(self):
-    return self._parent_conn.recv()
