@@ -1,6 +1,7 @@
 r"""Create tar file with parsed parquet files and metadata DataFrame.
 
-ray submit --start slippi_db/submit_cluster slippi_db/make_dataset.py
+ray submit --start slippi_db/submit_cluster.yaml \
+  slippi_db/scripts/make_dataset.py --env test
 """
 
 import io
@@ -20,6 +21,7 @@ from slippi_db.test_peppi import get_singles_info
 
 ENV = flags.DEFINE_string('env', 'test', 'production environment')
 DATASET = flags.DEFINE_string('dataset', upload_lib.PQ, 'Dataset name.')
+ONLY_META = flags.DEFINE_bool('only_meta', False, 'Only generate metadata.')
 
 def _to_row(game: dict) -> dict:
   row = game.copy()
@@ -65,7 +67,7 @@ def make_tar(env: str, dataset: str, keys: Iterable[str]):
   tar.close()
   return tmp
 
-def make_tar_and_df(env: str, dataset: str):
+def make_tar_and_df(env: str, dataset: str, make_tar: bool = True):
   """Creates the dataset (tar) and metadata (df).
   
   Dataset tar is saved to env/dataset/tar.
@@ -75,18 +77,19 @@ def make_tar_and_df(env: str, dataset: str):
   with upload_lib.Timer('make_df'):
     df = make_df(env, dataset)
 
-  print(f'Creating dataset with {len(df)} replays.')
+  if make_tar:
+    print(f'Creating dataset with {len(df)} replays.')
 
-  with upload_lib.Timer('tar'):
-    job = s3_tar.S3Tar(
-      source_bucket='slp-replays',
-      target_key='/'.join([env, 'datasets', dataset, 'games.tar']),
-    )
+    with upload_lib.Timer('tar'):
+      job = s3_tar.S3Tar(
+        source_bucket='slp-replays',
+        target_key='/'.join([env, 'datasets', dataset, 'games.tar']),
+      )
 
-    for key in df['key']:
-      job.add_file(upload_lib.s3_path(env, dataset, key))
+      for key in df['key']:
+        job.add_file(upload_lib.s3_path(env, dataset, key))
 
-    job.tar()
+      job.tar()
 
   # write metadata once games.tar is done
   with upload_lib.Timer('write df'):
@@ -103,7 +106,9 @@ def make_tar_and_df(env: str, dataset: str):
 
 
 def main(_):
-  make_tar_and_df(ENV.value, DATASET.value)
+  make_tar_and_df(
+      ENV.value, DATASET.value,
+      make_tar=not ONLY_META.value)
 
 if __name__ == '__main__':
   app.run(main)
