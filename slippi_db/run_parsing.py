@@ -11,7 +11,7 @@ import itertools
 import math
 import os
 import time
-from typing import Dict, Iterator, List, Optional, Tuple, TypeVar
+from typing import Dict, Iterator, List, Optional, Tuple
 import zlib
 
 from absl import app
@@ -26,6 +26,8 @@ from slippi_db import (
     parse_peppi,
 )
 from slippi_db.test_peppi import get_singles_info
+from slippi_db.utils import monitor
+
 
 class Parser(enum.Enum):
   LIBMELEE = 'libmelee'
@@ -157,44 +159,6 @@ process_slp_ray = ray.remote(
     resources=dict(workers=1),
   )(process_slp_safe)
 
-def monitor(
-    futures: Dict[concurrent.futures.Future, str],
-    log_interval: int = 10,
-) -> Iterator[ProcessResult]:
-  total_items = len(futures)
-  remaining_items = set(futures)
-  last_log = time.perf_counter()
-  finished_items = 0
-  items_since_last_log = 0
-  for finished in concurrent.futures.as_completed(futures):
-    current_time = time.perf_counter()
-
-    finished_items += 1
-    items_since_last_log += 1
-    remaining_items.remove(finished)
-
-    if current_time - last_log > log_interval:
-      run_time = current_time - last_log
-      items_per_second = items_since_last_log / run_time
-      num_items_remaining = total_items - finished_items
-      estimated_time_remaining = num_items_remaining / items_per_second
-      progress_percent = finished_items / total_items
-
-      print(
-          f'{finished_items}/{total_items} = {100 * progress_percent:.1f}%'
-          f' rate={items_per_second:.1f}'
-          f' eta={estimated_time_remaining:.0f}'
-      )
-      # display one of the remaining items
-      if num_items_remaining:
-        remaining_item = next(iter(remaining_items))
-        print('remaining: ' + futures[remaining_item])
-
-      last_log = current_time
-      items_since_last_log = 0
-    
-    yield finished.result()
-
 def process_many_ray(
     env: str, keys: List[str], **kwargs
 ) -> Iterator[ProcessResult]:
@@ -210,8 +174,6 @@ def process_many_ray(
   # possibly a lot of memory, may want to chunk?
   # but that might not actually avoid going through the object store
   # could break into chunks and send off with a ray.remote
-  # return ray.get(object_refs)
-  # return [f.result() for f in futures]
 
 
 def print_timings(timings: List[Optional[dict]]):

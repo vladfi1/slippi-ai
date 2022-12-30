@@ -6,9 +6,10 @@ ray submit --start slippi_db/parsing_cluster.yaml \
   slippi_db/scripts/generate_metadata.py --env test
 """
 
+import concurrent.futures
 import os
 import time
-from typing import List
+from typing import Dict, List, Iterator
 
 from absl import app
 from absl import flags
@@ -16,6 +17,7 @@ import ray
 
 from slippi_db import preprocessing
 from slippi_db import upload_lib
+from slippi_db.utils import monitor
 
 flags.DEFINE_string('env', 'test', 'production environment')
 flags.DEFINE_bool('wipe', False, 'Wipe existing metadata')
@@ -44,16 +46,20 @@ def generate_one(env: str, key: str) -> dict:
 def generate_many(env: str, keys: List[str]) -> List[dict]:
   return [generate_one(env, key) for key in keys]
 
-generate_one_ray = ray.remote(num_cpus=1)(generate_one)
+generate_one_ray = ray.remote(
+    scheduling_strategy="SPREAD",
+    resources=dict(workers=1),
+)(generate_one)
 
-def generate_many_ray(env: str, keys: List[str]) -> List[dict]:
-  futures = []
+def generate_many_ray(env: str, keys: List[str]) -> Iterator[dict]:
+  object_refs: List[ray.ObjectRef] = []
+  futures: Dict[concurrent.futures.Future, str] = {}
   for key in keys:
-    futures.append(generate_one_ray.remote(env, key))
-  # possibly a lot of memory, may want to chunk?
-  # but that might not actually avoid going through the object store
-  # could break into chunks and send off with a ray.remote
-  return ray.get(futures)
+    obj_ref = generate_one_ray.remote(env, key)
+    object_refs.append(obj_ref)
+    futures[obj_ref.future()] = key
+
+  yield from monitor(futures, log_interval=10)
 
 def generate_all(env: str, wipe=False, local=False):
   start_time = time.perf_counter()
@@ -78,7 +84,7 @@ def generate_all(env: str, wipe=False, local=False):
   if local:
     metadata = generate_many(env, to_generate)
   else:
-    metadata = generate_many_ray(env, to_generate)
+    metadata = list(generate_many_ray(env, to_generate))
 
   with upload_lib.Timer('meta_db.insert_many'):
     meta_db.insert_many(metadata)
