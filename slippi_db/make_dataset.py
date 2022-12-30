@@ -75,6 +75,8 @@ def make_tar_and_df(env: str, dataset: str):
   with upload_lib.Timer('make_df'):
     df = make_df(env, dataset)
 
+  print(f'Creating dataset with {len(df)} replays.')
+
   with upload_lib.Timer('tar'):
     job = s3_tar.S3Tar(
       source_bucket='slp-replays',
