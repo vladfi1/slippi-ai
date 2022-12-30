@@ -3,7 +3,7 @@ dm-sonnet
 git+https://github.com/vladfi1/libmelee.git@dev
 gdown
 tensorflow_probability
-sacred
+git+https://github.com/IDSIA/sacred.git
 git+https://github.com/mbr/simplekv.git
 boto3
 pymongo
