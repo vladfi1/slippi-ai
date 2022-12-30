@@ -1,24 +1,49 @@
+import abc
+import typing as tp
+
 import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai import embed
 
-class ControllerHead(snt.Module):
+ControllerType = tp.TypeVar('ControllerType')
 
-  def sample(self, inputs, prev_controller_state, temperature=None) -> embed.ActionWithRepeat:
+class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
+
+  @abc.abstractmethod
+  def sample(
+      self,
+      inputs: tf.Tensor,
+      prev_controller_state: ControllerType,
+      temperature: tp.Optional[float] = None,
+  ) -> embed.ActionWithRepeat:
     """Sample a controller state given input features and previous state."""
 
-  def distance(self, inputs, prev_controller_state, target_controller_state) -> embed.ActionWithRepeat:
+  @abc.abstractmethod
+  def distance(
+      self,
+      inputs: tf.Tensor,
+      prev_controller_state: ControllerType,
+      target_controller_state: ControllerType,
+  ) -> ControllerType:
     """A struct of distances (generally, negative log probs)."""
 
-class Independent(ControllerHead):
+  @abc.abstractmethod
+  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+    """Determines how controllers are embedded (e.g. discretized)."""
+
+class Independent(ControllerHead, snt.Module):
   """Models each component of the controller independently."""
 
   CONFIG = dict(
       residual=False,
   )
 
-  def __init__(self, residual: bool, embed_controller: embed.Embedding):
+  def __init__(
+      self,
+      residual: bool,
+      embed_controller: embed.Embedding[embed.Controller, ControllerType],
+  ):
     super().__init__(name='IndependentControllerHead')
     self.embed_controller = embed_controller
     self.to_controller_input = snt.Linear(self.embed_controller.size)
@@ -26,6 +51,9 @@ class Independent(ControllerHead):
     if residual:
       self.residual_net = snt.Linear(self.embed_controller.size,
         w_init=snt.initializers.Identity(), with_bias=False)
+
+  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+    return self.embed_controller
 
   def controller_prediction(self, inputs, prev_controller_state):
     controller_prediction = self.to_controller_input(inputs)
@@ -82,7 +110,7 @@ class AutoRegressiveComponent(snt.Module):
     residual += self.decoder(target_embedding)
     return residual, distance
 
-class AutoRegressive(ControllerHead):
+class AutoRegressive(ControllerHead, snt.Module):
   """Samples components sequentially conditioned on past samples."""
 
   CONFIG = dict(
@@ -92,7 +120,7 @@ class AutoRegressive(ControllerHead):
 
   def __init__(
       self,
-      embed_controller: embed.Embedding,
+      embed_controller: embed.Embedding[embed.Controller, ControllerType],
       residual_size: int,
       component_depth: int,
   ):
@@ -104,6 +132,9 @@ class AutoRegressive(ControllerHead):
     self.res_blocks = [
         AutoRegressiveComponent(e, residual_size, component_depth)
         for e in self.embed_flat]
+
+  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+    return self.embed_controller
 
   def sample(self, inputs, prev_controller_state, temperature=None):
     residual = self.to_residual(inputs)

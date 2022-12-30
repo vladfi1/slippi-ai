@@ -42,7 +42,7 @@ class Embedding(Generic[In, Out], abc.ABC):
   def unflatten(self, seq: Iterator[Any]) -> Out:
     return next(seq)
 
-  def decode(self, out: Out) -> Out:
+  def decode(self, out: Out) -> In:
     return out
 
   # def preprocess(self, x: In):
@@ -446,7 +446,7 @@ class DiscreteEmbedding(OneHotEmbedding):
     assert a.dtype == np.float32
     return (a * self.n + 0.5).astype(self.dtype)
 
-  def decode(self, a: Union[np.uint8, np.ndarray]):
+  def decode(self, a: Union[np.uint8, np.ndarray]) -> Union[np.float32, np.ndarray]:
     assert a.dtype == self.dtype
     return a.astype(np.float32) / self.n
 
