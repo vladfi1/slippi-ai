@@ -6,15 +6,15 @@ import tensorflow as tf
 
 from slippi_ai import embed
 
-ControllerType = tp.TypeVar('ControllerType')
+A = tp.TypeVar('A')  # action embedding type
 
-class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
+class ControllerHead(abc.ABC, tp.Generic[A]):
 
   @abc.abstractmethod
   def sample(
       self,
       inputs: tf.Tensor,
-      prev_controller_state: ControllerType,
+      prev_controller_state: A,
       temperature: tp.Optional[float] = None,
   ) -> embed.ActionWithRepeat:
     """Sample a controller state given input features and previous state."""
@@ -23,13 +23,13 @@ class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
   def distance(
       self,
       inputs: tf.Tensor,
-      prev_controller_state: ControllerType,
-      target_controller_state: ControllerType,
-  ) -> ControllerType:
+      prev_controller_state: A,
+      target_controller_state: A,
+  ) -> A:
     """A struct of distances (generally, negative log probs)."""
 
   @abc.abstractmethod
-  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+  def action_embedding(self) -> embed.Embedding[embed.ActionWithRepeat, A]:
     """Determines how controllers are embedded (e.g. discretized)."""
 
 class Independent(ControllerHead, snt.Module):
@@ -42,7 +42,7 @@ class Independent(ControllerHead, snt.Module):
   def __init__(
       self,
       residual: bool,
-      embed_controller: embed.Embedding[embed.Controller, ControllerType],
+      embed_controller: embed.Embedding[embed.Controller, A],
   ):
     super().__init__(name='IndependentControllerHead')
     self.embed_controller = embed_controller
@@ -52,7 +52,7 @@ class Independent(ControllerHead, snt.Module):
       self.residual_net = snt.Linear(self.embed_controller.size,
         w_init=snt.initializers.Identity(), with_bias=False)
 
-  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+  def action_embedding(self) -> embed.Embedding[embed.ActionWithRepeat, A]:
     return self.embed_controller
 
   def controller_prediction(self, inputs, prev_controller_state):
@@ -120,7 +120,7 @@ class AutoRegressive(ControllerHead, snt.Module):
 
   def __init__(
       self,
-      embed_controller: embed.Embedding[embed.Controller, ControllerType],
+      embed_controller: embed.Embedding[embed.ActionWithRepeat, A],
       residual_size: int,
       component_depth: int,
   ):
@@ -133,7 +133,7 @@ class AutoRegressive(ControllerHead, snt.Module):
         AutoRegressiveComponent(e, residual_size, component_depth)
         for e in self.embed_flat]
 
-  def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
+  def action_embedding(self) -> embed.Embedding[embed.ActionWithRepeat, A]:
     return self.embed_controller
 
   def sample(self, inputs, prev_controller_state, temperature=None):
