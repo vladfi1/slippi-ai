@@ -50,14 +50,15 @@ class Network(snt.Module):
 
 class MLP(Network):
   CONFIG = dict(
-      output_sizes=[256, 128],
+      depth=2,
+      width=128,
       dropout_rate=0.0,
   )
 
-  def __init__(self, output_sizes, dropout_rate):
+  def __init__(self, depth, width, dropout_rate):
     super().__init__(name='MLP')
     self._mlp = snt.nets.MLP(
-        output_sizes,
+        [width] * depth,
         activate_final=True,
         dropout_rate=dropout_rate)
 
