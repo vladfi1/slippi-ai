@@ -4,9 +4,11 @@ import multiprocessing as mp
 import os
 import random
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
+import zlib
 
 import numpy as np
 import pandas as pd
+import pyarrow
 import pyarrow.parquet as pq
 import tree
 
@@ -227,6 +229,19 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
     chars = list(melee.Character)
   return set(c.value for c in chars)
 
+def read_table(path: str, compressed: bool) -> Game:
+  if compressed:
+    with open(path, 'rb') as f:
+      contents = f.read()
+    contents = zlib.decompress(contents)
+    reader = pyarrow.BufferReader(contents)
+    table = pq.read_table(reader)
+  else:
+    table = pq.read_table(path)
+
+  game_struct = table['root'].combine_chunks()
+  return game_array_to_nt(game_struct)
+
 class DataSource:
   def __init__(
       self,
@@ -271,9 +286,7 @@ class DataSource:
     self.replay_counter = 0
     for replay in itertools.cycle(self.replays):
       self.replay_counter += 1
-      table = pq.read_table(replay.path)
-      game_struct = table['root'].combine_chunks()
-      game = game_array_to_nt(game_struct)
+      game = read_table(replay.path, self.compressed)
       if replay.swap:
         game = swap_players(game)
       assert self.is_allowed(game)
