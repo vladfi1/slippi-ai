@@ -272,7 +272,7 @@ class DataSource:
 
   def produce_trajectories(self) -> Iterator[StateActionReward]:
     games = self.produce_raw_games()
-    # games = filter(self.is_allowed, games)
+    games = filter(self.is_allowed, games)
     games = map(self.process_game, games)
     return games
 
@@ -289,7 +289,7 @@ class DataSource:
       game = read_table(replay.path, self.compressed)
       if replay.swap:
         game = swap_players(game)
-      assert self.is_allowed(game)
+      # assert self.is_allowed(game)
       yield game
 
   def is_allowed(self, game: Game) -> bool:
