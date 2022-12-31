@@ -4,6 +4,7 @@ ray submit --start slippi_db/submit_cluster.yaml \
   slippi_db/scripts/make_dataset.py --env test
 """
 
+import logging
 import io
 import tarfile
 import tempfile
@@ -36,16 +37,30 @@ def make_df(env: str, dataset: str) -> pd.DataFrame:
 
   metas = get_singles_info(env)
   key_to_meta = {meta['key']: meta for meta in metas}
+  keys = set(key_to_meta)
 
-  parses = list(upload_lib.get_db(env, dataset).find())
-  for info in parses:
-    if info['failed'] and info['key'] in key_to_meta:
-      del key_to_meta[info['key']]
+  parses = list(upload_lib.get_db(env, dataset).find({}, ['key', 'failed']))
 
-  if not key_to_meta:
+  parsed_keys = set(info['key'] for info in parses)
+  old_size = len(keys)
+  keys.intersection_update(parsed_keys)
+  dropped = old_size - len(keys)
+  if dropped > 0:
+    logging.warn(
+      f'Dropped {dropped} keys that were never parsed!'
+      ' Maybe you forgot to run parsing?')
+
+  failed_keys = set(info['key'] for info in parses if info['failed'])
+  old_size = len(keys)
+  keys -= failed_keys
+  dropped = old_size - len(keys)
+  logging.info(f'Dropped {dropped} keys with parse failures.')
+
+  if not keys:
     raise ValueError('No replays left. Maybe all parses failed?')
 
-  return pd.DataFrame(map(_to_row, key_to_meta.values()))
+  valid_metas = [meta for key, meta in key_to_meta.items() if key in keys]
+  return pd.DataFrame(map(_to_row, valid_metas))
 
 def make_tar(env: str, dataset: str, keys: Iterable[str]):
   print(f'Creating tar for "{dataset}" out of {len(keys)} games.')
