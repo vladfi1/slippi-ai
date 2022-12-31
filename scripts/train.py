@@ -4,6 +4,7 @@ import dataclasses
 import os
 import pickle
 import time
+import typing as tp
 
 import sacred
 import tensorflow as tf
@@ -20,6 +21,7 @@ from slippi_ai import (
 )
 from slippi_ai.learner import Learner
 from slippi_ai import data as data_lib
+from slippi_ai.file_cache import FileCache
 
 ex = sacred.Experiment('imitation')
 
@@ -38,12 +40,21 @@ class RuntimeConfig:
   eval_every_n: int = 100  # number of training steps between evaluations
   num_eval_steps: int = 10  # number of batches per evaluation
 
+@dataclasses.dataclass
+class FileCacheConfig:
+  use: bool = False
+  path: tp.Optional[str] = None
+  wipe: bool = False
+  version: str = 'test'
+
 @ex.config
 def config():
   runtime = dataclasses.asdict(RuntimeConfig())
 
-  dataset = data_lib.DATASET_CONFIG
+  file_cache = dataclasses.asdict(FileCacheConfig())
+  dataset = dataclasses.asdict(data_lib.DatasetConfig())
   data = data_lib.CONFIG
+
   learner = Learner.DEFAULT_CONFIG
   network = networks.DEFAULT_CONFIG
   controller_head = controller_heads.DEFAULT_CONFIG
@@ -80,20 +91,37 @@ def main(expt_dir, _config, _log):
       **learner_kwargs,
   )
 
+  _log.info("Network configuration")
   for comp in ['network', 'controller_head']:
-    print(f'\nUsing {comp}: {_config[comp]["name"]}')
+    _log.info(f'Using {comp}: {_config[comp]["name"]}')
 
-  dataset_config = _config['dataset'].copy()
+  ### Dataset Creation ###
+  dataset_config = data_lib.DatasetConfig(**_config['dataset'])
 
-  char_filters = {
-      k: data_lib.chars_from_string(dataset_config[k])
-      for k in ['allowed_characters', 'allowed_opponents']
-  }
-  dataset_config.update(char_filters)
+  file_cache_config = FileCacheConfig(**_config['file_cache'])
+  if file_cache_config.use:
+    file_cache = FileCache(
+        root=file_cache_config.path,
+        wipe=file_cache_config.wipe,
+    )
 
-  train_replays, test_replays = data_lib.train_test_split(**dataset_config)
-  print(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+    file_cache.pull_dataset(file_cache_config.version)
 
+    dataset_config.data_dir = file_cache.games_dir
+    dataset_config.meta_path = file_cache.meta_path
+
+  # Parse csv chars into list of enum values.
+  char_filters = {}
+  for key in ['allowed_characters', 'allowed_opponents']:
+    chars_string = getattr(dataset_config, key)
+    chars = data_lib.chars_from_string(chars_string)
+    setattr(dataset_config, key, chars)
+    char_filters[key] = chars
+
+  train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  _log.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+
+  # Create data sources for train and test.
   data_config = dict(
       _config['data'],
       embed_controller=embed_controller,

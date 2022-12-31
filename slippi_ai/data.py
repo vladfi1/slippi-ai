@@ -1,4 +1,5 @@
 import atexit
+import dataclasses
 import itertools
 import multiprocessing as mp
 import os
@@ -45,31 +46,43 @@ def _get_keys(
   df = df[df['p1.character'].isin(allowed_p1)]
   return df['key']
 
+
+def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
+  if chars is None:
+    chars = list(melee.Character)
+  return set(c.value for c in chars)
+
+
+@dataclasses.dataclass
+class DatasetConfig:
+    data_dir: Optional[str] = None
+    meta_path: Optional[str] = None
+    test_ratio: float = 0.1
+    # comma-separated lists of characters, or "all"
+    allowed_characters: str = 'all'
+    allowed_opponents: str = 'all'
+    seed: int = 0
+
+
 def train_test_split(
-    data_dir: str,
-    meta_path: Optional[str],
-    test_ratio: float = 0.1,
-    # None means all allowed.
-    allowed_characters: Optional[Iterable[melee.Character]] = None,
-    allowed_opponents: Optional[Iterable[melee.Character]] = None,
-    seed: int = 0,
+    config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
-  filenames = sorted(os.listdir(data_dir))
+  filenames = sorted(os.listdir(config.data_dir))
   print(f"Found {len(filenames)} files.")
 
-  if meta_path is not None:
-    df = pd.read_parquet(meta_path)
+  if config.meta_path is not None:
+    df = pd.read_parquet(config.meta_path)
     # check that we have the right metadata
     assert sorted(df['key']) == filenames
 
-    allowed_characters = _charset(allowed_characters)
-    allowed_opponents = _charset(allowed_opponents)
+    allowed_characters = _charset(config.allowed_characters)
+    allowed_opponents = _charset(config.allowed_opponents)
 
     unswapped = _get_keys(df, allowed_characters, allowed_opponents)
     swapped = _get_keys(df, allowed_opponents, allowed_characters)
   else:
-    assert allowed_characters is None
-    assert allowed_opponents is None
+    assert config.allowed_characters is None
+    assert config.allowed_opponents is None
 
     swapped = filenames
     unswapped = filenames
@@ -80,30 +93,21 @@ def train_test_split(
 
   replays = []
   for key in unswapped:
-    path = os.path.join(data_dir, key)
+    path = os.path.join(config.data_dir, key)
     replays.append(ReplayInfo(path, False))
   for key in swapped:
-    path = os.path.join(data_dir, key)
+    path = os.path.join(config.data_dir, key)
     replays.append(ReplayInfo(path, True))
 
   # reproducible train/test split
-  rng = random.Random(seed)
+  rng = random.Random(config.seed)
   rng.shuffle(replays)
-  num_test = int(test_ratio * len(replays))
+  num_test = int(config.test_ratio * len(replays))
 
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
 
   return train_replays, test_replays
-
-DATASET_CONFIG = dict(
-    data_dir=None,
-    meta_path=None,
-    test_ratio=0.1,
-    # comma-separated lists of characters, or "all"
-    allowed_characters='all',
-    allowed_opponents='all',
-)
 
 _name_to_character = {c.name.lower(): c for c in melee.Character}
 
@@ -236,11 +240,6 @@ def compress_repeated_actions(
     assert s == shapes[0]
 
   return compressed_game
-
-def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
-  if chars is None:
-    chars = list(melee.Character)
-  return set(c.value for c in chars)
 
 def read_table(path: str, compressed: bool) -> Game:
   if compressed:
