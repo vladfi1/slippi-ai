@@ -2,7 +2,7 @@ pandas
 dm-sonnet
 git+https://github.com/vladfi1/libmelee.git@dev
 gdown
-tensorflow_probability
+tensorflow_probability==0.18
 git+https://github.com/IDSIA/sacred.git
 git+https://github.com/mbr/simplekv.git
 boto3
