@@ -225,7 +225,7 @@ class RemoteEvaluator:
       self,
       step: int,
       policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
-  ) -> tp.Optional[futures.Future[RolloutMetrics]]:
+  ) -> tp.Optional[futures.Future]:
     if not self._ready.is_set():
       return None
     self._ready.clear()
