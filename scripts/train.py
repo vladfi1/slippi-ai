@@ -222,7 +222,7 @@ def main(expt_dir, _config, _log):
     timings = dict(
         sps=sps,
         mps=mps,
-        eps=eph,
+        eph=eph,
         data=data_time,
         step=step_time,
     )
