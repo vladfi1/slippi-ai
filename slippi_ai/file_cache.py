@@ -4,6 +4,9 @@ import shutil
 import subprocess
 import typing as tp
 
+from slippi_ai import s3_lib
+
+# in the slp-replays bucket
 DATASET_TEMPLATE = "https://slp-replays.s3.amazonaws.com/{version}/datasets/pq/{file}"
 
 DATASET_VERSIONS = (
@@ -14,12 +17,28 @@ GAMES_TAR = 'games.tar'
 GAMES_DIR = 'games'
 META_PQ = 'meta.pq'
 
+# in the slippi-data bucket
+ISO = 'SSBM.iso'
+DOLPHIN = 'dolphin'
+
+
 def download(url: str, path: tp.Union[str, pathlib.Path]):
   if isinstance(path, pathlib.Path):
     path = str(path)
 
   subprocess.check_call(
       ['curl', url, '-o', path])
+
+  print(f'Downloaded {url} to {path}.')
+
+def download_s3(s3_key: str, path: tp.Union[str, pathlib.Path]):
+  if isinstance(path, pathlib.Path):
+    path = str(path)
+
+  store = s3_lib.get_store()
+  store.get_file(s3_key, path)
+
+  print(f'Downloaded s3://{s3_lib.BUCKET_NAME}/{s3_key} to {path}.')
 
 class FileCache:
   """Caches files locally."""
@@ -64,9 +83,9 @@ class FileCache:
 
     if path.exists():
       print(f'"{path}" already exists.')
-      return False
-
-    download(url, path)
+    else:
+      download(url, path)
+  
     return path
 
   def pull_dataset(self, version: str):
@@ -74,3 +93,21 @@ class FileCache:
     self.pull_file(
         DATASET_TEMPLATE.format(version=version, file=META_PQ),
         META_PQ)
+
+  def pull_s3(self, s3_key: str, local_path: str):
+    path = self._root / local_path
+
+    if path.exists():
+      print(f'"{path}" already exists.')
+    else:
+      download_s3(s3_key, path)
+
+    return path
+
+  def pull_iso(self):
+    return self.pull_s3(ISO, ISO)
+
+  def pull_dolphin(self):
+    path = self.pull_s3(DOLPHIN, DOLPHIN)
+    subprocess.check_call(['chmod', '+x', path])
+    return path

@@ -14,6 +14,7 @@ class S3Keys(typing.NamedTuple):
 
 SEP = "."
 S3_PREFIX = SEP.join(["slippi-ai", "experiments"])
+BUCKET_NAME = 'slippi-data'
 
 def get_keys(tag: str) -> S3Keys:
   keys = {key: SEP.join([S3_PREFIX, tag, key]) for key in S3Keys._fields}
@@ -26,7 +27,7 @@ def get_store(s3_creds: str = None) -> Boto3Store:
 
   session = boto3.Session(access_key, secret_key)
   s3 = session.resource('s3')
-  bucket = s3.Bucket('slippi-data')
+  bucket = s3.Bucket(BUCKET_NAME)
   store = Boto3Store(bucket)
   return store
 

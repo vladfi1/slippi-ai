@@ -68,7 +68,7 @@ class FileCacheConfig:
   use: bool = False
   path: tp.Optional[str] = None
   wipe: bool = False
-  version: str = 'test'
+  version: str = 'test'  # dataset version
 
 
 @ex.config
@@ -99,6 +99,8 @@ def main(expt_dir, _config, _log):
   _config = dict(_config, version=saving.VERSION)
 
   runtime = RuntimeConfig(**_config['runtime'])
+  dolphin_config = DolphinConfig(**_config['dolphin'])
+  evaluation_config = EvaluationConfig(**_config['evaluation'])
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
@@ -132,6 +134,10 @@ def main(expt_dir, _config, _log):
 
     dataset_config.data_dir = file_cache.games_dir
     dataset_config.meta_path = file_cache.meta_path
+
+    if evaluation_config.run_rl:
+      dolphin_config.iso = str(file_cache.pull_iso())
+      dolphin_config.path = str(file_cache.pull_dolphin())
 
   # Parse csv chars into list of enum values.
   char_filters = {}
@@ -296,19 +302,22 @@ def main(expt_dir, _config, _log):
           f' step={step_time:.3f}')
     print()
 
-  evaluation_config: EvaluationConfig = EvaluationConfig(**_config['evaluation'])
-
   def log_data(data: dict):
     train_lib.log_stats(ex, data, step=step.numpy())
 
   if evaluation_config.run_rl:
+    if dolphin_config.path is None:
+      raise ValueError('Must pass --dolphin.path')
+    if dolphin_config.iso is None:
+      raise ValueError('Must pass --dolphin.iso')
+
     # TODO: configure character and opponent
     env_kwargs = dict(
         players={
             1: dolphin_lib.AI(),
             2: dolphin_lib.CPU(),
         },
-        **_config['dolphin'],
+        **dataclasses.asdict(dolphin_config),
     )
 
     def rl_log(data: evaluators.RolloutMetrics, step):
