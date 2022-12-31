@@ -108,6 +108,14 @@ class FileCache:
     return self.pull_s3(ISO, ISO)
 
   def pull_dolphin(self):
+    bin = self._root / 'squashfs-root/usr/bin'
+    if bin.exists():
+      print('Extracted dolphin appimage already exists.')
+      return bin
+
     path = self.pull_s3(DOLPHIN, DOLPHIN)
     subprocess.check_call(['chmod', '+x', path])
-    return path
+    subprocess.check_call([path, '--appimage-extract'], cwd=self._root)
+    assert bin.exists()
+
+    return bin
