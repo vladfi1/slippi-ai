@@ -191,7 +191,7 @@ def main(expt_dir, _config, _log):
 
   if restored:
     train_loss = _get_loss(train_manager.step())
-    _log.info('loss post-restore: %f', train_loss.numpy())
+    _log.info('loss post-restore: %f', train_loss)
 
   FRAMES_PER_MINUTE = 60 * 60
 
