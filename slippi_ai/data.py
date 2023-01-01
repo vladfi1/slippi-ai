@@ -19,6 +19,15 @@ from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
 
 from slippi_ai.embed import StateActionReward
 
+# These keys correspond to corrupted replays. I only found them because
+# they cause crashes slippi-ai; there may be others which are bad but
+# don't trigger any errors.
+# TODO: remove these from the dataset
+BAD_KEYS = {
+    '260950213a47132a2b88310734883c8a',  # causes out-of-bounds rewards
+    '4a9e2e174679bcb5ed72dbe5d858753d',  # player changes chars mid-game!
+}
+
 class Batch(NamedTuple):
   game: StateActionReward
   needs_reset: bool
@@ -64,6 +73,10 @@ def train_test_split(
 
     swapped = filenames
     unswapped = filenames
+
+  # filter bad keys
+  swapped = [key for key in swapped if key not in BAD_KEYS]
+  unswapped = [key for key in unswapped if key not in BAD_KEYS]
 
   replays = []
   for key in unswapped:
