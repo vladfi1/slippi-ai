@@ -1,5 +1,6 @@
 import dataclasses
-from typing import Callable, Optional, Tuple
+import socket
+from typing import Callable, Optional, Tuple, Sequence
 
 import fancyflags as ff
 import tensorflow as tf
@@ -172,3 +173,19 @@ def get_player(
     return dolphin.Human()
   elif type == 'cpu':
     return dolphin.CPU(character, level)
+
+
+def get_open_ports(n: int) -> Sequence[int]:
+  ports = []
+  sockets = []
+
+  for _ in range(n):
+    sock = socket.socket()
+    sock.bind(('', 0))
+    ports.append(sock.getsockname()[1])
+    sockets.append(sock)
+
+  for sock in sockets:
+    sock.close()
+  
+  return ports
