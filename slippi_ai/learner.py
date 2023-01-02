@@ -6,7 +6,7 @@ import tensorflow as tf
 
 from slippi_ai.data import Batch, Frames
 from slippi_ai.policies import Policy, RecurrentState
-from slippi_ai.value_function import ValueFunction
+from slippi_ai import value_function as vf_lib
 
 def swap_axes(t, axis1=0, axis2=1):
   permutation = list(range(len(t.shape)))
@@ -23,15 +23,6 @@ class LearnerConfig:
   reward_halflife: float = 2
   predict: int = 0
 
-class FakeValueFunction(snt.Module):
-
-  def initial_state(self, batch_size: int) -> RecurrentState:
-    del batch_size
-    return ()
-
-  def loss(self, frames, initial_state, discount):
-    del frames, initial_state, discount
-    return tf.constant(0.), (), {}
 
 # TODO: should this be a snt.Module?
 class Learner:
@@ -42,13 +33,13 @@ class Learner:
       policy: Policy,
       value_cost: float,
       reward_halflife: float,
-      value_function: Optional[ValueFunction] = None,
+      value_function: Optional[vf_lib.ValueFunction] = None,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
       predict: int = 0,
   ):
     self.policy = policy
-    self.value_function = value_function or FakeValueFunction()
+    self.value_function = value_function or vf_lib.FakeValueFunction()
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
     self.decay_rate = decay_rate
     self.value_cost = value_cost
@@ -75,7 +66,7 @@ class Learner:
     restarting = tf.expand_dims(restarting, -1)
     initial_states = tf.nest.map_structure(
         lambda x, y: tf.where(restarting, x, y),
-        self.initial_state(restarting.shape[0]),
+        self.initial_state(batch_size),
         initial_states)
     policy_initial_states, value_initial_states = initial_states
     del initial_states
@@ -85,7 +76,7 @@ class Learner:
         swap_axes, bm_frames)
 
     with tf.GradientTape() as tape:
-      policy_loss, policy_final_states, policy_metrics = self.policy.loss(
+      policy_loss, policy_final_states, policy_metrics = self.policy.imitation_loss(
           tm_frames, policy_initial_states,
           self.value_cost, self.discount)
 

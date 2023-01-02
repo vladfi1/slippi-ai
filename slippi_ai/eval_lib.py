@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
@@ -430,10 +431,27 @@ def build_agent(
       **agent_kwargs,
   )
 
+# TODO: move the dolphin-related stuff to dolphin.py
+
+@dataclasses.dataclass
+class DolphinConfig:
+  """Configure dolphin for evaluation."""
+  path: Optional[str] = None  # Path to folder containing the dolphin executable
+  iso: Optional[str] = None  # Path to melee 1.02 iso.
+  stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
+  online_delay: int = 0  # Simulate online delay.
+  blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  save_replays: bool = False  # Save slippi replays to the usual location.
+  replay_dir: Optional[str] = None  # Directory to save replays to.
+  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+
+
 DOLPHIN_FLAGS = dict(
     path=ff.String(None, 'Path to folder containing the dolphin executable.'),
     iso=ff.String(None, 'Path to melee 1.02 iso.'),
-    stage=ff.EnumClass(melee.Stage.FINAL_DESTINATION, melee.Stage, 'Which stage to play on.'),
+    stage=ff.EnumClass(melee.Stage.RANDOM_STAGE, melee.Stage, 'Which stage to play on.'),
     online_delay=ff.Integer(0, 'Simulate online delay.'),
     blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
     slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),

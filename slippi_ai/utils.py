@@ -9,6 +9,8 @@ import tree
 
 import numpy as np
 
+T = tp.TypeVar('T')
+
 def stack(*vals):
   return np.stack(vals)
 

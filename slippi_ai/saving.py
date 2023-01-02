@@ -71,9 +71,9 @@ def init_policy_vars(policy: policies.Policy):
   dummy_frames = data.Frames(dummy_state_action, dummy_reward)
   initial_state = policy.initial_state(1)
 
-  # loss intializes value function, which isn't used during sampling
+  # loss initializes value function, which isn't used during sampling
   # but is needed for setting the policy vars
-  policy.loss(dummy_frames, initial_state)
+  policy.imitation_loss(dummy_frames, initial_state)
 
 def load_policy_from_state(state: dict) -> policies.Policy:
   policy = policy_from_config(state['config'])

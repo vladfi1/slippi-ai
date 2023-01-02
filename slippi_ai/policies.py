@@ -1,5 +1,7 @@
 import dataclasses
 from typing import Any, Tuple
+import typing as tp
+
 import sonnet as snt
 import tensorflow as tf
 
@@ -8,6 +10,17 @@ from slippi_ai.rl_lib import discounted_returns
 from slippi_ai import data, networks, embed, types, utils, tf_utils
 
 RecurrentState = networks.RecurrentState
+
+class SampleOutputs(tp.NamedTuple):
+  action: embed.Action
+  log_prob: float
+  next_state: RecurrentState
+
+class UnrollOutputs(tp.NamedTuple):
+  log_probs: tf.Tensor  # [T-1, B]
+  values: tf.Tensor  # [T, B]
+  final_state: RecurrentState  # [B]
+  metrics: dict  # mixed
 
 class Policy(snt.Module):
 
@@ -34,13 +47,12 @@ class Policy(snt.Module):
   def controller_embedding(self) -> embed.Embedding[embed.Controller, embed.Action]:
     return self.controller_head.controller_embedding()
 
-  def loss(
+  def unroll(
       self,
       frames: data.Frames,
       initial_state: RecurrentState,
-      value_cost: float = 0.5,
       discount: float = 0.99,
-  ) -> Tuple[tf.Tensor, RecurrentState, dict]:
+  ) -> UnrollOutputs:
     """Computes prediction loss on a batch of frames.
 
     Args:
@@ -85,7 +97,7 @@ class Policy(snt.Module):
     distances = self.controller_head.distance(
         outputs, prev_action, next_action)
     policy_loss = tf.add_n(tf.nest.flatten(distances))
-    total_loss = policy_loss
+    log_probs = -policy_loss
 
     metrics = dict(
         loss=policy_loss,
@@ -94,54 +106,74 @@ class Policy(snt.Module):
         )
     )
 
-    # Compute value loss.
+    # Only use rewards that follow actions.
+    rewards = frames.reward[delay:]
+
+    values = tf.squeeze(self.value_head(outputs), -1)
+    last_output, _ = self.network.step(last_input, final_state)
+    last_value = tf.squeeze(self.value_head(last_output), -1)
+    discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
+    value_targets = discounted_returns(
+        rewards=rewards,
+        discounts=discounts,
+        bootstrap=last_value)
+    value_targets = tf.stop_gradient(value_targets)
+    value_loss = tf.square(value_targets - values)
+
+    _, value_variance = tf_utils.mean_and_variance(value_targets)
+    uev = value_loss / (value_variance + 1e-8)
+
+    reward_mean, reward_variance = tf_utils.mean_and_variance(rewards)
+
+    metrics['value'] = {
+        'reward': dict(
+            mean=reward_mean,
+            variance=reward_variance,
+            max=tf.reduce_max(rewards),
+            min=tf.reduce_min(rewards),
+        ),
+        'return': value_targets,
+        'loss': value_loss,
+        'variance': value_variance,
+        'uev': uev,  # unexplained variance
+    }
+
+    return UnrollOutputs(
+        log_probs=log_probs,
+        values=values,
+        final_state=final_state,
+        metrics=metrics)
+
+  def imitation_loss(
+      self,
+      frames: data.Frames,
+      initial_state: RecurrentState,
+      discount: float = 0.99,
+      value_cost: float = 0.5,
+  ) -> tp.Tuple[tf.Tensor, RecurrentState, dict]:
+    unroll_outputs = self.unroll(
+        frames, initial_state,
+        discount=discount,
+    )
+
+    metrics = unroll_outputs.metrics
+
+    total_loss = metrics['loss']
     if self.train_value_head:
-      # Only use rewards that follow actions.
-      rewards = frames.reward[delay:]
-
-      values = tf.squeeze(self.value_head(outputs), -1)
-      last_output, _ = self.network.step(last_input, final_state)
-      last_value = tf.squeeze(self.value_head(last_output), -1)
-      discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
-      value_targets = discounted_returns(
-          rewards=rewards,
-          discounts=discounts,
-          bootstrap=last_value)
-      value_targets = tf.stop_gradient(value_targets)
-      value_loss = tf.square(value_targets - values)
-
-      _, value_variance = tf_utils.mean_and_variance(value_targets)
-      uev = value_loss / (value_variance + 1e-8)
-
-      reward_mean, reward_variance = tf_utils.mean_and_variance(rewards)
-
-      metrics['value'] = {
-          'reward': dict(
-              mean=reward_mean,
-              variance=reward_variance,
-              max=tf.reduce_max(rewards),
-              min=tf.reduce_min(rewards),
-          ),
-          'return': value_targets,
-          'loss': value_loss,
-          'variance': value_variance,
-          'uev': uev,  # unexplained variance
-      }
-
-      total_loss += value_cost * value_loss
+      total_loss += value_cost * metrics['value']['loss']
 
     metrics.update(
         total_loss=total_loss,
     )
 
-    return total_loss, final_state, metrics
+    return total_loss, unroll_outputs.final_state, metrics
 
   def sample(
       self,
       state_action: embed.StateAction,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> Tuple[embed.Action, RecurrentState]:
+  ) -> tp.Tuple[embed.Action, RecurrentState]:
     input = self.embed_state_action(state_action)
     output, final_state = self.network.step(input, initial_state)
 

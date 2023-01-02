@@ -74,3 +74,14 @@ class ValueFunction(snt.Module):
     }
 
     return value_loss, final_state, metrics
+
+
+class FakeValueFunction(snt.Module):
+
+  def initial_state(self, batch_size: int) -> RecurrentState:
+    del batch_size
+    return ()
+
+  def loss(self, frames, initial_state, discount):
+    del frames, initial_state, discount
+    return tf.constant(0.), (), {}

@@ -29,6 +29,7 @@ class Trajectory(tp.NamedTuple):
   initial_state: policies.RecurrentState
   delayed_actions: embed.Action
 
+
 class RolloutWorker:
 
   def __init__(
