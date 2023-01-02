@@ -83,40 +83,28 @@ def run(config: Config):
       PORT: dolphin.AI(),
       ENEMY_PORT: dolphin.CPU(),
   }
+  env_kwargs = dict(
+      players=players,
+      **dataclasses.asdict(config.dolphin),
+  )
 
-  ports = eval_lib.get_open_ports(config.num_actors)
-
-  actors: tp.List[actor_lib.Actor] = []
-  for port in ports:
-    dolphin_config = dataclasses.replace(config.dolphin)
-    dolphin_config.slippi_port = port
-    env_kwargs = dict(
-        players=players,
-        **dataclasses.asdict(dolphin_config),
-    )
-
-    actor = actor_lib.Actor(
-        policy_states={PORT: rl_state},
-        env_kwargs=env_kwargs,
-        num_steps_per_rollout=config.rollout_length,
-    )
-
-    actors.append(actor)
+  actor_pool = actor_lib.ActorPool(
+      config.num_actors,
+      policy_states={PORT: rl_state},
+      env_kwargs=env_kwargs,
+      num_steps_per_rollout=config.rollout_length,
+  )
 
   for _ in range(config.runtime.max_step):
     policy_vars = {PORT: learner.policy_variables()}
 
-    results = [actor.rollout(policy_vars) for actor in actors]
+    results = actor_pool.rollout(policy_vars)
+    print(results.timings)
 
-    trajectories = [result.trajectories[PORT] for result in results]
-    batched_trajectories = utils.batch_nest(trajectories)
-
-    metrics = learner.step(batched_trajectories)
-
+    metrics = learner.step(results.trajectories[PORT])
     print(metrics['kl'].numpy().mean())
 
-  for actor in actors:
-    actor.stop()
+  actor_pool.stop()
 
 def main(_):
   config = flag_utils.dataclass_from_dict(Config, CONFIG.value)

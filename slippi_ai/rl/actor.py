@@ -6,6 +6,7 @@ import numpy as np
 from slippi_ai import (
     embed,
     evaluators,
+    eval_lib,
     saving,
     utils,
 )
@@ -58,3 +59,49 @@ class Actor:
 
   def stop(self):
     self._rollout_worker.stop()
+
+
+class ActorPool:
+  def __init__(
+      self,
+      num_actors: int,
+      policy_states: tp.Mapping[Port, dict],
+      env_kwargs: dict,
+      num_steps_per_rollout: int,
+  ):
+
+    ports = eval_lib.get_open_ports(num_actors)
+
+    self._actors: tp.List[Actor] = []
+    for port in ports:
+      env_kwargs_copy = env_kwargs.copy()
+      env_kwargs_copy['slippi_port'] = port
+
+      actor = Actor(
+          policy_states=policy_states,
+          env_kwargs=env_kwargs_copy,
+          num_steps_per_rollout=num_steps_per_rollout,
+      )
+
+      self._actors.append(actor)
+
+  def rollout(
+      self,
+      policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
+  ) -> RolloutResults:
+    results = [actor.rollout(policy_vars) for actor in self._actors]
+
+    batched_trajectories = utils.batch_nest(
+        [result.trajectories for result in results])
+
+    mean_timings = tree.map_structure(
+        lambda *xs: np.mean(xs),
+        [result.timings for result in results])
+
+    return RolloutResults(
+        timings=mean_timings,
+        trajectories=batched_trajectories)
+
+  def stop(self):
+    for actor in self._actors:
+      actor.stop()
