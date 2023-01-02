@@ -98,9 +98,9 @@ class RolloutWorker:
   def rollout(self) -> tp.Tuple[tp.Mapping[Port, Trajectory], RolloutTiming]:
     trajectories = {
         port: Trajectory(
-            initial_state=self._recurrent_states[port],
-            observations=[state])
-        for port, state in self._last_state_action.items()
+            initial_state=state,
+            observations=[])  # consider including last_state_action?
+        for port, state in self._recurrent_states.items()
     }
 
     env_profiler = utils.Profiler()
@@ -110,11 +110,10 @@ class RolloutWorker:
       actions_with_repeat = {}
       controllers = {}
 
-      for port, trajectory in trajectories.items():
+      for port, state_action in self._last_state_action.items():
         with policy_profilers[port]:
-          last_observation = trajectory.observations[-1]
           actions_with_repeat[port], controllers[port] = self._sample(
-              port, last_observation)
+              port, state_action)
 
       with env_profiler:
         observations = self._env.step(controllers)
@@ -126,11 +125,7 @@ class RolloutWorker:
             reward=reward,
         )
         trajectories[port].observations.append(state_action)
-
-    self._last_state_action = {
-        port: trajectory.observations[-1]
-        for port, trajectory in trajectories.items()
-    }
+        self._last_state_action[port] = state_action
 
     inference_times = {
         port: profiler.mean_time()
@@ -141,6 +136,9 @@ class RolloutWorker:
         inference=inference_times,
         env=env_profiler.mean_time(),
     )
+
+    for trajectory in trajectories.values():
+      assert len(trajectory.observations) == self._num_steps_per_rollout
 
     return trajectories, timings
 
