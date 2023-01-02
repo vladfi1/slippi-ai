@@ -4,13 +4,7 @@ import tensorflow as tf
 
 from slippi_ai.data import Batch
 from slippi_ai.policies import Policy
-from slippi_ai import embed
-
-def to_time_major(t):
-  permutation = list(range(len(t.shape)))
-  permutation[0] = 1
-  permutation[1] = 0
-  return tf.transpose(t, permutation)
+from slippi_ai import embed, utils
 
 # TODO: should this be a snt.Module?
 class Learner:
@@ -51,10 +45,10 @@ class Learner:
 
     # switch axes to time-major
     tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
-        to_time_major, bm_gamestate)
+        utils.to_time_major, bm_gamestate)
 
     with tf.GradientTape() as tape:
-      loss, final_states, metrics = self.policy.loss(
+      loss, final_states, metrics = self.policy.imitation_loss(
           tm_gamestate, initial_states,
           self.value_cost, self.discount)
 

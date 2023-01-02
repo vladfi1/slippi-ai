@@ -7,7 +7,6 @@ from slippi_ai import (
     controller_heads,
     embed,
     s3_lib,
-    train_lib,
 )
 
 VERSION = 1
@@ -78,7 +77,7 @@ def build_policy_from_sacred(tag: str) -> policies.Policy:
 def init_variables(policy: policies.Policy):
   dummy_state_action = policy.embed_state_action.dummy([1, 1])
   initial_state = policy.initial_state(1)
-  policy.loss(dummy_state_action, initial_state)
+  policy.imitation_loss(dummy_state_action, initial_state)
 
 def load_policy_from_state(state: dict) -> policies.Policy:
   policy = policy_from_config(state['config'])

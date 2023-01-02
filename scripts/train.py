@@ -9,12 +9,11 @@ import typing as tp
 import sacred
 import tensorflow as tf
 
-import melee
-
 from slippi_ai import (
     controller_heads,
     embed,
     evaluators,
+    eval_lib,
     networks,
     policies,
     saving,
@@ -43,19 +42,6 @@ class RuntimeConfig:
   save_interval: int = 300  # seconds between saving to disk
 
 @dataclasses.dataclass
-class DolphinConfig:
-  """Configure dolphin for evaluation."""
-  path: str = None  # Path to folder containing the dolphin executable
-  iso: str = None  # Path to melee 1.02 iso.
-  stage: str = melee.Stage.FINAL_DESTINATION  # Which stage to play on.
-  online_delay: int = 0  # Simulate online delay.
-  blocking_input: bool = True  # Have game wait for AIs to send inputs.
-  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
-  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
-  save_replays: bool = False  # Save slippi replays to the usual location.
-  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
-
-@dataclasses.dataclass
 class EvaluationConfig:
   eval_every_n: int = 100  # number of training steps between evaluations
   num_eval_steps: int = 10  # number of batches per evaluation
@@ -75,7 +61,7 @@ class FileCacheConfig:
 def config():
   runtime = dataclasses.asdict(RuntimeConfig())
   evaluation = dataclasses.asdict(EvaluationConfig())
-  dolphin = dataclasses.asdict(DolphinConfig())
+  dolphin = dataclasses.asdict(eval_lib.DolphinConfig())
 
   file_cache = dataclasses.asdict(FileCacheConfig())
   dataset = dataclasses.asdict(data_lib.DatasetConfig())
@@ -99,7 +85,7 @@ def main(expt_dir, _config, _log):
   _config = dict(_config, version=saving.VERSION)
 
   runtime = RuntimeConfig(**_config['runtime'])
-  dolphin_config = DolphinConfig(**_config['dolphin'])
+  dolphin_config = eval_lib.DolphinConfig(**_config['dolphin'])
   evaluation_config = EvaluationConfig(**_config['evaluation'])
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure

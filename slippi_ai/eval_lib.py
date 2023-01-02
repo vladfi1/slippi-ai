@@ -1,3 +1,4 @@
+import dataclasses
 from typing import Callable, Optional, Tuple
 
 import fancyflags as ff
@@ -121,6 +122,21 @@ def build_agent(
       policy=policy,
       sample_kwargs=dict(temperature=sample_temperature),
   )
+
+
+@dataclasses.dataclass
+class DolphinConfig:
+  """Configure dolphin for evaluation."""
+  path: str = None  # Path to folder containing the dolphin executable
+  iso: str = None  # Path to melee 1.02 iso.
+  stage: melee.Stage = melee.Stage.FINAL_DESTINATION  # Which stage to play on.
+  online_delay: int = 0  # Simulate online delay.
+  blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  save_replays: bool = False  # Save slippi replays to the usual location.
+  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+
 
 DOLPHIN_FLAGS = dict(
     path=ff.String(None, 'Path to folder containing the dolphin executable.'),

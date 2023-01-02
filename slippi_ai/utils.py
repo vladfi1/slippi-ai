@@ -1,4 +1,3 @@
-import functools
 import time
 import typing as tp
 
@@ -6,11 +5,19 @@ import numpy as np
 import tensorflow as tf
 import tree
 
+T = tp.TypeVar('T')
+
 def stack(*vals):
   return np.stack(vals)
 
-def batch_nest(nests):
+def batch_nest(nests: tp.Sequence[T]) -> T:
   return tf.nest.map_structure(stack, *nests)
+
+def to_time_major(t):
+  permutation = list(range(len(t.shape)))
+  permutation[0] = 1
+  permutation[1] = 0
+  return tf.transpose(t, permutation)
 
 def dynamic_rnn(core, inputs, initial_state):
   """Dynamically unrolls an rnn core.

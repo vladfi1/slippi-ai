@@ -10,12 +10,15 @@ import tree
 import typing as tp
 
 from slippi_ai.policies import Policy
+from slippi_ai.networks import RecurrentState
 from slippi_ai import envs as env_lib
 from slippi_ai import embed, saving, utils
 
 Port = int
-Trajectory = tp.Sequence[embed.StateActionReward]
 
+class Trajectory(tp.NamedTuple):
+  initial_state: RecurrentState
+  observations: tp.Sequence[embed.StateActionReward]
 
 class RolloutTiming(tp.NamedTuple):
   """Mean timings during a rollout."""
@@ -94,7 +97,10 @@ class RolloutWorker:
 
   def rollout(self) -> tp.Tuple[tp.Mapping[Port, Trajectory], RolloutTiming]:
     trajectories = {
-        port: [state] for port, state in self._last_state_action.items()
+        port: Trajectory(
+            initial_state=self._recurrent_states[port],
+            observations=[state])
+        for port, state in self._last_state_action.items()
     }
 
     env_profiler = utils.Profiler()
@@ -106,8 +112,9 @@ class RolloutWorker:
 
       for port, trajectory in trajectories.items():
         with policy_profilers[port]:
+          last_observation = trajectory.observations[-1]
           actions_with_repeat[port], controllers[port] = self._sample(
-              port, trajectory[-1])
+              port, last_observation)
 
       with env_profiler:
         observations = self._env.step(controllers)
@@ -118,9 +125,12 @@ class RolloutWorker:
             action=actions_with_repeat[port],
             reward=reward,
         )
-        trajectories[port].append(state_action)
+        trajectories[port].observations.append(state_action)
 
-    self._last_state_action = {p: t[-1] for p, t in trajectories.items()}
+    self._last_state_action = {
+        port: trajectory.observations[-1]
+        for port, trajectory in trajectories.items()
+    }
 
     inference_times = {
         port: profiler.mean_time()
@@ -183,7 +193,7 @@ class SerializableRolloutWorker:
       trajectories, timings = self._rollout_worker.rollout()
 
       rewards = {
-          port: sum(x.reward for x in trajectory)
+          port: sum(x.reward for x in trajectory.observations)
           for port, trajectory in trajectories.items()
       }
 

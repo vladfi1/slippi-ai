@@ -161,7 +161,7 @@ class DebugLearner:
     p1_controller = get_p1_controller(gamestate, action_repeat)
     next_action = tf.nest.map_structure(lambda t: t[1:], p1_controller)
 
-    loss, final_states, distances = self.policy.loss(tm_gamestate, initial_states)
+    loss, final_states, distances = self.policy.imitation_loss(tm_gamestate, initial_states)
     mean_loss = tf.reduce_mean(loss)
     stats = dict(loss=mean_loss, distances=distances)
 
