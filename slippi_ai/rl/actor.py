@@ -20,9 +20,12 @@ class Trajectory(tp.NamedTuple):
   observations: embed.StateActionReward  # column-major
 
 def from_row_major(trajectory: evaluators.Trajectory) -> Trajectory:
+  observations = utils.batch_nest(trajectory.observations)
+  observations = tree.map_structure(
+      lambda x: np.expand_dims(x, 0), observations)
   return Trajectory(
       initial_state=trajectory.initial_state,
-      observations=utils.batch_nest(trajectory.observations),
+      observations=observations,
   )
 
 class RolloutResults(tp.NamedTuple):
@@ -61,7 +64,27 @@ class Actor:
     self._rollout_worker.stop()
 
 
+def merge_timings(timings: tp.Sequence[evaluators.RolloutTiming]) -> evaluators.RolloutTiming:
+  return tree.map_structure(lambda *xs: np.mean(xs), timings)
+
+
+def merge_results(results: tp.Sequence[RolloutResults]) -> RolloutResults:
+    batched_trajectories = tree.map_structure(
+        lambda *xs: np.concatenate(xs, 0),
+        *[result.trajectories for result in results])
+
+    mean_timings = tree.map_structure(
+        lambda *xs: np.mean(xs),
+        *[result.timings for result in results])
+
+    return RolloutResults(
+        timings=mean_timings,
+        trajectories=batched_trajectories)
+
+
 class ActorPool:
+  """Single-threaded pool of actors."""
+
   def __init__(
       self,
       num_actors: int,
@@ -90,17 +113,7 @@ class ActorPool:
       policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
   ) -> RolloutResults:
     results = [actor.rollout(policy_vars) for actor in self._actors]
-
-    batched_trajectories = utils.batch_nest(
-        [result.trajectories for result in results])
-
-    mean_timings = tree.map_structure(
-        lambda *xs: np.mean(xs),
-        [result.timings for result in results])
-
-    return RolloutResults(
-        timings=mean_timings,
-        trajectories=batched_trajectories)
+    return merge_results(results)
 
   def stop(self):
     for actor in self._actors:
