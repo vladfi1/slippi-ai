@@ -17,6 +17,17 @@ TYPE_TO_ITEM = {
     list: ff.Sequence,
 }
 
+def maybe_undo_optional(t: type) -> type:
+  if (
+      hasattr(t, '__origin__') and
+      t.__origin__ is tp.Union and
+      len(t.__args__) == 2 and
+      t.__args__[1] is type(None)
+  ):
+    return t.__args__[0]
+  return t
+
+
 def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
   if isinstance(default, dict):
     result = {}
@@ -44,18 +55,19 @@ def get_flags_from_dataclass(cls: type) -> tree.Structure[ff.Item]:
   result = {}
 
   for field in dataclasses.fields(cls):
-    item_constructor = TYPE_TO_ITEM.get(field.type)
+    field_type = maybe_undo_optional(field.type)
+    item_constructor = TYPE_TO_ITEM.get(field_type)
     if item_constructor is not None:
       result[field.name] = item_constructor(_get_default(field))
-    elif dataclasses.is_dataclass(field.type):
-      result[field.name] = get_flags_from_dataclass(field.type)
-    elif issubclass(field.type, enum.Enum):
+    elif dataclasses.is_dataclass(field_type):
+      result[field.name] = get_flags_from_dataclass(field_type)
+    elif issubclass(field_type, enum.Enum):
       result[field.name] = ff.EnumClass(
           default=_get_default(field),
-          enum_class=field.type,
+          enum_class=field_type,
       )
     else:
-      logging.warn(f'Unsupported field of type {field.type}')
+      logging.warn(f'Unsupported field of type {field_type}')
 
   return result
 
