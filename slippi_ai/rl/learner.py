@@ -61,7 +61,7 @@ class Learner:
         discount=self.discount,
     )
 
-    teacher_outputs = self._policy.unroll(
+    teacher_outputs = self._teacher.unroll(
         state_action=tm_gamestate,
         initial_state=initial_teacher_states,
         discount=self.discount,
