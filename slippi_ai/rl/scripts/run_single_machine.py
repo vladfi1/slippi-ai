@@ -18,12 +18,12 @@ from slippi_ai import (
     dolphin,
     flag_utils,
     paths,
-    s3_lib,
     saving,
     types,
     utils,
 )
 
+from slippi_ai.file_cache import FileCache
 from slippi_ai.rl import actor as actor_lib
 from slippi_ai.rl import learner as learner_lib
 
@@ -54,13 +54,14 @@ class Config:
   pretraining_ckpt: str = str(paths.DEMO_CHECKPOINT)
 
   runtime: RuntimeConfig = field(RuntimeConfig)
+  file_cache: FileCacheConfig = field(FileCacheConfig)
 
   dolphin: eval_lib.DolphinConfig = field(eval_lib.DolphinConfig)
 
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
 
   num_parallel_actors: int = 1  # controls env parallelism
-  num_envs_per_actor: int = 2
+  num_envs_per_actor: int = 1
   rollout_length: int = 64
 
 
@@ -84,16 +85,16 @@ def log_actor(
     step: int,
 ):
   total_time = profiler.mean_time()
-  print(results.timings)
 
   trajectories = results.trajectories[PORT]
   mean_reward = trajectories.observations.reward.mean()
 
   reward_per_minute = mean_reward * 60 * 60
-  print('mean_reward:', mean_reward)
 
   num_steps = trajectories.observations.reward.size
   sps = num_steps / total_time
+
+  print(f'rpm={mean_reward:.3f}, sps={sps:.1f}')
 
   timings = types.nt_to_nest(results.timings)
   timings.update(total=total_time, sps=sps)
@@ -138,13 +139,24 @@ def run(config: Config):
       batch_size=config.num_envs_per_actor * config.num_parallel_actors,
   )
 
+  # Initialize actors.
+  dolphin_config = config.dolphin
+  if config.file_cache.use:
+    file_cache = FileCache(
+        root=config.file_cache.path,
+        wipe=config.file_cache.wipe,
+    )
+
+    dolphin_config.iso = str(file_cache.pull_iso())
+    dolphin_config.path = str(file_cache.pull_dolphin())
+
   players = {
       PORT: dolphin.AI(),
       ENEMY_PORT: dolphin.CPU(),
   }
   env_kwargs = dict(
       players=players,
-      **dataclasses.asdict(config.dolphin),
+      **dataclasses.asdict(dolphin_config),
   )
 
   actor_pool_kwargs = dict(
