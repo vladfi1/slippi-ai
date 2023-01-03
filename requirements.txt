@@ -11,3 +11,4 @@ dnspython
 fancyflags
 pyarrow
 ray==2.2.0
+wandb

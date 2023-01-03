@@ -78,7 +78,7 @@ class Learner:
     # grad-exp trick
     kl_teacher_loss = policy_outputs.log_probs * tf.stop_gradient(kl)
 
-    metrics = policy_outputs.metrics
+    metrics = dict(value=policy_outputs.metrics['value'])
 
     losses = [
         pg_loss,

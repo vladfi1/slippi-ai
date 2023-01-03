@@ -146,3 +146,4 @@ setup.sh
 .vscode
 saved_models/
 pickled_models/
+wandb/

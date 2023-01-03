@@ -5,11 +5,13 @@ Learning runs on the main thread, acting runs on separate threads.
 
 import dataclasses
 import pickle
+import tree
 import typing as tp
 
 from absl import app
 import ray
 import fancyflags as ff
+import wandb
 
 from slippi_ai import (
     eval_lib,
@@ -18,11 +20,16 @@ from slippi_ai import (
     paths,
     s3_lib,
     saving,
+    types,
     utils,
 )
 
 from slippi_ai.rl import actor as actor_lib
 from slippi_ai.rl import learner as learner_lib
+
+PORT = 1
+ENEMY_PORT = 2
+
 
 @dataclasses.dataclass
 class FileCacheConfig:
@@ -61,11 +68,59 @@ CONFIG = ff.DEFINE_dict(
     'config',
     **flag_utils.get_flags_from_dataclass(Config))
 
+# passed to wandb.init
+WANDB = ff.DEFINE_dict(
+    'wandb',
+    project=ff.String('slippi-ai'),
+    mode=ff.Enum('disabled', ['online', 'offline', 'disabled']),
+    notes=ff.String(None),
+)
 
 make_remote_actor_pool = ray.remote(num_cpus=1)(actor_lib.ActorPool).remote
 
-def run(config: Config):
+def log_actor(
+    results: actor_lib.RolloutResults,
+    profiler: utils.Profiler,
+    step: int,
+):
+  total_time = profiler.mean_time()
+  print(results.timings)
 
+  trajectories = results.trajectories[PORT]
+  mean_reward = trajectories.observations.reward.mean()
+
+  reward_per_minute = mean_reward * 60 * 60
+  print('mean_reward:', mean_reward)
+
+  num_steps = trajectories.observations.reward.size
+  sps = num_steps / total_time
+
+  timings = types.nt_to_nest(results.timings)
+  timings.update(total=total_time, sps=sps)
+
+  to_log = dict(
+      timings=timings,
+      reward_per_minute=reward_per_minute,
+  )
+
+  wandb.log(dict(actor=to_log), step=step)
+
+def log_learner(
+    metrics: dict,
+    profiler: utils.Profiler,
+    step: int,
+):
+  print('learner time:', profiler.mean_time())
+
+  metrics = tree.map_structure(lambda x: x.numpy().mean(), metrics)
+  print('kl', metrics['kl'])
+
+  metrics['step_time'] = profiler.mean_time()
+
+  wandb.log(dict(learner=metrics), step=step)
+
+
+def run(config: Config):
   if config.pretraining_tag is not None:
     pretraining_state = saving.get_state_from_s3(
         config.pretraining_tag)
@@ -73,12 +128,8 @@ def run(config: Config):
     with open(config.pretraining_ckpt, 'rb') as f:
       pretraining_state = pickle.load(f)
 
-  # try:
-  #   rl_state = saving.get_state_from_s3(config.tag)
-  # except KeyError:
-  #   logging.info('no state found at %s', config.tag)
+  # TODO: load rl state from existing checkpoint
   rl_state = pretraining_state
-  rl_state['step'] = 0
 
   learner = learner_lib.Learner(
       config=config.learner,
@@ -87,8 +138,6 @@ def run(config: Config):
       batch_size=config.num_envs_per_actor * config.num_parallel_actors,
   )
 
-  PORT = 1
-  ENEMY_PORT = 2
   players = {
       PORT: dolphin.AI(),
       ENEMY_PORT: dolphin.CPU(),
@@ -112,7 +161,7 @@ def run(config: Config):
   actor_profiler = utils.Profiler()
   learner_profiler = utils.Profiler()
 
-  for _ in range(config.runtime.max_step):
+  for step in range(config.runtime.max_step):
     policy_vars = {PORT: learner.policy_variables()}
 
     with actor_profiler:
@@ -123,18 +172,21 @@ def run(config: Config):
       results = ray.get(results_futures)
       results = actor_lib.merge_results(results)
 
-    print('actor time:', actor_profiler.mean_time())
-    print(results.timings)
+    log_actor(results, actor_profiler, step)
 
     with learner_profiler:
       metrics = learner.step(results.trajectories[PORT])
-    print('learner time:', learner_profiler.mean_time())
-    print('kl', metrics['kl'].numpy().mean())
+    
+    log_learner(metrics, learner_profiler, step)
 
   for actor_pool in remote_actor_pools:
     actor_pool.stop.remote()
 
 def main(_):
+  wandb.init(
+      config=CONFIG.value,
+      **WANDB.value,
+  )
   config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
   run(config)
 
