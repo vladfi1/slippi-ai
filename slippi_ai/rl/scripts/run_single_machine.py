@@ -94,7 +94,7 @@ def log_actor(
   num_steps = trajectories.observations.reward.size
   sps = num_steps / total_time
 
-  print(f'rpm={mean_reward:.3f}, sps={sps:.1f}')
+  print(f'time={total_time:.1f}, sps={sps:.1f}, rpm={mean_reward:.3f}')
 
   timings = types.nt_to_nest(results.timings)
   timings.update(total=total_time, sps=sps)
