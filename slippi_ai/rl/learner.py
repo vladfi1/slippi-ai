@@ -22,6 +22,9 @@ class LearnerConfig:
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
 
+  # Don't train the policy until the uev is this low.
+  uev_threshold: tp.Optional[float] = None
+
 class Learner(snt.Module):
   """Implements A2C."""
 
@@ -100,6 +103,13 @@ class Learner(snt.Module):
     # This would up-weight states with low return variance.
     value_loss = tf.square(advantages)
     uev = tf.reduce_mean(value_loss) / (return_variance + 1e-8)
+
+    if self._config.uev_threshold is not None:
+      pg_loss = tf.where(
+          uev < self._config.uev_threshold,
+          pg_loss,
+          tf.zeros_like(pg_loss),
+      )
 
     losses = [
         pg_loss,
