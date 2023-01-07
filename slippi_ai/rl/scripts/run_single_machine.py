@@ -102,7 +102,7 @@ def log_actor(
   num_steps = trajectories.observations.reward.size
   sps = num_steps / total_time
 
-  print(f'time={total_time:.1f}, sps={sps:.1f}, rpm={mean_reward:.3f}')
+  print(f'actor time={total_time:.1f}, sps={sps:.1f}, rpm={mean_reward:.3f}')
 
   timings = types.nt_to_nest(results.timings)
   timings.update(total=total_time, sps=sps)
@@ -119,12 +119,14 @@ def log_learner(
     profiler: utils.Profiler,
     step: int,
 ):
-  print('learner time:', profiler.mean_time())
-
   metrics = tree.map_structure(lambda x: x.numpy().mean(), metrics)
-  print('kl', metrics['kl'])
+  kl = metrics['kl']
+  uev = metrics['value']['uev']
 
+  step_time = profiler.mean_time()
   metrics['step_time'] = profiler.mean_time()
+
+  print(f'learner time={step_time:.2f}, kl={kl:.3f}, uev={uev:.3f}')
 
   wandb.log(dict(learner=metrics), step=step)
 

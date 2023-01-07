@@ -75,6 +75,7 @@ class Policy(snt.Module):
     value_targets = tf.stop_gradient(value_targets)
     value_loss = tf.square(value_targets - values[:-1])
 
+    # We should use a learned constant instead, as in rl.
     _, value_variance = utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
 

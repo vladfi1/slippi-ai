@@ -21,7 +21,7 @@ class LearnerConfig:
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
 
-class Learner:
+class Learner(snt.Module):
   """Implements A2C."""
 
   def __init__(
@@ -30,11 +30,14 @@ class Learner:
       teacher_state: dict,
       rl_state: dict,
       batch_size: int,
+      name='RlLearner',
   ) -> None:
+    super().__init__(name)
     self._config = config
     self._teacher = saving.load_policy_from_state(teacher_state)
     self._policy = saving.load_policy_from_state(rl_state)
     self.optimizer = snt.optimizers.Adam(config.learning_rate)
+    self._value_constant = tf.Variable(0, dtype=tf.float32, name='value_constant')
 
     self.discount = 0.5 ** (1 / config.reward_halflife * 60)
 
@@ -67,7 +70,11 @@ class Learner:
         discount=self.discount,
     )
 
-    returns = policy_outputs.metrics['value']['return']
+    returns = tf.stop_gradient(policy_outputs.metrics['value']['return'])
+
+    constant_value_loss = tf.square(returns - self._value_constant)
+    return_variance = tf.reduce_mean(constant_value_loss)
+
     advantages = returns - policy_outputs.values[:-1]
     pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
 
@@ -78,19 +85,28 @@ class Learner:
     # grad-exp trick
     kl_teacher_loss = policy_outputs.log_probs * tf.stop_gradient(kl)
 
-    metrics = dict(value=policy_outputs.metrics['value'])
+    # Here we could instead take the ratio per-step (pre-reduce_mean).
+    # This would up-weight states with low return variance.
+    value_loss = tf.square(advantages)
+    uev = tf.reduce_mean(value_loss) / (return_variance + 1e-8)
 
     losses = [
         pg_loss,
         self._config.kl_teacher_weight * kl_teacher_loss,
-        self._config.value_cost * metrics['value']['loss'],
+        self._config.value_cost * value_loss,
+        constant_value_loss,  # train self._constant_value
     ]
-
     total_loss = tf.add_n(losses)
-    
-    metrics.update(
+
+    metrics = dict(
         total_loss=total_loss,
         kl=kl,
+        value=dict(
+            loss=value_loss,
+            return_mean=tf.reduce_mean(returns),
+            return_variance=return_variance,
+            uev=uev,
+        ),
     )
 
     return total_loss, teacher_outputs.final_state, metrics
@@ -107,7 +123,7 @@ class Learner:
 
     params: tp.Sequence[tf.Variable] = tape.watched_variables()
     watched_names = [p.name for p in params]
-    trainable_names = [v.name for v in self._policy.trainable_variables]
+    trainable_names = [v.name for v in self.variables if v.trainable]
     assert set(watched_names) == set(trainable_names)
     grads = tape.gradient(loss, params)
     self.optimizer.apply(grads, params)
