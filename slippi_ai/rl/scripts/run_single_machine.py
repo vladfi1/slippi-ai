@@ -77,7 +77,15 @@ WANDB = ff.DEFINE_dict(
     notes=ff.String(None),
 )
 
-make_remote_actor_pool = ray.remote(num_cpus=1)(actor_lib.ActorPool).remote
+# disable GPUs on actors
+actor_runtime_env = dict(
+    env_vars={'CUDA_LOCAL_DEVICES': ''},
+)
+make_remote_actor_pool = ray.remote(
+    num_cpus=1,
+    runtime_env=actor_runtime_env)(
+        actor_lib.ActorPool).remote
+
 
 def log_actor(
     results: actor_lib.RolloutResults,
