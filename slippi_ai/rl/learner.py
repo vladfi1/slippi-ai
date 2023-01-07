@@ -6,6 +6,7 @@ import tensorflow as tf
 
 from slippi_ai import (
     embed,
+    rl_lib,
     saving,
     utils,
 )
@@ -70,20 +71,29 @@ class Learner(snt.Module):
         discount=self.discount,
     )
 
-    returns = tf.stop_gradient(policy_outputs.metrics['value']['return'])
-
-    constant_value_loss = tf.square(returns - self._value_constant)
-    return_variance = tf.reduce_mean(constant_value_loss)
-
-    advantages = returns - policy_outputs.values[:-1]
-    pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
-
     # TODO: this is a high-variance estimator; we can do better by
     # including the logits from policy and teacher.
     kl = policy_outputs.log_probs - teacher_outputs.log_probs
 
-    # grad-exp trick
-    kl_teacher_loss = policy_outputs.log_probs * tf.stop_gradient(kl)
+    rewards = tf.cast(tm_gamestate.reward[1:], tf.float32)
+
+    # Include the KL in the rewards so that the value function acts as
+    # variance reduction. TODO: check that backing up across states is correct.
+    rewards = rewards - self._config.kl_teacher_weight * kl
+
+    discounts = tf.cast(self.discount, tf.float32) * tf.ones_like(rewards)
+    returns = rl_lib.discounted_returns(
+        rewards=rewards,
+        discounts=discounts,
+        bootstrap=policy_outputs.values[-1])
+    returns = tf.stop_gradient(returns)
+
+    advantages = returns - policy_outputs.values[:-1]
+    pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
+
+    # Train the constant value.
+    constant_value_loss = tf.square(returns - self._value_constant)
+    return_variance = tf.reduce_mean(constant_value_loss)
 
     # Here we could instead take the ratio per-step (pre-reduce_mean).
     # This would up-weight states with low return variance.
@@ -92,7 +102,6 @@ class Learner(snt.Module):
 
     losses = [
         pg_loss,
-        self._config.kl_teacher_weight * kl_teacher_loss,
         self._config.value_cost * value_loss,
         constant_value_loss,  # train self._constant_value
     ]
