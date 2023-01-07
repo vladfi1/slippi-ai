@@ -18,8 +18,8 @@ class LearnerConfig:
   # TODO: unify this with the imitation config?
   learning_rate: float = 1e-4
   compile: bool = True
+  policy_weight: float = 1.0
   kl_teacher_weight: float = 1e-1
-  value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
 
   # Don't train the policy until the uev is this low.
@@ -123,8 +123,8 @@ class Learner(snt.Module):
       )
 
     losses = [
-        pg_loss,
-        self._config.value_cost * value_loss,
+        self._config.policy_weight * pg_loss,
+        value_loss,
         constant_value_loss,  # train self._constant_value
     ]
     total_loss = tf.add_n(losses)
