@@ -74,6 +74,8 @@ WANDB = ff.DEFINE_dict(
     'wandb',
     project=ff.String('slippi-ai'),
     mode=ff.Enum('disabled', ['online', 'offline', 'disabled']),
+    group=ff.String('single-machine'),
+    name=ff.String(None),
     notes=ff.String(None),
 )
 
