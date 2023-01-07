@@ -40,14 +40,17 @@ class Learner(snt.Module):
     self._config = config
     self._teacher = saving.load_policy_from_state(teacher_state)
     self._policy = saving.load_policy_from_state(rl_state)
-    self.optimizer = snt.optimizers.Adam(config.learning_rate)
+    self._value_net = saving.load_policy_from_state(rl_state)
+
     self._value_constant = tf.Variable(0, dtype=tf.float32, name='value_constant')
+    self.optimizer = snt.optimizers.Adam(config.learning_rate)
 
     self.discount = 0.5 ** (1 / config.reward_halflife * 60)
 
     self.compiled_step = tf.function(self.step) if config.compile else self.step
 
     self._teacher_state = self._teacher.initial_state(batch_size)
+    self._value_net_state = self._value_net.initial_state(batch_size)
 
   def policy_variables(self) -> tp.Sequence[tf.Variable]:
     return self._policy.variables
@@ -56,6 +59,7 @@ class Learner(snt.Module):
       self,
       bm_trajectories: Trajectory,
       initial_teacher_states: RecurrentState,
+      initial_value_net_states: RecurrentState,
   ):
     # TODO: handle game resets?
 
@@ -74,6 +78,12 @@ class Learner(snt.Module):
         discount=self.discount,
     )
 
+    value_net_outputs = self._value_net.unroll(
+        state_action=tm_gamestate,
+        initial_state=initial_value_net_states,
+        discount=self.discount,
+    )
+
     # TODO: this is a high-variance estimator; we can do better by
     # including the logits from policy and teacher.
     kl = policy_outputs.log_probs - teacher_outputs.log_probs
@@ -85,14 +95,15 @@ class Learner(snt.Module):
     # variance reduction. TODO: check that backing up across states is correct.
     rewards = rewards - self._config.kl_teacher_weight * kl
 
+    values = value_net_outputs.values
     discounts = tf.cast(self.discount, tf.float32) * tf.ones_like(rewards)
     returns = rl_lib.discounted_returns(
         rewards=rewards,
         discounts=discounts,
-        bootstrap=policy_outputs.values[-1])
+        bootstrap=values[-1])
     returns = tf.stop_gradient(returns)
 
-    advantages = returns - policy_outputs.values[:-1]
+    advantages = returns - values[:-1]
     pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
 
     # Train the constant value.
@@ -130,17 +141,24 @@ class Learner(snt.Module):
         ),
     )
 
-    return total_loss, teacher_outputs.final_state, metrics
+    return (
+        total_loss,
+        teacher_outputs.final_state,
+        value_net_outputs.final_state,
+        metrics,
+    )
 
   def step(
       self,
       bm_trajectories: Trajectory,
       initial_teacher_states: RecurrentState,
+      initial_value_net_states: RecurrentState,
   ) -> tp.Tuple[RecurrentState, dict]:
     with tf.GradientTape() as tape:
-      loss, final_teacher_states, metrics = self.unroll(
+      loss, final_teacher_states, final_value_states, metrics = self.unroll(
           bm_trajectories,
           initial_teacher_states=initial_teacher_states,
+          initial_value_net_states=initial_value_net_states,
       )
 
     params: tp.Sequence[tf.Variable] = tape.watched_variables()
@@ -150,12 +168,12 @@ class Learner(snt.Module):
     grads = tape.gradient(loss, params)
     self.optimizer.apply(grads, params)
 
-    return final_teacher_states, metrics
+    return final_teacher_states, final_value_states, metrics
 
   def train(
       self,
       bm_trajectories: Trajectory,
   ) -> dict:
-    self._teacher_state, metrics = self.compiled_step(
-        bm_trajectories, self._teacher_state)
+    self._teacher_state, self._value_net_state, metrics = self.compiled_step(
+        bm_trajectories, self._teacher_state, self._value_net_state)
     return metrics
