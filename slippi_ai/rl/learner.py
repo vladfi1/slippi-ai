@@ -74,6 +74,7 @@ class Learner(snt.Module):
     # TODO: this is a high-variance estimator; we can do better by
     # including the logits from policy and teacher.
     kl = policy_outputs.log_probs - teacher_outputs.log_probs
+    entropy = -policy_outputs.log_probs
 
     rewards = tf.cast(tm_gamestate.reward[1:], tf.float32)
 
@@ -110,6 +111,7 @@ class Learner(snt.Module):
     metrics = dict(
         total_loss=total_loss,
         kl=kl,
+        entropy=tf.reduce_mean(entropy),
         value=dict(
             loss=value_loss,
             return_mean=tf.reduce_mean(returns),
