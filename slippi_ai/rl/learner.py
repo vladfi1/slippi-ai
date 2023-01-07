@@ -123,11 +123,12 @@ class Learner(snt.Module):
   def step(
       self,
       bm_trajectories: Trajectory,
-  ) -> dict:
+      initial_teacher_states: RecurrentState,
+  ) -> tp.Tuple[RecurrentState, dict]:
     with tf.GradientTape() as tape:
-      loss, self._teacher_state, metrics = self.unroll(
+      loss, final_teacher_states, metrics = self.unroll(
           bm_trajectories,
-          initial_teacher_states=self._teacher_state,
+          initial_teacher_states=initial_teacher_states,
       )
 
     params: tp.Sequence[tf.Variable] = tape.watched_variables()
@@ -137,4 +138,12 @@ class Learner(snt.Module):
     grads = tape.gradient(loss, params)
     self.optimizer.apply(grads, params)
 
+    return final_teacher_states, metrics
+
+  def train(
+      self,
+      bm_trajectories: Trajectory,
+  ) -> dict:
+    self._teacher_state, metrics = self.compiled_step(
+        bm_trajectories, self._teacher_state)
     return metrics

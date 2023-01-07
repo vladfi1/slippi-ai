@@ -199,7 +199,7 @@ def run(config: Config):
     log_actor(results, actor_profiler, step)
 
     with learner_profiler:
-      metrics = learner.step(results.trajectories[PORT])
+      metrics = learner.train(results.trajectories[PORT])
     
     log_learner(metrics, learner_profiler, step)
 
