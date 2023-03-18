@@ -268,19 +268,6 @@ class DataSource:
 
   def produce_raw_games(self) -> Iterator[Game]:
     """Raw games without post-processing."""
-<<<<<<< HEAD
-    self.file_counter = 0
-    for path in itertools.cycle(self.filenames):
-      self.file_counter += 1
-      with open(path, 'rb') as f:
-        obj_bytes = f.read()
-      try:
-        if self.compressed:
-          obj_bytes = zlib.decompress(obj_bytes)
-      except zlib.error:
-        continue
-      game = pickle.loads(obj_bytes)
-=======
     self.replay_counter = 0
     for replay in itertools.cycle(self.replays):
       self.replay_counter += 1
@@ -290,7 +277,6 @@ class DataSource:
       if replay.swap:
         game = swap_players(game)
       assert self.is_allowed(game)
->>>>>>> upstream/main
       yield game
 
   def is_allowed(self, game: Game) -> bool:
