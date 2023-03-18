@@ -194,7 +194,7 @@ def main(expt_dir, _config, _log):
     _log.info('loss post-restore: %f', train_loss.numpy())
 
   FRAMES_PER_MINUTE = 60 * 60
-  start_time = time.time()
+  start_time = time.perf_time()
 
   step_tracker = utils.Tracker(step.numpy())
   epoch_tracker = utils.Tracker(train_stats['epoch'])
