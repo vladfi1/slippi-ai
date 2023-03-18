@@ -1,4 +1,6 @@
+import functools
 import time
+import typing as tp
 
 import numpy as np
 import tensorflow as tf
@@ -82,6 +84,23 @@ class Periodically:
       self.last_call = now
       return self.f(*args, **kwargs)
 
+def periodically(interval: int):
+  def wrap(f):
+    return Periodically(f, interval)
+  return wrap
+
+T = tp.TypeVar('T')
+
+class Tracker(tp.Generic[T]):
+
+  def __init__(self, initial: T):
+    self.last = initial
+
+  def update(self, latest: T) -> T:
+    delta = latest - self.last
+    self.last = latest
+    return delta
+
 class EMA:
   """Exponential moving average."""
 
@@ -105,3 +124,13 @@ def with_flat_signature(fn, signature):
   def g(*flat_args):
     return fn(*tree.unflatten_as(signature, flat_args))
   return tf.function(g, input_signature=tree.flatten(signature))
+
+def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.TensorSpec]:
+  mean = tf.reduce_mean(xs)
+  variance = tf.reduce_mean(tf.square(xs - mean))
+  return mean, variance
+
+def to_numpy(x) -> np.ndarray:
+  if isinstance(x, tf.Tensor):
+    return x.numpy()
+  return x

@@ -132,11 +132,17 @@ dmypy.json
 experiments/
 
 # don't track replays
-data/AllCompressed/
+data/untracked/
 
 # storage for b9 scripts
 run_scripts/
 
+# shhhhhhh
 secrets.sh
+secrets.json
+setup.sh
+**/client_secrets.json
+
 .vscode
 saved_models/
+pickled_models/

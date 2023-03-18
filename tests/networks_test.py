@@ -4,13 +4,9 @@ from parameterized import parameterized
 import numpy as np
 import tensorflow as tf
 
-import learner
-import networks
-import data
-import paths
-import utils
-import embed
-from policies import get_p1_controller
+from slippi_ai import (
+    learner, networks, paths, data, utils, embed
+)
 
 def assert_tensors_close(t1, t2):
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
@@ -25,7 +21,7 @@ embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat
 
 def default_data_source():
   return data.DataSource(
-      [paths.MULTISHINE_PATH],
+      [data.ReplayInfo(paths.DEMO_PATH, False)],
       batch_size=1,
       unroll_length=8,
       embed_controller=embed_controller,
@@ -37,14 +33,10 @@ def get_inputs(data_source: data.DataSource):
 
   # from Learner
   bm_gamestate = batch.game
-  tm_gamestate = tf.nest.map_structure(learner.to_time_major, bm_gamestate)
+  tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
+    learner.to_time_major, bm_gamestate)
 
-  # from Policy
-  gamestate, action_repeat, rewards = tm_gamestate
-  del rewards
-  p1_controller = get_p1_controller(gamestate, action_repeat)
-  p1_controller_embed = embed_controller_with_repeat(p1_controller)
-  return (gamestate, p1_controller_embed)
+  return embed.default_embed_game(tm_gamestate.state)
 
 class NetworksTest(unittest.TestCase):
 

@@ -1,9 +1,10 @@
 from typing import List, Optional
 import sonnet as snt
 import tensorflow as tf
-from slippi_ai.data import Batch
 
+from slippi_ai.data import Batch
 from slippi_ai.policies import Policy
+from slippi_ai import embed
 
 def to_time_major(t):
   permutation = list(range(len(t.shape)))
@@ -18,18 +19,24 @@ class Learner:
       learning_rate=1e-4,
       compile=True,
       decay_rate=0.,
+      value_cost=0.5,
+      reward_halflife=2,  # measured in seconds
   )
 
   def __init__(self,
       learning_rate: float,
       compile: bool,
       policy: Policy,
+      value_cost: float,
+      reward_halflife: float,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
   ):
     self.policy = policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
     self.decay_rate = decay_rate
+    self.value_cost = value_cost
+    self.discount = 0.5 ** (1 / reward_halflife * 60)
     self.compiled_step = tf.function(self.step) if compile else self.step
 
   def step(self, batch: Batch, initial_states, train=True):
@@ -43,33 +50,24 @@ class Learner:
         initial_states)
 
     # switch axes to time-major
-    tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
+    tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
+        to_time_major, bm_gamestate)
 
     with tf.GradientTape() as tape:
-      loss, final_states, distances = self.policy.loss(
-          tm_gamestate, initial_states)
-      mean_loss = tf.reduce_mean(loss)
-
-      # maybe do this in the Policy?
-      counts = tf.cast(tm_gamestate.counts[1:] + 1, tf.float32)
-      weighted_loss = tf.reduce_sum(loss) / tf.reduce_sum(counts)
-
-    stats = dict(
-        loss=mean_loss,
-        weighted_loss=weighted_loss,
-        distances=distances,
-    )
+      loss, final_states, metrics = self.policy.loss(
+          tm_gamestate, initial_states,
+          self.value_cost, self.discount)
 
     if train:
       params: List[tf.Variable] = tape.watched_variables()
       watched_names = [p.name for p in params]
       trainable_names = [v.name for v in self.policy.trainable_variables]
       assert set(watched_names) == set(trainable_names)
-      grads = tape.gradient(mean_loss, params)
+      grads = tape.gradient(loss, params)
       self.optimizer.apply(grads, params)
 
       if self.decay_rate:
         for param in params:
           param.assign((1 - self.decay_rate) * param)
 
-    return stats, final_states
+    return metrics, final_states

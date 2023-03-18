@@ -2,63 +2,113 @@ import atexit
 import itertools
 import multiprocessing as mp
 import os
-import pickle
 import random
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
-import zlib
 
 import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
 import tree
 
 import melee
 
-from slippi_ai import embed, reward, stats, utils
+from slippi_ai import embed, reward, utils
+from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
 
-Nest = Any
-Controller = Nest
-Game = Nest
-
-class CompressedGame(NamedTuple):
-  states: Game
-  counts: Sequence[int]
-  rewards: Sequence[float]
+from slippi_ai.embed import StateActionReward
 
 class Batch(NamedTuple):
-  game: CompressedGame
+  game: StateActionReward
   needs_reset: bool
 
-def train_test_split(data_dir, subset=None, test_ratio=.1):
-  if subset:
-    print("Using subset:", subset)
-    filenames = stats.get_subset(subset)
-    filenames = [name + '.pkl' for name in filenames]
-  else:
-    print("Using all replays in", data_dir)
-    filenames = sorted(os.listdir(data_dir))
+class ReplayInfo(NamedTuple):
+  path: str
+  swap: bool
 
-  print(f"Found {len(filenames)} replays.")
+def _get_keys(
+    df: pd.DataFrame,
+    allowed_p0: Iterable[int],
+    allowed_p1: Iterable[int],
+) -> Iterable[str]:
+  df = df[df['p0.character'].isin(allowed_p0)]
+  df = df[df['p1.character'].isin(allowed_p1)]
+  return df['key']
+
+def train_test_split(
+    data_dir: str,
+    meta_path: Optional[str],
+    test_ratio: float = 0.1,
+    # None means all allowed.
+    allowed_characters: Optional[Iterable[melee.Character]] = None,
+    allowed_opponents: Optional[Iterable[melee.Character]] = None,
+    seed: int = 0,
+) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
+  filenames = sorted(os.listdir(data_dir))
+  print(f"Found {len(filenames)} files.")
+
+  if meta_path is not None:
+    df = pd.read_parquet(meta_path)
+    # check that we have the right metadata
+    assert sorted(df['key']) == filenames
+
+    allowed_characters = _charset(allowed_characters)
+    allowed_opponents = _charset(allowed_opponents)
+
+    unswapped = _get_keys(df, allowed_characters, allowed_opponents)
+    swapped = _get_keys(df, allowed_opponents, allowed_characters)
+  else:
+    assert allowed_characters is None
+    assert allowed_opponents is None
+
+    swapped = filenames
+    unswapped = filenames
+
+  replays = []
+  for key in unswapped:
+    path = os.path.join(data_dir, key)
+    replays.append(ReplayInfo(path, False))
+  for key in swapped:
+    path = os.path.join(data_dir, key)
+    replays.append(ReplayInfo(path, True))
 
   # reproducible train/test split
-  rng = random.Random()
-  rng.shuffle(filenames)
-  test_files = rng.sample(filenames, int(test_ratio * len(filenames)))
-  test_set = set(test_files)
-  train_files = [f for f in filenames if f not in test_set]
-  train_paths = [os.path.join(data_dir, f) for f in train_files]
-  test_paths = [os.path.join(data_dir, f) for f in test_files]
-  if not test_paths:
-    test_paths = train_paths
-  return train_paths, test_paths
+  rng = random.Random(seed)
+  rng.shuffle(replays)
+  num_test = int(test_ratio * len(replays))
 
-def game_len(game: CompressedGame):
-  return len(game.counts)
+  train_replays = replays[num_test:]
+  test_replays = replays[:num_test]
+
+  return train_replays, test_replays
+
+DATASET_CONFIG = dict(
+    data_dir=None,
+    meta_path=None,
+    test_ratio=0.1,
+    # comma-separated lists of characters, or "all"
+    allowed_characters='all',
+    allowed_opponents='all',
+)
+
+_name_to_character = {c.name.lower(): c for c in melee.Character}
+
+def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
+  if chars == 'all':
+    return None
+  chars = chars.split(',')
+  return [_name_to_character[c] for c in chars]
+
+
+def game_len(game: StateActionReward):
+  return len(game.reward)
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source: Iterator[CompressedGame]):
+  def __init__(self, source: Iterator[StateActionReward]):
     self.source = source
-    self.game: CompressedGame = None
+    self.game: StateActionReward = None
+    self.frame = None
 
   def find_game(self, n):
     while True:
@@ -67,9 +117,14 @@ class TrajectoryManager:
     self.game = game
     self.frame = 0
 
-  def grab_chunk(self, n) -> Tuple[CompressedGame, bool]:
+  def grab_chunk(self, n) -> Tuple[StateActionReward, bool]:
+    """Grabs a chunk from a trajectory.
+
+    Subsequent trajectories overlap by a single frame.
+    """
     # TODO: write a unit test for this
-    needs_reset = self.game is None or game_len(self.game) - self.frame < n
+    needs_reset = self.game is None or self.frame + n > game_len(self.game)
+
     if needs_reset:
       self.find_game(n)
 
@@ -81,13 +136,9 @@ class TrajectoryManager:
     return Batch(chunk, needs_reset)
 
 def swap_players(game: Game) -> Game:
-  old_players = game['player']
-  new_players = {1: old_players[2], 2: old_players[1]}
-  new_game = game.copy()
-  new_game['player'] = new_players
-  return new_game
+  return game._replace(p0=game.p1, p1=game.p0)
 
-def detect_repeated_actions(controllers: Nest) -> Sequence[bool]:
+def detect_repeated_actions(controllers: Nest[np.ndarray]) -> Sequence[bool]:
   """Labels actions as repeated or not.
 
   Args:
@@ -142,24 +193,33 @@ def indices_and_counts(
 def compress_repeated_actions(
     game: Game,
     rewards: Sequence[float],
-    embed_controller: embed.Embedding,
+    embed_controller: embed.Embedding[Controller, Any],
     max_repeat: int,
-  ) -> CompressedGame:
-  controllers = game['player'][1]['controller_state']
-  controllers = embed_controller.map(lambda e, a: e.preprocess(a), controllers)
+    embed_game=embed.default_embed_game,
+  ) -> StateActionReward:
+  controllers = embed_controller.from_state(game.p0.controller)
 
   repeats = detect_repeated_actions(controllers)
   indices, counts = indices_and_counts(repeats, max_repeat)
 
-  compressed_game = tree.map_structure(lambda a: a[indices], game)
-  reward_indices = np.concatenate([[0], indices[:-1]])
-  compressed_rewards = np.add.reduceat(rewards, reward_indices)
-  compressed_game = CompressedGame(compressed_game, counts, compressed_rewards)
+  compressed_states = tree.map_structure(lambda a: a[indices], game)
+  compressed_states = embed_game.from_state(compressed_states)
+  actions = tree.map_structure(lambda a: a[indices], controllers)
+  compressed_rewards = np.concatenate([
+      np.zeros([1], dtype=np.float32),
+      np.add.reduceat(rewards, indices[:-1]),
+  ])
+  compressed_game = StateActionReward(
+      state=compressed_states,
+      action=embed.ActionWithRepeat(
+          action=actions,
+          repeat=counts),
+      reward=compressed_rewards)
 
   shapes = [x.shape for x in tree.flatten(compressed_game)]
   for s in shapes:
     assert s == shapes[0]
-  
+
   return compressed_game
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
@@ -170,18 +230,18 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
 class DataSource:
   def __init__(
       self,
-      filenames,
+      replays: List[ReplayInfo],
+      # preprocesses (discretizes) actions before repeat detection
+      embed_controller: embed.Embedding[Controller, Any],
       compressed=True,
       batch_size=64,
       unroll_length=64,
       max_action_repeat=15,
-      # preprocesses (discretizes) actions before repeat detection
-      embed_controller=None,
       # Lists of melee.Character. None means all allowed.
       allowed_characters=None,
       allowed_opponents=None,
-      ):
-    self.filenames = filenames
+  ):
+    self.replays = replays
     self.batch_size = batch_size
     self.unroll_length = unroll_length
     self.compressed = compressed
@@ -195,19 +255,20 @@ class DataSource:
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
 
-  def produce_trajectories(self) -> Iterator[CompressedGame]:
-    raw_games = self.produce_raw_games()
-    allowed_games = filter(self.is_allowed, raw_games)
-    processed_games = map(self.process_game, allowed_games)
-    return processed_games
+  def produce_trajectories(self) -> Iterator[StateActionReward]:
+    games = self.produce_raw_games()
+    # games = filter(self.is_allowed, games)
+    games = map(self.process_game, games)
+    return games
 
-  def process_game(self, game: Game) -> CompressedGame:
+  def process_game(self, game: Game) -> StateActionReward:
     rewards = reward.compute_rewards(game)
     return compress_repeated_actions(
         game, rewards, self.embed_controller, self.max_action_repeat)
 
   def produce_raw_games(self) -> Iterator[Game]:
     """Raw games without post-processing."""
+<<<<<<< HEAD
     self.file_counter = 0
     for path in itertools.cycle(self.filenames):
       self.file_counter += 1
@@ -219,19 +280,30 @@ class DataSource:
       except zlib.error:
         continue
       game = pickle.loads(obj_bytes)
+=======
+    self.replay_counter = 0
+    for replay in itertools.cycle(self.replays):
+      self.replay_counter += 1
+      table = pq.read_table(replay.path)
+      game_struct = table['root'].combine_chunks()
+      game = game_array_to_nt(game_struct)
+      if replay.swap:
+        game = swap_players(game)
+      assert self.is_allowed(game)
+>>>>>>> upstream/main
       yield game
-      yield swap_players(game)
 
   def is_allowed(self, game: Game) -> bool:
+    # TODO: handle Zelda/Sheik transformation
     return (
-        game['player'][1]['character'][0] in self.allowed_characters
+        game.p0.character[0] in self.allowed_characters
         and
-        game['player'][2]['character'][0] in self.allowed_opponents)
+        game.p1.character[0] in self.allowed_opponents)
 
   def __next__(self) -> Tuple[Batch, float]:
     next_batch = utils.batch_nest(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
-    epoch = self.file_counter / len(self.filenames)
+    epoch = self.replay_counter / len(self.replays)
     return next_batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
@@ -254,32 +326,16 @@ class DataSourceMP:
   def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
 
-_name_to_character = {c.name.lower(): c for c in melee.Character}
-
-def _chars_from_string(chars: str) -> List[melee.Character]:
-  if chars == 'all':
-    return list(melee.Character)
-  chars = chars.split(',')
-  return [_name_to_character[c] for c in chars]
-
 CONFIG = dict(
     batch_size=32,
     unroll_length=64,
     compressed=True,
-    max_action_repeat=15,
+    max_action_repeat=0,
     in_parallel=True,
-    # comma-separated lists of characters, or "all"
-    allowed_characters='all',
-    allowed_opponents='all',
 )
 
 def make_source(
-    allowed_characters: str,
-    allowed_opponents: str,
     in_parallel: bool,
     **kwargs):
   constructor = DataSourceMP if in_parallel else DataSource
-  return constructor(
-      allowed_characters=_chars_from_string(allowed_characters),
-      allowed_opponents=_chars_from_string(allowed_opponents),
-      **kwargs)
+  return constructor(**kwargs)

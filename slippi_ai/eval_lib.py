@@ -1,52 +1,64 @@
-import functools
-from typing import Callable, NamedTuple, Tuple
+import multiprocessing as mp
+from typing import Callable, Mapping, Optional, Tuple
 
-import numpy as np
+import fancyflags as ff
 import tensorflow as tf
 
 import melee
 
-from slippi_ai import embed, policies, data, saving
+from slippi_ai import embed, policies, dolphin, saving
+from slippi_ai.types import Controller, Game
+from slippi_db.parse_libmelee import get_game
 
-expected_players = (1, 2)
 
-class Policy(NamedTuple):
-  sample: Callable[
-      [data.CompressedGame, policies.RecurrentState],
-      Tuple[policies.ControllerWithRepeat, policies.RecurrentState]]
-  initial_state: Callable[[int], policies.RecurrentState]
+def disable_gpus():
+  tf.config.set_visible_devices([], 'GPU')
 
-  @staticmethod
-  def from_saved_model(path: str) -> "Policy":
-    policy = tf.saved_model.load(path)
-    return Policy(
-        sample=lambda *structs: policy.sample(*tf.nest.flatten(structs)),
-        initial_state=policy.initial_state)
 
-  @staticmethod
-  def from_experiment(tag: str, sample_kwargs=None) -> "Policy":
-    policy = saving.load_policy(tag)
-    sample_kwargs = sample_kwargs or {}
-    sample = functools.partial(policy.sample, **sample_kwargs)
-    return Policy(
-        sample=tf.function(sample),
-        # sample=sample,
-        initial_state=policy.initial_state)
+Sample = Callable[
+    [embed.StateActionReward, policies.RecurrentState],
+    Tuple[embed.ActionWithRepeat, policies.RecurrentState]]
+
+def send_controller(controller: melee.Controller, controller_state: Controller):
+  for b in embed.LEGAL_BUTTONS:
+    if getattr(controller_state.buttons, b.value):
+      controller.press_button(b)
+    else:
+      controller.release_button(b)
+  main_stick = controller_state.main_stick
+  controller.tilt_analog(melee.Button.BUTTON_MAIN, main_stick.x, main_stick.y)
+  c_stick = controller_state.c_stick
+  controller.tilt_analog(melee.Button.BUTTON_C, c_stick.x, c_stick.y)
+  controller.press_shoulder(melee.Button.BUTTON_L, controller_state.shoulder)
 
 class Agent:
+  """Wraps a Policy to track hidden state."""
 
   def __init__(
       self,
       controller: melee.Controller,
       opponent_port: int,
-      policy: Policy,
+      policy: policies.Policy,
+      embed_controller: embed.StructEmbedding[Controller] = embed.embed_controller_discrete,
+      sample_kwargs: dict = {},
   ):
     self._controller = controller
     self._port = controller.port
     self._players = (self._port, opponent_port)
-    self._embed_game = embed.make_game_embedding(players=self._players)
     self._policy = policy
-    self._sample = policy.sample
+    self._embed_controller = embed_controller
+
+    def sample_unbatched(state_action, prev_state):
+      batched_state_action = tf.nest.map_structure(
+          lambda x: tf.expand_dims(x, 0), state_action)
+      batched_action, next_state = policy.sample(
+          batched_state_action, prev_state, **sample_kwargs)
+      action = tf.nest.map_structure(
+          lambda x: tf.squeeze(x, 0), batched_action)
+      return action, next_state
+
+    self._sample = tf.function(sample_unbatched)
+    # self._sample = sample_unbatched
     self._hidden_state = policy.initial_state(1)
     self._current_action_repeat = 0
     self._current_repeats_left = 0
@@ -56,33 +68,151 @@ class Agent:
       self._current_repeats_left -= 1
       return None
 
-    embedded_game = self._embed_game.from_state(gamestate)
-    # put the players in the expected positions
-    embedded_game['player'] = {
-      e: embedded_game['player'][p]
-      for e, p in zip(expected_players, self._players)}
+    game = get_game(gamestate, ports=self._players)
 
-    unbatched_input = data.CompressedGame(embedded_game, self._current_action_repeat, 0.)
-    batched_input = tf.nest.map_structure(
-        lambda a: np.expand_dims(a, 0), unbatched_input)
-    sampled_controller_with_repeat, self._hidden_state = self._sample(
-        batched_input, self._hidden_state)
-    sampled_controller_with_repeat = tf.nest.map_structure(
-        lambda t: np.squeeze(t.numpy(), 0), sampled_controller_with_repeat)
-    sampled_controller = sampled_controller_with_repeat['controller']
-    self._current_action_repeat = sampled_controller_with_repeat['action_repeat']
+    state_action = embed.StateActionReward(
+        state=game,
+        action=embed.ActionWithRepeat(
+            action=game.p0.controller,
+            repeat=self._current_action_repeat,
+        ),
+        reward=0.,
+    )
+    state_action = self._policy.embed_state_action.from_state(state_action)
+
+    action_with_repeat: embed.ActionWithRepeat
+    action_with_repeat, self._hidden_state = self._sample(
+        state_action, self._hidden_state)
+    action_with_repeat = tf.nest.map_structure(
+        lambda t: t.numpy(), action_with_repeat)
+
+    sampled_controller = action_with_repeat.action
+    # decode un-discretizes the discretized components (x/y axis and shoulder)
+    sampled_controller = self._embed_controller.decode(sampled_controller)
+    send_controller(self._controller, sampled_controller)
+
+    self._current_action_repeat = action_with_repeat.repeat
     self._current_repeats_left = self._current_action_repeat
 
-    for b in embed.LEGAL_BUTTONS:
-      if sampled_controller['button'][b.value]:
-        self._controller.press_button(b)
-      else:
-        self._controller.release_button(b)
-    main_stick = sampled_controller["main_stick"]
-    self._controller.tilt_analog(melee.Button.BUTTON_MAIN, *main_stick)
-    c_stick = sampled_controller["c_stick"]
-    self._controller.tilt_analog(melee.Button.BUTTON_C, *c_stick)
-    self._controller.press_shoulder(melee.Button.BUTTON_L, sampled_controller["l_shoulder"])
-    self._controller.press_shoulder(melee.Button.BUTTON_R, sampled_controller["r_shoulder"])
+    return action_with_repeat
 
-    return sampled_controller_with_repeat
+
+AGENT_FLAGS = dict(
+    path=ff.String(None, 'Local path to pickled agent state.'),
+    tag=ff.String(None, 'Tag used to save state in s3.'),
+    sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
+)
+
+def build_agent(
+    controller: melee.Controller,
+    opponent_port: int,
+    path: Optional[str] = None,
+    tag: Optional[str] = None,
+    sample_temperature: float = 1.0,
+) -> Agent:
+  if path:
+    policy = saving.load_policy_from_disk(path)
+  elif tag:
+    policy = saving.load_policy_from_s3(tag)
+  else:
+    raise ValueError('Must specify one of "tag" or "path".')
+
+  return Agent(
+      controller=controller,
+      opponent_port=opponent_port,
+      policy=policy,
+      sample_kwargs=dict(temperature=sample_temperature),
+  )
+
+DOLPHIN_FLAGS = dict(
+    path=ff.String(None, 'Path to folder containing the dolphin executable.'),
+    iso=ff.String(None, 'Path to melee 1.02 iso.'),
+    stage=ff.EnumClass(melee.Stage.FINAL_DESTINATION, melee.Stage, 'Which stage to play on.'),
+    online_delay=ff.Integer(0, 'Simulate online delay.'),
+    blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
+    slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
+    render=ff.Boolean(True, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
+    save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
+    headless=ff.Boolean(
+        False, 'Headless configuration: exi + ffw, no graphics or audio.'),
+)
+
+PLAYER_FLAGS = dict(
+    type=ff.Enum('ai', ('ai', 'human', 'cpu'), 'Player type.'),
+    character=ff.EnumClass(
+        melee.Character.FOX, melee.Character,
+        'Character selected by agent or CPU.'),
+    level=ff.Integer(9, 'CPU level.'),
+    ai=AGENT_FLAGS,
+)
+
+def get_player(
+    type: str,
+    character: melee.Character,
+    level: int,
+    **_,  # for convenience
+) -> dolphin.Player:
+  if type == 'ai':
+    return dolphin.AI(character)
+  elif type == 'human':
+    return dolphin.Human()
+  elif type == 'cpu':
+    return dolphin.CPU(character, level)
+
+
+class Environment(dolphin.Dolphin):
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+    assert len(self._players) == 2
+
+    self._player_to_ports = {}
+    ports = list(self._players)
+
+    for port, opponent_port in zip(ports, reversed(ports)):
+      if isinstance(self._players[port], dolphin.AI):
+        self._player_to_ports[port] = (port, opponent_port)
+
+  def step(self, controllers: Mapping[int, dict]) -> Mapping[int, Game]:
+    for port, controller in controllers.items():
+      send_controller(self.controllers[port], controller)
+
+    gamestate = super().step()
+
+    return {
+        p: get_game(gamestate, self._player_to_ports[p])
+        for p in self._players
+    }
+
+
+def run_env(init_kwargs, conn):
+  env = Environment(**init_kwargs)
+
+  while True:
+    controllers = conn.recv()
+    if controllers is None:
+      break
+
+    conn.send(env.step(controllers))
+
+  env.stop()
+  conn.close()
+
+class AsyncEnv:
+
+  def __init__(self, **kwargs):
+    self._parent_conn, child_conn = mp.Pipe()
+    self._process = mp.Process(target=run_env, args=(kwargs, child_conn))
+    self._process.start()
+
+  def stop(self):
+    self._parent_conn.send(None)
+    self._process.join()
+    self._parent_conn.close()
+
+  def send(self, controllers):
+    self._parent_conn.send(controllers)
+
+  def recv(self):
+    return self._parent_conn.recv()

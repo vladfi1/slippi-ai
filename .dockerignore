@@ -1,0 +1,6 @@
+# Ignore everything
+*
+
+# allow only these
+!requirements.txt
+!docker/
