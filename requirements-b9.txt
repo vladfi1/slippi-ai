@@ -1,8 +1,7 @@
-pandas
+pandas==1.4.4
 dm-sonnet
 git+https://github.com/vladfi1/libmelee.git@dev
 gdown
-tensorflow_probability
 git+https://github.com/IDSIA/sacred.git
 git+https://github.com/mbr/simplekv.git
 boto3
@@ -10,3 +9,7 @@ pymongo
 dnspython
 fancyflags
 pyarrow
+
+# for nvcr's tensorflow 2.3
+numpy==1.18.5
+tensorflow_probability==0.11
