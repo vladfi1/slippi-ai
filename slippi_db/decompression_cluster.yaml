@@ -94,7 +94,7 @@ available_node_types:
         # You can also set custom resources.
         # For example, to mark a node type as having 1 CPU, 1 GPU, and 5 units of a resource called "custom", set
         # resources: {"CPU": 1, "GPU": 1, "custom": 5}
-        resources: {"mem": 256, "host": 1}
+        resources: {"host": 1}
         # Provider-specific config for this node type, e.g. instance type. By default
         # Ray will auto-configure unspecified fields such as SubnetId and KeyName.
         # For more documentation on available fields, see:
@@ -103,7 +103,8 @@ available_node_types:
             # InstanceType: m5.large # 2 CPU, 8 GB ram
             # InstanceType: x2gd.4xlarge # 16 CPU, 256 GB ram
             # InstanceType: r6g.4xlarge # 16 CPU, 256 GB ram
-            InstanceType: m5.16xlarge # 64 CPU, 256 GB ram
+            InstanceType: m7a.16xlarge # 64 CPU, 256 GB ram
+            # InstanceType: m7a.32xlarge # 128 CPU, 512 GB ram
             ImageId: ami-04702e558cbe166b9 # minimal-ray 09/23
             # You can provision additional disk space with a conf as follows
             BlockDeviceMappings:
@@ -168,8 +169,6 @@ initialization_commands: []
 
 # List of shell commands to run to set up nodes.
 setup_commands:
-    # - pip install -e /slippi-ai
-    # - sudo apt install -y p7zip-full
     # We need to move things out of / to work around a __pycache__ issue:
     # https://ray-distributed.slack.com/archives/CN2RGCHRR/p1638582892031600
     - rm -rf $HOME/slippi-ai && cp -r /slippi-ai $HOME/slippi-ai
