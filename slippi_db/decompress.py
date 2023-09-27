@@ -1,6 +1,7 @@
 """Decompress raw uploads and upload individually compressed slp files."""
 
 import abc
+from concurrent import futures
 import hashlib
 import multiprocessing
 import os
@@ -15,6 +16,8 @@ from absl import app
 from absl import flags
 
 from slippi_db import upload_lib, fix_zip
+from slippi_db.utils import monitor
+
 
 flags.DEFINE_string('env', 'test', 'production environment')
 flags.DEFINE_bool('mp', False, 'Run in parallel with multiprocessing.')
@@ -108,7 +111,8 @@ def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
   files = []
   relpaths = py7zr.SevenZipFile(root).getnames()
   for path in relpaths:
-    files.append(SevenZipFile(root, path))
+    if path.endswith('.slp'):
+      files.append(SevenZipFile(root, path))
   return files
 
 def upload_slp(
@@ -151,7 +155,7 @@ def upload_slp_mp(kwargs: dict):
 
 class UploadResults(NamedTuple):
   uploads: List[dict]
-  duplicates: List[str]
+  duplicates: List[str]  # slp keys
   timings: List[dict]
 
   @staticmethod
@@ -168,28 +172,38 @@ def filter_duplicate_slp(
 
     if slp_key in slp_keys:
       # print('Duplicate slp with key', slp_key)
-      duplicates.append(file.name)
+      duplicates.append(slp_key)
       continue
 
     slp_keys.add(slp_key)
     yield file, slp_key
+
+def _file_md5(file: LocalFile) -> str:
+  return file.md5()
 
 def filter_duplicate_slp_mp(
     files: list[LocalFile],
     slp_keys: Set[str],
     duplicates: List[str],
-) -> Iterator[Tuple[LocalFile, str]]:
-  pool = multiprocessing.Pool()
-  local_slp_keys = pool.map(LocalFile.md5, files, chunksize=16)
+) -> List[Tuple[LocalFile, str]]:
+  with futures.ProcessPoolExecutor() as pool:
+    md5_futures = [pool.submit(_file_md5, file) for file in files]
+    futures_dict = {future: file.name for future, file in zip(md5_futures, files)}
+    for _ in monitor(futures_dict, log_interval=30):
+      pass
+  local_slp_keys = [future.result() for future in md5_futures]
 
+  files_and_keys = []
   for file, slp_key in zip(files, local_slp_keys):
     if slp_key in slp_keys:
       # print('Duplicate slp with key', slp_key)
-      duplicates.append(file.name)
+      duplicates.append(slp_key)
       continue
 
     slp_keys.add(slp_key)
-    yield file, slp_key
+    files_and_keys.append((file, slp_key))
+
+  return files_and_keys
 
 def upload_files(
   env: str,
@@ -219,19 +233,20 @@ def upload_files_mp(
   pool = multiprocessing.Pool()
   duplicates = []
 
-  files_and_keys = filter_duplicate_slp_mp(files, slp_keys, duplicates)
+  with upload_lib.Timer('filter_duplicate_slp_mp'):
+    files_and_keys = filter_duplicate_slp_mp(files, slp_keys, duplicates)
 
-  def to_kwargs(args):
-    file, slp_key = args
-    return dict(
-        env=env,
-        file=file,
-        slp_key=slp_key,
-    )
+  with futures.ProcessPoolExecutor() as pool:
+    upload_futures = [
+        pool.submit(upload_slp, env=env, file=file, slp_key=slp_key)
+        for file, slp_key in files_and_keys
+    ]
+    futures_dict = {
+        future: file.name for future, (file, _) in
+        zip(upload_futures, files_and_keys)
+    }
+    uploads = monitor(futures_dict, log_interval=30)
 
-  upload_slp_kwargs = map(to_kwargs, files_and_keys)
-  uploads = pool.imap_unordered(
-      upload_slp_mp, upload_slp_kwargs, chunksize=32)
   uploads = list(uploads)
   if uploads:
     results, timings = zip(*uploads)
@@ -319,7 +334,9 @@ def process_raw(
       raise RuntimeError(f'DB upload failed for {raw_name} ({raw_key})') from e
 
   # set processed flag in raw_db
-  raw_db.update_one({'key': raw_key}, {'$set': {'processed': True}})
+  duplicates = ','.join(results.duplicates)
+  raw_db.update_one({'key': raw_key}, {'$set': {'processed': True, 'duplicates': duplicates}})
+  # TODO: consider deleting raw file from s3 after it has been processed
 
   num_uploaded = len(results.uploads)
   num_duplicates = len(results.duplicates)

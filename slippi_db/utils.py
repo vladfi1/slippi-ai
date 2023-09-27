@@ -39,5 +39,5 @@ def monitor(
 
       last_log = current_time
       items_since_last_log = 0
-    
+
     yield finished.result()
