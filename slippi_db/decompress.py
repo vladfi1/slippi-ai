@@ -191,7 +191,7 @@ def filter_duplicate_slp_mp(
     futures_dict = {future: file.name for future, file in zip(md5_futures, files)}
     for _ in monitor(futures_dict, log_interval=30):
       pass
-  local_slp_keys = [future.result() for future in md5_futures]
+    local_slp_keys = [future.result() for future in md5_futures]
 
   files_and_keys = []
   for file, slp_key in zip(files, local_slp_keys):
@@ -230,7 +230,6 @@ def upload_files_mp(
   files: list[LocalFile],
   slp_keys: Set[str],
 ) -> UploadResults:
-  pool = multiprocessing.Pool()
   duplicates = []
 
   with upload_lib.Timer('filter_duplicate_slp_mp'):
@@ -245,9 +244,8 @@ def upload_files_mp(
         future: file.name for future, (file, _) in
         zip(upload_futures, files_and_keys)
     }
-    uploads = monitor(futures_dict, log_interval=30)
+    uploads = list(monitor(futures_dict, log_interval=30))
 
-  uploads = list(uploads)
   if uploads:
     results, timings = zip(*uploads)
   else:

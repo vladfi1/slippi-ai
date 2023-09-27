@@ -34,7 +34,7 @@ docker:
         - --shm-size=250G
 
 # If a node is idle for this many minutes, it will be removed.
-idle_timeout_minutes: 5
+idle_timeout_minutes: 1
 
 # Cloud-provider specific configuration.
 provider:
