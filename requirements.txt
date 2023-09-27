@@ -10,3 +10,4 @@ pymongo
 dnspython
 fancyflags
 pyarrow
+py7zr

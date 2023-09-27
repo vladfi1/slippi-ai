@@ -9,6 +9,7 @@ pymongo
 dnspython
 fancyflags
 pyarrow
+py7zr
 
 # for nvcr's tensorflow 2.3
 numpy==1.18.5
