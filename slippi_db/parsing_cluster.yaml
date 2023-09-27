@@ -16,7 +16,7 @@ upscaling_speed: 2.0
 # and opens all the necessary ports to support the Ray cluster.
 # Empty string means disabled.
 docker:
-    image: "vladfi/slippi-ai:latest"
+    image: "vladfi/slippi-ai:db"
     # image: "rayproject/ray-ml:latest-cpu" # You can change this to latest-cpu if you don't need GPU support and want a faster startup
     container_name: "ray_container"
     # If true, pulls latest version of image. Otherwise, `docker run` will only pull the image
@@ -77,7 +77,7 @@ available_node_types:
             # InstanceType: t3.micro
             # InstanceType: m5.large
             InstanceType: m5.xlarge # 4 CPU, 16 GB ram
-            ImageId: ami-0329a504ac63e1224 # minimal-ray
+            ImageId: ami-04702e558cbe166b9 # minimal-ray 09/23
             # You can provision additional disk space with a conf as follows
             BlockDeviceMappings:
                 - DeviceName: /dev/xvda # matches device name in ami
@@ -107,7 +107,7 @@ available_node_types:
             # InstanceType: t3.micro # 2 CPU, 1 GB ram
             # InstanceType: t3.small # 2 CPU, 2 GB ram
             InstanceType: c6i.large # 2 CPU, 4 GB ram
-            ImageId: ami-0329a504ac63e1224 # minimal-ray
+            ImageId: ami-04702e558cbe166b9 # minimal-ray 09/23
             # You can provision additional disk space with a conf as follows
             BlockDeviceMappings:
                 - DeviceName: /dev/xvda # matches device name in ami

@@ -15,7 +15,7 @@ upscaling_speed: 1.0
 # and opens all the necessary ports to support the Ray cluster.
 # Empty string means disabled.
 docker:
-    image: "vladfi/slippi-ai:latest"
+    image: "vladfi/slippi-ai:db"
     container_name: "ray_container"
     # If true, pulls latest version of image. Otherwise, `docker run` will only pull the image
     # if no cached version is present.
@@ -64,12 +64,12 @@ available_node_types:
         # http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
         node_config:
             InstanceType: m5.large
-            ImageId: ami-0329a504ac63e1224 # minimal-ray
+            ImageId: ami-04702e558cbe166b9 # minimal-ray 09/23
             # You can provision additional disk space with a conf as follows
             BlockDeviceMappings:
                 - DeviceName: /dev/xvda # matches device name in ami
                   Ebs:
-                      VolumeSize: 64
+                      VolumeSize: 72
                       VolumeType: gp3
             # Additional options in the boto docs.
 
