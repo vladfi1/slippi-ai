@@ -104,7 +104,7 @@ class Timer:
     if self.verbose:
       print(f'{self.name}: {self.duration:.1f}')
 
-def iter_bytes(f, chunk_size=2 ** 16):
+def iter_bytes(f: BinaryIO, chunk_size=2 ** 16):
   while True:
     chunk = f.read(chunk_size)
     if chunk:
