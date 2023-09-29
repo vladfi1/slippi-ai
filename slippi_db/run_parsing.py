@@ -41,7 +41,7 @@ class Parser(enum.Enum):
 
 class CompressionType(enum.Enum):
   # zlib compresses parquet file itself
-  # we don't have a way to read it yet
+  # To read it, set compress=True in slippi_ai.data.make_source
   ZLIB = 'zlib'
   SNAPPY = 'snappy'
   GZIP = 'gzip'
