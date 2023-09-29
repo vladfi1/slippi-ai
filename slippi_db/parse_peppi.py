@@ -24,10 +24,10 @@ BUTTON_MASKS = {
 
 def get_buttons(button_bits: np.ndarray) -> types.Buttons:
   return types.Buttons(**{
-      b.value: np.asarray(
-          np.bitwise_and(button_bits, BUTTON_MASKS[b]),
+      name: np.asarray(
+          np.bitwise_and(button_bits, BUTTON_MASKS[button]),
           dtype=bool)
-      for b in BUTTON_MASKS
+      for name, button in types.LIBMELEE_BUTTONS.items()
   })
 
 def to_libmelee_stick(raw_stick: np.ndarray) -> np.ndarray:
@@ -53,7 +53,8 @@ def get_player(player: pa.StructArray) -> types.Player:
       x=position.field('x'),
       y=position.field('y'),
       action=get_post('state'),
-      invulnerable=get_post('hurtbox_state') != 0,  # libmelee does extra processing
+      # libmelee does extra processing to determine invulnerability
+      invulnerable=get_post('hurtbox_state').to_numpy() != 0,
       character=get_post('character'),  # uint8
       jumps_left=get_post('jumps'),  # uint8
       shield_strength=get_post('shield'),  # float
