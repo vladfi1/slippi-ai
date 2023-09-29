@@ -69,7 +69,7 @@ available_node_types:
             BlockDeviceMappings:
                 - DeviceName: /dev/xvda # matches device name in ami
                   Ebs:
-                      VolumeSize: 72
+                      VolumeSize: 128
                       VolumeType: gp3
             # Additional options in the boto docs.
 

@@ -21,10 +21,11 @@ def get_file(url: str, in_memory: bool):
     filename, response = urllib.request.urlretrieve(url, filename=f.name)
   del response
 
-  print(f'Downloaded {url} to {filename}.')
+  original_name = url.split('/')[-1]
+  print(f'Downloaded {url} to {filename}, uploading as {original_name}.')
 
   try:
-    yield os.path.basename(filename), f
+    yield original_name, f
   finally:
     f.close()
 
