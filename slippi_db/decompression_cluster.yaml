@@ -169,6 +169,7 @@ initialization_commands: []
 
 # List of shell commands to run to set up nodes.
 setup_commands:
+    - apt install sudo
     # We need to move things out of / to work around a __pycache__ issue:
     # https://ray-distributed.slack.com/archives/CN2RGCHRR/p1638582892031600
     - rm -rf $HOME/slippi-ai && cp -r /slippi-ai $HOME/slippi-ai
