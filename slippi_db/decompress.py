@@ -129,8 +129,7 @@ def upload_slp(
     slp_bytes = file.read()
 
   with timers['zlib.compress']:
-    compressed_slp_bytes = zlib.compress(
-      slp_bytes, level=zlib.Z_BEST_COMPRESSION)
+    compressed_slp_bytes = zlib.compress(slp_bytes)
 
   slp_s3_path = f'{env}/slp/{slp_key}'
 
