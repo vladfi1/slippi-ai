@@ -137,6 +137,8 @@ data/untracked/
 # storage for b9 scripts
 run_scripts/
 
+wandb/
+
 # shhhhhhh
 secrets.sh
 secrets.json
