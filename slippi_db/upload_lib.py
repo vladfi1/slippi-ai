@@ -260,20 +260,47 @@ class ReplayDB:
     # store.delete()
     self.raw.delete_one({'key': key})
 
-def nuke_replays(env: str, stage: str):
-  get_main_db().drop_collection(env + '-' + stage)
-  get_main_db().params.delete_many({'env': env + '-' + stage})
-  keys = s3.store.iter_keys(prefix=f'{env}/{stage}/')
+def delete_keys(keys: list[str]):
   objects = [dict(Key=k) for k in keys]
   if not objects:
     print('No objects to delete.')
     return
-  response = s3.bucket.delete_objects(Delete=dict(Objects=objects))
+  return s3.bucket.delete_objects(Delete=dict(Objects=objects))
+
+def nuke_replays(env: str, stage: str):
+  get_main_db().drop_collection(env + '-' + stage)
+  get_main_db().params.delete_many({'env': env + '-' + stage})
+  keys = s3.store.iter_keys(prefix=f'{env}/{stage}/')
+  response = delete_keys(keys)
   print(f'Deleted {len(response["Deleted"])} objects.')
 
 def nuke_stages(env: str):
   for stage in [RAW, SLP, META, DATASET_META, PQ]:
     nuke_replays(env, stage)
+
+def remove_processed(env: str, dry_run: bool = False):
+  """Removes processed raw uploads."""
+  raw = get_main_db().get_collection(env + '-' + RAW)
+  to_remove = list(raw.find({'processed': True}))
+  by_key = {info['key']: info for info in to_remove}
+
+  total_size = sum(info['stored_size'] for info in to_remove)
+  print(f'Deleting {len(by_key)} raw objects of size {total_size}.')
+  if dry_run:
+    print('Dry run, quitting.')
+    return
+
+  s3_paths = {f'{env}/{RAW}/{key}': key for key in by_key}
+  response = delete_keys(s3_paths)
+
+  deleted_keys = [s3_path[obj['Key']] for obj in response['Deleted']]
+  deleted_filenames = [by_key[key]['filename'] for key in deleted_keys]
+  deleted_total_size = sum(by_key[key]['stored_size'] for key in deleted_keys)
+
+  print(f'Deleted {len(delete_keys)} raw objects from env "{env}".')
+  print('Filenames:', deleted_filenames)
+  print('Keys:', list(deleted_keys))
+  print('Total Size:', deleted_total_size)
 
 shm_dir = '/dev/shm'
 bucket = s3.bucket
