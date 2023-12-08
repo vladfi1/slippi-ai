@@ -3,7 +3,7 @@
 import abc
 from concurrent import futures
 import hashlib
-import multiprocessing
+import multiprocessing as mp
 import os
 import py7zr
 import subprocess
@@ -186,7 +186,8 @@ def filter_duplicate_slp_mp(
     slp_keys: Set[str],
     duplicates: List[str],
 ) -> List[Tuple[LocalFile, str]]:
-  with futures.ProcessPoolExecutor() as pool:
+  context = mp.get_context('forkserver')
+  with futures.ProcessPoolExecutor(mp_context=context) as pool:
     md5_futures = [pool.submit(_file_md5, file) for file in files]
     futures_dict = {future: file.name for future, file in zip(md5_futures, files)}
     for _ in monitor(futures_dict, log_interval=30):
@@ -235,7 +236,8 @@ def upload_files_mp(
   with upload_lib.Timer('filter_duplicate_slp_mp'):
     files_and_keys = filter_duplicate_slp_mp(files, slp_keys, duplicates)
 
-  with futures.ProcessPoolExecutor() as pool:
+  context = mp.get_context('forkserver')
+  with futures.ProcessPoolExecutor(mp_context=context) as pool:
     upload_futures = [
         pool.submit(upload_slp, env=env, file=file, slp_key=slp_key)
         for file, slp_key in files_and_keys
