@@ -281,7 +281,11 @@ def nuke_stages(env: str):
 def remove_processed(env: str, dry_run: bool = False):
   """Removes processed raw uploads."""
   raw = get_main_db().get_collection(env + '-' + RAW)
-  to_remove = list(raw.find({'processed': True}))
+  to_remove = list(raw.find({'processed': True, 'deleted': {'$ne': True}}))
+  if not to_remove:
+    print('No processed uploads to remove.')
+    return
+
   by_key = {info['key']: info for info in to_remove}
 
   total_size = sum(info['stored_size'] for info in to_remove)
@@ -293,11 +297,13 @@ def remove_processed(env: str, dry_run: bool = False):
   s3_paths = {f'{env}/{RAW}/{key}': key for key in by_key}
   response = delete_keys(s3_paths)
 
-  deleted_keys = [s3_path[obj['Key']] for obj in response['Deleted']]
+  deleted_keys = [s3_paths[obj['Key']] for obj in response['Deleted']]
   deleted_filenames = [by_key[key]['filename'] for key in deleted_keys]
   deleted_total_size = sum(by_key[key]['stored_size'] for key in deleted_keys)
 
-  print(f'Deleted {len(delete_keys)} raw objects from env "{env}".')
+  raw.update_many({'key': {'$in': deleted_keys}}, {'$set': {'deleted': True}})
+
+  print(f'Deleted {len(deleted_keys)} raw objects from env "{env}".')
   print('Filenames:', deleted_filenames)
   print('Keys:', list(deleted_keys))
   print('Total Size:', deleted_total_size)
