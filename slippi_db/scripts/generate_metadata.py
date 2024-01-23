@@ -31,14 +31,14 @@ def generate_one(env: str, key: str) -> dict:
   try:
     slp_file = upload_lib.download_slp_to_file(env, key)
   except MemoryError as e:
-    metadata = dict(
+    return dict(
         failed=True,
         reason='MemoryError',
+        key=key,
     )
 
-  if slp_file is not None:
-    metadata = preprocessing.get_metadata_safe(slp_file.name)
-    os.remove(slp_file.name)
+  metadata = preprocessing.get_metadata_safe(slp_file.name)
+  os.remove(slp_file.name)
 
   metadata.update(key=key)
   return metadata
