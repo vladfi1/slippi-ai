@@ -48,8 +48,8 @@ def get_player(player: pa.StructArray) -> types.Player:
   pre = leader.field('pre')
 
   return types.Player(
-      percent=np.asarray(get_post('damage'), dtype=np.uint16),
-      facing=np.asarray(get_post('direction').to_numpy(), dtype=bool),
+      percent=np.asarray(get_post('percent'), dtype=np.uint16),
+      facing=get_post('direction').to_numpy() > 0,
       x=position.field('x'),
       y=position.field('y'),
       action=get_post('state'),
@@ -62,29 +62,28 @@ def get_player(player: pa.StructArray) -> types.Player:
           main_stick=get_stick(pre.field('joystick')),
           c_stick=get_stick(pre.field('cstick')),
           # libmelee reads the logical value and assigns it to both l/r
-          shoulder=pre.field('triggers').field('logical'),
-          buttons=get_buttons(pre.field('buttons').field('physical')),
+          shoulder=pre.field('triggers'),
+          buttons=get_buttons(pre.field('buttons_physical')),
       ),
       on_ground=np.logical_not(
           post.field('airborne').to_numpy(zero_copy_only=False)),
   )
 
 def get_players(ports: pa.StructArray) -> dict[str, types.Player]:
-  return {f'p{i}': get_player(ports.field(str(i))) for i in range(2)}
+  return {f'p{i}': get_player(ports.field(f'P{i+1}')) for i in [0, 1]}
 
-def get_slp(path: str) -> types.GAME_TYPE:
-  game = peppi_py.game(path, rollbacks=True)
-  frames = game['frames']
+def from_peppi(game: peppi_py.Game) -> types.GAME_TYPE:
+  frames = game.frames
 
   players = get_players(frames.field('ports'))
 
-  stage = melee.enums.to_internal_stage(game['start']['stage'])
+  stage = melee.enums.to_internal_stage(game.start['stage'])
   stage = np.full([len(frames)], stage.value, dtype=np.uint8)
 
   game = types.Game(stage=stage, **players)
   game_array = types.array_from_nt(game)
 
-  index = frames.field('index').to_numpy()
+  index = frames.field('id').to_numpy()
   first_indices = []
   next_idx = -123
   for i, idx in enumerate(index):
@@ -92,3 +91,7 @@ def get_slp(path: str) -> types.GAME_TYPE:
       first_indices.append(i)
       next_idx += 1
   return game_array.take(first_indices)
+
+def get_slp(path: str) -> types.GAME_TYPE:
+  game = peppi_py.read_slippi(path)
+  return from_peppi(game)
