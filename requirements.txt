@@ -1,6 +1,6 @@
 pandas
 dm-sonnet
-git+https://github.com/vladfi1/libmelee.git@dev
+git+https://github.com/vladfi1/libmelee.git@peppi_invuln
 gdown
 tensorflow_probability
 git+https://github.com/IDSIA/sacred.git
