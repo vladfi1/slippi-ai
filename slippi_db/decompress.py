@@ -1,11 +1,8 @@
 """Decompress raw uploads and upload individually compressed slp files."""
 
-import abc
 from concurrent import futures
-import hashlib
 import multiprocessing as mp
 import os
-import py7zr
 import subprocess
 import tempfile
 import time
@@ -15,7 +12,7 @@ import zlib
 from absl import app
 from absl import flags
 
-from slippi_db import upload_lib, fix_zip
+from slippi_db import upload_lib, fix_zip, utils
 from slippi_db.utils import monitor
 
 
@@ -32,92 +29,9 @@ bucket = upload_lib.s3.bucket
 
 SUPPORTED_TYPES = ('zip', '7z')
 
-def _md5(b: bytes) -> str:
-  return hashlib.md5(b).hexdigest()
-
-def _tmp_dir(in_memory: bool):
-  return '/dev/shm' if in_memory else None
-
-def extract_zip(src: str, dst_dir: str):
-  with upload_lib.Timer("unzip"):
-    subprocess.check_call(
-        ['unzip', src],
-        cwd=dst_dir,
-        stdout=subprocess.DEVNULL)
-
-def extract_7z(src: str, dst_dir: str):
-  with upload_lib.Timer("7z x"):
-    subprocess.check_call(
-        ['7z', 'x', src, '-o' + dst_dir],
-        stdout=subprocess.DEVNULL)
-
-class LocalFile(abc.ABC):
-  """Identifies a file on the local system."""
-
-  @abc.abstractmethod
-  def read(self) -> bytes:
-    """Read the file bytes."""
-
-  def md5(self) -> str:
-    return _md5(self.read())
-
-  @property
-  @abc.abstractmethod
-  def name(self) -> str:
-    """The file's name."""
-
-class SimplePath(LocalFile):
-
-  def __init__(self, root: str, path: str):
-    self.root = root
-    self.path = path
-
-  @property
-  def name(self) -> str:
-    return self.path
-
-  def read(self):
-    with open(os.path.join(self.root, self.path), 'rb') as f:
-      return f.read()
-
-class SevenZipFile(LocalFile):
-  """File inside a 7z archive."""
-
-  def __init__(self, root: str, path: str):
-    self.root = root
-    self.path = path
-
-  @property
-  def name(self) -> str:
-    return self.path
-
-  def read(self):
-    result = subprocess.run(
-        ['7z', 'e', '-so', self.root, self.path],
-        stdout=subprocess.PIPE)
-    return result.stdout
-
-def traverse_slp_files(root: str) -> list[SimplePath]:
-  files = []
-  for abspath, _, filenames in os.walk(root):
-    for name in filenames:
-      if name.endswith('.slp'):
-        reldir = os.path.relpath(abspath, root)
-        relpath = os.path.join(reldir, name)
-        files.append(SimplePath(root, relpath))
-  return files
-
-def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
-  files = []
-  relpaths = py7zr.SevenZipFile(root).getnames()
-  for path in relpaths:
-    if path.endswith('.slp'):
-      files.append(SevenZipFile(root, path))
-  return files
-
 def upload_slp(
     env: str,
-    file: LocalFile,
+    file: utils.LocalFile,
     slp_key: str,
 ) -> Tuple[dict, dict]:
   timers = {
@@ -163,10 +77,10 @@ class UploadResults(NamedTuple):
     return UploadResults([], [], [])
 
 def filter_duplicate_slp(
-    files: list[LocalFile],
+    files: list[utils.LocalFile],
     slp_keys: Set[str],
     duplicates: List[str],
-) -> Iterator[Tuple[LocalFile, str]]:
+) -> Iterator[Tuple[utils.LocalFile, str]]:
   for file in files:
     slp_key = file.md5()
 
@@ -178,14 +92,14 @@ def filter_duplicate_slp(
     slp_keys.add(slp_key)
     yield file, slp_key
 
-def _file_md5(file: LocalFile) -> str:
+def _file_md5(file: utils.LocalFile) -> str:
   return file.md5()
 
 def filter_duplicate_slp_mp(
-    files: list[LocalFile],
+    files: list[utils.LocalFile],
     slp_keys: Set[str],
     duplicates: List[str],
-) -> List[Tuple[LocalFile, str]]:
+) -> List[Tuple[utils.LocalFile, str]]:
   context = mp.get_context('forkserver')
   with futures.ProcessPoolExecutor(mp_context=context) as pool:
     md5_futures = [pool.submit(_file_md5, file) for file in files]
@@ -208,7 +122,7 @@ def filter_duplicate_slp_mp(
 
 def upload_files(
   env: str,
-  files: list[LocalFile],
+  files: list[utils.LocalFile],
   slp_keys: Set[str],
 ) -> UploadResults:
   results = UploadResults.empty()
@@ -228,7 +142,7 @@ def upload_files(
 
 def upload_files_mp(
   env: str,
-  files: list[LocalFile],
+  files: list[utils.LocalFile],
   slp_keys: Set[str],
 ) -> UploadResults:
   duplicates = []
@@ -256,7 +170,7 @@ def upload_files_mp(
   return UploadResults(results, duplicates, timings)
 
 # TODO: use a Protocol
-Uploader = Callable[[str, list[LocalFile], Set[str]], UploadResults]
+Uploader = Callable[[str, list[utils.LocalFile], Set[str]], UploadResults]
 
 # TODO: handle duplicates when calling multiple process_raw in parallel
 def process_raw(
@@ -288,7 +202,7 @@ def process_raw(
   slp_db = upload_lib.get_db(env, 'slp')
   slp_keys = set(doc["key"] for doc in slp_db.find({}, ["key"]))
 
-  tmp_dir = _tmp_dir(in_memory)
+  tmp_dir = utils.tmp_dir(in_memory)
 
   # download raw file
   raw_file = tempfile.NamedTemporaryFile(dir=tmp_dir, delete=False)
@@ -305,19 +219,19 @@ def process_raw(
         if raw_info['stored_size'] >= 2 ** 32:
           # Fix zip64 files generated on Windows.
           fix_zip.fix_zip(raw_file.name)
-        extract_zip(raw_file.name, unzip_dir.name)
+        utils.extract_zip(raw_file.name, unzip_dir.name)
       elif obj_type == '7z':
-        extract_7z(raw_file.name, unzip_dir.name)
+        utils.extract_7z(raw_file.name, unzip_dir.name)
     except subprocess.CalledProcessError as e:
       raise RuntimeError(f'Extracting {raw_name} ({raw_key}) failed') from e
     finally:
       os.remove(raw_file.name)
 
-    files = traverse_slp_files(unzip_dir.name)
+    files = utils.traverse_slp_files(unzip_dir.name)
     cleanup = unzip_dir.cleanup
   elif obj_type == '7z':
     # Don't extract the 7z file to save on space.
-    files = traverse_slp_files_7z(raw_file.name)
+    files = utils.traverse_slp_files_7z(raw_file.name)
     cleanup = lambda: os.remove(raw_file.name)
 
   try:
