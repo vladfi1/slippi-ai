@@ -14,7 +14,8 @@ from slippi_db import parse_peppi
 from slippi_ai import types
 
 def assert_same_parse(game_path: str):
-  peppi_game = parse_peppi.get_slp(game_path)
+  peppi_game_raw = peppi_py.read_slippi(game_path)
+  peppi_game = parse_peppi.from_peppi(peppi_game_raw)
   peppi_game = types.array_to_nest(peppi_game)
 
   libmelee_game = parse_libmelee.get_slp(game_path)
@@ -51,12 +52,11 @@ class PlayerMeta(typing.NamedTuple):
   port: int
   # 0 is human, 1 is cpu
   type: int
+  # netplay info
+  netplay: dict
 
 class Metadata(typing.NamedTuple):
-  key: str
-  startAt: str
   lastFrame: int
-  playedOn: str
   slippi_version: List[int]
   num_players: int
   players: List[PlayerMeta]
@@ -66,6 +66,13 @@ class Metadata(typing.NamedTuple):
   # attempt to guess winner by looking at last frame
   # index into player array, NOT port number
   winner: Optional[int]
+
+  # These are missing from ranked-anonymized replays
+  startAt: Optional[str] = None
+  playedOn: Optional[str] = None
+
+  # Game hash
+  key: Optional[str] = None
 
   @staticmethod
   def from_dict(d: dict) -> 'Metadata':
@@ -80,38 +87,45 @@ def mode(xs: np.ndarray):
 
 def get_metadata(path: str) -> dict:
   try:
-    game = peppi_py.game(path)
+    game = peppi_py.read_slippi(path)
   except OSError as e:
     return dict(
         invalid=True,
         reason=str(e),
     )
 
-  metadata = game['metadata']
-  start = game['start']
-
   result = {}
-  for key in ['startAt', 'lastFrame', 'playedOn']:
-    result[key] = metadata[key]
+
+  # Metadata section may be empty for ranked-anonymized replays.
+  metadata = game.metadata
+  for key in ['startAt', 'playedOn']:
+    if key in metadata:
+      result[key] = metadata[key]
+  del metadata
+
+  result['lastFrame'] = game.frames.field('id')[-1].as_py()
+
+  start = game.start
   result['slippi_version'] = start['slippi']['version']
 
   players = []
-  ports = []
+  ports: [str] = []
 
-  for i, player in enumerate(start['players']):
-    port = int(player['port'][1])
+  for player in start['players']:
+    port = player['port']  # P1 or P2
     ports.append(port)
 
     # get most-played character
-    p = game['frames'].field('ports').field(str(i))
+    p = game.frames.field('ports').field(port)
     c = p.field('leader').field('post').field('character').to_numpy()
     character = mode(c)
 
     players.append(dict(
-        port=port,
+        port=int(port[1]),
         character=int(character),
-        type=player['type'],
+        type=0 if player['type'] == 'Human' else 1,
         name_tag=player['name_tag'],
+        netplay=player.get('netplay'),
     ))
   result.update(
       num_players=len(players),
@@ -122,18 +136,18 @@ def get_metadata(path: str) -> dict:
     result[key] = start[key]
 
   # compute winner
-  last_frame = game['frames'][-1]
-  winner = None
+  last_frame = game.frames[-1]
+  result['winner'] = None  # default
   stock_counts = {}
-  for index, player in last_frame['ports'].items():
-    stock_counts[int(index)] = player['leader']['post']['stocks'].as_py()
+  for port, player in last_frame['ports'].items():
+    stock_counts[port] = player['leader']['post']['stocks'].as_py()
 
   losers = [p for p, s in stock_counts.items() if s == 0]
   if losers:
     winners = [p for p, s in stock_counts.items() if s > 0]
     if len(winners) == 1:
       winner = winners[0]
-  result['winner'] = winner
+      result['winner'] = int(winner[1])
 
   return result
 
@@ -170,31 +184,33 @@ BANNED_CHARACTERS = set([
 ALLOWED_CHARACTERS = set(Character) - BANNED_CHARACTERS
 ALLOWED_CHARACTER_VALUES = set(c.value for c in ALLOWED_CHARACTERS)
 
-MIN_SLP_VERSION = [2, 0, 0]
+MIN_SLP_VERSION = [2, 1, 0]
 
-MIN_TIME = 60 * 60  # one minute
+MIN_FRAMES = 60 * 60  # one minute
+GAME_TIME = 60 * 8  # eight minutes
 
-def is_training_replay(meta_dict: dict) -> bool:
+def is_training_replay(meta_dict: dict) -> tuple[bool, str]:
   if meta_dict.get('invalid') or meta_dict.get('failed'):
-    return False
+    return False, meta_dict.get('reason', 'invalid or failed')
 
-  del meta_dict['_id']
+  # del meta_dict['_id']
   meta = Metadata.from_dict(meta_dict)
 
-  if any([
-    meta.slippi_version < MIN_SLP_VERSION,
-    meta.num_players != 2,
-    meta.timer != 480,
-    meta.lastFrame < MIN_TIME,
-    enums.to_internal_stage(meta.stage) == enums.Stage.NO_STAGE,
-  ]):
-    return False
+  if meta.slippi_version < MIN_SLP_VERSION:
+    return False, 'slippi version too low'
+  if meta.num_players != 2:
+    return False, 'not 1v1'
+  if meta.lastFrame < MIN_FRAMES:
+    return False, 'game length too short'
+  if meta.timer != GAME_TIME:
+    return False, 'timer not set to 8 minutes'
+  if enums.to_internal_stage(meta.stage) == enums.Stage.NO_STAGE:
+    return False, 'invalid stage'
 
   for player in meta.players:
-    if any([
-      player.type != 0,
-      player.character not in ALLOWED_CHARACTER_VALUES,
-    ]):
-      return False
- 
-  return True
+    if player.type != 0:
+      return False, 'not human'
+    if player.character not in ALLOWED_CHARACTER_VALUES:
+      return False, 'invalid character'
+
+  return True, ''
