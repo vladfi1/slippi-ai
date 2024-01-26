@@ -12,7 +12,7 @@ import boto3
 from simplekv.net.boto3store import Boto3Store
 from pymongo import MongoClient
 
-from slippi_db.secrets import SECRETS
+from slippi_db.secrets_lib import SECRETS
 
 MB = 10 ** 6
 

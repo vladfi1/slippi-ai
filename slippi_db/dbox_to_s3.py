@@ -6,7 +6,7 @@ from absl import flags
 import dropbox
 import dropbox.files
 
-from slippi_db.secrets import SECRETS
+from slippi_db.secrets_lib import SECRETS
 from slippi_db import upload_lib
 
 _ENV = flags.DEFINE_string('env', 'test', 'production environment')
