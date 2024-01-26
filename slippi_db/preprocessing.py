@@ -85,6 +85,29 @@ def mode(xs: np.ndarray):
   i = np.argmax(counts)
   return unique[i]
 
+def port_to_int(port: str) -> int:
+  assert port.startswith('P')
+  return int(port[1])
+
+def compute_winner(game: peppi_py.Game) -> Optional[int]:
+  if len(game.start['players']) > 2:
+    # TODO: handle more than 2 players
+    return None
+
+  last_frame = game.frames[-1]
+  stock_counts = {}
+  for port, player in last_frame['ports'].items():
+    stock_counts[port] = player['leader']['post']['stocks'].as_py()
+
+  # s is 0 or None for eliminated players
+  losers = [p for p, s in stock_counts.items() if not s]
+  if losers:
+    winners = [p for p, s in stock_counts.items() if s]
+    if len(winners) == 1:
+      return port_to_int(winners[0])
+
+  return None
+
 def get_metadata(game: peppi_py.Game) -> dict:
   result = {}
 
@@ -100,46 +123,38 @@ def get_metadata(game: peppi_py.Game) -> dict:
   start = game.start
   result['slippi_version'] = start['slippi']['version']
 
-  players = []
-  ports: [str] = []
+  players = start['players']
+  player_metas = []
 
-  for player in start['players']:
-    port = player['port']  # P1 or P2
-    ports.append(port)
+  for player in players:
+    port = player['port']  # P[1-4]
 
     # get most-played character
-    p = game.frames.field('ports').field(port)
-    c = p.field('leader').field('post').field('character').to_numpy()
-    character = mode(c)
+    if len(players) == 2:
+      leader = game.frames.field('ports').field(port).field('leader')
+      cs = leader.field('post').field('character').to_numpy()
+      character = int(mode(cs))
+    else: # Non-1v1 games will have nulls when players are eliminated
+      leader = game.frames[0]['ports'][port]['leader']
+      character = leader['post']['character'].as_py()
 
-    players.append(dict(
-        port=int(port[1]),
-        character=int(character),
+    player_metas.append(dict(
+        port=port_to_int(port),
+        character=character,
         type=0 if player['type'] == 'Human' else 1,
         name_tag=player['name_tag'],
         netplay=player.get('netplay'),
     ))
   result.update(
-      num_players=len(players),
-      players=players,
+      num_players=len(player_metas),
+      players=player_metas,
   )
 
   for key in ['stage', 'timer', 'is_teams']:
     result[key] = start[key]
 
   # compute winner
-  last_frame = game.frames[-1]
-  result['winner'] = None  # default
-  stock_counts = {}
-  for port, player in last_frame['ports'].items():
-    stock_counts[port] = player['leader']['post']['stocks'].as_py()
-
-  losers = [p for p, s in stock_counts.items() if s == 0]
-  if losers:
-    winners = [p for p, s in stock_counts.items() if s > 0]
-    if len(winners) == 1:
-      winner = winners[0]
-      result['winner'] = int(winner[1])
+  result['winner'] = compute_winner(game)
 
   return result
 
