@@ -69,13 +69,14 @@ def get_player(player: pa.StructArray) -> types.Player:
           post.field('airborne').to_numpy(zero_copy_only=False)),
   )
 
-def get_players(ports: pa.StructArray) -> dict[str, types.Player]:
-  return {f'p{i}': get_player(ports.field(f'P{i+1}')) for i in [0, 1]}
-
 def from_peppi(game: peppi_py.Game) -> types.GAME_TYPE:
   frames = game.frames
 
-  players = get_players(frames.field('ports'))
+  players = {}
+  port_names = sorted(p['port'] for p in game.start['players'])
+  ports_data = frames.field('ports')
+  for i, port_name in enumerate(port_names):
+    players[f'p{i}'] = get_player(ports_data.field(port_name))
 
   stage = melee.enums.to_internal_stage(game.start['stage'])
   stage = np.full([len(frames)], stage.value, dtype=np.uint8)
