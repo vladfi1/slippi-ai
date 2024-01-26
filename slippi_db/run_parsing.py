@@ -6,13 +6,11 @@ ray submit --start slippi_db/parsing_cluster.yaml \
 
 import concurrent.futures
 import enum
-import io
 import itertools
 import math
 import os
 import time
 from typing import Dict, Iterator, List, Optional, Tuple
-import zlib
 
 from absl import app
 from absl import flags
@@ -24,6 +22,7 @@ from slippi_db import (
     upload_lib,
     parse_libmelee,
     parse_peppi,
+    parsing_utils,
 )
 from slippi_db.test_peppi import get_singles_info
 from slippi_db.utils import monitor
@@ -39,58 +38,12 @@ class Parser(enum.Enum):
     elif self == Parser.PEPPI:
       return parse_peppi.get_slp(path)
 
-class CompressionType(enum.Enum):
-  # zlib compresses parquet file itself
-  # To read it, set compress=True in slippi_ai.data.make_source
-  ZLIB = 'zlib'
-  SNAPPY = 'snappy'
-  GZIP = 'gzip'
-  BROTLI = 'brotli'
-  LZ4 = 'lz4'
-  ZSTD = 'zstd'
-  NONE = 'none'
-
-  def for_parquet(self) -> str:
-    if self is CompressionType.ZLIB:
-      return CompressionType.NONE.value
-    return self.value
-
-def convert_slp(
-    path: str,
-    parser: Parser,
-    pq_version: str = '2.4',
-    compression: CompressionType = CompressionType.NONE,
-    compression_level: Optional[int] = None,
-) -> bytes:
-  game = parser.get_slp(path)
-  table = pa.Table.from_arrays([game], names=['root'])
-  pq_file = io.BytesIO()
-
-  if compression == CompressionType.ZLIB:
-    pq_compression_level = None
-  else:
-    pq_compression_level = compression_level
-
-  pq.write_table(
-      table, pq_file,
-      version=pq_version,
-      compression=compression.for_parquet(),
-      compression_level=pq_compression_level,
-      use_dictionary=False,
-  )
-  pq_bytes = pq_file.getvalue()
-
-  if compression == CompressionType.ZLIB:
-    level = -1 if compression_level is None else compression_level
-    pq_bytes = zlib.compress(pq_bytes, level=level)
-  return pq_bytes
-
 def process_slp(
     env: str,
     key: str,
     parser: Parser,
     dataset: str,
-    compression: CompressionType,
+    compression: parsing_utils.CompressionType,
     **kwargs,
 ) -> Tuple[dict, dict]:
   timers = {
@@ -102,8 +55,9 @@ def process_slp(
     slp_file = upload_lib.download_slp_to_file(env, key)
   with timers['parse_slp']:
     try:
-      pq_bytes = convert_slp(
-        slp_file.name, parser,
+      game = parser.get_slp(slp_file.name)
+      pq_bytes = parsing_utils.convert_game(
+        game=game,
         compression=compression,
         **kwargs)
     finally:
@@ -272,19 +226,6 @@ def process_all(
       f'gen: {num_processd}, skip: {skipped}, '
       f'time: {run_time:.0f}, rate: {rate:.1f}')
 
-ENV = flags.DEFINE_string('env', 'test', 'production environment')
-WIPE = flags.DEFINE_bool('wipe', False, 'Wipe existing metadata')
-SERIAL = flags.DEFINE_bool('local', False, 'Run serially instead of in parallel with ray.')
-CLUSTER = flags.DEFINE_bool('cluster', True, 'Run in a ray cluster.')
-DATASET = flags.DEFINE_string('dataset', upload_lib.PQ, 'Dataset name.')
-PARSER = flags.DEFINE_enum_class('parser', Parser.LIBMELEE, Parser, 'Which parser to use.')
-COMPRESSION = flags.DEFINE_enum_class(
-    name='compression',
-    default=CompressionType.ZLIB,  # best one
-    enum_class=CompressionType,
-    help='Type of compression to use.')
-COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
-
 
 def main(_):
   if CLUSTER.value:
@@ -301,4 +242,17 @@ def main(_):
   )
 
 if __name__ == '__main__':
+  ENV = flags.DEFINE_string('env', 'test', 'production environment')
+  WIPE = flags.DEFINE_bool('wipe', False, 'Wipe existing metadata')
+  SERIAL = flags.DEFINE_bool('local', False, 'Run serially instead of in parallel with ray.')
+  CLUSTER = flags.DEFINE_bool('cluster', True, 'Run in a ray cluster.')
+  DATASET = flags.DEFINE_string('dataset', upload_lib.PQ, 'Dataset name.')
+  PARSER = flags.DEFINE_enum_class('parser', Parser.LIBMELEE, Parser, 'Which parser to use.')
+  COMPRESSION = flags.DEFINE_enum_class(
+      name='compression',
+      default=CompressionType.ZLIB,  # best one
+      enum_class=CompressionType,
+      help='Type of compression to use.')
+  COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
+
   app.run(main)
