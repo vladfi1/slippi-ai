@@ -4,14 +4,17 @@ import concurrent.futures
 from contextlib import contextmanager
 import functools
 import hashlib
+import numpy as np
 import os
 from typing import Generator
 import py7zr
+import random
 import subprocess
 import sys
 import tempfile
 import time
 import typing as tp
+import zipfile
 
 T = tp.TypeVar('T')
 
@@ -71,7 +74,7 @@ def md5(b: bytes) -> str:
   return hashlib.md5(b).hexdigest()
 
 _MACOS_SHM_DISK = 'ramdisk'
-_MACOS_SHM_SIZE = 256 # MB
+_MACOS_SHM_SIZE = 1024 # MB
 
 @functools.cache
 def tmp_dir(in_memory: bool) -> tp.Optional[str]:
@@ -164,7 +167,7 @@ class SevenZipFile(LocalFile):
   def name(self) -> str:
     return self.path
 
-  def read(self):
+  def read(self) -> bytes:
     result = subprocess.run(
         ['7z', 'e', '-so', self.root, self.path],
         stdout=subprocess.PIPE)
@@ -179,6 +182,32 @@ class SevenZipFile(LocalFile):
       # with py7zr.SevenZipFile(self.root) as archive:
       #   archive.extract(path=tmpdir, targets=[self.path])
       yield os.path.join(tmpdir, self.path)
+
+class ZipFile(LocalFile):
+  """File inside a zip archive."""
+
+  def __init__(self, root: str, path: str):
+    self.root = root
+    self.path = path
+
+  @property
+  def name(self) -> str:
+    return self.path
+
+  def read(self) -> bytes:
+    result = subprocess.run(
+        ['unzip', '-p', self.root, self.path],
+        check=True, stdout=subprocess.PIPE)
+    return result.stdout
+
+  @contextmanager
+  def extract(self) -> Generator[str, None, None]:
+    with tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=True)) as tmpdir:
+      subprocess.check_call(
+        ['unzip', self.root, self.path, '-d', tmpdir],
+        stdout=subprocess.DEVNULL)
+      yield os.path.join(tmpdir, self.path)
+
 
 def traverse_slp_files(root: str) -> list[SimplePath]:
   files = []
@@ -196,4 +225,110 @@ def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
   for path in relpaths:
     if path.endswith('.slp'):
       files.append(SevenZipFile(root, path))
+  return files
+
+class SevenZipChunk:
+
+  def __init__(self, path: str, files: list[str]) -> None:
+    self.path = path
+    self.files = files
+
+  def __enter__(self):
+    self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=True))
+    self.extract()
+    return self
+
+class SevenZipChunk:
+
+  def __init__(self, path: str, files: list[str]) -> None:
+    self.path = path
+    self.files = files
+
+  @contextmanager
+  def extract(self, in_memory: bool = True) -> Generator[list[LocalFile], None, None]:
+    """Extract the chunk to a temporary directory and return the files."""
+    with tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=in_memory)) as tmpdir:
+      py7zr.SevenZipFile(self.path).extract(targets=self.files, path=tmpdir)
+      yield [SimplePath(tmpdir, f) for f in self.files]
+
+def traverse_7z_fast(
+    path: str,
+    chunk_size_gb: float = 0.5,
+) -> list[SevenZipChunk]:
+# ) -> tuple[tp.Iterator[list[LocalFile]], int]:
+  """Efficiently iterate through a 7z archive."""
+  archive = py7zr.SevenZipFile(path, 'r')
+
+  # calculate optimal chunks
+  folders = archive.header.main_streams.unpackinfo.folders
+
+  max_chunk_size = chunk_size_gb * 1024**3
+
+  folder_sizes = []
+  for folder in folders:
+    folder_sizes.append(sum(file.uncompressed for file in folder.files))
+  folder_sizes = np.array(folder_sizes)
+
+  print(
+    'folder sizes: num={num}, mean={mean:.1f}, std={std:.1f}'.format(
+      num=len(folder_sizes), mean=folder_sizes.mean(), std=folder_sizes.std()))
+
+  # First pack small folders into chunks
+  small_folders = [
+    i for i, size in enumerate(folder_sizes)
+    if size <= max_chunk_size]
+
+  chunks = []
+  chunk = []
+  chunk_size = 0
+
+  for i in small_folders:
+    folder = folders[i]
+    size = folder_sizes[i]
+
+    if chunk_size + size > max_chunk_size:
+      chunks.append(chunk)
+      chunk = []
+      chunk_size = 0
+
+    chunk_size += size
+    chunk.extend([file.filename for file in folder.files])
+
+  # commit last chunk
+  if chunk:
+    chunks.append(chunk)
+
+  # Then split large folders into chunks
+  large_folders = [
+    i for i, size in enumerate(folder_sizes)
+    if size > max_chunk_size]
+
+  for i in large_folders:
+    folder = folders[i]
+    chunk = []
+    chunk_size = 0
+    for file in folder.files:
+      if chunk_size + file.uncompressed > max_chunk_size:
+        chunks.append(chunk)
+        chunk = []
+        chunk_size = 0
+
+      chunk_size += file.uncompressed
+      chunk.append(file.filename)
+
+    # commit last chunk
+    if chunk:
+      chunks.append(chunk)
+
+  print(f'Split {len(folders)} folders into {len(chunks)} chunks')
+  print(f'Folders per chunk = {len(folders) / len(chunks):.1f}')
+
+  return [SevenZipChunk(path, chunk) for chunk in chunks]
+
+def traverse_slp_files_zip(root: str) -> list[LocalFile]:
+  files = []
+  relpaths = zipfile.PyZipFile(root).namelist()
+  for path in relpaths:
+    if path.endswith('.slp'):
+      files.append(ZipFile(root, path))
   return files

@@ -10,4 +10,4 @@ pymongo
 dnspython
 fancyflags
 pyarrow
-py7zr
+git+https://github.com/vladfi1/py7zr.git@dev

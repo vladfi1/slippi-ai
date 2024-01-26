@@ -85,15 +85,7 @@ def mode(xs: np.ndarray):
   i = np.argmax(counts)
   return unique[i]
 
-def get_metadata(path: str) -> dict:
-  try:
-    game = peppi_py.read_slippi(path)
-  except OSError as e:
-    return dict(
-        invalid=True,
-        reason=str(e),
-    )
-
+def get_metadata(game: peppi_py.Game) -> dict:
   result = {}
 
   # Metadata section may be empty for ranked-anonymized replays.
@@ -153,7 +145,8 @@ def get_metadata(path: str) -> dict:
 
 def get_metadata_safe(path: str) -> dict:
   try:
-    return get_metadata(path)
+    game = peppi_py.read_slippi(path)
+    return get_metadata(game)
   except BaseException as e:
     return dict(
         invalid=True,
@@ -209,6 +202,7 @@ def is_training_replay(meta_dict: dict) -> tuple[bool, str]:
 
   for player in meta.players:
     if player.type != 0:
+      # import ipdb; ipdb.set_trace()
       return False, 'not human'
     if player.character not in ALLOWED_CHARACTER_VALUES:
       return False, 'invalid character'
