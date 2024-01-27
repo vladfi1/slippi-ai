@@ -133,6 +133,7 @@ experiments/
 
 # don't track replays
 data/untracked/
+notebooks/data/
 
 # storage for b9 scripts
 run_scripts/
