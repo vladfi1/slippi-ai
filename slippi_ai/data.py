@@ -1,6 +1,7 @@
 import atexit
 import dataclasses
 import itertools
+import json
 import multiprocessing as mp
 import os
 import random
@@ -20,22 +21,23 @@ from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
 
 from slippi_ai.embed import StateActionReward
 
-# These keys correspond to corrupted replays. I only found them because
-# they cause crashes slippi-ai; there may be others which are bad but
-# don't trigger any errors.
-# TODO: remove these from the dataset
-BAD_KEYS = {
-    '260950213a47132a2b88310734883c8a',  # causes out-of-bounds rewards
-    '4a9e2e174679bcb5ed72dbe5d858753d',  # player changes chars mid-game!
-}
-
 class Batch(NamedTuple):
   game: StateActionReward
   needs_reset: bool
 
+class PlayerMeta(NamedTuple):
+  character: int
+  name: str
+
+class ReplayMetadata(NamedTuple):
+  p0: PlayerMeta
+  p1: PlayerMeta
+  stage: int
+
 class ReplayInfo(NamedTuple):
   path: str
   swap: bool
+  metadata: Optional[ReplayMetadata] = None
 
 def _get_keys(
     df: pd.DataFrame,
@@ -55,13 +57,13 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
 
 @dataclasses.dataclass
 class DatasetConfig:
-    data_dir: Optional[str] = None
-    meta_path: Optional[str] = None
-    test_ratio: float = 0.1
-    # comma-separated lists of characters, or "all"
-    allowed_characters: str = 'all'
-    allowed_opponents: str = 'all'
-    seed: int = 0
+  data_dir: Optional[str] = None  # required
+  meta_path: Optional[str] = None
+  test_ratio: float = 0.1
+  # comma-separated lists of characters, or "all"
+  allowed_characters: str = 'all'
+  allowed_opponents: str = 'all'
+  seed: int = 0
 
 
 def train_test_split(
@@ -70,34 +72,56 @@ def train_test_split(
   filenames = sorted(os.listdir(config.data_dir))
   print(f"Found {len(filenames)} files.")
 
+  replays: list[ReplayInfo] = []
+
   if config.meta_path is not None:
-    df = pd.read_parquet(config.meta_path)
+    with open(config.meta_path) as f:
+      meta_rows: list[dict] = json.load(f)
+
     # check that we have the right metadata
-    assert sorted(df['key']) == filenames
+    filenames_set = set(filenames)
+    assert all(row['slp_md5'] in filenames_set for row in meta_rows)
 
-    allowed_characters = _charset(config.allowed_characters)
-    allowed_opponents = _charset(config.allowed_opponents)
+    allowed_characters = _charset(chars_from_string(config.allowed_characters))
+    allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
 
-    unswapped = _get_keys(df, allowed_characters, allowed_opponents)
-    swapped = _get_keys(df, allowed_opponents, allowed_characters)
+    for row in meta_rows:
+      player_metas = []
+      for player in row['players']:
+        netplay = player['netplay']
+        if netplay is None:
+          name = player['name_tag']
+        else:
+          name = netplay['name']
+        player_metas.append(PlayerMeta(
+            character=player['character'],
+            name=name))
+
+      replay_meta = ReplayMetadata(
+          p0=player_metas[0],
+          p1=player_metas[1],
+          stage=row['stage'])
+
+      c0 = replay_meta.p0.character
+      c1 = replay_meta.p1.character
+      replay_path = os.path.join(config.data_dir, row['slp_md5'])
+
+      if c0 in allowed_characters and c1 in allowed_opponents:
+        replays.append(ReplayInfo(replay_path, False, replay_meta))
+
+      if c0 in allowed_opponents and c1 in allowed_characters:
+        replays.append(ReplayInfo(replay_path, True, replay_meta))
   else:
-    assert config.allowed_characters is None
-    assert config.allowed_opponents is None
+    if not (config.allowed_characters == 'all'
+            and config.allowed_opponents == 'all'):
+      raise ValueError(
+          "Can't filter by character without metadata. "
+          "Please provide a metadata file.")
 
-    swapped = filenames
-    unswapped = filenames
-
-  # filter bad keys
-  swapped = [key for key in swapped if key not in BAD_KEYS]
-  unswapped = [key for key in unswapped if key not in BAD_KEYS]
-
-  replays = []
-  for key in unswapped:
-    path = os.path.join(config.data_dir, key)
-    replays.append(ReplayInfo(path, False))
-  for key in swapped:
-    path = os.path.join(config.data_dir, key)
-    replays.append(ReplayInfo(path, True))
+    for filename in filenames:
+      replay_path = os.path.join(config.data_dir, filename)
+      replays.append(ReplayInfo(replay_path, False))
+      replays.append(ReplayInfo(replay_path, True))
 
   # reproducible train/test split
   rng = random.Random(config.seed)
@@ -261,12 +285,12 @@ class DataSource:
       # preprocesses (discretizes) actions before repeat detection
       embed_controller: embed.Embedding[Controller, Any],
       compressed=True,
-      batch_size=64,
-      unroll_length=64,
+      batch_size: int = 64,
+      unroll_length: int = 64,
       max_action_repeat=15,
-      # Lists of melee.Character. None means all allowed.
-      allowed_characters=None,
-      allowed_opponents=None,
+      # None means all allowed.
+      allowed_characters: Optional[list[melee.Character]] = None,
+      allowed_opponents: Optional[list[melee.Character]] = None,
   ):
     self.replays = replays
     self.batch_size = batch_size
