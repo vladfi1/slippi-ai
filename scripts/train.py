@@ -114,9 +114,7 @@ def main(expt_dir, _config, _log):
   char_filters = {}
   for key in ['allowed_characters', 'allowed_opponents']:
     chars_string = getattr(dataset_config, key)
-    chars = data_lib.chars_from_string(chars_string)
-    setattr(dataset_config, key, chars)
-    char_filters[key] = chars
+    char_filters[key] = data_lib.chars_from_string(chars_string)
 
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
   _log.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
