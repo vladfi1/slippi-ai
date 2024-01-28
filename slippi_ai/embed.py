@@ -500,6 +500,7 @@ def get_controller_embedding_with_action_repeat(
 class StateActionReward(NamedTuple):
   state: Game
   action: ActionWithRepeat
+  # Note, this has length T-1
   reward: np.float32
 
 def get_state_action_embedding(

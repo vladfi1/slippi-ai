@@ -134,3 +134,12 @@ def to_numpy(x) -> np.ndarray:
   if isinstance(x, tf.Tensor):
     return x.numpy()
   return x
+
+def map_nt(f, *nt):
+  t = type(nt[0])
+  if issubclass(t, tuple):
+    return t(*[map_nt(f, *vs) for vs in zip(*nt)])
+  return f(*nt)
+
+def batch_nest_nt(nests):
+  return map_nt(stack, *nests)

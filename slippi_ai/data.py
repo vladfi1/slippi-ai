@@ -143,6 +143,7 @@ def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
 
 
 def game_len(game: StateActionReward):
+  # We use the reward length, effectively ignoring the last frame.
   return len(game.reward)
 
 class TrajectoryManager:
@@ -161,10 +162,7 @@ class TrajectoryManager:
     self.frame = 0
 
   def grab_chunk(self, n) -> Tuple[StateActionReward, bool]:
-    """Grabs a chunk from a trajectory.
-
-    Subsequent trajectories overlap by a single frame.
-    """
+    """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
     needs_reset = self.game is None or self.frame + n > game_len(self.game)
 
@@ -173,97 +171,14 @@ class TrajectoryManager:
 
     new_frame = self.frame + n
     slice = lambda a: a[self.frame:new_frame]
-    chunk = tree.map_structure(slice, self.game)
+    # faster than tree.map_structure
+    chunk = utils.map_nt(slice, self.game)
     self.frame = new_frame
 
     return Batch(chunk, needs_reset)
 
 def swap_players(game: Game) -> Game:
   return game._replace(p0=game.p1, p1=game.p0)
-
-def detect_repeated_actions(controllers: Nest[np.ndarray]) -> Sequence[bool]:
-  """Labels actions as repeated or not.
-
-  Args:
-    controllers: A nest of numpy arrays with shape [T].
-  Returns:
-    A boolean numpy array `repeats` with shape [T-1].
-    repeats[i] is True iff controllers[i+1] equals controllers[i]
-  """
-  is_same = lambda a: a[:-1] == a[1:]
-  repeats = tree.map_structure(is_same, controllers)
-  repeats = np.stack(tree.flatten(repeats), -1)
-  repeats = np.all(repeats, -1)
-  return repeats
-
-def indices_and_counts(
-    repeats: Sequence[bool],
-    max_repeat=15,
-  ) -> Tuple[Sequence[int], Sequence[int]]:
-  """Finds the indices and counts of repeated actions.
-
-  `repeats` is meant to be produced by `detect_repeated_actions`
-  If `controllers` is [a, a, a, c, b, b], then
-  repeats = [T, T, F, F, T]
-  indices = [2, 3, 5]
-  counts = [2, 0, 1]
-
-  Args:
-    repeats: A boolean array with shape [T-1].
-    max_repeat: Maximum number of consecutive repeated actions before a repeat
-      is considered a non-repeat.
-  Returns:
-    A tuple (indices, counts).
-  """
-  indices = []
-  counts = []
-
-  count = 0
-
-  for i, is_repeat in enumerate(repeats):
-    if not is_repeat or count == max_repeat:
-      indices.append(i)  # index of the last repeated action
-      counts.append(count)
-      count = 0
-    else:
-      count += 1
-
-  indices.append(len(repeats))
-  counts.append(count)
-
-  return np.array(indices), np.array(counts)
-
-def compress_repeated_actions(
-    game: Game,
-    rewards: Sequence[float],
-    embed_controller: embed.Embedding[Controller, Any],
-    max_repeat: int,
-    embed_game=embed.default_embed_game,
-  ) -> StateActionReward:
-  controllers = embed_controller.from_state(game.p0.controller)
-
-  repeats = detect_repeated_actions(controllers)
-  indices, counts = indices_and_counts(repeats, max_repeat)
-
-  compressed_states = tree.map_structure(lambda a: a[indices], game)
-  compressed_states = embed_game.from_state(compressed_states)
-  actions = tree.map_structure(lambda a: a[indices], controllers)
-  compressed_rewards = np.concatenate([
-      np.zeros([1], dtype=np.float32),
-      np.add.reduceat(rewards, indices[:-1]),
-  ])
-  compressed_game = StateActionReward(
-      state=compressed_states,
-      action=embed.ActionWithRepeat(
-          action=actions,
-          repeat=counts),
-      reward=compressed_rewards)
-
-  shapes = [x.shape for x in tree.flatten(compressed_game)]
-  for s in shapes:
-    assert s == shapes[0]
-
-  return compressed_game
 
 def read_table(path: str, compressed: bool) -> Game:
   if compressed:
@@ -314,8 +229,17 @@ class DataSource:
 
   def process_game(self, game: Game) -> StateActionReward:
     rewards = reward.compute_rewards(game)
-    return compress_repeated_actions(
-        game, rewards, self.embed_controller, self.max_action_repeat)
+    controllers = self.embed_controller.from_state(game.p0.controller)
+
+    # TODO: configure game embedding
+    states = embed.default_embed_game.from_state(game)
+    result = StateActionReward(
+        state=states,
+        action=embed.ActionWithRepeat(
+            action=controllers,
+            repeat=np.zeros(len(game.stage), dtype=np.int64)),
+        reward=rewards)
+    return result
 
   def produce_raw_games(self) -> Iterator[Game]:
     """Raw games without post-processing."""
@@ -336,9 +260,10 @@ class DataSource:
         game.p1.character[0] in self.allowed_opponents)
 
   def __next__(self) -> Tuple[Batch, float]:
-    next_batch = utils.batch_nest(
+    next_batch: Batch = utils.batch_nest_nt(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
+    assert next_batch.game.action.repeat.shape[-1] == self.unroll_length
     return next_batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
