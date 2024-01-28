@@ -60,7 +60,7 @@ class Policy(snt.Module):
       values = tf.squeeze(self.value_head(outputs), -1)
       discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
       value_targets = discounted_returns(
-          rewards=tf.cast(state_action.reward[1:], tf.float32),
+          rewards=tf.cast(state_action.reward[:-1], tf.float32),
           discounts=discounts,
           bootstrap=values[-1])
       value_targets = tf.stop_gradient(value_targets)
