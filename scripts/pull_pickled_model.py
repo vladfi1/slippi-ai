@@ -6,7 +6,6 @@ from slippi_ai import s3_lib
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('tag', None, 'experiment tag', required=True)
-flags.DEFINE_string('s3_creds', None, 's3 credentials')
 flags.DEFINE_string('path', 'pickled_models/', 'path to put model')
 
 def main(_):
