@@ -39,16 +39,6 @@ class ReplayInfo(NamedTuple):
   swap: bool
   metadata: Optional[ReplayMetadata] = None
 
-def _get_keys(
-    df: pd.DataFrame,
-    allowed_p0: Iterable[int],
-    allowed_p1: Iterable[int],
-) -> Iterable[str]:
-  df = df[df['p0.character'].isin(allowed_p0)]
-  df = df[df['p1.character'].isin(allowed_p1)]
-  return df['key']
-
-
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   if chars is None:
     chars = list(melee.Character)
