@@ -26,6 +26,7 @@ def default_data_source():
       unroll_length=8,
       embed_controller=embed_controller,
       max_action_repeat=max_action_repeat,
+      compressed=False,
   )
 
 def get_inputs(data_source: data.DataSource):
