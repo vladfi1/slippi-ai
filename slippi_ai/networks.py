@@ -1,9 +1,10 @@
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import sonnet as snt
 import tensorflow as tf
+from tensorflow.python.framework.tensor import Tensor
 
-from slippi_ai import embed, utils, types
+from slippi_ai import embed, utils
 
 RecurrentState = Any
 Inputs = tf.Tensor
@@ -129,10 +130,10 @@ class LayerNorm(snt.Module):
   def _initialize(self, inputs):
     feature_shape = inputs.shape[-1:]
     self.scale = tf.Variable(
-        tf.ones(feature_shape, inputs.dtype),
+        tf.ones(feature_shape, dtype=inputs.dtype),
         name='scale')
     self.bias = tf.Variable(
-        tf.zeros(feature_shape, inputs.dtype),
+        tf.zeros(feature_shape, dtype=inputs.dtype),
         name='bias')
 
   def __call__(self, inputs):
@@ -151,13 +152,18 @@ class LayerNorm(snt.Module):
 
 class ResBlock(snt.Module):
 
-  def __init__(self, residual_size, hidden_size=None, name='ResBlock'):
+  def __init__(
+      self,
+      residual_size: int,
+      hidden_size: Optional[int] = None,
+      activation=tf.nn.relu,
+      name='ResBlock'):
     super().__init__(name=name)
     self.block = snt.Sequential([
         # https://openreview.net/forum?id=B1x8anVFPr recommends putting the layernorm here
         LayerNorm(),
         snt.Linear(hidden_size or residual_size),
-        tf.nn.relu,
+        activation,
         # initialize the resnet as the identity function
         snt.Linear(residual_size, w_init=tf.zeros_initializer()),
     ])
@@ -258,12 +264,144 @@ class GRU(Network):
   def unroll(self, inputs, prev_state):
     return utils.dynamic_rnn(self._gru, inputs, prev_state)
 
+class RecurrentWrapper(Network):
+  """Wraps an RNNCore as a Network."""
+
+  def __init__(self, core: snt.RNNCore, name='RecurrentWrapper'):
+    super().__init__(name=name)
+    self._core = core
+
+  def initial_state(self, batch_size):
+    return self._core.initial_state(batch_size)
+
+  def step(self, inputs, prev_state):
+    return self._core(inputs, prev_state)
+
+  def unroll(self, inputs, prev_state):
+    return utils.dynamic_rnn(self._core, inputs, prev_state)
+
+class FFWWrapper(Network):
+  """Wraps an MLP as a Network."""
+
+  def __init__(self, mlp: snt.Module, name='FFWWrapper'):
+    super().__init__(name=name)
+    self._mlp = mlp
+
+  def initial_state(self, batch_size):
+    return ()
+
+  def step(self, inputs, prev_state):
+    del prev_state
+    return self._mlp(inputs), ()
+
+  def unroll(self, inputs, prev_state):
+    del prev_state
+    return self._mlp(inputs), ()
+
+class Sequential(Network):
+
+  def __init__(self, layers: list[Network], name='Sequential'):
+    super().__init__(name=name)
+    self._layers = layers
+
+  def initial_state(self, batch_size):
+    return [layer.initial_state(batch_size) for layer in self._layers]
+
+  def step(self, inputs, prev_state):
+    next_states = []
+    for layer, state in zip(self._layers, prev_state):
+      inputs, next_state = layer.step(inputs, state)
+      next_states.append(next_state)
+    return inputs, next_states
+
+  def unroll(self, inputs, prev_state):
+    final_states = []
+    for layer, state in zip(self._layers, prev_state):
+      inputs, final_state = layer.unroll(inputs, state)
+      final_states.append(final_state)
+    return inputs, final_states
+
+class ResidualWrapper(Network):
+
+  def __init__(self, net: Network):
+    super().__init__(name='ResidualWrapper')
+    self._net = net
+
+  def initial_state(self, batch_size):
+    return self._net.initial_state(batch_size)
+
+  def step(self, inputs, prev_state):
+    outputs, next_state = self._net.step(inputs, prev_state)
+    return inputs + outputs, next_state
+
+  def unroll(self, inputs, prev_state):
+    outputs, final_state = self._net.unroll(inputs, prev_state)
+    return inputs + outputs, final_state
+
+class TransformerLike(Network):
+  """Alternates recurrent and FFW layers."""
+
+  CONFIG=dict(
+      hidden_size=128,
+      num_layers=1,
+      ffw_multiplier=4,
+      recurrent_layer='lstm',
+      activation='gelu',
+  )
+
+  def __init__(
+      self,
+      hidden_size: int,
+      num_layers: int,
+      ffw_multiplier: int,
+      recurrent_layer: str,
+      activation: str,
+  ):
+    super().__init__(name=f'TransformerLike')
+    self._hidden_size = hidden_size
+    self._num_layers = num_layers
+    self._ffw_multiplier = ffw_multiplier
+
+    self._recurrent_constructor = dict(
+        lstm=snt.LSTM,
+        gru=snt.GRU,
+    )[recurrent_layer]
+
+    layers = []
+
+    # We need to encode for the first residual
+    encoder = snt.Linear(hidden_size, name='encoder')
+    layers.append(FFWWrapper(encoder))
+
+    for _ in range(num_layers):
+      # consider adding layernorm here?
+      recurrent_layer = ResidualWrapper(RecurrentWrapper(
+          self._recurrent_constructor(hidden_size)))
+      layers.append(recurrent_layer)
+
+      ffw_layer = ResBlock(
+          hidden_size, hidden_size * ffw_multiplier,
+          activation=getattr(tf.nn, activation))
+      layers.append(FFWWrapper(ffw_layer))
+
+    self._net = Sequential(layers)
+
+  def initial_state(self, batch_size: int) -> RecurrentState:
+    return self._net.initial_state(batch_size)
+
+  def step(self, inputs: Inputs, prev_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
+    return self._net.step(inputs, prev_state)
+
+  def unroll(self, inputs: Inputs, initial_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
+    return self._net.unroll(inputs, initial_state)
+
 CONSTRUCTORS = dict(
     mlp=MLP,
     frame_stack_mlp=FrameStackingMLP,
     lstm=LSTM,
     gru=GRU,
     res_lstm=DeepResLSTM,
+    tx_like=TransformerLike,
 )
 
 DEFAULT_CONFIG = dict(
@@ -273,6 +411,7 @@ DEFAULT_CONFIG = dict(
     lstm=LSTM.CONFIG,
     gru=GRU.CONFIG,
     res_lstm=DeepResLSTM.CONFIG,
+    tx_like=TransformerLike.CONFIG,
 )
 
 def construct_network(name, **config):
