@@ -64,6 +64,7 @@ def config():
   tag = train_lib.get_experiment_tag()
   save_to_s3 = False
   restore_tag = None
+  restore_pickle = None
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
@@ -206,6 +207,13 @@ def main(expt_dir, _config, _log):
     except KeyError:
       # TODO: re-raise if user specified restore_tag
       _log.info('no params found at %s', restore_key)
+  elif _config['restore_pickle']:
+    pickle_path = _config['restore_pickle']
+    _log.info('restoring from %s', pickle_path)
+    with open(pickle_path, 'rb') as f:
+      combined_state = pickle.load(f)
+    set_tf_state(combined_state['state'])
+    restored = True
   elif os.path.exists(pickle_path):
     _log.info('restoring from %s', pickle_path)
     with open(pickle_path, 'rb') as f:
