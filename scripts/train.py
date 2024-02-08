@@ -77,7 +77,6 @@ def main(expt_dir, _config, _log):
 
   policy = saving.build_policy(
       controller_head_config=_config['controller_head'],
-      max_action_repeat=_config['data']['max_action_repeat'],
       network_config=_config['network'],
       embed_controller=embed_controller,
       **_config['policy'],

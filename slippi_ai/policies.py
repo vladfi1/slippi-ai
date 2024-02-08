@@ -57,14 +57,13 @@ class Policy(snt.Module):
         )
     )
 
-    num_frames = tf.cast(action.repeat[1:] + 1, tf.float32)
-
     # compute value loss
     if self.train_value_head:
+      rewards = state_action.reward[:-1]
       values = tf.squeeze(self.value_head(outputs), -1)
-      discounts = tf.pow(tf.cast(discount, tf.float32), num_frames)
+      discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
       value_targets = discounted_returns(
-          rewards=tf.cast(state_action.reward[:-1], tf.float32),
+          rewards=rewards,
           discounts=discounts,
           bootstrap=values[-1])
       value_targets = tf.stop_gradient(value_targets)
@@ -91,12 +90,8 @@ class Policy(snt.Module):
 
       total_loss += value_cost * value_loss
 
-    # compute metrics
-    weighted_loss = tf.reduce_sum(total_loss) / tf.reduce_sum(num_frames)
-
     metrics.update(
         total_loss=total_loss,
-        weighted_loss=weighted_loss,
     )
 
     return total_loss, final_state, metrics

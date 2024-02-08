@@ -479,28 +479,13 @@ embed_controller_discrete = get_controller_embedding(16)
 Action = Controller
 
 # @dataclass
-class ActionWithRepeat(NamedTuple):
-  action: Action
-  repeat: np.int32
-
-def get_controller_embedding_with_action_repeat(
-    embed_controller: Embedding[Controller, Any],
-    max_repeat: int,
-) -> StructEmbedding[ActionWithRepeat]:
-  embedding = ActionWithRepeat(
-      action=embed_controller,
-      repeat=OneHotEmbedding('action_repeat', max_repeat+1)
-  )
-  return struct_embedding_from_nt("controller_with_action_repeat", embedding)
-
-# @dataclass
 class StateActionReward(NamedTuple):
   state: Game
   # The action could actually be an "encoded" action type,
   # which might discretize certain components of the controller
   # such as the sticks and shoulder. Unfortunately NamedTuples can't be
   # generic. We could use a dataclass instead, but TF can't trace them.
-  action: ActionWithRepeat
+  action: Action
   # In chunks, this has the same length as the state & action.
   # In raw games, this has length one less.
   reward: np.float32
