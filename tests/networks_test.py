@@ -15,9 +15,6 @@ def default_network(name):
   return networks.CONSTRUCTORS[name](**networks.DEFAULT_CONFIG[name])
 
 embed_controller = embed.embed_controller_discrete
-max_action_repeat = 15
-embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat(
-    embed_controller, max_action_repeat)
 
 def default_data_source():
   return data.DataSource(
@@ -25,7 +22,6 @@ def default_data_source():
       batch_size=1,
       unroll_length=8,
       embed_controller=embed_controller,
-      max_action_repeat=max_action_repeat,
       compressed=False,
   )
 
