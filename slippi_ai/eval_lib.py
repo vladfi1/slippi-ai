@@ -17,7 +17,7 @@ def disable_gpus():
 
 Sample = Callable[
     [embed.StateActionReward, policies.RecurrentState],
-    Tuple[embed.ActionWithRepeat, policies.RecurrentState]]
+    Tuple[embed.Action, policies.RecurrentState]]
 
 def send_controller(controller: melee.Controller, controller_state: Controller):
   for b in embed.LEGAL_BUTTONS:
@@ -60,42 +60,28 @@ class Agent:
     self._sample = tf.function(sample_unbatched)
     # self._sample = sample_unbatched
     self._hidden_state = policy.initial_state(1)
-    self._current_action_repeat = 0
-    self._current_repeats_left = 0
 
   def step(self, gamestate: melee.GameState):
-    if self._current_repeats_left > 0:
-      self._current_repeats_left -= 1
-      return None
-
     game = get_game(gamestate, ports=self._players)
 
     state_action = embed.StateActionReward(
         state=game,
-        action=embed.ActionWithRepeat(
-            action=game.p0.controller,
-            repeat=self._current_action_repeat,
-        ),
+        action=game.p0.controller,
         reward=0.,
     )
     # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)
 
-    action_with_repeat: embed.ActionWithRepeat
-    action_with_repeat, self._hidden_state = self._sample(
+    action: embed.Action
+    action, self._hidden_state = self._sample(
         state_action, self._hidden_state)
-    action_with_repeat = tf.nest.map_structure(
-        lambda t: t.numpy(), action_with_repeat)
+    action = tf.nest.map_structure(lambda t: t.numpy(), action)
 
-    sampled_controller = action_with_repeat.action
-    # `decode` un-discretizes the discretized components (x/y axis and shoulder)
-    sampled_controller = self._embed_controller.decode(sampled_controller)
+    # decode un-discretizes the discretized components (x/y axis and shoulder)
+    sampled_controller = self._embed_controller.decode(action)
     send_controller(self._controller, sampled_controller)
 
-    self._current_action_repeat = action_with_repeat.repeat
-    self._current_repeats_left = self._current_action_repeat
-
-    return action_with_repeat
+    return action
 
 
 AGENT_FLAGS = dict(

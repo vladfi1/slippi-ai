@@ -58,9 +58,8 @@ def main(_):
     batched_gamestates = utils.batch_nest(gamestates)[1]
     compressed_game = CompressedGame(batched_gamestates, counts, rewards)
 
-    sampled_controller_with_repeat, hidden_state = policy.sample(
+    sampled_controller, hidden_state = policy.sample(
         compressed_game, hidden_state)
-    sampled_controller = sampled_controller_with_repeat['controller']
     sampled_controller = tree.map_structure(lambda x: x.numpy(), sampled_controller)
 
     for i, env in enumerate(envs):

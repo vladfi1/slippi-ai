@@ -23,29 +23,24 @@ def upgrade_config(config: dict):
       train_value_head=False,
     )
     config['version'] = 1
-  
+
   assert config['version'] == VERSION
   return config
 
 
 def build_policy(
   controller_head_config: dict,
-  max_action_repeat: int,
   network_config: dict,
   embed_controller: embed.Embedding = embed.embed_controller_discrete,
   **policy_kwargs,
 ) -> policies.Policy:
-  embed_controller_with_repeat = embed.get_controller_embedding_with_action_repeat(
-      embed_controller,
-      max_action_repeat)
-
   controller_head_config = dict(
       controller_head_config,
-      embed_controller=embed_controller_with_repeat)
+      embed_controller=embed_controller)
 
   embed_state_action = embed.get_state_action_embedding(
       embed_game=embed.default_embed_game,
-      embed_action=embed_controller_with_repeat,
+      embed_action=embed_controller,
   )
 
   return policies.Policy(
@@ -60,7 +55,6 @@ def policy_from_config(config: dict) -> policies.Policy:
   config = upgrade_config(config)
   return build_policy(
       controller_head_config=config['controller_head'],
-      max_action_repeat=config['data']['max_action_repeat'],
       network_config=config['network'],
       **config['policy'],
   )

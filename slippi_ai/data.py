@@ -187,12 +187,10 @@ class DataSource:
   def __init__(
       self,
       replays: List[ReplayInfo],
-      # preprocesses (discretizes) actions before repeat detection
       embed_controller: embed.Embedding[Controller, Any],
       compressed=True,
       batch_size: int = 64,
       unroll_length: int = 64,
-      max_action_repeat=15,
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
@@ -201,7 +199,6 @@ class DataSource:
     self.batch_size = batch_size
     self.unroll_length = unroll_length
     self.compressed = compressed
-    self.max_action_repeat = max_action_repeat
     self.embed_controller = embed_controller
     trajectories = self.produce_trajectories()
     self.managers = [
@@ -225,9 +222,7 @@ class DataSource:
     states = embed.default_embed_game.from_state(game)
     result = StateActionReward(
         state=states,
-        action=embed.ActionWithRepeat(
-            action=controllers,
-            repeat=np.zeros(len(game.stage), dtype=np.int64)),
+        action=controllers,
         reward=rewards)
     return result
 
@@ -253,7 +248,7 @@ class DataSource:
     next_batch: Batch = utils.batch_nest_nt(
         [m.grab_chunk(self.unroll_length) for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
-    assert next_batch.game.action.repeat.shape[-1] == self.unroll_length
+    assert next_batch.game.state.stage.shape[-1] == self.unroll_length
     return next_batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
@@ -280,7 +275,6 @@ CONFIG = dict(
     batch_size=32,
     unroll_length=64,
     compressed=True,
-    max_action_repeat=0,
     in_parallel=True,
 )
 
