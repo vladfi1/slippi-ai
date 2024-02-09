@@ -1,3 +1,4 @@
+from collections import deque
 import multiprocessing as mp
 from typing import Callable, Mapping, Optional, Tuple
 
@@ -48,6 +49,11 @@ class Agent:
     self._policy = policy
     self._embed_controller = embed_controller
 
+    self._action_queue = deque(maxlen=policy.delay+1)
+    default_action = self._embed_controller.dummy([])
+    self._action_queue.extend([default_action] * policy.delay)
+    self._prev_controller = embed_controller.decode(default_action)
+
     def sample_unbatched(state_action, prev_state):
       batched_state_action = tf.nest.map_structure(
           lambda x: tf.expand_dims(x, 0), state_action)
@@ -66,19 +72,25 @@ class Agent:
 
     state_action = embed.StateAction(
         state=game,
-        action=game.p0.controller,
+        action=self._prev_controller,
     )
     # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)
 
+    # Sample an action.
     action: embed.Action
     action, self._hidden_state = self._sample(
         state_action, self._hidden_state)
     action = tf.nest.map_structure(lambda t: t.numpy(), action)
 
+    # Push the action into the queue and pop the current action.
+    self._action_queue.append(action)
+    action = self._action_queue.popleft()
+
     # decode un-discretizes the discretized components (x/y axis and shoulder)
     sampled_controller = self._embed_controller.decode(action)
     send_controller(self._controller, sampled_controller)
+    self._prev_controller = sampled_controller
 
     return action
 
