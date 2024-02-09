@@ -139,31 +139,40 @@ def game_len(game: StateActionReward):
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source: Iterator[StateActionReward]):
+  def __init__(
+      self,
+      source: Iterator[StateActionReward],
+      unroll_length: int,
+      overlap: int = 1):
     self.source = source
+    self.unroll_length = unroll_length
+    self.overlap = overlap
     self.game: StateActionReward = None
     self.frame = None
 
-  def find_game(self, n):
+  def find_game(self):
     while True:
       game = next(self.source)
-      if game_len(game) >= n: break
+      if game_len(game) >= self.unroll_length: break
     self.game = game
     self.frame = 0
 
-  def grab_chunk(self, n) -> Tuple[StateActionReward, bool]:
+  def grab_chunk(self) -> Tuple[StateActionReward, bool]:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
-    needs_reset = self.game is None or self.frame + n > game_len(self.game)
+
+    needs_reset = (
+      self.game is None or
+      self.frame + self.unroll_length > game_len(self.game))
 
     if needs_reset:
-      self.find_game(n)
+      self.find_game()
 
-    new_frame = self.frame + n
+    new_frame = self.frame + self.unroll_length
     slice = lambda a: a[self.frame:new_frame]
     # faster than tree.map_structure
     chunk = utils.map_nt(slice, self.game)
-    self.frame = new_frame
+    self.frame = new_frame - self.overlap
 
     return Batch(chunk, needs_reset)
 
@@ -202,7 +211,7 @@ class DataSource:
     self.embed_controller = embed_controller
     trajectories = self.produce_trajectories()
     self.managers = [
-        TrajectoryManager(trajectories)
+        TrajectoryManager(trajectories, self.unroll_length)
         for _ in range(batch_size)]
 
     self.allowed_characters = _charset(allowed_characters)
@@ -246,7 +255,7 @@ class DataSource:
 
   def __next__(self) -> Tuple[Batch, float]:
     next_batch: Batch = utils.batch_nest_nt(
-        [m.grab_chunk(self.unroll_length) for m in self.managers])
+        [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
     assert next_batch.game.state.stage.shape[-1] == self.unroll_length
     return next_batch, epoch
@@ -270,6 +279,9 @@ class DataSourceMP:
 
   def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
+
+  def __del__(self):
+    self.process.terminate()
 
 CONFIG = dict(
     batch_size=32,
