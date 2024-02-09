@@ -244,6 +244,7 @@ class DataSource:
       compressed: bool = True,
       batch_size: int = 64,
       unroll_length: int = 64,
+      extra_frames: int = 1,
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
@@ -251,6 +252,7 @@ class DataSource:
     self.replays = replays
     self.batch_size = batch_size
     self.unroll_length = unroll_length
+    self.chunk_size = unroll_length + extra_frames
     self.compressed = compressed
     self.embed_controller = embed_controller
     self.embed_game = embed_game
@@ -259,7 +261,8 @@ class DataSource:
     self.managers = [
         TrajectoryManager(
             replays,
-            unroll_length,
+            unroll_length=self.chunk_size,
+            overlap=extra_frames,
             compressed=compressed,
             game_filter=self.is_allowed)
         for _ in range(batch_size)]
@@ -291,7 +294,7 @@ class DataSource:
     return Frames(state_action=state_action, reward=rewards)
 
   def process_batch(self, chunks: list[Chunk]) -> Batch:
-    batches = []
+    batches: List[Batch] = []
 
     for chunk in chunks:
       batches.append(Batch(
@@ -305,8 +308,7 @@ class DataSource:
     batch: Batch = self.process_batch(
         [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
-    assert batch.frames.state_action.state.stage.shape[-1] == self.unroll_length
-    assert batch.frames.reward.shape[-1] == self.unroll_length - 1
+    assert batch.frames.state_action.state.stage.shape[-1] == self.chunk_size
     return batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
@@ -337,6 +339,7 @@ CONFIG = dict(
     unroll_length=64,
     compressed=True,
     in_parallel=True,
+    # `extra_frames` is determined by policy.delay
 )
 
 def make_source(

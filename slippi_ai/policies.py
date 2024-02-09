@@ -16,6 +16,7 @@ class Policy(snt.Module):
       controller_head: ControllerHead,
       embed_state_action: embed.StructEmbedding[embed.StateAction],
       train_value_head: bool = True,
+      delay: int = 0,
   ):
     super().__init__(name='Policy')
     self.network = network
@@ -23,6 +24,7 @@ class Policy(snt.Module):
     self.embed_state_action = embed_state_action
     self.initial_state = self.network.initial_state
     self.train_value_head = train_value_head
+    self.delay = delay
 
     if train_value_head:
       self.value_head = snt.Linear(1, name='value_head')
@@ -46,18 +48,25 @@ class Policy(snt.Module):
       value_cost: Weighting of value function loss.
       discount: Per-frame discount factor for returns.
     """
+    # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
+    # is D + 1). Then the first trajectory has game states [0, U + D] and the
+    # second trajectory has game states [U, 2U + D]. That means that we want to
+    # use states [0, U-1] to predict actions [D + 1, U + D] (with previous
+    # actions being [D, U + D - 1]). The final hidden state should be the one
+    # preceding timestep U, meaning we compute it from game states [0, U-1]. We
+    # will use game state U to bootstrap the value function.
+
+    delay = self.delay
+    overlap = 1 + delay
     state_action = frames.state_action
-    # Inputs come in with overlap of 1. Thus, we compute the final_state
-    # on the penultimate input to give the right initial_state on the next
-    # trajectory. We only need the last input for bootstrapping the value
-    # function.
     all_inputs = self.embed_state_action(state_action)
-    inputs, last_input = all_inputs[:-1], all_inputs[-1]
+    inputs, last_input = all_inputs[:-overlap], all_inputs[-overlap]
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
     action = state_action.action
-    prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
-    next_action = tf.nest.map_structure(lambda t: t[1:], action)
+    # Offset actions by delay.
+    prev_action = tf.nest.map_structure(lambda t: t[delay : -1], action)
+    next_action = tf.nest.map_structure(lambda t: t[delay + 1:], action)
 
     distances = self.controller_head.distance(
         outputs, prev_action, next_action)
@@ -71,9 +80,9 @@ class Policy(snt.Module):
         )
     )
 
-    # compute value loss
+    # Compute value loss.
     if self.train_value_head:
-      rewards = frames.reward
+      rewards = frames.reward[self.delay:]
       values = tf.squeeze(self.value_head(outputs), -1)
       last_output, _ = self.network.step(last_input, final_state)
       last_value = tf.squeeze(self.value_head(last_output), -1)
@@ -127,4 +136,5 @@ class Policy(snt.Module):
 
 DEFAULT_CONFIG = dict(
     train_value_head=True,
+    delay=0,
 )

@@ -21,6 +21,7 @@ class Learner:
       decay_rate=0.,
       value_cost=0.5,
       reward_halflife=2,  # measured in seconds
+      predict=0,
   )
 
   def __init__(self,
@@ -31,6 +32,7 @@ class Learner:
       reward_halflife: float,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
+      predict: int = 0,
   ):
     self.policy = policy
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)

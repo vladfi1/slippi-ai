@@ -126,6 +126,7 @@ def main(expt_dir, _config, _log):
   data_config = dict(
       _config['data'],
       embed_controller=embed_controller,
+      extra_frames=1 + policy.delay,
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
