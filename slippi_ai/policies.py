@@ -47,7 +47,12 @@ class Policy(snt.Module):
       discount: Per-frame discount factor for returns.
     """
     state_action = frames.state_action
-    inputs = self.embed_state_action(state_action)
+    # Inputs come in with overlap of 1. Thus, we compute the final_state
+    # on the penultimate input to give the right initial_state on the next
+    # trajectory. We only need the last input for bootstrapping the value
+    # function.
+    all_inputs = self.embed_state_action(state_action)
+    inputs, last_input = all_inputs[:-1], all_inputs[-1]
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
     action = state_action.action
@@ -55,7 +60,7 @@ class Policy(snt.Module):
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
     distances = self.controller_head.distance(
-        outputs[:-1], prev_action, next_action)
+        outputs, prev_action, next_action)
     policy_loss = tf.add_n(tf.nest.flatten(distances))
     total_loss = policy_loss
 
@@ -70,13 +75,15 @@ class Policy(snt.Module):
     if self.train_value_head:
       rewards = frames.reward
       values = tf.squeeze(self.value_head(outputs), -1)
+      last_output, _ = self.network.step(last_input, final_state)
+      last_value = tf.squeeze(self.value_head(last_output), -1)
       discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
       value_targets = discounted_returns(
           rewards=rewards,
           discounts=discounts,
-          bootstrap=values[-1])
+          bootstrap=last_value)
       value_targets = tf.stop_gradient(value_targets)
-      value_loss = tf.square(value_targets - values[:-1])
+      value_loss = tf.square(value_targets - values)
 
       _, value_variance = utils.mean_and_variance(value_targets)
       uev = value_loss / (value_variance + 1e-8)

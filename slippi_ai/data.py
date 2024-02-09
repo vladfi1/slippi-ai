@@ -165,15 +165,20 @@ class TrajectoryManager:
   def __init__(
       self,
       source: Iterator[ReplayInfo],
+      unroll_length: int,
+      overlap: int = 1,
       compressed: bool = True,
       game_filter: Optional[Callable[[Game], bool]] = None,
   ):
     self.source = source
     self.compressed = compressed
-    self.game: Game = None
-    self.frame = None
-    self.info: ReplayInfo = None
+    self.unroll_length = unroll_length
+    self.overlap = overlap
     self.game_filter = game_filter or (lambda _: True)
+
+    self.game: Game = None
+    self.frame: int = None
+    self.info: ReplayInfo = None
 
   def load_game(self, info: ReplayInfo) -> Game:
     game = read_table(info.path, compressed=self.compressed)
@@ -181,11 +186,11 @@ class TrajectoryManager:
       game = swap_players(game)
     return game
 
-  def find_game(self, n):
+  def find_game(self):
     while True:
       info = next(self.source)
       game = self.load_game(info)
-      if game_len(game) < n:
+      if game_len(game) < self.unroll_length:
         continue
       if not self.game_filter(game):
         continue
@@ -194,20 +199,23 @@ class TrajectoryManager:
     self.frame = 0
     self.info = info
 
-  def grab_chunk(self, n) -> Chunk:
+  def grab_chunk(self) -> Chunk:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
-    needs_reset = self.game is None or self.frame + n > game_len(self.game)
+
+    needs_reset = (
+        self.game is None or
+        self.frame + self.unroll_length > game_len(self.game))
 
     if needs_reset:
-      self.find_game(n)
+      self.find_game()
 
     start = self.frame
-    end = start + n
+    end = start + self.unroll_length
     slice = lambda a: a[start:end]
     # faster than tree.map_structure
     states = utils.map_nt(slice, self.game)
-    self.frame = end
+    self.frame = end - self.overlap
 
     return Chunk(states, ChunkMeta(start, end, self.info))
 
@@ -251,6 +259,7 @@ class DataSource:
     self.managers = [
         TrajectoryManager(
             replays,
+            unroll_length,
             compressed=compressed,
             game_filter=self.is_allowed)
         for _ in range(batch_size)]
@@ -293,9 +302,9 @@ class DataSource:
     return utils.batch_nest_nt(batches)
 
   def __next__(self) -> Tuple[Batch, float]:
-    chunks = [m.grab_chunk(self.unroll_length) for m in self.managers]
+    batch: Batch = self.process_batch(
+        [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
-    batch = self.process_batch(chunks)
     assert batch.frames.state_action.state.stage.shape[-1] == self.unroll_length
     assert batch.frames.reward.shape[-1] == self.unroll_length - 1
     return batch, epoch
@@ -319,6 +328,9 @@ class DataSourceMP:
 
   def __next__(self) -> Tuple[Batch, float]:
     return self.batch_queue.get()
+
+  def __del__(self):
+    self.process.terminate()
 
 CONFIG = dict(
     batch_size=32,
