@@ -16,7 +16,7 @@ class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
       inputs: tf.Tensor,
       prev_controller_state: ControllerType,
       temperature: tp.Optional[float] = None,
-  ) -> embed.ActionWithRepeat:
+  ) -> ControllerType:
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod

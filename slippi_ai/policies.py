@@ -27,6 +27,10 @@ class Policy(snt.Module):
     if train_value_head:
       self.value_head = snt.Linear(1, name='value_head')
 
+  @property
+  def controller_embedding(self) -> embed.Embedding[embed.Controller, embed.Action]:
+    return self.controller_head.controller_embedding()
+
   def loss(
       self,
       state_action: embed.StateActionReward,

@@ -78,6 +78,7 @@ class Agent:
         ),
         reward=0.,
     )
+    # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)
 
     action_with_repeat: embed.ActionWithRepeat
@@ -87,7 +88,7 @@ class Agent:
         lambda t: t.numpy(), action_with_repeat)
 
     sampled_controller = action_with_repeat.action
-    # decode un-discretizes the discretized components (x/y axis and shoulder)
+    # `decode` un-discretizes the discretized components (x/y axis and shoulder)
     sampled_controller = self._embed_controller.decode(sampled_controller)
     send_controller(self._controller, sampled_controller)
 
