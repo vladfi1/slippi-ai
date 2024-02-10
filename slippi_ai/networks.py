@@ -1,12 +1,13 @@
 from typing import Any, Optional, Tuple
 
+import tree
 import sonnet as snt
 import tensorflow as tf
 from tensorflow import Tensor
 
 from slippi_ai import embed, utils
 
-RecurrentState = Any
+RecurrentState = tree.Structure[tf.Tensor]
 Inputs = tf.Tensor
 
 # TODO: make configurable

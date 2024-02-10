@@ -6,8 +6,10 @@ import pickle
 import time
 import typing as tp
 
-import sacred
+import numpy as np
 import tensorflow as tf
+
+import sacred
 
 from slippi_ai import (
     controller_heads,
@@ -65,6 +67,7 @@ def config():
   save_to_s3 = False
   restore_tag = None
   restore_pickle = None
+  is_test = False  # for db management
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()

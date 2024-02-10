@@ -29,9 +29,9 @@ def get_inputs(data_source: data.DataSource):
   batch = next(data_source)[0]
 
   # from Learner
-  bm_gamestate = batch.game
-  tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
-    learner.to_time_major, bm_gamestate)
+  bm_gamestate = batch.frames
+  tm_gamestate: embed.StateAction = tf.nest.map_structure(
+    learner.swap_axes, bm_gamestate)
 
   return embed.default_embed_game(tm_gamestate.state)
 

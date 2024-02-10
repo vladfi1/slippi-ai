@@ -1,5 +1,5 @@
 import datetime
-from typing import Iterator, Tuple
+from typing import Optional
 import os
 import secrets
 
@@ -32,7 +32,7 @@ class TrainManager:
   def __init__(
       self,
       learner: Learner,
-      data_source: Iterator[Tuple[data.Batch, float]],
+      data_source: data.DataSource,
       step_kwargs={},
   ):
     self.learner = learner
@@ -46,11 +46,10 @@ class TrainManager:
   def step(self) -> dict:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
-      # batch = sanitize_batch(batch)
     with self.step_profiler:
       stats, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
-    num_frames = np.prod(batch.game.state.stage.shape)
+    num_frames = np.prod(batch.frames.state_action.state.stage.shape)
     self.total_frames += num_frames
     stats.update(
         epoch=epoch,
@@ -59,12 +58,17 @@ class TrainManager:
     )
     return stats
 
-def log_stats(ex: sacred.Experiment, stats, step=None, sep='.'):
+def log_stats(
+    ex: sacred.Experiment,
+    stats,
+    step: Optional[int] = None,
+    sep: str ='.',
+):
   def log(path, value):
     if isinstance(value, tf.Tensor):
       value = value.numpy()
     if isinstance(value, np.ndarray):
-      value = value.mean()
+      value = value.mean().item()
     key = sep.join(map(str, path))
     ex.log_scalar(key, value, step=step)
   tree.map_structure_with_path(log, stats)

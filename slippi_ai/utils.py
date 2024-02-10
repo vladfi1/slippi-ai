@@ -1,4 +1,3 @@
-import functools
 import time
 import typing as tp
 
@@ -85,6 +84,7 @@ class Periodically:
       return self.f(*args, **kwargs)
 
 def periodically(interval: int):
+  """Decorator for running a function periodically."""
   def wrap(f):
     return Periodically(f, interval)
   return wrap
@@ -114,18 +114,7 @@ class EMA:
     else:
       self.value += self.decay * (value - self.value)
 
-def add_batch_dims(spec: tf.TensorSpec, num_dims: int):
-  return tf.TensorSpec([None] * num_dims + spec.shape.as_list(), spec.dtype)
-
-def nested_add_batch_dims(nest, num_dims):
-  return tree.map_structure(lambda spec: add_batch_dims(spec, num_dims), nest)
-
-def with_flat_signature(fn, signature):
-  def g(*flat_args):
-    return fn(*tree.unflatten_as(signature, flat_args))
-  return tf.function(g, input_signature=tree.flatten(signature))
-
-def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.TensorSpec]:
+def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor]:
   mean = tf.reduce_mean(xs)
   variance = tf.reduce_mean(tf.square(xs - mean))
   return mean, variance
@@ -135,11 +124,16 @@ def to_numpy(x) -> np.ndarray:
     return x.numpy()
   return x
 
-def map_nt(f, *nt):
+def map_nt(f, *nt: T) -> T:
+  """Map over nested tuples.
+
+  More efficient than tf/tree map_structure.
+  """
   t = type(nt[0])
   if issubclass(t, tuple):
     return t(*[map_nt(f, *vs) for vs in zip(*nt)])
   return f(*nt)
 
-def batch_nest_nt(nests):
+def batch_nest_nt(nests: tp.Sequence[T]) -> T:
+  # More efficient than batch_nest
   return map_nt(stack, *nests)

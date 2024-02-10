@@ -1,13 +1,15 @@
 import pickle
+
 import tree
+import tensorflow as tf
 
 from slippi_ai import (
+    data,
     policies,
     networks,
     controller_heads,
     embed,
     s3_lib,
-    train_lib,
 )
 
 VERSION = 1
@@ -71,8 +73,10 @@ def load_policy_from_state(state: dict) -> policies.Policy:
 
   # create tensorflow Variables
   dummy_state_action = policy.embed_state_action.dummy([1, 1])
+  dummy_reward = tf.zeros([0, 1], tf.float32)
+  dummy_frames = data.Frames(dummy_state_action, dummy_reward)
   initial_state = policy.initial_state(1)
-  policy.loss(dummy_state_action, initial_state)
+  policy.loss(dummy_frames, initial_state)
 
   # assign using saved params
   params = state['state']['policy']
