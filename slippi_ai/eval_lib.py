@@ -134,6 +134,7 @@ DOLPHIN_FLAGS = dict(
     slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
     render=ff.Boolean(True, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
     save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
+    replay_dir=ff.String(None, 'Directory to save replays to.'),
     headless=ff.Boolean(
         False, 'Headless configuration: exi + ffw, no graphics or audio.'),
 )
