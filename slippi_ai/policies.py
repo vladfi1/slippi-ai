@@ -4,7 +4,7 @@ import tensorflow as tf
 
 from slippi_ai.controller_heads import ControllerHead
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import networks, embed, types, utils
+from slippi_ai import data, networks, embed, types, utils
 
 RecurrentState = networks.RecurrentState
 
@@ -14,7 +14,7 @@ class Policy(snt.Module):
       self,
       network: networks.Network,
       controller_head: ControllerHead,
-      embed_state_action: embed.StructEmbedding[embed.StateActionReward],
+      embed_state_action: embed.StructEmbedding[embed.StateAction],
       train_value_head: bool = True,
   ):
     super().__init__(name='Policy')
@@ -33,11 +33,20 @@ class Policy(snt.Module):
 
   def loss(
       self,
-      state_action: embed.StateActionReward,
+      frames: data.Frames,
       initial_state: RecurrentState,
       value_cost: float = 0.5,
       discount: float = 0.99,
   ) -> Tuple[tf.Tensor, RecurrentState, dict]:
+    """Computes prediction loss on a batch of frames.
+
+    Args:
+      frames: Time-major batch of states, actions, and rewards.
+      initial_state: Batch of initial recurrent states.
+      value_cost: Weighting of value function loss.
+      discount: Per-frame discount factor for returns.
+    """
+    state_action = frames.state_action
     inputs = self.embed_state_action(state_action)
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
@@ -59,7 +68,7 @@ class Policy(snt.Module):
 
     # compute value loss
     if self.train_value_head:
-      rewards = state_action.reward[:-1]
+      rewards = frames.reward
       values = tf.squeeze(self.value_head(outputs), -1)
       discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
       value_targets = discounted_returns(
@@ -72,15 +81,14 @@ class Policy(snt.Module):
       _, value_variance = utils.mean_and_variance(value_targets)
       uev = value_loss / (value_variance + 1e-8)
 
-      reward_mean, reward_variance = utils.mean_and_variance(
-          state_action.reward)
+      reward_mean, reward_variance = utils.mean_and_variance(rewards)
 
       metrics['value'] = {
           'reward': dict(
               mean=reward_mean,
               variance=reward_variance,
-              max=tf.reduce_max(state_action.reward),
-              min=tf.reduce_min(state_action.reward),
+              max=tf.reduce_max(rewards),
+              min=tf.reduce_min(rewards),
           ),
           'return': value_targets,
           'loss': value_loss,
@@ -98,7 +106,7 @@ class Policy(snt.Module):
 
   def sample(
       self,
-      state_action: embed.StateActionReward,
+      state_action: embed.StateAction,
       initial_state: RecurrentState,
       **kwargs,
   ) -> Tuple[embed.Action, RecurrentState]:

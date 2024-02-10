@@ -1,5 +1,5 @@
 '''
-   Load a trained model, evaluate it on test set, 
+   Load a trained model, evaluate it on test set,
    writing test replay data and model predictions
    to a human readable dataframe for data analysis.
 
@@ -28,7 +28,7 @@ import stats
 import utils
 
 from train_lib import sanitize_batch, sanitize_game
-from learner import to_time_major
+from learner import swap_axes
 from policies import Policy, get_p1_controller
 
 from collections import defaultdict, namedtuple
@@ -55,10 +55,10 @@ class DebugManager:
       table_name='debug_test',
   )
 
-  def __init__(self, 
-      learner, 
-      data_source, 
-      saved_model_path, 
+  def __init__(self,
+      learner,
+      data_source,
+      saved_model_path,
       table_length,
       table_name,
     ):
@@ -87,7 +87,7 @@ class DebugManager:
 
   def update_table(self, debug_namedtuple):
     nests = {
-      'obs': debug_namedtuple.observations, 
+      'obs': debug_namedtuple.observations,
       'sample': debug_namedtuple.samples,
       'gamestate': debug_namedtuple.gamestate,
       'dist': debug_namedtuple.distances
@@ -155,7 +155,7 @@ class DebugLearner:
         initial_states)
 
     # switch axes to time-major
-    tm_gamestate = tf.nest.map_structure(to_time_major, bm_gamestate)
+    tm_gamestate = tf.nest.map_structure(swap_axes, bm_gamestate)
     gamestate, action_repeat, rewards = tm_gamestate
 
     p1_controller = get_p1_controller(gamestate, action_repeat)
@@ -168,10 +168,10 @@ class DebugLearner:
     controller_samples, _ = utils.dynamic_rnn(self.sample, tm_gamestate, initial_states)
 
     return stats, DebugResult(
-      loss, 
+      loss,
       next_action,
-      controller_samples, 
-      distances, 
+      controller_samples,
+      distances,
       tm_gamestate,
       final_states
     )

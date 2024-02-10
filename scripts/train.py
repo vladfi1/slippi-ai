@@ -6,8 +6,10 @@ import pickle
 import time
 import typing as tp
 
-import sacred
+import numpy as np
 import tensorflow as tf
+
+import sacred
 
 from slippi_ai import (
     controller_heads,
@@ -65,6 +67,7 @@ def config():
   save_to_s3 = False
   restore_tag = None
   restore_pickle = None
+  is_test = False  # for db management
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
@@ -289,6 +292,25 @@ def main(expt_dir, _config, _log):
 
     to_log = dict(eval=eval_stats)
     train_lib.log_stats(ex, to_log, total_steps)
+
+    # Now log some per-trajectory statistics.
+
+    # Stats have shape [num_eval_steps, unroll_length, batch_size]
+    time_mean = lambda x: np.reshape(np.mean(x, axis=1), (-1,))
+    loss = time_mean(eval_stats['policy']['loss'])
+    assert loss.shape == (runtime.num_eval_steps * _config['data']['batch_size'],)
+
+    # Metadata only has a batch dimension.
+    meta: data_lib.ChunkMeta = utils.map_nt(
+        lambda x: np.reshape(x, (-1,)), eval_stats['meta'])
+
+    batch_stats = dict(
+        policy_loss=loss,
+        meta=meta,
+    )
+
+    to_log = dict(eval_batched=batch_stats)
+    train_lib.log_stats(ex, to_log, total_steps, take_mean=False)
 
   start_time = time.time()
 

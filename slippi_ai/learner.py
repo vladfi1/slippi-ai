@@ -3,13 +3,13 @@ import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai.data import Batch
-from slippi_ai.policies import Policy
+from slippi_ai.policies import Policy, RecurrentState
 from slippi_ai import embed
 
-def to_time_major(t):
+def swap_axes(t, axis1=0, axis2=1):
   permutation = list(range(len(t.shape)))
-  permutation[0] = 1
-  permutation[1] = 0
+  permutation[axis2] = axis1
+  permutation[axis1] = axis2
   return tf.transpose(t, permutation)
 
 # TODO: should this be a snt.Module?
@@ -39,8 +39,14 @@ class Learner:
     self.discount = 0.5 ** (1 / reward_halflife * 60)
     self.compiled_step = tf.function(self.step) if compile else self.step
 
-  def step(self, batch: Batch, initial_states, train=True):
-    bm_gamestate, restarting = batch
+  def step(
+      self,
+      batch: Batch,
+      initial_states: RecurrentState,
+      train: bool = True,
+  ):
+    bm_frames = batch.frames
+    restarting = batch.needs_reset
 
     # reset initial_states where necessary
     restarting = tf.expand_dims(restarting, -1)
@@ -50,13 +56,18 @@ class Learner:
         initial_states)
 
     # switch axes to time-major
-    tm_gamestate: embed.StateActionReward = tf.nest.map_structure(
-        to_time_major, bm_gamestate)
+    tm_frames: embed.StateAction = tf.nest.map_structure(
+        swap_axes, bm_frames)
 
     with tf.GradientTape() as tape:
       loss, final_states, metrics = self.policy.loss(
-          tm_gamestate, initial_states,
+          tm_frames, initial_states,
           self.value_cost, self.discount)
+
+    # convert metrics to batch-major
+    # metrics: dict = tf.nest.map_structure(
+    #   lambda t: swap_axes(t) if len(t.shape) >= 2 else t,
+    #   metrics)
 
     if train:
       params: List[tf.Variable] = tape.watched_variables()

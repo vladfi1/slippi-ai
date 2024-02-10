@@ -222,7 +222,9 @@ class StructEmbedding(Embedding[NT, NT]):
 
   def map(self, f, *args: NT) -> NT:
     # return self.type(*map(lambda e, *xs: e.map(f, *xs), self.embedding, *args))
-    result = {k: e.map(f, *(self.getter(x, k) for x in args)) for k, e in self.embedding}
+    result = {
+        k: e.map(f, *(self.getter(x, k) for x in args))
+        for k, e in self.embedding}
     return self.builder(result)
 
   def flatten(self, struct: NT):
@@ -280,7 +282,7 @@ class StructEmbedding(Embedding[NT, NT]):
 T = TypeVar("T")
 
 # use this because lambdas can't be properly pickled :(
-class SplatKwargs:
+class SplatKwargs(Generic[T]):
   """Wraps a function that takes kwargs."""
 
   def __init__(self, f: Callable[..., T], fixed_kwargs: Mapping[str, Any] = {}):
@@ -479,26 +481,22 @@ embed_controller_discrete = get_controller_embedding(16)
 Action = Controller
 
 # @dataclass
-class StateActionReward(NamedTuple):
+class StateAction(NamedTuple):
   state: Game
   # The action could actually be an "encoded" action type,
   # which might discretize certain components of the controller
   # such as the sticks and shoulder. Unfortunately NamedTuples can't be
   # generic. We could use a dataclass instead, but TF can't trace them.
+  # Note that this is the action taken on the _previous_ frame.
   action: Action
-  # In chunks, this has the same length as the state & action.
-  # In raw games, this has length one less.
-  reward: np.float32
 
 def get_state_action_embedding(
   embed_game: Embedding[Game, Any],
   embed_action: Embedding[Action, Any],
-) -> StructEmbedding[StateActionReward]:
-  embedding = StateActionReward(
+) -> StructEmbedding[StateAction]:
+  embedding = StateAction(
       state=embed_game,
       action=embed_action,
-      # ignore incoming reward
-      reward=FloatEmbedding('reward', scale=0),
   )
   return struct_embedding_from_nt("state_action", embedding)
 

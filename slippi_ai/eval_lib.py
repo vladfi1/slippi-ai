@@ -16,7 +16,7 @@ def disable_gpus():
 
 
 Sample = Callable[
-    [embed.StateActionReward, policies.RecurrentState],
+    [embed.StateAction, policies.RecurrentState],
     Tuple[embed.Action, policies.RecurrentState]]
 
 def send_controller(controller: melee.Controller, controller_state: Controller):
@@ -64,10 +64,9 @@ class Agent:
   def step(self, gamestate: melee.GameState):
     game = get_game(gamestate, ports=self._players)
 
-    state_action = embed.StateActionReward(
+    state_action = embed.StateAction(
         state=game,
         action=game.p0.controller,
-        reward=0.,
     )
     # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)

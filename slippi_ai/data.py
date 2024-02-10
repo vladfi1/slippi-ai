@@ -5,39 +5,77 @@ import json
 import multiprocessing as mp
 import os
 import random
-from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple, Iterator, NamedTuple
+from typing import (
+    Any, Callable, Iterable, List, Optional, Set, Tuple, Iterator, NamedTuple,
+    Union,
+)
 import zlib
 
 import numpy as np
-import pandas as pd
 import pyarrow
 import pyarrow.parquet as pq
-import tree
 
 import melee
 
 from slippi_ai import embed, reward, utils
-from slippi_ai.types import Controller, Game, Nest, game_array_to_nt
+from slippi_ai.types import Controller, Game, game_array_to_nt
 
-from slippi_ai.embed import StateActionReward
-
-class Batch(NamedTuple):
-  game: StateActionReward
-  needs_reset: bool
+from slippi_ai.embed import StateAction
 
 class PlayerMeta(NamedTuple):
   character: int
   name: str
 
-class ReplayMetadata(NamedTuple):
+  @classmethod
+  def from_metadata(cls, player_meta: dict) -> 'PlayerMeta':
+    netplay = player_meta['netplay']
+    if netplay is None:
+      name = player_meta['name_tag']
+    else:
+      name = netplay['name']
+    return cls(
+        character=player_meta['character'],
+        name=name)
+
+class ReplayMeta(NamedTuple):
   p0: PlayerMeta
   p1: PlayerMeta
   stage: int
+  slp_md5: str
+
+  @classmethod
+  def from_metadata(cls, metadata: dict) -> 'ReplayMeta':
+    return cls(
+        p0=PlayerMeta.from_metadata(metadata['players'][0]),
+        p1=PlayerMeta.from_metadata(metadata['players'][1]),
+        stage=metadata['stage'],
+        slp_md5=metadata['slp_md5'])
 
 class ReplayInfo(NamedTuple):
   path: str
   swap: bool
-  metadata: Optional[ReplayMetadata] = None
+  # We use empty tuple instead of None to play nicely with Tensorflow.
+  meta: Union[ReplayMeta, Tuple[()]] = ()
+
+class ChunkMeta(NamedTuple):
+  start: int
+  end: int
+  info: ReplayInfo
+
+class Chunk(NamedTuple):
+  states: Game
+  meta: ChunkMeta
+
+class Frames(NamedTuple):
+  state_action: StateAction
+  # This will have length one less than the states and actions.
+  reward: np.float32
+
+class Batch(NamedTuple):
+  frames: Frames
+  needs_reset: bool
+  meta: ChunkMeta
+
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   if chars is None:
@@ -76,25 +114,11 @@ def train_test_split(
     allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
 
     for row in meta_rows:
-      player_metas = []
-      for player in row['players']:
-        netplay = player['netplay']
-        if netplay is None:
-          name = player['name_tag']
-        else:
-          name = netplay['name']
-        player_metas.append(PlayerMeta(
-            character=player['character'],
-            name=name))
-
-      replay_meta = ReplayMetadata(
-          p0=player_metas[0],
-          p1=player_metas[1],
-          stage=row['stage'])
+      replay_meta = ReplayMeta.from_metadata(row)
 
       c0 = replay_meta.p0.character
       c1 = replay_meta.p1.character
-      replay_path = os.path.join(config.data_dir, row['slp_md5'])
+      replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
 
       if c0 in allowed_characters and c1 in allowed_opponents:
         replays.append(ReplayInfo(replay_path, False, replay_meta))
@@ -132,26 +156,45 @@ def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   return [_name_to_character[c] for c in chars]
 
 
-def game_len(game: StateActionReward):
-  # We use the reward length, effectively ignoring the last frame.
-  return len(game.reward)
+def game_len(game: Game):
+  return len(game.stage)
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
-  def __init__(self, source: Iterator[StateActionReward]):
+  def __init__(
+      self,
+      source: Iterator[ReplayInfo],
+      compressed: bool = True,
+      game_filter: Optional[Callable[[Game], bool]] = None,
+  ):
     self.source = source
-    self.game: StateActionReward = None
+    self.compressed = compressed
+    self.game: Game = None
     self.frame = None
+    self.info: ReplayInfo = None
+    self.game_filter = game_filter or (lambda _: True)
+
+  def load_game(self, info: ReplayInfo) -> Game:
+    game = read_table(info.path, compressed=self.compressed)
+    if info.swap:
+      game = swap_players(game)
+    return game
 
   def find_game(self, n):
     while True:
-      game = next(self.source)
-      if game_len(game) >= n: break
+      info = next(self.source)
+      game = self.load_game(info)
+      if game_len(game) < n:
+        continue
+      if not self.game_filter(game):
+        continue
+      break
     self.game = game
     self.frame = 0
+    self.info = info
 
-  def grab_chunk(self, n) -> Tuple[StateActionReward, bool]:
+  def grab_chunk(self, n) -> Chunk:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
     needs_reset = self.game is None or self.frame + n > game_len(self.game)
@@ -159,13 +202,14 @@ class TrajectoryManager:
     if needs_reset:
       self.find_game(n)
 
-    new_frame = self.frame + n
-    slice = lambda a: a[self.frame:new_frame]
+    start = self.frame
+    end = start + n
+    slice = lambda a: a[start:end]
     # faster than tree.map_structure
-    chunk = utils.map_nt(slice, self.game)
-    self.frame = new_frame
+    states = utils.map_nt(slice, self.game)
+    self.frame = end
 
-    return Batch(chunk, needs_reset)
+    return Chunk(states, ChunkMeta(start, end, self.info))
 
 def swap_players(game: Game) -> Game:
   return game._replace(p0=game.p1, p1=game.p0)
@@ -188,7 +232,8 @@ class DataSource:
       self,
       replays: List[ReplayInfo],
       embed_controller: embed.Embedding[Controller, Any],
-      compressed=True,
+      embed_game: embed.Embedding[Game, Any] = embed.default_embed_game,
+      compressed: bool = True,
       batch_size: int = 64,
       unroll_length: int = 64,
       # None means all allowed.
@@ -200,42 +245,24 @@ class DataSource:
     self.unroll_length = unroll_length
     self.compressed = compressed
     self.embed_controller = embed_controller
-    trajectories = self.produce_trajectories()
+    self.embed_game = embed_game
+
+    replays = self.iter_replays()
     self.managers = [
-        TrajectoryManager(trajectories)
+        TrajectoryManager(
+            replays,
+            compressed=compressed,
+            game_filter=self.is_allowed)
         for _ in range(batch_size)]
 
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
 
-  def produce_trajectories(self) -> Iterator[StateActionReward]:
-    games = self.produce_raw_games()
-    games = filter(self.is_allowed, games)
-    games = map(self.process_game, games)
-    return games
-
-  def process_game(self, game: Game) -> StateActionReward:
-    rewards = reward.compute_rewards(game)
-    controllers = self.embed_controller.from_state(game.p0.controller)
-
-    # TODO: configure game embedding
-    states = embed.default_embed_game.from_state(game)
-    result = StateActionReward(
-        state=states,
-        action=controllers,
-        reward=rewards)
-    return result
-
-  def produce_raw_games(self) -> Iterator[Game]:
-    """Raw games without post-processing."""
+  def iter_replays(self) -> Iterator[ReplayInfo]:
     self.replay_counter = 0
     for replay in itertools.cycle(self.replays):
       self.replay_counter += 1
-      game = read_table(replay.path, self.compressed)
-      if replay.swap:
-        game = swap_players(game)
-      # assert self.is_allowed(game)
-      yield game
+      yield replay
 
   def is_allowed(self, game: Game) -> bool:
     # TODO: handle Zelda/Sheik transformation
@@ -244,12 +271,34 @@ class DataSource:
         and
         game.p1.character[0] in self.allowed_opponents)
 
+  def process_game(self, game: Game) -> Frames:
+    # These could be deferred to the learner.
+    rewards = reward.compute_rewards(game)
+    controllers = self.embed_controller.from_state(game.p0.controller)
+
+    states = self.embed_game.from_state(game)
+
+    state_action = StateAction(states, controllers)
+    return Frames(state_action=state_action, reward=rewards)
+
+  def process_batch(self, chunks: list[Chunk]) -> Batch:
+    batches = []
+
+    for chunk in chunks:
+      batches.append(Batch(
+          frames=self.process_game(chunk.states),
+          needs_reset=chunk.meta.start == 0,
+          meta=chunk.meta))
+
+    return utils.batch_nest_nt(batches)
+
   def __next__(self) -> Tuple[Batch, float]:
-    next_batch: Batch = utils.batch_nest_nt(
-        [m.grab_chunk(self.unroll_length) for m in self.managers])
+    chunks = [m.grab_chunk(self.unroll_length) for m in self.managers]
     epoch = self.replay_counter / len(self.replays)
-    assert next_batch.game.state.stage.shape[-1] == self.unroll_length
-    return next_batch, epoch
+    batch = self.process_batch(chunks)
+    assert batch.frames.state_action.state.stage.shape[-1] == self.unroll_length
+    assert batch.frames.reward.shape[-1] == self.unroll_length - 1
+    return batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):
   data_source = DataSource(**data_source_kwargs)
