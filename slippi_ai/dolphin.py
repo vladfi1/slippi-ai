@@ -94,7 +94,7 @@ class Dolphin:
     self.console = console
 
     self.controllers = {}
-    self._menuing_controllers = []
+    self._menuing_controllers: list[tuple[melee.Controller, Player]] = []
     self._autostart = True
 
     for port, player in players.items():
