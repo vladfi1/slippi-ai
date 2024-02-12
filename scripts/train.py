@@ -1,6 +1,8 @@
 """Train (and test) a network via imitation learning."""
 
+import collections
 import dataclasses
+import json
 import os
 import pickle
 import time
@@ -281,6 +283,28 @@ def main(expt_dir, _config, _log):
           f' step={step_time:.3f}')
     print()
 
+  # Encode only the most frequent names to save space.
+  max_names = 2 ** 8  # uint8
+  name_map = {}
+  name_counts = collections.Counter()
+
+  # TODO: Handle no-meta case.
+  name_counts.update(replay.main_player.name for replay in test_replays)
+
+  # Leave one out as a catch-all.
+  for name, _ in name_counts.most_common(max_names - 1):
+    name_map[name] = len(name_map)
+
+  # Record name map
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
+  with open(name_map_path, 'w') as f:
+    json.dump(name_map, f)
+  ex.add_artifact(name_map_path, 'name_map')
+
+  def encode_name(name: str) -> int:
+    return np.uint8(name_map.get(name, len(name_map)))
+  batch_encode_name = np.vectorize(encode_name)
+
   def maybe_eval():
     total_steps = step.numpy()
     if total_steps % runtime.eval_every_n != 0:
@@ -296,18 +320,28 @@ def main(expt_dir, _config, _log):
     # Now log some per-trajectory statistics.
 
     # Stats have shape [num_eval_steps, unroll_length, batch_size]
-    time_mean = lambda x: np.reshape(np.mean(x, axis=1), (-1,))
+    time_mean = lambda x: np.mean(x, axis=1)
     loss = time_mean(eval_stats['policy']['loss'])
-    assert loss.shape == (runtime.num_eval_steps * _config['data']['batch_size'],)
+    assert loss.shape == (runtime.num_eval_steps, _config['data']['batch_size'])
 
     # Metadata only has a batch dimension.
-    meta: data_lib.ChunkMeta = utils.map_nt(
-        lambda x: np.reshape(x, (-1,)), eval_stats['meta'])
+    meta: data_lib.ChunkMeta = eval_stats['meta']
+
+    # Name of the player we're imitating.
+    name = np.where(
+        meta.info.swap, meta.info.meta.p1.name, meta.info.meta.p0.name)
+    encoded_name = batch_encode_name(name)
+    assert encoded_name.dtype == np.uint8
 
     batch_stats = dict(
         policy_loss=loss,
-        meta=meta,
+        encoded_name=encoded_name,
+        # In principle this allows us to recompute all metadata.
+        batch_count=eval_stats['batch_count'],
     )
+
+    # Pickle for space efficiency. Could use np.save to avoid pickle.
+    batch_stats = pickle.dumps(batch_stats)
 
     to_log = dict(eval_batched=batch_stats)
     train_lib.log_stats(ex, to_log, total_steps, take_mean=False)
