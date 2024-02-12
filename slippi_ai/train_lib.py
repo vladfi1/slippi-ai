@@ -37,7 +37,9 @@ class TrainManager:
   ):
     self.learner = learner
     self.data_source = data_source
-    self.hidden_state = learner.policy.initial_state(data_source.batch_size)
+    self.hidden_states = [
+        learner.policy.initial_state(1)
+        for _ in range(data_source.game_buffer)]
     self.step_kwargs = step_kwargs
     self.total_frames = 0
     self.data_profiler = utils.Profiler()
@@ -46,10 +48,17 @@ class TrainManager:
   def step(self) -> dict:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
-      # batch = sanitize_batch(batch)
+      # Assemble initial states.
+      # TODO: do this in TF with scatter_update?
+      initial_states = [self.hidden_states[i] for i in batch.index]
+      initial_state = utils.batch_nest(initial_states)
     with self.step_profiler:
-      stats, self.hidden_state = self.learner.compiled_step(
-          batch, self.hidden_state, **self.step_kwargs)
+      stats, final_state = self.learner.compiled_step(
+          batch, initial_state, **self.step_kwargs)
+      # Now update hidden states.
+      for j, i in enumerate(batch.index):
+        self.hidden_states[i] = tf.nest.map_structure(
+            lambda t: t[j], final_state)
     num_frames = np.prod(batch.frames.state_action.state.stage.shape[-1])
     self.total_frames += num_frames
     stats.update(

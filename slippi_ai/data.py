@@ -73,6 +73,7 @@ class Frames(NamedTuple):
 
 class Batch(NamedTuple):
   frames: Frames
+  index: int  # For re-using recurrent states.
   needs_reset: bool
   meta: ChunkMeta
 
@@ -235,6 +236,10 @@ class DataSource:
       embed_game: embed.Embedding[Game, Any] = embed.default_embed_game,
       compressed: bool = True,
       batch_size: int = 64,
+      # Allows for data mixing by iterating through more games than the batch size.
+      # If set to 0, defaults to the batch size. We use an int instead of None
+      # to play more nicely with sacred's config handling.
+      game_buffer: int = 0,
       unroll_length: int = 64,
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
@@ -242,6 +247,9 @@ class DataSource:
   ):
     self.replays = replays
     self.batch_size = batch_size
+    self.game_buffer = game_buffer or batch_size
+    if self.game_buffer < batch_size:
+      raise ValueError('game_buffer must be at least batch_size')
     self.unroll_length = unroll_length
     self.compressed = compressed
     self.embed_controller = embed_controller
@@ -253,7 +261,8 @@ class DataSource:
             replays,
             compressed=compressed,
             game_filter=self.is_allowed)
-        for _ in range(batch_size)]
+        for _ in range(self.game_buffer)]
+    self.iter_managers = itertools.cycle(enumerate(self.managers))
 
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
@@ -281,21 +290,21 @@ class DataSource:
     state_action = StateAction(states, controllers)
     return Frames(state_action=state_action, reward=rewards)
 
-  def process_batch(self, chunks: list[Chunk]) -> Batch:
-    batches = []
+  def __next__(self) -> Tuple[Batch, float]:
+    batches: list[Batch] = []
 
-    for chunk in chunks:
+    for _ in range(self.batch_size):
+      index, manager = next(self.iter_managers)
+      chunk = manager.grab_chunk(self.unroll_length)
       batches.append(Batch(
           frames=self.process_game(chunk.states),
+          index=index,
           needs_reset=chunk.meta.start == 0,
           meta=chunk.meta))
 
-    return utils.batch_nest_nt(batches)
-
-  def __next__(self) -> Tuple[Batch, float]:
-    chunks = [m.grab_chunk(self.unroll_length) for m in self.managers]
+    batch = utils.batch_nest_nt(batches)
     epoch = self.replay_counter / len(self.replays)
-    batch = self.process_batch(chunks)
+
     assert batch.frames.state_action.state.stage.shape[-1] == self.unroll_length
     assert batch.frames.reward.shape[-1] == self.unroll_length - 1
     return batch, epoch
@@ -307,8 +316,12 @@ def produce_batches(data_source_kwargs, batch_queue):
 
 class DataSourceMP:
   def __init__(self, buffer=4, **kwargs):
+    # This is a hack to allow seemless interchange with plain DataSources.
+    # A "real" solution would be to use a remote object, like in ray.
     for k, v in kwargs.items():
       setattr(self, k, v)
+    self.game_buffer = self.game_buffer or self.batch_size
+
     self.batch_queue = mp.Queue(buffer)
     self.process = mp.Process(
         target=produce_batches, args=(kwargs, self.batch_queue))
@@ -322,6 +335,7 @@ class DataSourceMP:
 
 CONFIG = dict(
     batch_size=32,
+    game_buffer=0,
     unroll_length=64,
     compressed=True,
     in_parallel=True,
