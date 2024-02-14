@@ -1,0 +1,16 @@
+pandas
+dm-sonnet
+git+https://github.com/vladfi1/libmelee.git@peppi_invuln
+gdown
+git+https://github.com/IDSIA/sacred.git
+git+https://github.com/mbr/simplekv.git
+boto3
+pymongo
+dnspython
+fancyflags
+pyarrow
+py7zr
+git+https://github.com/vladfi1/py7zr.git@dev
+
+# for nvcr.io/nvidia/tensorflow:23.10-tf2-py3 which has tensorflow 2.14
+tensorflow_probability==0.22
