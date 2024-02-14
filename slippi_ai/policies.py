@@ -59,14 +59,27 @@ class Policy(snt.Module):
     delay = self.delay
     overlap = 1 + delay
     state_action = frames.state_action
-    all_inputs = self.embed_state_action(state_action)
-    inputs, last_input = all_inputs[:-overlap], all_inputs[-overlap]
+
+    # Includes "overlap" frame.
+    unroll_length = state_action.state.stage.shape[0] - delay
+
+    # Match state t with action t + delay.
+    delayed_state_action = embed.StateAction(
+        state=tf.nest.map_structure(
+            lambda t: t[:unroll_length], state_action.state),
+        action=tf.nest.map_structure(
+            lambda t: t[delay:], state_action.action),
+    )
+    del state_action
+
+    all_inputs = self.embed_state_action(delayed_state_action)
+    inputs, last_input = all_inputs[:-1], all_inputs[-1]
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
-    action = state_action.action
-    # Offset actions by delay.
-    prev_action = tf.nest.map_structure(lambda t: t[delay : -1], action)
-    next_action = tf.nest.map_structure(lambda t: t[delay + 1:], action)
+    # Predict next action.
+    action = delayed_state_action.action
+    prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
+    next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
     distances = self.controller_head.distance(
         outputs, prev_action, next_action)
@@ -82,7 +95,9 @@ class Policy(snt.Module):
 
     # Compute value loss.
     if self.train_value_head:
-      rewards = frames.reward[self.delay:]
+      # Only use rewards that follow actions.
+      rewards = frames.reward[delay:]
+
       values = tf.squeeze(self.value_head(outputs), -1)
       last_output, _ = self.network.step(last_input, final_state)
       last_value = tf.squeeze(self.value_head(last_output), -1)
