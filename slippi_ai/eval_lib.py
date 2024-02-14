@@ -41,6 +41,7 @@ class Agent:
       opponent_port: int,
       policy: policies.Policy,
       config: dict,  # use train.Config instead
+      name_code: str,
       embed_controller: embed.StructEmbedding[Controller] = embed.embed_controller_discrete,
       console_delay: int = 0,
       sample_kwargs: dict = {},
@@ -50,6 +51,7 @@ class Agent:
     self._players = (self._port, opponent_port)
     self._policy = policy
     self.config = config
+    self._name_code = name_code
     self._embed_controller = embed_controller
 
     delay = policy.delay - console_delay
@@ -77,6 +79,7 @@ class Agent:
     state_action = embed.StateAction(
         state=game,
         action=self._prev_controller,
+        name=self._name_code,
     )
     # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)
@@ -103,11 +106,13 @@ AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
+    name=ff.String('Master Player', 'Name of the agent.'),
 )
 
 def build_agent(
     controller: melee.Controller,
     opponent_port: int,
+    name: str,
     path: Optional[str] = None,
     tag: Optional[str] = None,
     sample_temperature: float = 1.0,
@@ -120,6 +125,10 @@ def build_agent(
   else:
     raise ValueError('Must specify one of "tag" or "path".')
 
+  name_map: dict[str, int] = state['name_map']
+  if name not in name_map:
+    raise ValueError(f'Nametag must be one of {name_map.keys()}.')
+
   policy = saving.load_policy_from_state(state)
 
   return Agent(
@@ -128,6 +137,7 @@ def build_agent(
       policy=policy,
       config=state['config'],
       console_delay=console_delay,
+      name_code=name_map[name],
       sample_kwargs=dict(temperature=sample_temperature),
   )
 
