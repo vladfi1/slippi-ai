@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 
 import melee
 
-from slippi_ai import embed, reward, utils
+from slippi_ai import embed, reward, utils, nametags
 from slippi_ai.types import Controller, Game, game_array_to_nt
 
 from slippi_ai.embed import StateAction
@@ -259,6 +259,7 @@ class DataSource:
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
+      name_map: Optional[dict[str, int]] = None,
   ):
     self.replays = replays
     self.batch_size = batch_size
@@ -282,6 +283,8 @@ class DataSource:
 
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
+    self.name_map = name_map or {}
+    self.encode_name = nametags.name_encoder(self.name_map)
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
     for replay in itertools.cycle(self.replays):
@@ -295,22 +298,24 @@ class DataSource:
         and
         game.p1.character[0] in self.allowed_opponents)
 
-  def process_game(self, game: Game) -> Frames:
+  def process_game(self, game: Game, name_code: int) -> Frames:
     # These could be deferred to the learner.
     rewards = reward.compute_rewards(game)
     controllers = self.embed_controller.from_state(game.p0.controller)
 
     states = self.embed_game.from_state(game)
 
-    state_action = StateAction(states, controllers)
+    name_codes = np.full([game_len(game)], name_code, np.int32)
+    state_action = StateAction(states, controllers, name_codes)
     return Frames(state_action=state_action, reward=rewards)
 
   def process_batch(self, chunks: list[Chunk]) -> Batch:
     batches: List[Batch] = []
 
     for chunk in chunks:
+      name_code = self.encode_name(chunk.meta.info.main_player.name)
       batches.append(Batch(
-          frames=self.process_game(chunk.states),
+          frames=self.process_game(chunk.states, name_code),
           needs_reset=chunk.meta.start == 0,
           count=self.batch_counter,
           meta=chunk.meta))

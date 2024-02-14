@@ -33,6 +33,7 @@ def upgrade_config(config: dict):
 def build_policy(
   controller_head_config: dict,
   network_config: dict,
+  num_names: int,
   embed_controller: embed.Embedding = embed.embed_controller_discrete,
   **policy_kwargs,
 ) -> policies.Policy:
@@ -43,6 +44,7 @@ def build_policy(
   embed_state_action = embed.get_state_action_embedding(
       embed_game=embed.default_embed_game,
       embed_action=embed_controller,
+      num_names=num_names,
   )
 
   return policies.Policy(
@@ -58,6 +60,7 @@ def policy_from_config(config: dict) -> policies.Policy:
   return build_policy(
       controller_head_config=config['controller_head'],
       network_config=config['network'],
+      num_names=config['max_names'],
       **config['policy'],
   )
 
