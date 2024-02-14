@@ -490,13 +490,18 @@ class StateAction(NamedTuple):
   # Note that this is the action taken on the _previous_ frame.
   action: Action
 
+  # Encoded name
+  name: int
+
 def get_state_action_embedding(
   embed_game: Embedding[Game, Any],
   embed_action: Embedding[Action, Any],
+  num_names: int,
 ) -> StructEmbedding[StateAction]:
   embedding = StateAction(
       state=embed_game,
       action=embed_action,
+      name=OneHotEmbedding('name', num_names),
   )
   return struct_embedding_from_nt("state_action", embedding)
 

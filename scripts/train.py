@@ -100,14 +100,9 @@ def train(config: Config):
 
   runtime = config.runtime
 
-  embed_controller = embed.embed_controller_discrete  # TODO: configure
-
-  policy = saving.build_policy(
-      controller_head_config=config.controller_head,
-      network_config=config.network,
-      embed_controller=embed_controller,
-      **dataclasses.asdict(config.policy),
-  )
+  # TODO: configure controller embedding
+  policy = saving.policy_from_config(dataclasses.asdict(config))
+  embed_controller = policy.controller_embedding
 
   learner_kwargs = dataclasses.asdict(config.learner)
   learning_rate = tf.Variable(
@@ -146,11 +141,45 @@ def train(config: Config):
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
+  # Set up name mapping.
+  max_names = config.max_names
+  name_map = {}
+  name_counts = collections.Counter()
+
+  normalized_names = [
+      nametags.normalize_name(replay.main_player.name)
+      for replay in train_replays]
+  name_counts.update(normalized_names)
+
+  for name, _ in name_counts.most_common(max_names):
+    name_map[name] = len(name_map)
+  missing_name_code = len(name_map)
+  num_codes = missing_name_code + 1
+
+  # Bake in name groups from nametags.py
+  for first, *rest in nametags.name_groups:
+    if first not in name_map:
+      continue
+    for name in rest:
+      name_map[name] = name_map[first]
+
+  # Record name map
+  print(name_map)
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
+  with open(name_map_path, 'w') as f:
+    json.dump(name_map, f)
+  wandb.save(name_map_path, policy='now')
+
+  def encode_name(name: str) -> np.uint8:
+    return np.uint8(name_map.get(name, missing_name_code))
+  batch_encode_name = np.vectorize(encode_name)
+
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
       embed_controller=embed_controller,
       extra_frames=1 + policy.delay,
+      name_map=name_map,
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
@@ -191,38 +220,6 @@ def train(config: Config):
     s3_store = s3_lib.get_store()
     s3_keys = s3_lib.get_keys(tag)
 
-  # Set up name mapping.
-  max_names = config.max_names
-  name_map = {}
-  name_counts = collections.Counter()
-
-  normalized_names = [
-      nametags.normalize_name(replay.main_player.name)
-      for replay in train_replays]
-  name_counts.update(normalized_names)
-
-  for name, _ in name_counts.most_common(max_names):
-    name_map[name] = len(name_map)
-  missing_name_code = len(name_map)
-  num_codes = missing_name_code + 1
-
-  # Bake in name groups from nametags.py
-  for first, *rest in nametags.name_groups:
-    if first not in name_map:
-      continue
-    for name in rest:
-      name_map[name] = name_map[first]
-
-  # Record name map
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
-  with open(name_map_path, 'w') as f:
-    json.dump(name_map, f)
-  wandb.save(name_map_path, policy='now')
-
-  def encode_name(name: str) -> np.uint8:
-    return np.uint8(name_map.get(name, missing_name_code))
-  batch_encode_name = np.vectorize(encode_name)
-
   def save():
     # Local Save
     tf_state = get_tf_state()
@@ -231,6 +228,7 @@ def train(config: Config):
     combined_state = dict(
         state=tf_state,
         config=dataclasses.asdict(config),
+        name_map=name_map,
     )
     pickled_state = pickle.dumps(combined_state)
 

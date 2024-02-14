@@ -69,6 +69,7 @@ class Policy(snt.Module):
             lambda t: t[:unroll_length], state_action.state),
         action=tf.nest.map_structure(
             lambda t: t[delay:], state_action.action),
+        name=state_action.name[delay:],
     )
     del state_action
 
