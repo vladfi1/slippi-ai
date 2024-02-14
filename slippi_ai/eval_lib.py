@@ -39,11 +39,14 @@ class RawAgent:
       self,
       policy: policies.Policy,
       batch_size: int,
+      # config: dict,  # use train.Config instead
+      name_code: int,
       console_delay: int = 0,
       sample_kwargs: dict = {},
       compile: bool = True,
   ):
     self._policy = policy
+    self._name_code = name_code
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
 
@@ -80,6 +83,7 @@ class RawAgent:
     state_action = embed.StateAction(
         state=game,
         action=self._prev_controller,
+        name=self._name_code,
     )
     # `from_state` discretizes certain components of the action
     state_action = self._policy.embed_state_action.from_state(state_action)
@@ -146,6 +150,7 @@ AGENT_FLAGS = dict(
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
+    name=ff.String('Master Player', 'Name of the agent.'),
 )
 
 def load_state(path: Optional[str], tag: Optional[str]) -> dict:
@@ -173,6 +178,7 @@ def build_raw_agent(
 def build_agent(
     controller: melee.Controller,
     opponent_port: int,
+    name: str,
     state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
@@ -182,6 +188,11 @@ def build_agent(
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
+
+  name_map: dict[str, int] = state['name_map']
+  if name not in name_map:
+    raise ValueError(f'Nametag must be one of {name_map.keys()}.')
+
   policy = saving.load_policy_from_state(state)
 
   return Agent(
@@ -190,6 +201,7 @@ def build_agent(
       policy=policy,
       config=state['config'],
       console_delay=console_delay,
+      name_code=name_map[name],
       sample_kwargs=dict(temperature=sample_temperature),
       **agent_kwargs,
   )
