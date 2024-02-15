@@ -132,6 +132,7 @@ DOLPHIN_FLAGS = dict(
     online_delay=ff.Integer(0, 'Simulate online delay.'),
     blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
     slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
+    fullscreen=ff.Boolean(False, 'Run dolphin in full screen mode.'),
     render=ff.Boolean(True, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
     save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
     replay_dir=ff.String(None, 'Directory to save replays to.'),
