@@ -2,7 +2,7 @@ from typing import Any, Optional, Tuple
 
 import sonnet as snt
 import tensorflow as tf
-from tensorflow.python.framework.tensor import Tensor
+from tensorflow import Tensor
 
 from slippi_ai import embed, utils
 
