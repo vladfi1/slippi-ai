@@ -41,6 +41,7 @@ class Agent:
       opponent_port: int,
       policy: policies.Policy,
       embed_controller: embed.StructEmbedding[Controller] = embed.embed_controller_discrete,
+      console_delay: int = 0,
       sample_kwargs: dict = {},
   ):
     self._controller = controller
@@ -49,9 +50,10 @@ class Agent:
     self._policy = policy
     self._embed_controller = embed_controller
 
-    self._controller_queue = deque(maxlen=policy.delay+1)
+    delay = policy.delay - console_delay
+    self._controller_queue = deque(maxlen=delay+1)
     default_controller = embed_controller.decode(embed_controller.dummy([]))
-    self._controller_queue.extend([default_controller] * policy.delay)
+    self._controller_queue.extend([default_controller] * delay)
     self._prev_controller = default_controller
 
     def sample_unbatched(state_action, prev_state):
@@ -107,6 +109,7 @@ def build_agent(
     path: Optional[str] = None,
     tag: Optional[str] = None,
     sample_temperature: float = 1.0,
+    console_delay: int = 0,
 ) -> Agent:
   if path:
     policy = saving.load_policy_from_disk(path)
@@ -119,6 +122,7 @@ def build_agent(
       controller=controller,
       opponent_port=opponent_port,
       policy=policy,
+      console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
   )
 

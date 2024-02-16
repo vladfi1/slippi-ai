@@ -37,6 +37,7 @@ def main(_):
       agent = eval_lib.build_agent(
           controller=dolphin.controllers[port],
           opponent_port=opponent_port,
+          console_delay=DOLPHIN.value['online_delay'],
           **PLAYERS[port].value['ai'],
       )
       agents.append(agent)
