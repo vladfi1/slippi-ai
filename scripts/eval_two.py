@@ -57,4 +57,6 @@ def main(_):
   dolphin.stop()
 
 if __name__ == '__main__':
+  # https://github.com/python/cpython/issues/87115
+  __spec__ = None
   app.run(main)
