@@ -49,10 +49,10 @@ class Agent:
     self._policy = policy
     self._embed_controller = embed_controller
 
-    self._action_queue = deque(maxlen=policy.delay+1)
-    default_action = self._embed_controller.dummy([])
-    self._action_queue.extend([default_action] * policy.delay)
-    self._prev_controller = embed_controller.decode(default_action)
+    self._controller_queue = deque(maxlen=policy.delay+1)
+    default_controller = embed_controller.decode(embed_controller.dummy([]))
+    self._controller_queue.extend([default_controller] * policy.delay)
+    self._prev_controller = default_controller
 
     def sample_unbatched(state_action, prev_state):
       batched_state_action = tf.nest.map_structure(
@@ -83,16 +83,16 @@ class Agent:
         state_action, self._hidden_state)
     action = tf.nest.map_structure(lambda t: t.numpy(), action)
 
-    # Push the action into the queue and pop the current action.
-    self._action_queue.append(action)
-    action = self._action_queue.popleft()
-
     # decode un-discretizes the discretized components (x/y axis and shoulder)
     sampled_controller = self._embed_controller.decode(action)
-    send_controller(self._controller, sampled_controller)
     self._prev_controller = sampled_controller
 
-    return action
+    # Push the action into the queue and pop the current action.
+    self._controller_queue.appendleft(sampled_controller)
+    delayed_controller = self._controller_queue.pop()
+    send_controller(self._controller, delayed_controller)
+
+    return delayed_controller
 
 
 AGENT_FLAGS = dict(

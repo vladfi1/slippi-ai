@@ -57,7 +57,6 @@ class Policy(snt.Module):
     # will use game state U to bootstrap the value function.
 
     delay = self.delay
-    overlap = 1 + delay
     state_action = frames.state_action
 
     # Includes "overlap" frame.
