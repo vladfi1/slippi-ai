@@ -450,7 +450,7 @@ class DiscreteEmbedding(OneHotEmbedding):
 
   def decode(self, a: Union[np.uint8, np.ndarray]) -> Union[np.float32, np.ndarray]:
     assert a.dtype == self.dtype
-    return a.astype(np.float32) / self.n
+    return (a / self.n).astype(np.float32)
 
 embed_shoulder = DiscreteEmbedding(4)
 

@@ -72,8 +72,9 @@ def load_policy_from_state(state: dict) -> policies.Policy:
   policy = policy_from_config(state['config'])
 
   # create tensorflow Variables
-  dummy_state_action = policy.embed_state_action.dummy([1, 1])
-  dummy_reward = tf.zeros([0, 1], tf.float32)
+  dummy_state_action = policy.embed_state_action.dummy(
+    [2 + policy.delay, 1])
+  dummy_reward = tf.zeros([1 + policy.delay, 1], tf.float32)
   dummy_frames = data.Frames(dummy_state_action, dummy_reward)
   initial_state = policy.initial_state(1)
   policy.loss(dummy_frames, initial_state)
