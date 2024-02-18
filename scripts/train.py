@@ -1,6 +1,8 @@
 """Train (and test) a network via imitation learning."""
 
+import collections
 import dataclasses
+import json
 import os
 import pickle
 import time
@@ -19,6 +21,7 @@ from slippi_ai import (
     controller_heads,
     embed,
     flag_utils,
+    nametags,
     networks,
     policies,
     saving,
@@ -66,6 +69,8 @@ class Config:
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
   policy: policies.PolicyConfig = _field(policies.PolicyConfig)
+
+  max_names: int = 16
 
   expt_root: str = 'experiments'
   expt_dir: tp.Optional[str] = None
@@ -155,7 +160,7 @@ def train(config: Config):
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
   # initialize variables
-  train_stats = train_manager.step()
+  train_stats, _ = train_manager.step()
   logging.info('loss initial: %f', _get_loss(train_stats))
 
   step = tf.Variable(0, trainable=False, name="step")
@@ -186,6 +191,38 @@ def train(config: Config):
     s3_store = s3_lib.get_store()
     s3_keys = s3_lib.get_keys(tag)
 
+  # Set up name mapping.
+  max_names = config.max_names
+  name_map = {}
+  name_counts = collections.Counter()
+
+  normalized_names = [
+      nametags.normalize_name(replay.main_player.name)
+      for replay in train_replays]
+  name_counts.update(normalized_names)
+
+  for name, _ in name_counts.most_common(max_names):
+    name_map[name] = len(name_map)
+  missing_name_code = len(name_map)
+  num_codes = missing_name_code + 1
+
+  # Bake in name groups from nametags.py
+  for first, *rest in nametags.name_groups:
+    if first not in name_map:
+      continue
+    for name in rest:
+      name_map[name] = name_map[first]
+
+  # Record name map
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
+  with open(name_map_path, 'w') as f:
+    json.dump(name_map, f)
+  wandb.save(name_map_path, policy='now')
+
+  def encode_name(name: str) -> np.uint8:
+    return np.uint8(name_map.get(name, missing_name_code))
+  batch_encode_name = np.vectorize(encode_name)
+
   def save():
     # Local Save
     tf_state = get_tf_state()
@@ -205,7 +242,7 @@ def train(config: Config):
       logging.info('saving state to S3: %s', s3_keys.combined)
       s3_store.put(s3_keys.combined, pickled_state)
 
-  save = utils.Periodically(save, runtime.save_interval)
+  maybe_save = utils.Periodically(save, runtime.save_interval)
 
   if config.restore_tag:
     restore_s3_keys = s3_lib.get_keys(config.restore_tag)
@@ -244,7 +281,7 @@ def train(config: Config):
     logging.info('not restoring any params')
 
   if restored:
-    train_loss = _get_loss(train_manager.step())
+    train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
   FRAMES_PER_MINUTE = 60 * 60
@@ -256,7 +293,7 @@ def train(config: Config):
   @utils.periodically(runtime.log_interval)
   def maybe_log(train_stats: dict):
     """Do a test step, then log both train and test stats."""
-    test_stats = test_manager.step()
+    test_stats, _ = test_manager.step()
 
     elapsed_time = log_tracker.update(time.time())
     total_steps = step.numpy()
@@ -304,22 +341,56 @@ def train(config: Config):
     if total_steps % runtime.eval_every_n != 0:
       return
 
-    eval_stats = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+
+    eval_stats, batches = zip(*eval_results)
     eval_stats = tf.nest.map_structure(utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
     to_log = dict(eval=eval_stats)
     train_lib.log_stats(to_log, total_steps)
 
+    # Log losses aggregated by name.
+
+    # Stats have shape [num_eval_steps, unroll_length, batch_size]
+    time_mean = lambda x: np.mean(x, axis=1)
+    loss = time_mean(eval_stats['policy']['loss'])
+    assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
+
+    # Metadata only has a batch dimension.
+    metas: list[data_lib.ChunkMeta] = [batch.meta for batch in batches]
+    meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
+
+    # Name of the player we're imitating.
+    name = np.where(
+        meta.info.swap, meta.info.meta.p1.name, meta.info.meta.p0.name)
+    encoded_name = batch_encode_name(name)
+    assert encoded_name.dtype == np.uint8
+    assert encoded_name.shape == loss.shape
+
+    loss_sums_and_counts = []
+    for i in range(num_codes):
+      mask = encoded_name == i
+      loss_sums_and_counts.append((np.sum(loss * mask), np.sum(mask)))
+
+    losses, counts = zip(*loss_sums_and_counts)
+    to_log = dict(
+        losses=np.array(losses, dtype=np.float32),
+        counts=np.array(counts, dtype=np.uint32),
+    )
+
+    to_log = dict(eval_names=to_log)
+    train_lib.log_stats(to_log, total_steps, take_mean=False)
+
   start_time = time.time()
 
   while time.time() - start_time < runtime.max_runtime:
-    train_stats = train_manager.step()
+    train_stats, _ = train_manager.step()
     step.assign_add(1)
     maybe_log(train_stats)
     maybe_eval()
 
-    save_path = save()
+    save_path = maybe_save()
     if save_path:
       logging.info('Saved network to %s', save_path)
 

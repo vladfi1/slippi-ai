@@ -57,6 +57,10 @@ class ReplayInfo(NamedTuple):
   # We use empty tuple instead of None to play nicely with Tensorflow.
   meta: Union[ReplayMeta, Tuple[()]] = ()
 
+  @property
+  def main_player(self) -> PlayerMeta:
+    return self.meta.p1 if self.swap else self.meta.p0
+
 class ChunkMeta(NamedTuple):
   start: int
   end: int
@@ -74,8 +78,8 @@ class Frames(NamedTuple):
 class Batch(NamedTuple):
   frames: Frames
   needs_reset: bool
+  count: int  # For reproducing batches
   meta: ChunkMeta
-
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   if chars is None:
@@ -94,6 +98,30 @@ class DatasetConfig:
   seed: int = 0
 
 
+def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
+  replays = []
+
+  with open(config.meta_path) as f:
+    meta_rows: list[dict] = json.load(f)
+
+  allowed_characters = _charset(chars_from_string(config.allowed_characters))
+  allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
+
+  for row in meta_rows:
+    replay_meta = ReplayMeta.from_metadata(row)
+
+    c0 = replay_meta.p0.character
+    c1 = replay_meta.p1.character
+    replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
+
+    if c0 in allowed_characters and c1 in allowed_opponents:
+      replays.append(ReplayInfo(replay_path, False, replay_meta))
+
+    if c0 in allowed_opponents and c1 in allowed_characters:
+      replays.append(ReplayInfo(replay_path, True, replay_meta))
+
+  return replays
+
 def train_test_split(
     config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
@@ -103,28 +131,11 @@ def train_test_split(
   replays: list[ReplayInfo] = []
 
   if config.meta_path is not None:
-    with open(config.meta_path) as f:
-      meta_rows: list[dict] = json.load(f)
+    replays = replays_from_meta(config)
 
     # check that we have the right metadata
     filenames_set = set(filenames)
-    assert all(row['slp_md5'] in filenames_set for row in meta_rows)
-
-    allowed_characters = _charset(chars_from_string(config.allowed_characters))
-    allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
-
-    for row in meta_rows:
-      replay_meta = ReplayMeta.from_metadata(row)
-
-      c0 = replay_meta.p0.character
-      c1 = replay_meta.p1.character
-      replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
-
-      if c0 in allowed_characters and c1 in allowed_opponents:
-        replays.append(ReplayInfo(replay_path, False, replay_meta))
-
-      if c0 in allowed_opponents and c1 in allowed_characters:
-        replays.append(ReplayInfo(replay_path, True, replay_meta))
+    assert all(info.meta.slp_md5 in filenames_set for info in replays)
   else:
     if not (config.allowed_characters == 'all'
             and config.allowed_opponents == 'all'):
@@ -256,7 +267,9 @@ class DataSource:
     self.compressed = compressed
     self.embed_controller = embed_controller
     self.embed_game = embed_game
+    self.batch_counter = 0
 
+    self.replay_counter = 0
     replays = self.iter_replays()
     self.managers = [
         TrajectoryManager(
@@ -271,7 +284,6 @@ class DataSource:
     self.allowed_opponents = _charset(allowed_opponents)
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
-    self.replay_counter = 0
     for replay in itertools.cycle(self.replays):
       self.replay_counter += 1
       yield replay
@@ -300,6 +312,7 @@ class DataSource:
       batches.append(Batch(
           frames=self.process_game(chunk.states),
           needs_reset=chunk.meta.start == 0,
+          count=self.batch_counter,
           meta=chunk.meta))
 
     return utils.batch_nest_nt(batches)
@@ -308,7 +321,9 @@ class DataSource:
     batch: Batch = self.process_batch(
         [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / len(self.replays)
+    self.batch_counter += 1
     assert batch.frames.state_action.state.stage.shape[-1] == self.chunk_size
+    assert batch.frames.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
 def produce_batches(data_source_kwargs, batch_queue):

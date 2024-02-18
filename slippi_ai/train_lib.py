@@ -37,32 +37,35 @@ class TrainManager:
     self.data_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
 
-  def step(self) -> dict:
+  def step(self) -> tuple[dict, data.Batch]:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
+      # batch = sanitize_batch(batch)
     with self.step_profiler:
       stats, self.hidden_state = self.learner.compiled_step(
           batch, self.hidden_state, **self.step_kwargs)
-    num_frames = np.prod(batch.frames.state_action.state.stage.shape)
+    num_frames = batch.frames.state_action.state.stage.size
     self.total_frames += num_frames
     stats.update(
         epoch=epoch,
         num_frames=num_frames,
         total_frames=self.total_frames,
     )
-    return stats
+    return stats, batch
+
+def mean(value):
+  if isinstance(value, tf.Tensor):
+    value = value.numpy()
+  if isinstance(value, np.ndarray):
+    value = value.mean().item()
+  return value
 
 def log_stats(
     stats: tree.Structure,
     step: Optional[int] = None,
     sep: str ='.',
+    take_mean: bool = True,
 ):
-  def take_mean(value):
-    if isinstance(value, tf.Tensor):
-      value = value.numpy()
-    if isinstance(value, np.ndarray):
-      value = value.mean().item()
-    return value
-
-  stats = tree.map_structure(take_mean, stats)
+  if take_mean:
+    stats = tree.map_structure(mean, stats)
   wandb.log(data=stats, step=step)
