@@ -68,6 +68,11 @@ class Learner:
           tm_frames, initial_states,
           self.value_cost, self.discount)
 
+    # convert metrics to batch-major
+    # metrics: dict = tf.nest.map_structure(
+    #   lambda t: swap_axes(t) if len(t.shape) >= 2 else t,
+    #   metrics)
+
     if train:
       params: List[tf.Variable] = tape.watched_variables()
       watched_names = [p.name for p in params]
