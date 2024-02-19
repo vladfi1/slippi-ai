@@ -331,11 +331,15 @@ WANDB = ff.DEFINE_dict(
 )
 
 def main(_):
+  config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
+
+  wandb_kwargs = dict(WANDB.value)
+  if config.tag:
+    wandb_kwargs['name'] = config.tag
   wandb.init(
       config=CONFIG.value,
-      **WANDB.value,
+      **wandb_kwargs,
   )
-  config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
   train(config)
 
 if __name__ == '__main__':
