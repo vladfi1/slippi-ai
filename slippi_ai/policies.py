@@ -1,3 +1,4 @@
+import dataclasses
 from typing import Any, Tuple
 import sonnet as snt
 import tensorflow as tf
@@ -148,7 +149,7 @@ class Policy(snt.Module):
         output, prev_action, **kwargs)
     return next_action, final_state
 
-DEFAULT_CONFIG = dict(
-    train_value_head=True,
-    delay=0,
-)
+@dataclasses.dataclass
+class PolicyConfig:
+  train_value_head: bool = True
+  delay: int = 0

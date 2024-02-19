@@ -334,13 +334,12 @@ class DataSourceMP:
   def __del__(self):
     self.process.terminate()
 
-CONFIG = dict(
-    batch_size=32,
-    unroll_length=64,
-    compressed=True,
-    in_parallel=True,
-    # `extra_frames` is determined by policy.delay
-)
+@dataclasses.dataclass
+class DataConfig:
+  batch_size: int = 32
+  unroll_length: int = 64
+  compressed: bool = True
+  in_parallel: bool = True
 
 def make_source(
     in_parallel: bool,

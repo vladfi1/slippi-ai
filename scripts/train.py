@@ -6,14 +6,19 @@ import pickle
 import time
 import typing as tp
 
+from absl import app
+from absl import logging
+
+import fancyflags as ff
 import numpy as np
 import tensorflow as tf
 
-import sacred
+import wandb
 
 from slippi_ai import (
     controller_heads,
     embed,
+    flag_utils,
     networks,
     policies,
     saving,
@@ -21,17 +26,14 @@ from slippi_ai import (
     train_lib,
     utils,
 )
-from slippi_ai.learner import Learner
+from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai.file_cache import FileCache
 
-ex = sacred.Experiment('imitation')
+T = tp.TypeVar('T')
 
-mongo_uri = os.environ.get('MONGO_URI')
-if mongo_uri:
-  from sacred.observers import MongoObserver
-  db_name = os.environ.get('MONGO_DB_NAME', 'sacred')
-  ex.observers.append(MongoObserver(url=mongo_uri, db_name=db_name))
+def _field(default_factory: tp.Callable[[], T]) -> T:
+  return dataclasses.field(default_factory=default_factory)
 
 @dataclasses.dataclass
 class RuntimeConfig:
@@ -49,59 +51,65 @@ class FileCacheConfig:
   wipe: bool = False
   version: str = 'test'
 
-@ex.config
-def config():
-  runtime = dataclasses.asdict(RuntimeConfig())
+@dataclasses.dataclass
+class Config:
+  runtime: RuntimeConfig = _field(RuntimeConfig)
 
-  file_cache = dataclasses.asdict(FileCacheConfig())
-  dataset = dataclasses.asdict(data_lib.DatasetConfig())
-  data = data_lib.CONFIG
+  file_cache: FileCacheConfig = _field(FileCacheConfig)
+  dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
+  data: data_lib.DataConfig = _field(data_lib.DataConfig)
 
-  learner = Learner.DEFAULT_CONFIG
-  network = networks.DEFAULT_CONFIG
-  controller_head = controller_heads.DEFAULT_CONFIG
-  policy = policies.DEFAULT_CONFIG
+  learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
-  expt_dir = train_lib.get_experiment_directory()
-  tag = train_lib.get_experiment_tag()
-  save_to_s3 = False
-  restore_tag = None
-  restore_pickle = None
-  is_test = False  # for db management
+  # TODO: turn these into dataclasses too
+  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
+  controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
+
+  policy: policies.PolicyConfig = _field(policies.PolicyConfig)
+
+  expt_dir: tp.Optional[str] = None
+  tag: tp.Optional[str] = None
+
+  # TODO: group these into their own subconfig
+  save_to_s3: bool = False
+  restore_tag: tp.Optional[str] = None
+  restore_pickle: tp.Optional[str] = None
+
+  is_test: bool = False  # for db management
+  version: int = saving.VERSION
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
 
-@ex.automain
-def main(expt_dir, _config, _log):
-  runtime = RuntimeConfig(**_config['runtime'])
+def train(config: Config):
+  runtime = config.runtime
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
 
   policy = saving.build_policy(
-      controller_head_config=_config['controller_head'],
-      network_config=_config['network'],
+      controller_head_config=config.controller_head,
+      network_config=config.network,
       embed_controller=embed_controller,
-      **_config['policy'],
+      **dataclasses.asdict(config.policy),
   )
 
-  learner_kwargs = _config['learner'].copy()
+  learner_kwargs = dataclasses.asdict(config.learner)
   learning_rate = tf.Variable(
-      learner_kwargs['learning_rate'], name='learning_rate')
+      learner_kwargs['learning_rate'], name='learning_rate', trainable=False)
   learner_kwargs.update(learning_rate=learning_rate)
-  learner = Learner(
+  learner = learner_lib.Learner(
       policy=policy,
       **learner_kwargs,
   )
 
-  _log.info("Network configuration")
+  logging.info("Network configuration")
   for comp in ['network', 'controller_head']:
-    _log.info(f'Using {comp}: {_config[comp]["name"]}')
+    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   ### Dataset Creation ###
-  dataset_config = data_lib.DatasetConfig(**_config['dataset'])
+  dataset_config = config.dataset
 
-  file_cache_config = FileCacheConfig(**_config['file_cache'])
+  file_cache_config = config.file_cache
   if file_cache_config.use:
     file_cache = FileCache(
         root=file_cache_config.path,
@@ -120,11 +128,11 @@ def main(expt_dir, _config, _log):
     char_filters[key] = data_lib.chars_from_string(chars_string)
 
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  _log.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
   # Create data sources for train and test.
   data_config = dict(
-      _config['data'],
+      dataclasses.asdict(config.data),
       embed_controller=embed_controller,
       extra_frames=1 + policy.delay,
       **char_filters,
@@ -137,7 +145,7 @@ def main(expt_dir, _config, _log):
 
   # initialize variables
   train_stats = train_manager.step()
-  _log.info('loss initial: %f', _get_loss(train_stats))
+  logging.info('loss initial: %f', _get_loss(train_stats))
 
   step = tf.Variable(0, trainable=False, name="step")
 
@@ -157,11 +165,15 @@ def main(expt_dir, _config, _log):
       lambda var, val: var.assign(val),
       tf_state, state)
 
+  tag = config.tag or train_lib.get_experiment_tag()
+  expt_dir = config.expt_dir
+  if expt_dir is None:
+    expt_dir = f'experiments/{tag}'
+    os.makedirs(expt_dir, exist_ok=True)
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
-  tag = _config["tag"]
 
-  save_to_s3 = _config['save_to_s3']
-  if save_to_s3 or _config['restore_tag']:
+  save_to_s3 = config.save_to_s3
+  if save_to_s3 or config.restore_tag:
     if 'S3_CREDS' not in os.environ:
       raise ValueError('must set the S3_CREDS environment variable')
 
@@ -175,22 +187,22 @@ def main(expt_dir, _config, _log):
     # easier to always bundle the config with the state
     combined_state = dict(
         state=tf_state,
-        config=dict(_config, version=saving.VERSION),
+        config=dataclasses.asdict(config),
     )
     pickled_state = pickle.dumps(combined_state)
 
-    _log.info('saving state to %s', pickle_path)
+    logging.info('saving state to %s', pickle_path)
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
 
     if save_to_s3:
-      _log.info('saving state to S3: %s', s3_keys.combined)
+      logging.info('saving state to S3: %s', s3_keys.combined)
       s3_store.put(s3_keys.combined, pickled_state)
 
   save = utils.Periodically(save, runtime.save_interval)
 
-  if _config['restore_tag']:
-    restore_s3_keys = s3_lib.get_keys(_config['restore_tag'])
+  if config.restore_tag:
+    restore_s3_keys = s3_lib.get_keys(config.restore_tag)
   elif save_to_s3:
     restore_s3_keys = s3_keys
   else:
@@ -202,33 +214,32 @@ def main(expt_dir, _config, _log):
     try:
       restore_key = restore_s3_keys.combined
       obj = s3_store.get(restore_key)
-      _log.info('restoring from %s', restore_key)
+      logging.info('restoring from %s', restore_key)
       combined_state = pickle.loads(obj)
       set_tf_state(combined_state['state'])
       restored = True
       # TODO: do some config compatibility validation
     except KeyError:
       # TODO: re-raise if user specified restore_tag
-      _log.info('no params found at %s', restore_key)
-  elif _config['restore_pickle']:
-    pickle_path = _config['restore_pickle']
-    _log.info('restoring from %s', pickle_path)
-    with open(pickle_path, 'rb') as f:
+      logging.info('no params found at %s', restore_key)
+  elif config.restore_pickle:
+    logging.info('restoring from %s', config.restore_pickle)
+    with open(config.restore_pickle, 'rb') as f:
       combined_state = pickle.load(f)
     set_tf_state(combined_state['state'])
     restored = True
   elif os.path.exists(pickle_path):
-    _log.info('restoring from %s', pickle_path)
+    logging.info('restoring from %s', pickle_path)
     with open(pickle_path, 'rb') as f:
       combined_state = pickle.load(f)
     set_tf_state(combined_state['state'])
     restored = True
   else:
-    _log.info('not restoring any params')
+    logging.info('not restoring any params')
 
   if restored:
     train_loss = _get_loss(train_manager.step())
-    _log.info('loss post-restore: %f', train_loss)
+    logging.info('loss post-restore: %f', train_loss)
 
   FRAMES_PER_MINUTE = 60 * 60
 
@@ -269,7 +280,7 @@ def main(expt_dir, _config, _log):
         test=test_stats,
         timings=timings,
     )
-    train_lib.log_stats(ex, all_stats, total_steps)
+    # train_lib.log_stats(ex, all_stats, total_steps)
 
     train_loss = _get_loss(train_stats)
     test_loss = _get_loss(test_stats)
@@ -292,7 +303,7 @@ def main(expt_dir, _config, _log):
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
     to_log = dict(eval=eval_stats)
-    train_lib.log_stats(ex, to_log, total_steps)
+    # train_lib.log_stats(ex, to_log, total_steps)
 
   start_time = time.time()
 
@@ -305,3 +316,12 @@ def main(expt_dir, _config, _log):
     save_path = save()
     if save_path:
       _log.info('Saved network to %s', save_path)
+
+CONFIG = flag_utils.define_dict_from_dataclass('config', Config)
+
+def main(_):
+  config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
+  train(config)
+
+if __name__ == '__main__':
+  app.run(main)

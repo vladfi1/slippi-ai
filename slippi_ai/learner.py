@@ -1,4 +1,6 @@
+import dataclasses
 from typing import List, Optional
+
 import sonnet as snt
 import tensorflow as tf
 
@@ -12,17 +14,17 @@ def swap_axes(t, axis1=0, axis2=1):
   permutation[axis1] = axis2
   return tf.transpose(t, permutation)
 
+@dataclasses.dataclass
+class LearnerConfig:
+  learning_rate: float = 1e-4
+  compile: bool = True
+  decay_rate: float = 0.
+  value_cost: float = 0.5
+  reward_halflife: float = 2
+  predict: int = 0
+
 # TODO: should this be a snt.Module?
 class Learner:
-
-  DEFAULT_CONFIG = dict(
-      learning_rate=1e-4,
-      compile=True,
-      decay_rate=0.,
-      value_cost=0.5,
-      reward_halflife=2,  # measured in seconds
-      predict=0,
-  )
 
   def __init__(self,
       learning_rate: float,

@@ -28,6 +28,20 @@ def maybe_undo_optional(t: type) -> type:
   return t
 
 
+def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
+  field_type = maybe_undo_optional(field_type)
+  item_constructor = TYPE_TO_ITEM.get(field_type)
+  if item_constructor is not None:
+    return item_constructor(default)
+  elif issubclass(field_type, enum.Enum):
+    return ff.EnumClass(
+        default=default,
+        enum_class=field_type,
+    )
+  # TODO: also log path to unsupported field
+  logging.warn(f'Unsupported field of type {field_type}')
+  return None
+
 def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
   if isinstance(default, dict):
     result = {}
@@ -37,37 +51,34 @@ def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
         result[k] = flag
     return result
 
-  item_constructor = TYPE_TO_ITEM.get(type(default))
-  if item_constructor is not None:
-    return item_constructor(default)
-
-  return None
+  # TODO: handle dataclasses
+  field_type = type(default)
+  return get_leaf_flag(field_type, default)
 
 
 def _get_default(field: dataclasses.Field):
-  return None if field.default is dataclasses.MISSING else field.default
+  if field.default_factory is not dataclasses.MISSING:
+    return field.default_factory()
+  if field.default is not dataclasses.MISSING:
+    return field.default
+  return None
 
 
 def get_flags_from_dataclass(cls: type) -> tree.Structure[ff.Item]:
   if not dataclasses.is_dataclass(cls):
     raise TypeError(f'{cls} is not a dataclass')
-  
+
   result = {}
 
   for field in dataclasses.fields(cls):
-    field_type = maybe_undo_optional(field.type)
-    item_constructor = TYPE_TO_ITEM.get(field_type)
-    if item_constructor is not None:
-      result[field.name] = item_constructor(_get_default(field))
-    elif dataclasses.is_dataclass(field_type):
-      result[field.name] = get_flags_from_dataclass(field_type)
-    elif issubclass(field_type, enum.Enum):
-      result[field.name] = ff.EnumClass(
-          default=_get_default(field),
-          enum_class=field_type,
-      )
+    if dataclasses.is_dataclass(field.type):
+      result[field.name] = get_flags_from_dataclass(field.type)
+    elif field.type is dict:
+      result[field.name] = get_flags_from_default(_get_default(field))
     else:
-      logging.warn(f'Unsupported field of type {field_type}')
+      item = get_leaf_flag(field.type, _get_default(field))
+      if item is not None:
+        result[field.name] = item
 
   return result
 
@@ -77,12 +88,13 @@ def define_dict_from_dataclass(name: str, cls: type) -> flags.FlagHolder:
 
 
 def dataclass_from_dict(cls: tp.Type[T], nest: dict) -> T:
+  """Recursively construct a dataclass from a nested dict."""
   recursed = {}
 
   for field in dataclasses.fields(cls):
-    value = nest[field.name]
+    value = nest[field.name]  # TODO: handle missing keys?
     if dataclasses.is_dataclass(field.type):
       value = dataclass_from_dict(field.type, value)
     recursed[field.name] = value
-  
+
   return cls(**recursed)
