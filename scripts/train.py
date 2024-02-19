@@ -280,7 +280,7 @@ def train(config: Config):
         test=test_stats,
         timings=timings,
     )
-    # train_lib.log_stats(ex, all_stats, total_steps)
+    train_lib.log_stats(all_stats, total_steps)
 
     train_loss = _get_loss(train_stats)
     test_loss = _get_loss(test_stats)
@@ -303,7 +303,7 @@ def train(config: Config):
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
     to_log = dict(eval=eval_stats)
-    # train_lib.log_stats(ex, to_log, total_steps)
+    train_lib.log_stats(to_log, total_steps)
 
   start_time = time.time()
 
@@ -315,11 +315,26 @@ def train(config: Config):
 
     save_path = save()
     if save_path:
-      _log.info('Saved network to %s', save_path)
+      logging.info('Saved network to %s', save_path)
 
-CONFIG = flag_utils.define_dict_from_dataclass('config', Config)
+CONFIG = ff.DEFINE_dict(
+    'config', **flag_utils.get_flags_from_dataclass(Config))
+
+# passed to wandb.init
+WANDB = ff.DEFINE_dict(
+    'wandb',
+    project=ff.String('slippi-ai'),
+    mode=ff.Enum('disabled', ['online', 'offline', 'disabled']),
+    group=ff.String('imitation'),
+    name=ff.String(None),
+    notes=ff.String(None),
+)
 
 def main(_):
+  wandb.init(
+      config=CONFIG.value,
+      **WANDB.value,
+  )
   config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
   train(config)
 

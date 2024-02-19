@@ -84,6 +84,9 @@ def get_flags_from_dataclass(cls: type) -> tree.Structure[ff.Item]:
 
 
 def define_dict_from_dataclass(name: str, cls: type) -> flags.FlagHolder:
+  # Note: calling this has the unfortunate property that the flags are
+  # associated with the flag_utils.py module, not the module that calls this,
+  # which makes them not show up in help messages unless you pass --helpfull.
   return ff.DEFINE_dict(name, **get_flags_from_dataclass(cls))
 
 

@@ -2,7 +2,7 @@ pandas==1.4.4
 dm-sonnet
 git+https://github.com/vladfi1/libmelee.git@dev
 gdown
-git+https://github.com/IDSIA/sacred.git
+wandb
 git+https://github.com/mbr/simplekv.git
 boto3
 pymongo

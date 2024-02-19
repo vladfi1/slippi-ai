@@ -7,7 +7,7 @@ import numpy as np
 import tensorflow as tf
 import tree
 
-import sacred
+import wandb
 
 from slippi_ai import (
     data,
@@ -19,12 +19,6 @@ from slippi_ai.learner import Learner
 def get_experiment_tag():
   today = datetime.date.today()
   return f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
-
-def get_experiment_directory():
-  # create directory for tf checkpoints and other experiment artifacts
-  expt_dir = f'experiments/{get_experiment_tag()}'
-  os.makedirs(expt_dir, exist_ok=True)
-  return expt_dir
 
 
 class TrainManager:
@@ -59,16 +53,16 @@ class TrainManager:
     return stats
 
 def log_stats(
-    ex: sacred.Experiment,
-    stats,
+    stats: tree.Structure,
     step: Optional[int] = None,
     sep: str ='.',
 ):
-  def log(path, value):
+  def take_mean(value):
     if isinstance(value, tf.Tensor):
       value = value.numpy()
     if isinstance(value, np.ndarray):
       value = value.mean().item()
-    key = sep.join(map(str, path))
-    ex.log_scalar(key, value, step=step)
-  tree.map_structure_with_path(log, stats)
+    return value
+
+  stats = tree.map_structure(take_mean, stats)
+  wandb.log(data=stats, step=step)
