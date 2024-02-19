@@ -4,6 +4,7 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
+from melee import enums
 from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
@@ -33,7 +34,8 @@ def main(_):
   agents = []
 
   for port, opponent_port in zip(PORTS, reversed(PORTS)):
-    if isinstance(players[port], dolphin_lib.AI):
+    player = players[port]
+    if isinstance(player, dolphin_lib.AI):
       agent = eval_lib.build_agent(
           controller=dolphin.controllers[port],
           opponent_port=opponent_port,
@@ -41,6 +43,15 @@ def main(_):
           **PLAYERS[port].value['ai'],
       )
       agents.append(agent)
+
+      character_str = agent.config['dataset']['allowed_characters']
+      if ',' in character_str:
+        character_strs = character_str.split(',')
+        if player.character.name.lower() not in character_strs:
+          raise ValueError(f"Character must be one of {character_str}")
+      elif character_str != 'all':
+        print('Setting character to', character_str)
+        player.character = eval_lib.name_to_character[character_str]
 
   total_frames = 60 * FLAGS.runtime
 

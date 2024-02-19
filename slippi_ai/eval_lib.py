@@ -40,6 +40,7 @@ class Agent:
       controller: melee.Controller,
       opponent_port: int,
       policy: policies.Policy,
+      config: dict,  # use train.Config instead
       embed_controller: embed.StructEmbedding[Controller] = embed.embed_controller_discrete,
       console_delay: int = 0,
       sample_kwargs: dict = {},
@@ -48,6 +49,7 @@ class Agent:
     self._port = controller.port
     self._players = (self._port, opponent_port)
     self._policy = policy
+    self.config = config
     self._embed_controller = embed_controller
 
     delay = policy.delay - console_delay
@@ -112,16 +114,19 @@ def build_agent(
     console_delay: int = 0,
 ) -> Agent:
   if path:
-    policy = saving.load_policy_from_disk(path)
+    state = saving.load_state_from_disk(path)
   elif tag:
-    policy = saving.load_policy_from_s3(tag)
+    state = saving.load_state_from_s3(tag)
   else:
     raise ValueError('Must specify one of "tag" or "path".')
+
+  policy = saving.load_policy_from_state(state)
 
   return Agent(
       controller=controller,
       opponent_port=opponent_port,
       policy=policy,
+      config=state['config'],
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
   )
@@ -163,6 +168,9 @@ def get_player(
   elif type == 'cpu':
     return dolphin.CPU(character, level)
 
+name_to_character = {
+    char.name.lower(): char for char in melee.Character
+}
 
 class Environment(dolphin.Dolphin):
 
