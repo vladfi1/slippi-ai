@@ -61,13 +61,6 @@ def policy_from_config(config: dict) -> policies.Policy:
       **config['policy'],
   )
 
-def build_policy_from_sacred(tag: str) -> policies.Policy:
-  db = s3_lib.get_sacred_db()
-  run = db.runs.find_one({'config.tag': tag}, ['config'])
-  if run is None:
-    raise ValueError(f"Tag {tag} not found in db.")
-  return policy_from_config(run['config'])
-
 def load_policy_from_state(state: dict) -> policies.Policy:
   policy = policy_from_config(state['config'])
 
