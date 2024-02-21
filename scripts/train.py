@@ -328,6 +328,7 @@ WANDB = ff.DEFINE_dict(
     group=ff.String('imitation'),
     name=ff.String(None),
     notes=ff.String(None),
+    dir=ff.String(None, 'directory to save logs'),
 )
 
 def main(_):
