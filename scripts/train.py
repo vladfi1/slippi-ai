@@ -82,6 +82,15 @@ def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
 
 def train(config: Config):
+  tag = config.tag or train_lib.get_experiment_tag()
+  # Might want to use wandb.run.dir instead, but it doesn't seem
+  # to be set properly even when we try to override it.
+  expt_dir = config.expt_dir
+  if expt_dir is None:
+    expt_dir = f'experiments/{tag}'
+    os.makedirs(expt_dir, exist_ok=True)
+  logging.info('experiment directory: %s', expt_dir)
+
   runtime = config.runtime
 
   embed_controller = embed.embed_controller_discrete  # TODO: configure
@@ -165,11 +174,6 @@ def train(config: Config):
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  tag = config.tag or train_lib.get_experiment_tag()
-  expt_dir = config.expt_dir
-  if expt_dir is None:
-    expt_dir = f'experiments/{tag}'
-    os.makedirs(expt_dir, exist_ok=True)
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
   save_to_s3 = config.save_to_s3
