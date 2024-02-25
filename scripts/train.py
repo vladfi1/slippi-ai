@@ -67,6 +67,7 @@ class Config:
 
   policy: policies.PolicyConfig = _field(policies.PolicyConfig)
 
+  expt_root: str = 'experiments'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
@@ -87,8 +88,9 @@ def train(config: Config):
   # to be set properly even when we try to override it.
   expt_dir = config.expt_dir
   if expt_dir is None:
-    expt_dir = f'experiments/{tag}'
+    expt_dir = os.path.join(config.expt_root, tag)
     os.makedirs(expt_dir, exist_ok=True)
+  config.expt_dir = expt_dir  # for wandb logging
   logging.info('experiment directory: %s', expt_dir)
 
   runtime = config.runtime
