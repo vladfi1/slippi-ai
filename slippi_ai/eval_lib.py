@@ -69,9 +69,15 @@ class Agent:
 
     self._sample = tf.function(sample_unbatched)
     # self._sample = sample_unbatched
-    self._hidden_state = policy.initial_state(1)
+    self.reset_state()
+
+  def reset_state(self):
+    self._hidden_state = self._policy.initial_state(1)
 
   def step(self, gamestate: melee.GameState):
+    if gamestate.frame == -123:
+      self.reset_state()
+
     game = get_game(gamestate, ports=self._players)
 
     state_action = embed.StateAction(
