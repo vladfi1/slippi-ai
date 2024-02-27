@@ -56,6 +56,7 @@ class RolloutWorker:
           state_action = embed.StateAction(
               state=game,
               action=agent._prev_controller,
+              name=agent._name_code,
           )
           state_actions[port].append(state_action)
           actions[port] = agent.step(game, needs_reset)
