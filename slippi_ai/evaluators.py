@@ -92,7 +92,11 @@ class RemoteEvaluator:
       agent_kwargs: tp.Mapping[Port, dict],
       dolphin_kwargs: dict,
       num_steps_per_rollout: int,
+      use_gpu: bool = False,
   ):
+    if not use_gpu:
+      eval_lib.disable_gpus()
+
     env = dolphin.Dolphin(**dolphin_kwargs)
 
     players = env._players
