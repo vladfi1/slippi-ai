@@ -39,8 +39,9 @@ def main(_):
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
   )
 
-  stats = evaluator.rollout({})
-  print(stats)
+  stats, timings = evaluator.rollout({})
+  print('rewards:', stats)
+  print('timings:', timings)
 
 if __name__ == '__main__':
   app.run(main)

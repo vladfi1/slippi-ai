@@ -38,7 +38,7 @@ class RolloutWorker:
     self._agents = agents
     self._last_gamestate: tp.Optional[melee.GameState] = None
 
-  def rollout(self) -> tp.Mapping[Port, Trajectory]:
+  def rollout(self) -> tuple[tp.Mapping[Port, Trajectory], dict]:
     if self._last_gamestate is None:
       self._last_gamestate = self._env.step()
 
@@ -48,14 +48,20 @@ class RolloutWorker:
     }
     is_resetting: list[bool] = []
 
+    step_profiler = utils.Profiler()
+    # Maybe use separate profilers for each agent?
+    agent_profiler = utils.Profiler()
+
     for _ in range(self._num_steps_per_rollout):
       is_resetting.append(gamestate.frame == -123)
-      for port, agent in self._agents.items():
-        prev_action = agent._prev_controller
-        state = agent.step(gamestate).state
-        state_actions[port].append(embed.StateAction(state, prev_action))
+      with agent_profiler:
+        for port, agent in self._agents.items():
+          prev_action = agent._prev_controller
+          state = agent.step(gamestate).state
+          state_actions[port].append(embed.StateAction(state, prev_action))
 
-      gamestate = self._env.step()
+      with step_profiler:
+        gamestate = self._env.step()
 
     # TODO: overlap trajectories by one frame
     self._last_gamestate = gamestate
@@ -68,7 +74,12 @@ class RolloutWorker:
       frames = data.Frames(state_action=state_action, reward=rewards)
       trajectories[port] = Trajectory(frames, is_resetting)
 
-    return trajectories
+    timings = {
+        'step': step_profiler.mean_time(),
+        'agent': agent_profiler.mean_time(),
+    }
+
+    return trajectories, timings
 
   def update_variables(
       self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
@@ -130,11 +141,12 @@ class RemoteEvaluator:
   def rollout(
       self,
       policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
-  ) -> tp.Mapping[Port, RolloutMetrics]:
+  ) -> tuple[tp.Mapping[Port, RolloutMetrics], dict]:
     with self._lock:
       self._rollout_worker.update_variables(policy_vars)
-      trajectories = self._rollout_worker.rollout()
-      return {
+      trajectories, timings = self._rollout_worker.rollout()
+      metrics = {
           port: RolloutMetrics.from_trajectory(trajectory)
           for port, trajectory in trajectories.items()
       }
+      return metrics, timings
