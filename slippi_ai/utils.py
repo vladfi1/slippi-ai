@@ -56,6 +56,12 @@ def dynamic_rnn(core, inputs, initial_state):
   outputs = tf.nest.map_structure(lambda ta: ta.stack(), outputs)
   return outputs, state
 
+def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
+  """Broadcasting tf.where, with cond of shape [B]."""
+  rank = len(x.shape)
+  cond = tf.expand_dims(cond, list(range(1, rank)))
+  return tf.where(cond, x, y)
+
 class Profiler:
   def __init__(self):
     self.cumtime = 0

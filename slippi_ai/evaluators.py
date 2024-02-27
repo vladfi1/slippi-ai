@@ -55,7 +55,7 @@ class RolloutWorker:
       is_resetting.append(gamestate.frame == -123)
       with agent_profiler:
         for port, agent in self._agents.items():
-          prev_action = agent._prev_controller
+          prev_action = agent._agent._prev_controller
           state = agent.step(gamestate).state
           state_actions[port].append(embed.StateAction(state, prev_action))
 

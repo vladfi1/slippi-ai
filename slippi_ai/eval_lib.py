@@ -1,13 +1,15 @@
+import functools
 from collections import deque
 import multiprocessing as mp
 from typing import Callable, Mapping, Optional, Tuple
 
+import numpy as np
 import fancyflags as ff
 import tensorflow as tf
 
 import melee
 
-from slippi_ai import embed, policies, dolphin, saving, data
+from slippi_ai import embed, policies, dolphin, saving, data, utils
 from slippi_ai.types import Controller
 from slippi_db.parse_libmelee import get_game
 
@@ -31,58 +33,52 @@ def send_controller(controller: melee.Controller, controller_state: Controller):
   controller.tilt_analog(melee.Button.BUTTON_C, c_stick.x, c_stick.y)
   controller.press_shoulder(melee.Button.BUTTON_L, controller_state.shoulder)
 
-class Agent:
+
+class RawAgent:
   """Wraps a Policy to track hidden state."""
 
   def __init__(
       self,
-      controller: melee.Controller,
-      opponent_port: int,
       policy: policies.Policy,
-      config: dict,  # use train.Config instead
+      batch_size: int,
       console_delay: int = 0,
       sample_kwargs: dict = {},
       compile: bool = True,
   ):
-    self._controller = controller
-    self._port = controller.port
-    self._players = (self._port, opponent_port)
     self._policy = policy
-    self.config = config
     self._embed_controller = policy.controller_embedding
+    self._batch_size = batch_size
 
     delay = policy.delay - console_delay
     self._controller_queue = deque(maxlen=delay+1)
     default_controller = self._embed_controller.decode(
-        self._embed_controller.dummy([]))
+        self._embed_controller.dummy([batch_size]))
     self._controller_queue.extend([default_controller] * delay)
     self._prev_controller = default_controller
 
-    def sample_unbatched(state_action, prev_state):
-      batched_state_action = tf.nest.map_structure(
-          lambda x: tf.expand_dims(x, 0), state_action)
-      batched_action, next_state = policy.sample(
-          batched_state_action, prev_state, **sample_kwargs)
-      action = tf.nest.map_structure(
-          lambda x: tf.squeeze(x, 0), batched_action)
-      return action, next_state
+    initial_state = policy.initial_state(batch_size)
+
+    def sample(
+        state_action: embed.StateAction,
+        prev_state: policies.RecurrentState,
+        needs_reset: tf.Tensor,
+    ) -> tuple[embed.Action, policies.RecurrentState]:
+      prev_state = tf.nest.map_structure(
+          lambda x, y: utils.where(needs_reset, x, y),
+          initial_state, prev_state)
+      return policy.sample(state_action, prev_state, **sample_kwargs)
 
     if compile:
-      self._sample = tf.function(sample_unbatched)
-    else:
-      self._sample = sample_unbatched
+      sample = tf.function(sample)
+    self._sample = sample
 
-    self.reset_state()
+    self._hidden_state = self._policy.initial_state(batch_size)
 
-  def reset_state(self):
-    self._hidden_state = self._policy.initial_state(1)
-
-  def step(self, gamestate: melee.GameState) -> embed.StateAction:
-    if gamestate.frame == -123:
-      self.reset_state()
-
-    game = get_game(gamestate, ports=self._players)
-
+  def step(
+      self,
+      game: embed.StateAction,
+      needs_reset: np.ndarray
+  ) -> embed.StateAction:
     state_action = embed.StateAction(
         state=game,
         action=self._prev_controller,
@@ -93,7 +89,7 @@ class Agent:
     # Sample an action.
     action: embed.Action
     action, self._hidden_state = self._sample(
-        state_action, self._hidden_state)
+        state_action, self._hidden_state, needs_reset)
     action = tf.nest.map_structure(lambda t: t.numpy(), action)
 
     # decode un-discretizes the discretized components (x/y axis and shoulder)
@@ -103,11 +99,47 @@ class Agent:
     # Push the action into the queue and pop the current action.
     self._controller_queue.appendleft(sampled_controller)
     delayed_controller = self._controller_queue.pop()
-    send_controller(self._controller, delayed_controller)
 
     # Return the action actually taken, in decoded form.
-    return embed.StateAction(game, delayed_controller)
+    return delayed_controller
 
+  def step_unbatched(
+      self,
+      game: embed.StateAction,
+      needs_reset: bool
+  ) -> embed.StateAction:
+    assert self._batch_size == 1
+    batched_game = tf.nest.map_structure(
+        lambda x: tf.expand_dims(x, 0), game)
+    batched_needs_reset = np.array([needs_reset])
+    batched_state_action = self.step(batched_game, batched_needs_reset)
+
+class Agent:
+  """Wraps a Policy to interact with Dolphin."""
+
+  def __init__(
+      self,
+      controller: melee.Controller,
+      opponent_port: int,
+      config: dict,  # use train.Config instead
+      **agent_kwargs,
+  ):
+    self._controller = controller
+    self._port = controller.port
+    self._players = (self._port, opponent_port)
+    self.config = config
+
+    self._agent = RawAgent(batch_size=1, **agent_kwargs)
+
+  def step(self, gamestate: melee.GameState) -> embed.StateAction:
+    needs_reset = np.array([gamestate.frame == -123])
+    game = get_game(gamestate, ports=self._players)
+    game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
+
+    action = self._agent.step(game, needs_reset)
+    action = utils.map_nt(lambda x: x.item(), action)
+    send_controller(self._controller, action)
+    return embed.StateAction(state=game, action=action)
 
 AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
@@ -150,6 +182,7 @@ def build_agent(
     tag: Optional[str] = None,
     sample_temperature: float = 1.0,
     console_delay: int = 0,
+    **agent_kwargs,
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
@@ -162,6 +195,7 @@ def build_agent(
       config=state['config'],
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
+      **agent_kwargs,
   )
 
 DOLPHIN_FLAGS = dict(
