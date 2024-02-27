@@ -40,7 +40,6 @@ class Agent:
       opponent_port: int,
       policy: policies.Policy,
       config: dict,  # use train.Config instead
-      embed_controller: embed.StructEmbedding[Controller] = embed.embed_controller_discrete,
       console_delay: int = 0,
       sample_kwargs: dict = {},
   ):
@@ -49,11 +48,12 @@ class Agent:
     self._players = (self._port, opponent_port)
     self._policy = policy
     self.config = config
-    self._embed_controller = embed_controller
+    self._embed_controller = policy.controller_embedding
 
     delay = policy.delay - console_delay
     self._controller_queue = deque(maxlen=delay+1)
-    default_controller = embed_controller.decode(embed_controller.dummy([]))
+    default_controller = self._embed_controller.decode(
+        self._embed_controller.dummy([]))
     self._controller_queue.extend([default_controller] * delay)
     self._prev_controller = default_controller
 
