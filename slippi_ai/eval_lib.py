@@ -42,6 +42,7 @@ class Agent:
       config: dict,  # use train.Config instead
       console_delay: int = 0,
       sample_kwargs: dict = {},
+      compile: bool = True,
   ):
     self._controller = controller
     self._port = controller.port
@@ -66,8 +67,11 @@ class Agent:
           lambda x: tf.squeeze(x, 0), batched_action)
       return action, next_state
 
-    self._sample = tf.function(sample_unbatched)
-    # self._sample = sample_unbatched
+    if compile:
+      self._sample = tf.function(sample_unbatched)
+    else:
+      self._sample = sample_unbatched
+
     self.reset_state()
 
   def reset_state(self):
@@ -109,6 +113,7 @@ AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
+    compile=ff.Boolean(True, 'Compile the sample function.'),
 )
 
 def load_state(path: Optional[str], tag: Optional[str]) -> dict:

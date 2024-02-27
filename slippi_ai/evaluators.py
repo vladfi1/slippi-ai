@@ -30,7 +30,6 @@ class RolloutWorker:
     agents: tp.Mapping[Port, eval_lib.Agent],
     env: dolphin.Dolphin,  # TODO: support multiple envs
     num_steps_per_rollout: int,
-    # compile: bool = True,
   ) -> None:
     self._env = env
     self._num_steps_per_rollout = num_steps_per_rollout
