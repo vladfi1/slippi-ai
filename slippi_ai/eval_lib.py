@@ -1,7 +1,5 @@
-import functools
 from collections import deque
-import multiprocessing as mp
-from typing import Callable, Mapping, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import fancyflags as ff
@@ -76,7 +74,7 @@ class RawAgent:
 
   def step(
       self,
-      game: embed.StateAction,
+      game: embed.Game,
       needs_reset: np.ndarray
   ) -> embed.StateAction:
     state_action = embed.StateAction(
@@ -105,14 +103,16 @@ class RawAgent:
 
   def step_unbatched(
       self,
-      game: embed.StateAction,
+      game: embed.Game,
       needs_reset: bool
-  ) -> embed.StateAction:
+  ) -> embed.Action:
     assert self._batch_size == 1
     batched_game = tf.nest.map_structure(
         lambda x: tf.expand_dims(x, 0), game)
     batched_needs_reset = np.array([needs_reset])
-    batched_state_action = self.step(batched_game, batched_needs_reset)
+    batched_action = self.step(batched_game, batched_needs_reset)
+    return tf.nest.map_structure(lambda x: x.item(), batched_action)
+
 
 class Agent:
   """Wraps a Policy to interact with Dolphin."""
@@ -156,22 +156,18 @@ def load_state(path: Optional[str], tag: Optional[str]) -> dict:
   else:
     raise ValueError('Must specify one of "tag" or "path".')
 
-def agent_from_config(
-    config: dict,
-    controller: melee.Controller,
-    opponent_port: int,
+def build_raw_agent(
+    state: dict,
     sample_temperature: float = 1.0,
     console_delay: int = 0,
+    **agent_kwargs,
 ) -> Agent:
-  policy = saving.policy_from_config(config)
-  saving.init_policy_vars(policy)
-  return Agent(
-      controller=controller,
-      opponent_port=opponent_port,
+  policy = saving.load_policy_from_state(state)
+  return RawAgent(
       policy=policy,
-      config=config,
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
+      **agent_kwargs,
   )
 
 def build_agent(

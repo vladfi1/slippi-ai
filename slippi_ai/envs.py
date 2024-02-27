@@ -1,6 +1,7 @@
 import multiprocessing as mp
-from typing import Mapping, Tuple
+from typing import Mapping, Tuple, Optional
 
+from melee import GameState
 from slippi_ai import dolphin
 
 from slippi_ai.eval_lib import send_controller
@@ -8,7 +9,11 @@ from slippi_ai.types import Controller, Game
 from slippi_ai.reward import get_reward
 from slippi_db.parse_libmelee import get_game
 
+def is_initial_frame(gamestate: GameState) -> bool:
+  return gamestate.frame == -123
+
 class Environment(dolphin.Dolphin):
+  """Wraps dolphin to provide an RL interface."""
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
@@ -22,37 +27,44 @@ class Environment(dolphin.Dolphin):
       if isinstance(self._players[port], dolphin.AI):
         self._opponents[port] = opponent_port
 
-    # Note that this may do some menuing.
-    self._prev_state = super().step()
+    self._prev_state: Optional[GameState] = None
 
-  def current_state(self) -> Mapping[int, Game]:
-    results = {}
+  def current_state(self) -> tuple[Mapping[int, Game], bool]:
+    if self._prev_state is None:
+      self._prev_state = super().step()
+
+    needs_reset = is_initial_frame(self._prev_state)
+
+    games = {}
     for port, opponent_port in self._opponents.items():
-      results[port] = get_game(self._prev_state, (port, opponent_port))
-    return results
+      games[port] = get_game(self._prev_state, (port, opponent_port))
+
+    return games, needs_reset
 
   def step(
     self,
     controllers: Mapping[int, Controller],
-  ) -> Mapping[int, Tuple[Game, float]]:
-    """Send controllers for each AI. Return the next state and reward."""
+  ) -> tuple[Mapping[int, Game], bool]:
+    """Send controllers for each AI. Return the next state."""
     for port, controller in controllers.items():
       send_controller(self.controllers[port], controller)
 
-    gamestate = super().step()
+    # TODO: compute reward?
+    self._prev_state = super().step()
+    return self.current_state()
 
-    results = {}
+    # results = {}
 
-    for port, opponent_port in self._opponents.items():
-      game = get_game(gamestate, (port, opponent_port))
-      reward = get_reward(
-          self._prev_state, gamestate,
-          own_port=port, opponent_port=opponent_port)
-      results[port] = (game, reward)  # Frames?
+    # for port, opponent_port in self._opponents.items():
+    #   game = get_game(gamestate, (port, opponent_port))
+    #   # TODO: configure damage ratio
+    #   reward = get_reward(
+    #       self._prev_state, gamestate,
+    #       own_port=port, opponent_port=opponent_port)
+    #   results[port] = (game, reward)
 
-    # TODO: check whether the game was over.
-    self._prev_state = gamestate
-    return results
+    # self._prev_state = gamestate
+    # return results
 
 
 def run_env(init_kwargs, conn):

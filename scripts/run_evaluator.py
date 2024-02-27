@@ -35,7 +35,7 @@ def main(_):
   port = 1
   evaluator = evaluators.RemoteEvaluator(
       agent_kwargs={port: agent_kwargs},
-      dolphin_kwargs=env_kwargs,
+      env_kwargs=env_kwargs,
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
   )
 

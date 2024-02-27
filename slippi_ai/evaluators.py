@@ -5,19 +5,18 @@ import typing as tp
 
 import numpy as np
 
-import melee
-
+from slippi_ai import envs as env_lib
 from slippi_ai import (
     embed,
     data,
     eval_lib,
-    dolphin,
     reward,
     utils,
 )
 
 Port = int
 
+# Mimics data.Batch
 class Trajectory(tp.NamedTuple):
   frames: data.Frames
   is_resetting: bool
@@ -27,21 +26,17 @@ class RolloutWorker:
 
   def __init__(
     self,
-    agents: tp.Mapping[Port, eval_lib.Agent],
-    env: dolphin.Dolphin,  # TODO: support multiple envs
+    agents: tp.Mapping[Port, eval_lib.RawAgent],
+    env: env_lib.Environment,  # TODO: support multiple envs
     num_steps_per_rollout: int,
   ) -> None:
     self._env = env
     self._num_steps_per_rollout = num_steps_per_rollout
 
     self._agents = agents
-    self._last_gamestate: tp.Optional[melee.GameState] = None
 
   def rollout(self) -> tuple[tp.Mapping[Port, Trajectory], dict]:
-    if self._last_gamestate is None:
-      self._last_gamestate = self._env.step()
-
-    gamestate = self._last_gamestate
+    gamestates, needs_reset = self._env.current_state()
     state_actions: dict[Port, list[embed.StateAction]] = {
         port: [] for port in self._agents
     }
@@ -52,18 +47,22 @@ class RolloutWorker:
     agent_profiler = utils.Profiler()
 
     for _ in range(self._num_steps_per_rollout):
-      is_resetting.append(gamestate.frame == -123)
+      is_resetting.append(needs_reset)
       with agent_profiler:
+        actions: dict[Port, embed.Action] = {}
         for port, agent in self._agents.items():
-          prev_action = agent._agent._prev_controller
-          state = agent.step(gamestate).state
-          state_actions[port].append(embed.StateAction(state, prev_action))
+          game = gamestates[port]
+          state_action = embed.StateAction(
+              state=game,
+              action=agent._prev_controller,
+          )
+          state_actions[port].append(state_action)
+          actions[port] = agent.step_unbatched(game, needs_reset)
 
       with step_profiler:
-        gamestate = self._env.step()
+        gamestates, needs_reset = self._env.step(actions)
 
     # TODO: overlap trajectories by one frame
-    self._last_gamestate = gamestate
     is_resetting = np.array(is_resetting)
 
     trajectories = {}
@@ -100,37 +99,29 @@ class RemoteEvaluator:
   def __init__(
       self,
       agent_kwargs: tp.Mapping[Port, dict],
-      dolphin_kwargs: dict,
+      env_kwargs: dict,
       num_steps_per_rollout: int,
       use_gpu: bool = False,
   ):
     if not use_gpu:
       eval_lib.disable_gpus()
 
-    env = dolphin.Dolphin(**dolphin_kwargs)
-
-    players = env._players
-    assert len(players) == 2
-
-    # maps port to opponent port
-    opponents = dict(zip(players, reversed(players)))
-    ai_ports = [
-        port for port, player in players.items()
-        if isinstance(player, dolphin.AI)]
-    assert set(agent_kwargs) == set(ai_ports)
+    env = env_lib.Environment(**env_kwargs)
+    opponents = env._opponents
+    assert set(agent_kwargs) == set(opponents)
 
     agents = {
-        port: eval_lib.build_agent(
-            controller=env.controllers[port],
-            opponent_port=opponents[port],
-            console_delay=dolphin_kwargs['online_delay'],
+        port: eval_lib.build_raw_agent(
+            console_delay=env_kwargs['online_delay'],
+            batch_size=1,
             **kwargs,
         )
         for port, kwargs in agent_kwargs.items()
     }
 
-    for port, agent in agents.items():
-      eval_lib.update_character(players[port], agent.config)
+    for port, kwargs in agent_kwargs.items():
+      eval_lib.update_character(
+          env._players[port], kwargs['state']['config'])
 
     self._rollout_worker = RolloutWorker(
         agents, env, num_steps_per_rollout)
