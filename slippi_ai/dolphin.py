@@ -153,6 +153,9 @@ class Dolphin:
   def stop(self):
     self.console.stop()
 
+  def __del__(self):
+    self.stop()
+
   def multi_step(self, n: int):
     for _ in range(n):
       self.step()
