@@ -147,13 +147,13 @@ def train_test_split(
 
   return train_replays, test_replays
 
-_name_to_character = {c.name.lower(): c for c in melee.Character}
+name_to_character = {c.name.lower(): c for c in melee.Character}
 
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   if chars == 'all':
     return None
   chars = chars.split(',')
-  return [_name_to_character[c] for c in chars]
+  return [name_to_character[c] for c in chars]
 
 
 def game_len(game: Game):

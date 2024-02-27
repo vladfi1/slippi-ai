@@ -61,16 +61,20 @@ def policy_from_config(config: dict) -> policies.Policy:
       **config['policy'],
   )
 
-def load_policy_from_state(state: dict) -> policies.Policy:
-  policy = policy_from_config(state['config'])
-
-  # create tensorflow Variables
+def init_policy_vars(policy: policies.Policy):
   dummy_state_action = policy.embed_state_action.dummy(
     [2 + policy.delay, 1])
   dummy_reward = tf.zeros([1 + policy.delay, 1], tf.float32)
   dummy_frames = data.Frames(dummy_state_action, dummy_reward)
   initial_state = policy.initial_state(1)
+
+  # loss intializes value function, which isn't used during sampling
+  # but is needed for setting the policy vars
   policy.loss(dummy_frames, initial_state)
+
+def load_policy_from_state(state: dict) -> policies.Policy:
+  policy = policy_from_config(state['config'])
+  init_policy_vars(policy)
 
   # assign using saved params
   params = state['state']['policy']

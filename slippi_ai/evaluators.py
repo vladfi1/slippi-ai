@@ -7,10 +7,8 @@ import numpy as np
 
 import melee
 
-from slippi_ai.policies import Policy
 from slippi_ai import (
     embed,
-    saving,
     data,
     eval_lib,
     dolphin,
@@ -29,39 +27,15 @@ class RolloutWorker:
 
   def __init__(
     self,
-    policies: tp.Mapping[Port, Policy],
-    configs: tp.Mapping[Port, dict],
+    agents: tp.Mapping[Port, eval_lib.Agent],
     env: dolphin.Dolphin,  # TODO: support multiple envs
     num_steps_per_rollout: int,
     # compile: bool = True,
   ) -> None:
-    players = env._players
-    assert len(players) == 2
-
-    # maps port to opponent port
-    opponents = dict(zip(players, reversed(players)))
-    ai_ports = [
-        port for port, player in players.items()
-        if isinstance(player, dolphin.AI)]
-    assert set(policies) == set(ai_ports)
-
-    self._policies = policies
     self._env = env
     self._num_steps_per_rollout = num_steps_per_rollout
 
-    self._agents = {
-        port: eval_lib.Agent(
-            controller=env.controllers[port],
-            opponent_port=opponents[port],
-            policy=policy,
-            # TODO: configure compile
-            config=configs[port],
-            # This is redundant.
-            embed_controller=policy.controller_embedding,
-        )
-        for port, policy in policies.items()
-    }
-
+    self._agents = agents
     self._last_gamestate: tp.Optional[melee.GameState] = None
 
   def rollout(self) -> tp.Mapping[Port, Trajectory]:
@@ -70,7 +44,7 @@ class RolloutWorker:
 
     gamestate = self._last_gamestate
     state_actions: dict[Port, list[embed.StateAction]] = {
-        port: [] for port in self._policies
+        port: [] for port in self._agents
     }
     is_resetting: list[bool] = []
 
@@ -100,7 +74,8 @@ class RolloutWorker:
       self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
   ):
     for port, values in updates.items():
-      for var, val in zip(self._policies[port].variables, values):
+      policy = self._agents[port]._policy
+      for var, val in zip(policy.variables, values):
         var.assign(val)
 
 class RolloutMetrics(tp.NamedTuple):
@@ -114,19 +89,37 @@ class RemoteEvaluator:
 
   def __init__(
       self,
-      policy_configs: tp.Mapping[Port, dict],
+      agent_kwargs: tp.Mapping[Port, dict],
       dolphin_kwargs: dict,
       num_steps_per_rollout: int,
   ):
-    policies = {
-        port: saving.policy_from_config(config)
-        for port, config in policy_configs.items()
-    }
-
     env = dolphin.Dolphin(**dolphin_kwargs)
 
+    players = env._players
+    assert len(players) == 2
+
+    # maps port to opponent port
+    opponents = dict(zip(players, reversed(players)))
+    ai_ports = [
+        port for port, player in players.items()
+        if isinstance(player, dolphin.AI)]
+    assert set(agent_kwargs) == set(ai_ports)
+
+    agents = {
+        port: eval_lib.build_agent(
+            controller=env.controllers[port],
+            opponent_port=opponents[port],
+            console_delay=dolphin_kwargs['online_delay'],
+            **kwargs,
+        )
+        for port, kwargs in agent_kwargs.items()
+    }
+
+    for port, agent in agents.items():
+      eval_lib.update_character(players[port], agent.config)
+
     self._rollout_worker = RolloutWorker(
-        policies, policy_configs, env, num_steps_per_rollout)
+        agents, env, num_steps_per_rollout)
 
     self._lock = threading.Lock()
 

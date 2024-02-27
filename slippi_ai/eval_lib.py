@@ -7,7 +7,7 @@ import tensorflow as tf
 
 import melee
 
-from slippi_ai import embed, policies, dolphin, saving
+from slippi_ai import embed, policies, dolphin, saving, data
 from slippi_ai.types import Controller
 from slippi_db.parse_libmelee import get_game
 
@@ -111,21 +111,43 @@ AGENT_FLAGS = dict(
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
 )
 
+def load_state(path: Optional[str], tag: Optional[str]) -> dict:
+  if path:
+    return saving.load_state_from_disk(path)
+  elif tag:
+    return saving.load_state_from_s3(tag)
+  else:
+    raise ValueError('Must specify one of "tag" or "path".')
+
+def agent_from_config(
+    config: dict,
+    controller: melee.Controller,
+    opponent_port: int,
+    sample_temperature: float = 1.0,
+    console_delay: int = 0,
+) -> Agent:
+  policy = saving.policy_from_config(config)
+  saving.init_policy_vars(policy)
+  return Agent(
+      controller=controller,
+      opponent_port=opponent_port,
+      policy=policy,
+      config=config,
+      console_delay=console_delay,
+      sample_kwargs=dict(temperature=sample_temperature),
+  )
+
 def build_agent(
     controller: melee.Controller,
     opponent_port: int,
+    state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
     sample_temperature: float = 1.0,
     console_delay: int = 0,
 ) -> Agent:
-  if path:
-    state = saving.load_state_from_disk(path)
-  elif tag:
-    state = saving.load_state_from_s3(tag)
-  else:
-    raise ValueError('Must specify one of "tag" or "path".')
-
+  if state is None:
+    state = load_state(path, tag)
   policy = saving.load_policy_from_state(state)
 
   return Agent(
@@ -174,6 +196,18 @@ def get_player(
   elif type == 'cpu':
     return dolphin.CPU(character, level)
 
-name_to_character = {
-    char.name.lower(): char for char in melee.Character
-}
+
+def update_character(player: dolphin.AI, config: dict):
+  allowed_characters = config['dataset']['allowed_characters']
+  character_list = data.chars_from_string(allowed_characters)
+  if character_list is None or player.character in character_list:
+    return
+
+  if len(character_list) == 1:
+    # If there's only one option, then go with that.
+    player.character = character_list[0]
+    print('Setting character to', player.character)
+  else:
+    # Could use character_list[0] here, but that might lead to silently never
+    # picking the other options.
+    raise ValueError(f"Character must be one of {character_list}")

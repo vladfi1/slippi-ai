@@ -44,14 +44,7 @@ def main(_):
       )
       agents.append(agent)
 
-      character_str = agent.config['dataset']['allowed_characters']
-      if ',' in character_str:
-        character_strs = character_str.split(',')
-        if player.character.name.lower() not in character_strs:
-          raise ValueError(f"Character must be one of {character_str}")
-      elif character_str != 'all':
-        print('Setting character to', character_str)
-        player.character = eval_lib.name_to_character[character_str]
+      eval_lib.update_character(player, agent.config)
 
   total_frames = 60 * FLAGS.runtime
 
