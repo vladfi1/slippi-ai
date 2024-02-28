@@ -2,6 +2,7 @@ import itertools
 import multiprocessing as mp
 from typing import Mapping, Optional
 
+import portpicker
 import ray
 from melee import GameState
 
@@ -69,17 +70,22 @@ class Environment:
     # self._prev_state = gamestate
     # return results
 
+def get_free_ports(n: int) -> list[int]:
+  ports = [portpicker.pick_unused_port() for _ in range(n)]
+  if len(ports) < n:
+    raise ValueError('Not enough free ports')
+  return ports
+
 class BatchedEnvironment:
   """A set of synchronous environments with batched input/output."""
 
   def __init__(self, num_envs: int, env_kwargs: dict):
     self._env_kwargs = env_kwargs
 
-    dolphin_ports = itertools.count(env_kwargs.pop('slippi_port'))
     envs: list[Environment] = []
-    for _ in range(num_envs):
+    for slippi_port in get_free_ports(num_envs):
       kwargs = env_kwargs.copy()
-      kwargs.update(slippi_port=next(dolphin_ports))
+      kwargs.update(slippi_port=slippi_port)
       env = Environment(kwargs)
       envs.append(env)
 
@@ -112,11 +118,10 @@ class AsyncBatchedEnvironment:
   def __init__(self, num_envs: int, dophin_kwargs: dict):
     self._env_kwargs = dophin_kwargs
 
-    dolphin_ports = itertools.count(dophin_kwargs.pop('slippi_port'))
     envs = []
-    for _ in range(num_envs):
+    for slippi_port in get_free_ports(num_envs):
       kwargs = dophin_kwargs.copy()
-      kwargs.update(slippi_port=next(dolphin_ports))
+      kwargs.update(slippi_port=slippi_port)
       env = RemoteEnvironment.remote(kwargs)
       envs.append(env)
 
