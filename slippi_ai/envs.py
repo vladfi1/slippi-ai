@@ -2,9 +2,10 @@ import itertools
 import multiprocessing as mp
 from typing import Mapping, Optional
 
+import ray
 from melee import GameState
-from slippi_ai import dolphin, utils
 
+from slippi_ai import dolphin, utils
 from slippi_ai.eval_lib import send_controller
 from slippi_ai.types import Controller, Game
 from slippi_ai.reward import get_reward
@@ -13,26 +14,27 @@ from slippi_db.parse_libmelee import get_game
 def is_initial_frame(gamestate: GameState) -> bool:
   return gamestate.frame == -123
 
-class Environment(dolphin.Dolphin):
+class Environment:
   """Wraps dolphin to provide an RL interface."""
 
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
+  def __init__(self, dolphin_kwargs: dict):
+    self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
+    self.players = self._dolphin._players
 
-    assert len(self._players) == 2
+    assert len(self.players) == 2
 
     self._opponents: Mapping[int, int] = {}
-    ports = list(self._players)
+    ports = list(self.players)
 
     for port, opponent_port in zip(ports, reversed(ports)):
-      if isinstance(self._players[port], dolphin.AI):
+      if isinstance(self.players[port], dolphin.AI):
         self._opponents[port] = opponent_port
 
     self._prev_state: Optional[GameState] = None
 
   def current_state(self) -> tuple[Mapping[int, Game], bool]:
     if self._prev_state is None:
-      self._prev_state = super().step()
+      self._prev_state = self._dolphin.step()
 
     needs_reset = is_initial_frame(self._prev_state)
 
@@ -48,10 +50,10 @@ class Environment(dolphin.Dolphin):
   ) -> tuple[Mapping[int, Game], bool]:
     """Send controllers for each AI. Return the next state."""
     for port, controller in controllers.items():
-      send_controller(self.controllers[port], controller)
+      send_controller(self._dolphin.controllers[port], controller)
 
     # TODO: compute reward?
-    self._prev_state = super().step()
+    self._prev_state = self._dolphin.step()
     return self.current_state()
 
     # results = {}
@@ -78,7 +80,7 @@ class BatchedEnvironment:
     for _ in range(num_envs):
       kwargs = env_kwargs.copy()
       kwargs.update(slippi_port=next(dolphin_ports))
-      env = Environment(**kwargs)
+      env = Environment(kwargs)
       envs.append(env)
 
     self._envs = envs
@@ -99,8 +101,46 @@ class BatchedEnvironment:
     ]
     return utils.batch_nest_nt(results)
 
+# This would raise an annoying exception when Environment subclassed
+# Dolphin due to ray erroneously calling __del__ on the wrong object.
+# See https://github.com/ray-project/ray/issues/32952
+RemoteEnvironment = ray.remote(Environment)
+
+class AsyncBatchedEnvironment:
+  """A set of asynchronous environments with batched input/output."""
+
+  def __init__(self, num_envs: int, dophin_kwargs: dict):
+    self._env_kwargs = dophin_kwargs
+
+    dolphin_ports = itertools.count(dophin_kwargs.pop('slippi_port'))
+    envs = []
+    for _ in range(num_envs):
+      kwargs = dophin_kwargs.copy()
+      kwargs.update(slippi_port=next(dolphin_ports))
+      env = RemoteEnvironment.remote(kwargs)
+      envs.append(env)
+
+    self._envs = envs
+
+  def current_state(self) -> tuple[Mapping[int, Game], bool]:
+    current_states = ray.get(
+        [env.current_state.remote() for env in self._envs])
+    return utils.batch_nest_nt(current_states)
+
+  def step(
+    self,
+    controllers: Mapping[int, Controller],
+  ) -> tuple[Mapping[int, Game], bool]:
+    get_action = lambda i: utils.map_nt(lambda x: x[i], controllers)
+
+    results = ray.get([
+        env.step.remote(get_action(i))
+        for i, env in enumerate(self._envs)
+    ])
+    return utils.batch_nest_nt(results)
+
 def run_env(init_kwargs, conn):
-  env = Environment(**init_kwargs)
+  env = Environment(init_kwargs)
 
   while True:
     controllers = conn.recv()

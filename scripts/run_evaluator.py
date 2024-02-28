@@ -9,9 +9,10 @@ DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
 ROLLOUT_LENGTH = flags.DEFINE_integer(
     'rollout_length', 60 * 60, 'number of steps per rollout')
 NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
+SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
+ASYNC_ENVS = flags.DEFINE_boolean('async_envs', False, 'Use async environments.')
 
 AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
-SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
 
 def main(_):
   eval_lib.disable_gpus()
@@ -39,6 +40,7 @@ def main(_):
           if isinstance(player, dolphin.AI)},
       env_kwargs=env_kwargs,
       num_envs=NUM_ENVS.value,
+      async_envs=ASYNC_ENVS.value,
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
   )
 

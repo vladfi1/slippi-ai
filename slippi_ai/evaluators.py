@@ -104,6 +104,7 @@ class RemoteEvaluator:
       env_kwargs: dict,
       num_envs: int,
       num_steps_per_rollout: int,
+      async_envs: bool = False,
       use_gpu: bool = False,
   ):
     if not use_gpu:
@@ -124,7 +125,10 @@ class RemoteEvaluator:
           env_kwargs['players'][port],
           kwargs['state']['config'])
 
-    batched_env = env_lib.BatchedEnvironment(num_envs, env_kwargs)
+    env_class = (
+        env_lib.AsyncBatchedEnvironment
+        if async_envs else env_lib.BatchedEnvironment)
+    batched_env = env_class(num_envs, env_kwargs)
 
     self._rollout_worker = RolloutWorker(
         agents, batched_env, num_steps_per_rollout)
