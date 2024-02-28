@@ -11,13 +11,14 @@ ROLLOUT_LENGTH = flags.DEFINE_integer(
 NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
 AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
+SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
 
 def main(_):
   eval_lib.disable_gpus()
 
   players = {
       1: dolphin.AI(),
-      2: dolphin.CPU(),
+      2: dolphin.AI() if SELF_PLAY.value else dolphin.CPU(),
   }
 
   env_kwargs = dict(
@@ -32,9 +33,10 @@ def main(_):
 
   agent_kwargs['state'] = state
 
-  port = 1
   evaluator = evaluators.RemoteEvaluator(
-      agent_kwargs={port: agent_kwargs},
+      agent_kwargs={
+          port: agent_kwargs for port, player in players.items()
+          if isinstance(player, dolphin.AI)},
       env_kwargs=env_kwargs,
       num_envs=NUM_ENVS.value,
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
