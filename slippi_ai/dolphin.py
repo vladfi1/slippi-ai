@@ -93,7 +93,7 @@ class Dolphin:
     atexit.register(console.stop)
     self.console = console
 
-    self.controllers = {}
+    self.controllers: Mapping[int, melee.Controller] = {}
     self._menuing_controllers: list[tuple[melee.Controller, Player]] = []
     self._autostart = True
 

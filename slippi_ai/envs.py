@@ -1,5 +1,6 @@
+import itertools
 import multiprocessing as mp
-from typing import Mapping, Tuple, Optional
+from typing import Mapping, Optional
 
 from melee import GameState
 from slippi_ai import dolphin, utils
@@ -67,9 +68,19 @@ class Environment(dolphin.Dolphin):
     # return results
 
 class BatchedEnvironment:
+  """A set of synchronous environments with batched input/output."""
 
-  def __init__(self, envs: list[Environment]):
-    # TODO: handle env creation and port picking
+  def __init__(self, num_envs: int, env_kwargs: dict):
+    self._env_kwargs = env_kwargs
+
+    dolphin_ports = itertools.count(env_kwargs.pop('slippi_port'))
+    envs: list[Environment] = []
+    for _ in range(num_envs):
+      kwargs = env_kwargs.copy()
+      kwargs.update(slippi_port=next(dolphin_ports))
+      env = Environment(**kwargs)
+      envs.append(env)
+
     self._envs = envs
 
   def current_state(self) -> tuple[Mapping[int, Game], bool]:

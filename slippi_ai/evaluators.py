@@ -29,10 +29,10 @@ class RolloutWorker:
   def __init__(
     self,
     agents: tp.Mapping[Port, eval_lib.RawAgent],
-    envs: list[env_lib.Environment],  # TODO: run envs in parallel
+    batched_env: env_lib.BatchedEnvironment,  # TODO: run envs in parallel
     num_steps_per_rollout: int,
   ) -> None:
-    self._env = env_lib.BatchedEnvironment(envs)
+    self._env = batched_env
     self._num_steps_per_rollout = num_steps_per_rollout
     self._agents = agents
 
@@ -124,20 +124,10 @@ class RemoteEvaluator:
           env_kwargs['players'][port],
           kwargs['state']['config'])
 
-
-    dolphin_ports = itertools.count(env_kwargs.pop('slippi_port'))
-
-    envs = []
-    for _ in range(num_envs):
-      kwargs = env_kwargs.copy()
-      kwargs.update(slippi_port=next(dolphin_ports))
-      env = env_lib.Environment(**kwargs)
-      opponents = env._opponents
-      assert set(agent_kwargs) == set(opponents)
-      envs.append(env)
+    batched_env = env_lib.BatchedEnvironment(num_envs, env_kwargs)
 
     self._rollout_worker = RolloutWorker(
-        agents, envs, num_steps_per_rollout)
+        agents, batched_env, num_steps_per_rollout)
 
     self._lock = threading.Lock()
 
