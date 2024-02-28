@@ -2,13 +2,13 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
-from slippi_ai import eval_lib, dolphin
-from slippi_ai import evaluators
+from slippi_ai import eval_lib, dolphin, utils, evaluators
 
 DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
 
 ROLLOUT_LENGTH = flags.DEFINE_integer(
     'rollout_length', 60 * 60, 'number of steps per rollout')
+NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
 AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
 
@@ -36,12 +36,20 @@ def main(_):
   evaluator = evaluators.RemoteEvaluator(
       agent_kwargs={port: agent_kwargs},
       env_kwargs=env_kwargs,
+      num_envs=NUM_ENVS.value,
       num_steps_per_rollout=ROLLOUT_LENGTH.value,
   )
 
-  stats, timings = evaluator.rollout({})
+  timer = utils.Profiler()
+  with timer:
+    stats, timings = evaluator.rollout({})
+
   print('rewards:', stats)
   print('timings:', timings)
+
+  num_frames = ROLLOUT_LENGTH.value * NUM_ENVS.value
+  fps = num_frames / timer.cumtime
+  print(f'fps: {fps:.2f}')
 
 if __name__ == '__main__':
   app.run(main)

@@ -2,7 +2,7 @@ import multiprocessing as mp
 from typing import Mapping, Tuple, Optional
 
 from melee import GameState
-from slippi_ai import dolphin
+from slippi_ai import dolphin, utils
 
 from slippi_ai.eval_lib import send_controller
 from slippi_ai.types import Controller, Game
@@ -66,6 +66,27 @@ class Environment(dolphin.Dolphin):
     # self._prev_state = gamestate
     # return results
 
+class BatchedEnvironment:
+
+  def __init__(self, envs: list[Environment]):
+    # TODO: handle env creation and port picking
+    self._envs = envs
+
+  def current_state(self) -> tuple[Mapping[int, Game], bool]:
+    current_states = [env.current_state() for env in self._envs]
+    return utils.batch_nest_nt(current_states)
+
+  def step(
+    self,
+    controllers: Mapping[int, Controller],
+  ) -> tuple[Mapping[int, Game], bool]:
+    get_action = lambda i: utils.map_nt(lambda x: x[i], controllers)
+
+    results = [
+        env.step(get_action(i))
+        for i, env in enumerate(self._envs)
+    ]
+    return utils.batch_nest_nt(results)
 
 def run_env(init_kwargs, conn):
   env = Environment(**init_kwargs)
