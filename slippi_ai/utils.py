@@ -125,13 +125,20 @@ def to_numpy(x) -> np.ndarray:
   return x
 
 def map_nt(f, *nt: T) -> T:
-  """Map over nested tuples.
+  """Map over nested tuples and dicts.
 
   More efficient than tf/tree map_structure.
   """
   t = type(nt[0])
+  if t is tuple:
+    return tuple([map_nt(f, *vs) for vs in zip(*nt)])
   if issubclass(t, tuple):
     return t(*[map_nt(f, *vs) for vs in zip(*nt)])
+  if issubclass(t, dict):
+    return {k: map_nt(f, *[v[k] for v in nt]) for k in nt[0].keys()}
+  if t is list:
+    return [map_nt(f, *vs) for vs in zip(*nt)]
+  # Not a nest.
   return f(*nt)
 
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
