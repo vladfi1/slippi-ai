@@ -1,4 +1,5 @@
 from collections import deque
+import threading, queue
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -7,8 +8,10 @@ import tensorflow as tf
 
 import melee
 
-from slippi_ai import embed, policies, dolphin, saving, data, utils
-from slippi_ai.types import Controller
+from slippi_ai import (
+  embed, policies, dolphin, saving, data, utils, tf_utils
+)
+from slippi_ai.controller_lib import send_controller
 from slippi_db.parse_libmelee import get_game
 
 def disable_gpus():
@@ -19,20 +22,8 @@ Sample = Callable[
     [embed.StateAction, policies.RecurrentState],
     Tuple[embed.Action, policies.RecurrentState]]
 
-def send_controller(controller: melee.Controller, controller_state: Controller):
-  for b in embed.LEGAL_BUTTONS:
-    if getattr(controller_state.buttons, b.value):
-      controller.press_button(b)
-    else:
-      controller.release_button(b)
-  main_stick = controller_state.main_stick
-  controller.tilt_analog(melee.Button.BUTTON_MAIN, main_stick.x, main_stick.y)
-  c_stick = controller_state.c_stick
-  controller.tilt_analog(melee.Button.BUTTON_C, c_stick.x, c_stick.y)
-  controller.press_shoulder(melee.Button.BUTTON_L, controller_state.shoulder)
 
-
-class RawAgent:
+class BasicAgent:
   """Wraps a Policy to track hidden state."""
 
   def __init__(
@@ -40,7 +31,6 @@ class RawAgent:
       policy: policies.Policy,
       batch_size: int,
       name_code: int,
-      console_delay: int = 0,
       sample_kwargs: dict = {},
       compile: bool = True,
   ):
@@ -49,11 +39,8 @@ class RawAgent:
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
 
-    delay = policy.delay - console_delay
-    self._controller_queue = deque(maxlen=delay+1)
     default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
-    self._controller_queue.extend([default_controller] * delay)
     self._prev_controller = default_controller
 
     initial_state = policy.initial_state(batch_size)
@@ -64,13 +51,36 @@ class RawAgent:
         needs_reset: tf.Tensor,
     ) -> tuple[embed.Action, policies.RecurrentState]:
       prev_state = tf.nest.map_structure(
-          lambda x, y: utils.where(needs_reset, x, y),
+          lambda x, y: tf_utils.where(needs_reset, x, y),
           initial_state, prev_state)
       return policy.sample(state_action, prev_state, **sample_kwargs)
 
+    def multi_sample(
+        states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
+        prev_action: embed.Action,  # only for first step
+        initial_state: policies.RecurrentState,
+    ) -> Tuple[list[embed.Action], policies.RecurrentState]:
+      actions = []
+      hidden_state = initial_state
+      for game, needs_reset in states:
+        state_action = embed.StateAction(
+            state=game,
+            action=prev_action,
+            name=tf.fill([self._batch_size], self._name_code),
+        )
+        next_action, hidden_state = sample(
+            state_action, hidden_state, needs_reset)
+        actions.append(next_action)
+        prev_action = next_action
+
+      return actions, hidden_state
+
     if compile:
-      sample = tf.function(sample)
-    self._sample = sample
+      self._sample = tf.function(sample)
+      self._multi_sample = tf.function(multi_sample)
+    else:
+      self._sample = sample
+      self._multi_sample = multi_sample
 
     self._hidden_state = self._policy.initial_state(batch_size)
 
@@ -78,7 +88,8 @@ class RawAgent:
       self,
       game: embed.Game,
       needs_reset: np.ndarray
-  ) -> embed.StateAction:
+  ) -> embed.Action:
+    """Doesn't take into account delay."""
     state_action = embed.StateAction(
         state=game,
         action=self._prev_controller,
@@ -96,13 +107,23 @@ class RawAgent:
     # decode un-discretizes the discretized components (x/y axis and shoulder)
     sampled_controller = self._embed_controller.decode(action)
     self._prev_controller = sampled_controller
+    return sampled_controller
 
-    # Push the action into the queue and pop the current action.
-    self._controller_queue.appendleft(sampled_controller)
-    delayed_controller = self._controller_queue.pop()
+  def multi_step(
+      self,
+      states: list[tuple[embed.Game, np.ndarray]],
+  ) -> list[embed.Action]:
+    prev_controller = self._policy.controller_embedding.from_state(
+        self._prev_controller)
 
-    # Return the action actually taken, in decoded form.
-    return delayed_controller
+    actions, self._hidden_state = self._multi_sample(
+        states, prev_controller, self._hidden_state)
+    actions = utils.map_nt(lambda t: t.numpy(), actions)
+
+    sampled_controllers = [
+        self._policy.controller_embedding.decode(a) for a in actions]
+    self._prev_controller = sampled_controllers[-1]
+    return sampled_controllers
 
   def step_unbatched(
       self,
@@ -116,6 +137,163 @@ class RawAgent:
     batched_action = self.step(batched_game, batched_needs_reset)
     return tf.nest.map_structure(lambda x: x.item(), batched_action)
 
+class DelayedAgent:
+  """Wraps a BasicAgent with delay."""
+
+  def __init__(
+      self,
+      policy: policies.Policy,
+      batch_size: int,
+      console_delay: int = 0,
+      batch_steps: int = 0,
+      **agent_kwargs,
+  ):
+    if batch_steps != 0:
+      raise NotImplementedError('batch_steps not supported for DelayedAgent.')
+    del batch_steps
+
+    self._agent = BasicAgent(
+        policy=policy,
+        batch_size=batch_size,
+        **agent_kwargs)
+    self._policy = policy
+    self._embed_controller = policy.controller_embedding
+
+    delay = policy.delay - console_delay
+    self._controller_queue = queue.Queue()
+    default_controller = self._embed_controller.decode(
+        self._embed_controller.dummy([batch_size]))
+    for _ in range(delay):
+      self._controller_queue.put(default_controller)
+
+    # Break circular references.
+    self.pop = self._controller_queue.get
+
+    # TODO: put this in the BasicAgent?
+    self.step_profiler = utils.Profiler(burnin=1)
+
+  def step(
+      self,
+      game: embed.Game,
+      needs_reset: np.ndarray
+  ) -> embed.Action:
+    """Synchronous agent step."""
+    self.push(game, needs_reset)
+    # Return the action actually taken, in decoded form.
+    delayed_controller = self.pop()
+    return delayed_controller
+
+  # Present the same interface as the async agent.
+  def push(self, game: embed.Game, needs_reset: np.ndarray):
+    with self.step_profiler:
+      sampled_controller = self._agent.step(game, needs_reset)
+    self._controller_queue.put(sampled_controller)
+
+  def __del__(self):
+    # Signal that no more actions will be pushed.
+    self._controller_queue.put(None)
+
+def _run_agent(
+    agent: BasicAgent,
+    state_queue: queue.Queue,
+    controller_queue: queue.Queue,
+    batch_steps: int,
+    state_queue_profiler: utils.Profiler,
+    step_profiler: utils.Profiler,
+):
+  """Breaks circular references."""
+  while batch_steps == 0:
+    with state_queue_profiler:
+      next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+    if next_item is None:
+      # Signal that no more actions will be pushed.
+      controller_queue.put(None)
+      return
+    game, needs_reset = next_item
+    with step_profiler:
+      sampled_controller = agent.step(game, needs_reset)
+    controller_queue.put(sampled_controller)
+    state_queue.task_done()
+
+  while batch_steps > 0:
+    states = []
+    for _ in range(batch_steps):
+      with state_queue_profiler:
+        next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+      if next_item is None:
+        # Signal that no more actions will be pushed.
+        controller_queue.put(None)
+        return
+      states.append(next_item)
+
+    with step_profiler:
+      sampled_controllers = agent.multi_step(states)
+
+    for controller in sampled_controllers:
+      controller_queue.put(controller)
+      state_queue.task_done()
+
+class AsyncDelayedAgent:
+  """Delayed agent that runs inference asynchronously."""
+
+  def __init__(
+      self,
+      policy: policies.Policy,
+      batch_size: int,
+      console_delay: int = 0,
+      batch_steps: int = 1,
+      **agent_kwargs,
+  ):
+    self._agent = BasicAgent(
+        policy=policy,
+        batch_size=batch_size,
+        **agent_kwargs)
+    self._policy = policy
+    self._embed_controller = policy.controller_embedding
+
+    delay = policy.delay - console_delay
+    self._controller_queue = queue.Queue()
+    default_controller = self._embed_controller.decode(
+        self._embed_controller.dummy([batch_size]))
+    for _ in range(delay):
+      self._controller_queue.put(default_controller)
+
+    self.state_queue_profiler = utils.Profiler()
+    self.step_profiler = utils.Profiler()
+    self._state_queue = queue.Queue()
+    self._worker_thread = threading.Thread(
+        target=_run_agent, kwargs=dict(
+            agent=self._agent,
+            state_queue=self._state_queue,
+            controller_queue=self._controller_queue,
+            batch_steps=batch_steps,
+            state_queue_profiler=self.state_queue_profiler,
+            step_profiler=self.step_profiler,
+        ))
+    # assert not utils.ref_path_exists([self._worker_thread], [self])
+    assert not utils.has_ref_cycle(self)
+    self._worker_thread.start()
+
+    self.pop = self._controller_queue.get
+
+  def push(self, game: embed.Game, needs_reset: np.ndarray):
+    self._state_queue.put((game, needs_reset))
+
+  def __del__(self):
+    print('actor del')
+    self._state_queue.put(None)
+    self._worker_thread.join()
+
+  def step(
+      self,
+      game: embed.Game,
+      needs_reset: np.ndarray
+  ) -> embed.Action:
+    self._state_queue.put((game, needs_reset))
+
+    # Return the action actually taken, in decoded form.
+    delayed_controller = self._controller_queue.get()
+    return delayed_controller
 
 class Agent:
   """Wraps a Policy to interact with Dolphin."""
@@ -132,7 +310,7 @@ class Agent:
     self._players = (self._port, opponent_port)
     self.config = config
 
-    self._agent = RawAgent(batch_size=1, **agent_kwargs)
+    self._agent = DelayedAgent(batch_size=1, **agent_kwargs)
 
   def step(self, gamestate: melee.GameState) -> embed.StateAction:
     needs_reset = np.array([gamestate.frame == -123])
@@ -160,21 +338,23 @@ def load_state(path: Optional[str], tag: Optional[str]) -> dict:
   else:
     raise ValueError('Must specify one of "tag" or "path".')
 
-def get_name_code(state: dict, name: str):
+def get_name_code(state: dict, name: str) -> int:
   name_map: dict[str, int] = state['name_map']
   if name not in name_map:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def build_raw_agent(
+def build_delayed_agent(
     state: dict,
     name: str,
+    async_inference: bool = False,
     sample_temperature: float = 1.0,
     console_delay: int = 0,
     **agent_kwargs,
-) -> Agent:
+) -> DelayedAgent:
   policy = saving.load_policy_from_state(state)
-  return RawAgent(
+  agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
+  return agent_class(
       policy=policy,
       name_code=get_name_code(state, name),
       console_delay=console_delay,

@@ -14,6 +14,7 @@ flags.DEFINE_integer('frames', 1 * 60 * 60, 'number of frames to run for')
 flags.DEFINE_boolean('render', False, 'render graphics')
 flags.DEFINE_boolean('enable_ffw', False, 'enable ffw codes')
 flags.DEFINE_float('overclock', None, 'cpu overclock')
+flags.DEFINE_integer('chunk_size', 1, 'multistep chunk size')
 
 Dolphin = ray.remote(dolphin.Dolphin)
 
@@ -43,8 +44,15 @@ def main(_):
 
   start_time = time.perf_counter()
 
-  for d in dolphins:
-    d.multi_step.remote(FLAGS.frames)
+  chunk_size = FLAGS.chunk_size
+  if chunk_size == -1:
+    chunk_size = FLAGS.frames
+  num_chunks, r = divmod(FLAGS.frames, FLAGS.chunk_size)
+  assert r == 0
+
+  for _ in range(num_chunks):
+    for d in dolphins:
+      d.multi_step.remote(FLAGS.chunk_size)
 
   sync_step()
   run_time = time.perf_counter() - start_time
