@@ -50,6 +50,8 @@ class AI(Player):
 def _is_menu_state(gamestate: melee.GameState) -> bool:
   return gamestate.menu_state not in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]
 
+class ConnectFailed(Exception):
+  """Raised when we fail to connect to the console."""
 
 class Dolphin:
 
@@ -63,7 +65,7 @@ class Dolphin:
       blocking_input=True,
       slippi_port=51441,
       render=True,
-      save_replays=False,
+      save_replays=False,  # Override default in Console
       env_vars=None,
       headless=False,
       **console_kwargs,
@@ -113,11 +115,15 @@ class Dolphin:
 
     logging.info('Connecting to console...')
     if not console.connect():
-      raise RuntimeError("Failed to connect to the console.")
+      logging.error(f"Failed to connect to the console {console.temp_dir}")
+      import time; time.sleep(1000)
+      self.stop()
+      raise ConnectFailed(f"Failed to connect to the console on port {slippi_port}.")
 
     for controller in self.controllers.values():
       if not controller.connect():
-        raise RuntimeError("Failed to connect the controller.")
+        self.stop()
+        raise ConnectFailed("Failed to connect the controller.")
 
   def next_gamestate(self) -> melee.GameState:
     gamestate = self.console.step()

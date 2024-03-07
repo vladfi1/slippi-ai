@@ -5,7 +5,7 @@ import sonnet as snt
 import tensorflow as tf
 from tensorflow import Tensor
 
-from slippi_ai import embed, utils
+from slippi_ai import embed, utils, tf_utils
 
 RecurrentState = tree.Structure[tf.Tensor]
 Inputs = tf.Tensor
@@ -48,7 +48,7 @@ class Network(snt.Module):
       outputs: (time, batch, out_dim)
       final_state: (batch, state_dim)
     '''
-    return utils.dynamic_rnn(self.step, inputs, initial_state)
+    return tf_utils.dynamic_rnn(self.step, inputs, initial_state)
 
 class MLP(Network):
   CONFIG = dict(
@@ -203,7 +203,7 @@ class LSTM(Network):
 
   def unroll(self, inputs, prev_state):
     inputs = self._resnet(inputs)
-    return utils.dynamic_rnn(self._lstm, inputs, prev_state)
+    return tf_utils.dynamic_rnn(self._lstm, inputs, prev_state)
 
 
 class ResLSTMBlock(snt.RNNCore):
@@ -246,7 +246,7 @@ class DeepResLSTM(Network):
 
   def unroll(self, inputs, prev_state):
     inputs = self.encoder(inputs)
-    return utils.dynamic_rnn(self.deep_rnn, inputs, prev_state)
+    return tf_utils.dynamic_rnn(self.deep_rnn, inputs, prev_state)
 
 class GRU(Network):
   CONFIG=dict(hidden_size=128)
@@ -263,7 +263,7 @@ class GRU(Network):
     return self._gru(inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
-    return utils.dynamic_rnn(self._gru, inputs, prev_state)
+    return tf_utils.dynamic_rnn(self._gru, inputs, prev_state)
 
 class RecurrentWrapper(Network):
   """Wraps an RNNCore as a Network."""
@@ -279,7 +279,7 @@ class RecurrentWrapper(Network):
     return self._core(inputs, prev_state)
 
   def unroll(self, inputs, prev_state):
-    return utils.dynamic_rnn(self._core, inputs, prev_state)
+    return tf_utils.dynamic_rnn(self._core, inputs, prev_state)
 
 class FFWWrapper(Network):
   """Wraps an MLP as a Network."""

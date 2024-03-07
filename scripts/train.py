@@ -19,13 +19,13 @@ import wandb
 
 from slippi_ai import (
     controller_heads,
-    embed,
     flag_utils,
     nametags,
     networks,
     policies,
     saving,
     s3_lib,
+    tf_utils,
     train_lib,
     utils,
 )
@@ -342,7 +342,7 @@ def train(config: Config):
     eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
 
     eval_stats, batches = zip(*eval_results)
-    eval_stats = tf.nest.map_structure(utils.to_numpy, eval_stats)
+    eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
     to_log = dict(eval=eval_stats)

@@ -1,78 +1,33 @@
+import gc
 import time
 import typing as tp
 
-import numpy as np
-import tensorflow as tf
 import tree
+
+import numpy as np
 
 def stack(*vals):
   return np.stack(vals)
 
 def batch_nest(nests):
-  return tf.nest.map_structure(stack, *nests)
+  return tree.map_structure(stack, *nests)
 
-def dynamic_rnn(core, inputs, initial_state):
-  """Dynamically unrolls an rnn core.
-
-  In the simple case of flat inputs and outputs, executes:
-  T = len(inputs)
-  state[0] = initial_state
-  outputs[i], state[i+1] = core(inputs[i], state[i])
-  returns: outputs, state[T]
-
-  In general inputs and outputs can be nests of tensors.
-
-  Args:
-    core: A callable with signature (input, state) -> (output, state).
-      For example, a snt.LSTM.
-    inputs: A nest of time-major tensors.
-    initial_state: A nest of tensors.
-  Returns:
-    A tuple (outputs, final_state).
-  """
-  unroll_length = tf.shape(tf.nest.flatten(inputs)[0])[0]
-
-  def get_input(index):
-    return tf.nest.map_structure(lambda t: t[index], inputs)
-
-  output_0, state = core(get_input(0), initial_state)
-
-  outputs = tf.nest.map_structure(
-      lambda t: tf.TensorArray(
-          dtype=t.dtype, size=unroll_length, element_shape=t.shape),
-      output_0)
-
-  def write_output(index, output):
-    return tf.nest.map_structure(
-        lambda ta, t: ta.write(index, t),
-        outputs, output)
-
-  outputs = write_output(0, output_0)
-
-  for i in tf.range(1, unroll_length):
-    output, state = core(get_input(i), state)
-    outputs = write_output(i, output)
-
-  outputs = tf.nest.map_structure(lambda ta: ta.stack(), outputs)
-  return outputs, state
-
-def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
-  """Broadcasting tf.where, with cond of shape [B]."""
-  rank = len(x.shape)
-  cond = tf.expand_dims(cond, list(range(1, rank)))
-  return tf.where(cond, x, y)
 
 class Profiler:
-  def __init__(self):
+  def __init__(self, burnin: int = 1):
     self.cumtime = 0
     self.num_calls = 0
+    self.burnin = burnin
 
   def __enter__(self):
     self._enter_time = time.perf_counter()
 
   def __exit__(self, type, value, traceback):
-    self.cumtime += time.perf_counter() - self._enter_time
+    if self.burnin > 0:
+      self.burnin -= 1
+      return
     self.num_calls += 1
+    self.cumtime += time.perf_counter() - self._enter_time
 
   def mean_time(self):
     return self.cumtime / self.num_calls
@@ -120,15 +75,19 @@ class EMA:
     else:
       self.value += self.decay * (value - self.value)
 
-def mean_and_variance(xs: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor]:
-  mean = tf.reduce_mean(xs)
-  variance = tf.reduce_mean(tf.square(xs - mean))
-  return mean, variance
-
-def to_numpy(x) -> np.ndarray:
-  if isinstance(x, tf.Tensor):
-    return x.numpy()
-  return x
+def map_single_structure(f, nest: T) -> T:
+  """Map over a single nest."""
+  t = type(nest)
+  if t is tuple:
+    return tuple([map_single_structure(f, v) for v in nest])
+  if issubclass(t, tuple):
+    return t(*[map_single_structure(f, v) for v in nest])
+  if issubclass(t, dict):
+    return {k: map_single_structure(f, v) for k, v in nest.items()}
+  if t is list:
+    return [map_single_structure(f, v) for v in nest]
+  # Not a nest.
+  return f(nest)
 
 def map_nt(f, *nt: T) -> T:
   """Map over nested tuples and dicts.
@@ -150,3 +109,50 @@ def map_nt(f, *nt: T) -> T:
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
   return map_nt(stack, *nests)
+
+def ref_path_exists(
+    srcs: list[object],
+    dsts: list[object],
+) -> bool:
+  todo = srcs.copy()
+  dsts = set(id(obj) for obj in dsts)
+  done = set()
+
+  while todo:
+    next = todo.pop()
+    key = id(next)
+
+    if key in dsts:
+      return True
+
+    if key in done:
+      continue
+
+    for obj in gc.get_referents(next):
+      todo.append(obj)
+
+    done.add(key)
+
+  return False
+
+def has_ref_cycle(obj: object) -> bool:
+  return ref_path_exists(gc.get_referents(obj), [obj])
+
+def gc_run(main):
+  """Run main and then run garbage collection.
+
+  This is necessary because any exceptions raised by `main` can prevent
+  objects from being garbage collected.
+  """
+  from absl import app
+  try:
+    app.run(main)
+  except (Exception, KeyboardInterrupt) as e:
+    import traceback; traceback.print_exc()
+
+    # release stack frames that might be preventing garbage collection
+    new_exception = type(e)(*e.args)
+
+  # For some reason we have to manually call gc.collect
+  import gc; gc.collect()
+  raise new_exception

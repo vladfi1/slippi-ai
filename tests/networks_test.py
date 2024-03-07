@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 
 from slippi_ai import (
-    learner, networks, paths, data, utils, embed
+    learner, networks, paths, data, tf_utils, embed
 )
 
 def assert_tensors_close(t1, t2):
@@ -47,7 +47,7 @@ class NetworksTest(unittest.TestCase):
       inputs = get_inputs(data_source)
 
       unroll_outputs, unroll_final_state = network.unroll(inputs, initial_state)
-      step_outputs, step_final_state = utils.dynamic_rnn(network.step, inputs, initial_state)
+      step_outputs, step_final_state = tf_utils.dynamic_rnn(network.step, inputs, initial_state)
 
       assert_tensors_close(unroll_outputs, step_outputs)
       tf.nest.map_structure(assert_tensors_close, unroll_final_state, step_final_state)

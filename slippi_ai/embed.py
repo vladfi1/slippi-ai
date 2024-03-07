@@ -14,9 +14,8 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from melee import enums
-
 from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick
+from slippi_ai.controller_lib import LEGAL_BUTTONS
 
 float_type = tf.float32
 In = TypeVar('In')
@@ -415,18 +414,6 @@ default_embed_game = make_game_embedding(
     player_config=dict(with_controller=False))
 
 # Embeddings for controllers
-
-# this is the autoregressive order
-LEGAL_BUTTONS = [
-    enums.Button.BUTTON_A,
-    enums.Button.BUTTON_B,
-    enums.Button.BUTTON_X,
-    enums.Button.BUTTON_Y,
-    enums.Button.BUTTON_Z,
-    enums.Button.BUTTON_L,
-    enums.Button.BUTTON_R,
-    enums.Button.BUTTON_D_UP,
-]
 embed_buttons = ordered_struct_embedding(
     'buttons',
     [(b.value, BoolEmbedding(name=b.value)) for b in LEGAL_BUTTONS],

@@ -5,7 +5,7 @@ import tensorflow as tf
 
 from slippi_ai.controller_heads import ControllerHead
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import data, networks, embed, types, utils
+from slippi_ai import data, networks, embed, types, utils, tf_utils
 
 RecurrentState = networks.RecurrentState
 
@@ -110,10 +110,10 @@ class Policy(snt.Module):
       value_targets = tf.stop_gradient(value_targets)
       value_loss = tf.square(value_targets - values)
 
-      _, value_variance = utils.mean_and_variance(value_targets)
+      _, value_variance = tf_utils.mean_and_variance(value_targets)
       uev = value_loss / (value_variance + 1e-8)
 
-      reward_mean, reward_variance = utils.mean_and_variance(rewards)
+      reward_mean, reward_variance = tf_utils.mean_and_variance(rewards)
 
       metrics['value'] = {
           'reward': dict(
@@ -149,6 +149,29 @@ class Policy(snt.Module):
     next_action = self.controller_head.sample(
         output, prev_action, **kwargs)
     return next_action, final_state
+
+  def multi_sample(
+      self,
+      states: list[embed.Game],  # time-indexed
+      prev_action: embed.Action,  # only for first step
+      name_code: int,
+      initial_state: RecurrentState,
+      **kwargs,
+  ) -> Tuple[list[embed.Action], RecurrentState]:
+    actions = []
+    hidden_state = initial_state
+    for game in range(states):
+      state_action = embed.StateAction(
+          state=game,
+          action=prev_action,
+          name=name_code,
+      )
+      next_action, hidden_state = self.sample(
+          state_action, hidden_state, **kwargs)
+      actions.append(next_action)
+      prev_action = next_action
+
+    return actions, hidden_state
 
 @dataclasses.dataclass
 class PolicyConfig:

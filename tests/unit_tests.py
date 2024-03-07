@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from slippi_ai import embed, utils
+from slippi_ai import embed, tf_utils
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]
@@ -40,7 +40,7 @@ class UtilsTest(unittest.TestCase):
     )
 
     static_outputs, _ = static_rnn(nested_core, inputs, initial_state)
-    dynamic_outputs, _ = utils.dynamic_rnn(nested_core, inputs, initial_state)
+    dynamic_outputs, _ = tf_utils.dynamic_rnn(nested_core, inputs, initial_state)
 
     tf.nest.map_structure(assert_tensors_close, static_outputs, dynamic_outputs)
 
