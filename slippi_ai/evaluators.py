@@ -1,10 +1,8 @@
 """Evaluates a policy."""
 
-import collections
+import contextlib
 import threading
 import typing as tp
-import queue
-import logging
 import cProfile
 
 import numpy as np
@@ -27,30 +25,6 @@ class Trajectory(tp.NamedTuple):
   is_resetting: bool
   # initial_state: policies.RecurrentState
 
-def feed_environments(
-    ports: list[Port],
-    get_action: tp.Callable[[Port], embed.Game],
-    push_actions: tp.Callable[[tp.Mapping[Port, embed.Game]], None],
-    # env_profiler: cProfile.Profile,
-    push_profiler: utils.Profiler,
-):
-  # TODO: run only for a fixed number of steps.
-  while True:
-    actions = {}
-    for port in ports:
-      actions[port] = get_action(port)
-
-      # Agents output None once they're done.
-      if actions[port] is None:
-        return
-
-    try:
-      with push_profiler:
-        push_actions(actions)
-    except:
-      logging.warn('Error pushing actions, shutting down env feeder thread.')
-      return
-
 class RolloutWorker:
 
   def __init__(
@@ -68,36 +42,20 @@ class RolloutWorker:
     self._env_push_profiler = cProfile.Profile()
     self._env_push_profiler = utils.Profiler()
 
-    agent_profilers = {
-        port: utils.Profiler() for port in agents}
-    # Careful to break circular references.
-    self._agent_profilers = agent_profilers
-    get_actions = {port: agents[port].pop for port in agents}
-
-    def get_action(i):
-      with agent_profilers[i]:
-        return get_actions[i]()
-
-    self._env_feeder = threading.Thread(
-        target=feed_environments,
-        kwargs=dict(
-            ports=list(agents),
-            get_action=get_action,
-            push_actions=batched_env.push,
-            push_profiler=self._env_push_profiler,
-        ))
-    assert not utils.ref_path_exists([self._env_feeder], [self])
-    self._env_feeder.start()
-
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+    if num_steps % self._env.num_steps != 0:
+      raise ValueError(
+          f'rollout length {num_steps} must be a multiple of '
+          'environment time-batch-size {self._env.num_steps}')
+
     state_actions: dict[Port, list[embed.StateAction]] = {
         port: [] for port in self._agents
     }
     is_resetting: list[bool] = []
 
     step_profiler = utils.Profiler()
-    # Maybe use separate profilers for each agent?
-    # agent_profiler = utils.Profiler()
+    agent_profilers = {
+        port: utils.Profiler() for port in self._agents}
 
     def record_state(port: Port, game: embed.Game):
       state_action = embed.StateAction(
@@ -108,29 +66,38 @@ class RolloutWorker:
       )
       state_actions[port].append(state_action)
 
-    agent_state_queue_sizes = {port: [] for port in self._agents}
-    env_queue_sizes = []
+    # agent_state_queue_sizes = {port: [] for port in self._agents}
+    # env_queue_sizes = []
 
-    for _ in range(num_steps):
+    for t in range(num_steps):
       # Actions are auto-fed into the environment.
       # We just need to pull gamestates and feed them back into the agents.
+      # Note that there will always be a first gamestate before any actions
+      # are fed into the environment.
       with step_profiler:
         # env_queue_sizes.append(self._env._futures_queue.qsize())
-        error = False
         gamestates, needs_reset = self._env.pop()
-        # if error:
-        #   import gc
-        #   gc.collect()
-        #   referrers = gc.get_referrers(self._env)
-        #   import ipdb; ipdb.set_trace()
 
       is_resetting.append(needs_reset)
 
+      # Asynchronously push the gamestates to the agents.
       for port, agent in self._agents.items():
         # agent_state_queue_sizes[port].append(agent._state_queue.qsize())
         game = gamestates[port]
         agent.push(game, needs_reset)
         record_state(port, game)
+
+      # Feed the actions into the environment.
+      # If the environment batches multiple steps, we need to make sure
+      # to feed many actions in ahead of time.
+      if t % self._env.num_steps == 0:
+        for _ in range(self._env.num_steps):
+          actions = {}
+          for port, agent in self._agents.items():
+            with agent_profilers[port]:
+              actions[port] = agent.pop()
+          with self._env_push_profiler:
+            self._env.push(actions)
 
     # # TODO: record the last gamestate and delayed actions.
     # for gamestates, needs_reset in self._env.peek():
@@ -164,7 +131,7 @@ class RolloutWorker:
         'env_push': self._env_push_profiler.mean_time(),
         'agent_pop': {
             port: profiler.mean_time()
-            for port, profiler in self._agent_profilers.items()},
+            for port, profiler in agent_profilers.items()},
         # 'agent_state_queue_size': agent_state_queue_size_stats,
         # 'agent_state_queue_pop': {
         #     port: agent.state_queue_profiler.mean_time()
@@ -233,16 +200,41 @@ class RemoteEvaluator:
     if not async_envs:
       env_class = env_lib.BatchedEnvironment
     elif ray_envs:
-      env_class = env_lib.AsyncBatchedEnvironmentRay
+      raise NotImplementedError('Ray environments are not up to date.')
+      # env_class = env_lib.AsyncBatchedEnvironmentRay
     else:
       env_class = env_lib.AsyncBatchedEnvironmentMP
 
     self._env = env_class(num_envs, env_kwargs, **extra_env_kwargs)
 
+    # Make sure that the buffer sizes aren't too big.
+    for agent in agents.values():
+      # We get one environment state (the initial one) for free.
+      slack = 1 + agent.delay
+
+      # Maximum number of items that could get stuck.
+      max_agent_buffer = agent.batch_steps - 1
+      max_env_buffer = self._env.num_steps - 1
+
+      if max_agent_buffer + max_env_buffer > slack:
+        raise ValueError(
+            f'Agent and environment step buffer sizes are too large: '
+            f'{max_agent_buffer} + {max_env_buffer} > {slack}')
+
+    self._agents = agents
     self._rollout_worker = RolloutWorker(
         agents, self._env, num_steps_per_rollout)
 
     self._lock = threading.Lock()
+
+  @contextlib.contextmanager
+  def run(self):
+    with contextlib.ExitStack() as stack:
+      for agent in self._agents.values():
+        stack.enter_context(agent.run())
+      if isinstance(self._env, env_lib.AsyncBatchedEnvironmentMP):
+        stack.enter_context(self._env.run())
+      yield
 
   def rollout(
       self,

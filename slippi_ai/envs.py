@@ -1,4 +1,5 @@
 import collections
+import contextlib
 import multiprocessing as mp
 from multiprocessing.connection import Connection
 import typing as tp
@@ -130,7 +131,11 @@ class BatchedEnvironment:
 
     # Optional "async" interface for compatibility with the Async* Envs.
     self._controller_queue = collections.deque()
-    self._controller_queue.appendleft(None)  # initial state
+    self._controller_queue.appendleft(None)  # denotes initial state
+
+  @property
+  def num_steps(self) -> int:
+    return 1
 
   def stop(self):
     for env in self._envs:
@@ -256,11 +261,15 @@ class SafeEnvironment:
   ) -> list[EnvOutput]:
     return self._retry(lambda: self._env.multi_step(controllers))
 
+  def stop(self):
+    self._env.stop()
+
 def _run_env(
     build_env_kwargs: dict,
     conn: Connection,
     batch_time: bool = False,
 ):
+  env = None
   try:
     env = SafeEnvironment(build_env_kwargs)
 
@@ -279,12 +288,15 @@ def _run_env(
       conn.send(env_step(controllers))
 
     # conn.close()
-  except Exception as e:
-    conn.send(e)
-    # conn.close()
   except KeyboardInterrupt:
     # exit quietly without spamming stderr
     return
+  except Exception as e:
+    conn.send(e)
+    # conn.close()
+  finally:
+    if env:
+      env.stop()
 
 class EnvError(Exception):
   pass
@@ -349,7 +361,7 @@ class AsyncBatchedEnvironmentMP:
       num_envs: int,
       dophin_kwargs: dict,
       num_steps: int = 0,
-      inner_batch_size: int = 1,
+      # inner_batch_size: int = 1,
   ):
     self._env_kwargs = dophin_kwargs
 
@@ -366,13 +378,9 @@ class AsyncBatchedEnvironmentMP:
     self._action_queue: list[Mapping[int, Controller]] = []
     self._state_queue = collections.deque()
 
-    # Break circular references...
-    # self.push = functools.partial(
-    #     self._static_push,
-    #     envs=self._envs,
-    #     action_queue=self._action_queue,
-    #     num_steps=self._num_steps,
-    # )
+  @property
+  def num_steps(self) -> int:
+    return self._num_steps or 1  # 0 means 1
 
   def stop(self):
     # First initiate stop asynchronously for all envs.
@@ -383,29 +391,13 @@ class AsyncBatchedEnvironmentMP:
     for env in self._envs:
       env.ensure_stopped()
 
-  @staticmethod
-  def _static_push(
-      controllers: Mapping[int, Controller],
-      envs: list[AsyncEnvMP],
-      action_queue: list[Mapping[int, Controller]],
-      num_steps: int,
-  ):
-    if num_steps == 0:
-      get_action = lambda i: utils.map_single_structure(lambda x: x[i], controllers)
-      for i, env in enumerate(envs):
-        env.send(get_action(i))
-      return
-
-    action_queue.append(controllers)
-
-    if len(action_queue) == num_steps:
-      # Returns a time-indexed list of controller dictionaries.
-      get_action = lambda i: utils.map_single_structure(lambda x: x[i], action_queue)
-
-      for i, env in enumerate(envs):
-        env.send(get_action(i))
-
-      action_queue.clear()
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      yield self
+    finally:
+      print('AsyncBatchedEnvironmentMP.__exit__')
+      self.stop()
 
   def _flush(self):
     # Returns a time-indexed list of controller dictionaries.
@@ -442,7 +434,6 @@ class AsyncBatchedEnvironmentMP:
     return self._state_queue.pop()
 
   def __del__(self):
-    print(type(self), 'del')
     self.stop()
 
 # This would raise an annoying exception when Environment subclassed

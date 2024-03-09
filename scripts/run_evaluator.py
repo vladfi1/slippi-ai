@@ -46,8 +46,10 @@ if __name__ == '__main__':
         path=agent_kwargs.pop('path'),
         tag=agent_kwargs.pop('tag'))
 
-    agent_kwargs['state'] = state
-    agent_kwargs['batch_steps'] = NUM_AGENT_STEPS.value
+    agent_kwargs.update(
+        state=state,
+        batch_steps=NUM_AGENT_STEPS.value,
+    )
 
     evaluator = evaluators.RemoteEvaluator(
         agent_kwargs={
@@ -63,12 +65,14 @@ if __name__ == '__main__':
         extra_env_kwargs=dict(num_steps=NUM_ENV_STEPS.value),
     )
 
-    # burnin
-    evaluator.rollout({}, 32)
+    with evaluator.run():
+      # burnin
+      evaluator.rollout({}, 32)
+      # import time; time.sleep(1000)
 
-    timer = utils.Profiler(burnin=0)
-    with timer:
-      stats, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
+      timer = utils.Profiler(burnin=0)
+      with timer:
+        stats, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
 
     print('rewards:', stats)
     print('timings:', timings)

@@ -1,6 +1,7 @@
-from collections import deque
+import contextlib
 import threading, queue
 from typing import Callable, Optional, Tuple
+import typing as tp
 
 import numpy as np
 import fancyflags as ff
@@ -159,11 +160,11 @@ class DelayedAgent:
     self._policy = policy
     self._embed_controller = policy.controller_embedding
 
-    delay = policy.delay - console_delay
+    self.delay = policy.delay - console_delay
     self._controller_queue = queue.Queue()
     default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
-    for _ in range(delay):
+    for _ in range(self.delay):
       self._controller_queue.put(default_controller)
 
     # Break circular references.
@@ -171,6 +172,10 @@ class DelayedAgent:
 
     # TODO: put this in the BasicAgent?
     self.step_profiler = utils.Profiler(burnin=1)
+
+  @property
+  def batch_steps(self) -> int:
+    return 1
 
   def step(
       self,
@@ -189,9 +194,14 @@ class DelayedAgent:
       sampled_controller = self._agent.step(game, needs_reset)
     self._controller_queue.put(sampled_controller)
 
-  def __del__(self):
-    # Signal that no more actions will be pushed.
-    self._controller_queue.put(None)
+  @contextlib.contextmanager
+  def run(self):
+    """For compatibility with the async agent."""
+    yield self
+
+  # def __del__(self):
+  #   # Signal that no more actions will be pushed.
+  #   self._controller_queue.put(None)
 
 def _run_agent(
     agent: BasicAgent,
@@ -202,12 +212,12 @@ def _run_agent(
     step_profiler: utils.Profiler,
 ):
   """Breaks circular references."""
+  # Not needed anymore since we rely on context managers instead of __del__.
   while batch_steps == 0:
     with state_queue_profiler:
       next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
     if next_item is None:
-      # Signal that no more actions will be pushed.
-      controller_queue.put(None)
+      state_queue.task_done()
       return
     game, needs_reset = next_item
     with step_profiler:
@@ -221,8 +231,7 @@ def _run_agent(
       with state_queue_profiler:
         next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
       if next_item is None:
-        # Signal that no more actions will be pushed.
-        controller_queue.put(None)
+        state_queue.task_done()
         return
       states.append(next_item)
 
@@ -244,6 +253,8 @@ class AsyncDelayedAgent:
       batch_steps: int = 1,
       **agent_kwargs,
   ):
+    self._batch_size = batch_size
+    self._batch_steps = batch_steps
     self._agent = BasicAgent(
         policy=policy,
         batch_size=batch_size,
@@ -251,38 +262,52 @@ class AsyncDelayedAgent:
     self._policy = policy
     self._embed_controller = policy.controller_embedding
 
-    delay = policy.delay - console_delay
+    self.delay = policy.delay - console_delay
     self._controller_queue = queue.Queue()
     default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
-    for _ in range(delay):
+    for _ in range(self.delay):
       self._controller_queue.put(default_controller)
 
     self.state_queue_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
     self._state_queue = queue.Queue()
-    self._worker_thread = threading.Thread(
-        target=_run_agent, kwargs=dict(
-            agent=self._agent,
-            state_queue=self._state_queue,
-            controller_queue=self._controller_queue,
-            batch_steps=batch_steps,
-            state_queue_profiler=self.state_queue_profiler,
-            step_profiler=self.step_profiler,
-        ))
     # assert not utils.ref_path_exists([self._worker_thread], [self])
-    assert not utils.has_ref_cycle(self)
-    self._worker_thread.start()
+    # assert not utils.has_ref_cycle(self)
+    # self._worker_thread.start()
 
     self.pop = self._controller_queue.get
+
+  @property
+  def batch_steps(self) -> int:
+    return self._batch_steps or 1
+
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      self._worker_thread = threading.Thread(
+          target=_run_agent, kwargs=dict(
+              agent=self._agent,
+              state_queue=self._state_queue,
+              controller_queue=self._controller_queue,
+              batch_steps=self._batch_steps,
+              state_queue_profiler=self.state_queue_profiler,
+              step_profiler=self.step_profiler,
+          ))
+      self._worker_thread.start()
+      yield self
+    finally:
+      print('actor run exit')
+      self._state_queue.put(None)
+      self._worker_thread.join()
 
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
-  def __del__(self):
-    print('actor del')
-    self._state_queue.put(None)
-    self._worker_thread.join()
+  # def __del__(self):
+  #   print('actor del')
+  #   self._state_queue.put(None)
+  #   self._worker_thread.join()
 
   def step(
       self,
@@ -351,7 +376,7 @@ def build_delayed_agent(
     sample_temperature: float = 1.0,
     console_delay: int = 0,
     **agent_kwargs,
-) -> DelayedAgent:
+) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   policy = saving.load_policy_from_state(state)
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
