@@ -83,7 +83,7 @@ class BasicAgent:
       self._sample = sample
       self._multi_sample = multi_sample
 
-    self._hidden_state = self._policy.initial_state(batch_size)
+    self.hidden_state = self._policy.initial_state(batch_size)
 
   def step(
       self,
@@ -101,9 +101,9 @@ class BasicAgent:
 
     # Sample an action.
     action: embed.Action
-    action, self._hidden_state = self._sample(
-        state_action, self._hidden_state, needs_reset)
-    action = tf.nest.map_structure(lambda t: t.numpy(), action)
+    action, self.hidden_state = self._sample(
+        state_action, self.hidden_state, needs_reset)
+    action = utils.map_single_structure(lambda t: t.numpy(), action)
 
     # decode un-discretizes the discretized components (x/y axis and shoulder)
     sampled_controller = self._embed_controller.decode(action)
@@ -117,9 +117,9 @@ class BasicAgent:
     prev_controller = self._policy.controller_embedding.from_state(
         self._prev_controller)
 
-    actions, self._hidden_state = self._multi_sample(
-        states, prev_controller, self._hidden_state)
-    actions = utils.map_nt(lambda t: t.numpy(), actions)
+    actions, self.hidden_state = self._multi_sample(
+        states, prev_controller, self.hidden_state)
+    actions = utils.map_single_structure(lambda t: t.numpy(), actions)
 
     sampled_controllers = [
         self._policy.controller_embedding.decode(a) for a in actions]
@@ -161,17 +161,20 @@ class DelayedAgent:
     self._embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
-    self._controller_queue = queue.Queue()
-    default_controller = self._embed_controller.decode(
+    self._controller_queue = utils.PeekableQueue()
+    self.default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
     for _ in range(self.delay):
-      self._controller_queue.put(default_controller)
+      self._controller_queue.put(self.default_controller)
 
     # Break circular references.
     self.pop = self._controller_queue.get
 
     # TODO: put this in the BasicAgent?
     self.step_profiler = utils.Profiler(burnin=1)
+
+  def peek_delayed(self) -> list[embed.Action]:
+    return self._controller_queue.peek_n(self.delay)
 
   @property
   def batch_steps(self) -> int:
@@ -198,10 +201,6 @@ class DelayedAgent:
   def run(self):
     """For compatibility with the async agent."""
     yield self
-
-  # def __del__(self):
-  #   # Signal that no more actions will be pushed.
-  #   self._controller_queue.put(None)
 
 def _run_agent(
     agent: BasicAgent,
@@ -263,18 +262,15 @@ class AsyncDelayedAgent:
     self._embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
-    self._controller_queue = queue.Queue()
-    default_controller = self._embed_controller.decode(
+    self._controller_queue = utils.PeekableQueue()
+    self.default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
     for _ in range(self.delay):
-      self._controller_queue.put(default_controller)
+      self._controller_queue.put(self.default_controller)
 
     self.state_queue_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
     self._state_queue = queue.Queue()
-    # assert not utils.ref_path_exists([self._worker_thread], [self])
-    # assert not utils.has_ref_cycle(self)
-    # self._worker_thread.start()
 
     self.pop = self._controller_queue.get
 
@@ -319,6 +315,9 @@ class AsyncDelayedAgent:
     # Return the action actually taken, in decoded form.
     delayed_controller = self._controller_queue.get()
     return delayed_controller
+
+  def peek_delayed(self) -> list[embed.Action]:
+    return self._controller_queue.peek_n(self.delay)
 
 class Agent:
   """Wraps a Policy to interact with Dolphin."""

@@ -113,6 +113,42 @@ def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
   return map_nt(stack, *nests)
 
+def peek_deque(d: collections.deque, n: int) -> list:
+  """Peek at the last n elements of a deque."""
+  assert len(d) >= n
+  items = [d.pop() for _ in range(n)]
+  items.reverse()
+  d.extend(items)
+  return items
+
+class PeekableQueue(tp.Generic[T]):
+
+  def __init__(self):
+    self.queue = queue.Queue()
+    self._peeked = collections.deque()
+
+  def put(self, item: T):
+    self.queue.put(item)
+
+  def get(self) -> T:
+    if self._peeked:
+      return self._peeked.pop()
+    return self.queue.get()
+
+  def peek_n(self, n: int) -> list[T]:
+    while len(self._peeked) < n:
+      self._peeked.appendleft(self.queue.get())
+    return peek_deque(self._peeked, n)
+
+  def peek(self) -> T:
+    return self.peek_n(1)[0]
+
+  def qsize(self) -> int:
+    return self.queue.qsize() + len(self._peeked)
+
+  def empty(self):
+    return self.qsize() == 0
+
 E = tp.TypeVar('E', bound=Exception)
 
 def retry(

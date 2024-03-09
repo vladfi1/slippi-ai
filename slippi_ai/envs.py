@@ -5,7 +5,6 @@ from multiprocessing.connection import Connection
 import typing as tp
 from typing import Mapping, Optional
 from queue import Queue
-import logging
 
 import portpicker
 import ray
@@ -16,13 +15,14 @@ from melee import GameState
 from slippi_ai import dolphin, utils
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
-from slippi_ai.reward import get_reward
 from slippi_db.parse_libmelee import get_game
 
 def is_initial_frame(gamestate: GameState) -> bool:
   return gamestate.frame == -123
 
-EnvOutput = tuple[Mapping[int, Game], bool]
+class EnvOutput(tp.NamedTuple):
+  gamestates: Mapping[int, Game]
+  needs_reset: bool
 
 class Environment:
   """Wraps dolphin to provide an RL interface."""
@@ -57,7 +57,7 @@ class Environment:
     for port, opponent_port in self._opponents.items():
       games[port] = get_game(self._prev_state, (port, opponent_port))
 
-    return games, needs_reset
+    return EnvOutput(games, needs_reset)
 
   def multi_current_state(self) -> list[EnvOutput]:
     return [self.current_state()]
@@ -79,19 +79,6 @@ class Environment:
     # TODO: compute reward?
     self._prev_state = self._dolphin.step()
     return self.current_state()
-
-    # results = {}
-
-    # for port, opponent_port in self._opponents.items():
-    #   game = get_game(gamestate, (port, opponent_port))
-    #   # TODO: configure damage ratio
-    #   reward = get_reward(
-    #       self._prev_state, gamestate,
-    #       own_port=port, opponent_port=opponent_port)
-    #   results[port] = (game, reward)
-
-    # self._prev_state = gamestate
-    # return results
 
   def multi_step(
     self,
@@ -363,6 +350,10 @@ class AsyncBatchedEnvironmentMP:
     self._num_steps = num_steps
     self._action_queue: list[Mapping[int, Controller]] = []
     self._state_queue = collections.deque()
+    self._num_in_transit = 1  # take into account initial state
+
+  def qsize(self):
+    return self._num_in_transit + len(self._state_queue)
 
   @property
   def num_steps(self) -> int:
@@ -376,6 +367,9 @@ class AsyncBatchedEnvironmentMP:
     # Then ensure all envs are stopped.
     for env in self._envs:
       env.ensure_stopped()
+
+  def __del__(self):
+    self.stop()
 
   @contextlib.contextmanager
   def run(self):
@@ -393,12 +387,14 @@ class AsyncBatchedEnvironmentMP:
       env.send(get_action(i))
 
     self._action_queue.clear()
+    self._num_in_transit += self._num_steps
 
   def push(self, controllers: Mapping[int, Controller]):
     if self._num_steps == 0:
       get_action = lambda i: utils.map_single_structure(lambda x: x[i], controllers)
       for i, env in enumerate(self._envs):
         env.send(get_action(i))
+      self._num_in_transit += 1
       return
 
     self._action_queue.append(controllers)
@@ -406,21 +402,33 @@ class AsyncBatchedEnvironmentMP:
     if len(self._action_queue) == self._num_steps:
       self._flush()
 
-  def pop(self) -> EnvOutput:
+  def _receive(self):
     if self._num_steps == 0:
       outputs = [env.recv() for env in self._envs]
-      return utils.batch_nest_nt(outputs)
-
-    if not self._state_queue:
+      output = utils.batch_nest_nt(outputs)
+      self._state_queue.appendleft(output)
+      self._num_in_transit -= 1
+    else:
       batch_major = [env.recv() for env in self._envs]
       time_major = zip(*batch_major)
       for batch in time_major:
         self._state_queue.appendleft(utils.batch_nest_nt(batch))
+      self._num_in_transit -= self._num_steps
 
+  def pop(self) -> EnvOutput:
+    if not self._state_queue:
+      self._receive()
     return self._state_queue.pop()
 
-  def __del__(self):
-    self.stop()
+  def peek_n(self, n: int) -> list[EnvOutput]:
+    while len(self._state_queue) < n:
+      self._receive()
+    return utils.peek_deque(self._state_queue, n)
+
+  def peek(self) -> EnvOutput:
+    if not self._state_queue:
+      self._receive()
+    return self._state_queue[-1]
 
 # This would raise an annoying exception when Environment subclassed
 # Dolphin due to ray erroneously calling __del__ on the wrong object.

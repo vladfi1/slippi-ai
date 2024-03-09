@@ -12,6 +12,7 @@ from slippi_ai import (
     embed,
     data,
     eval_lib,
+    policies,
     reward,
     utils,
 )
@@ -23,7 +24,8 @@ Timings = dict
 class Trajectory(tp.NamedTuple):
   frames: data.Frames
   is_resetting: bool
-  # initial_state: policies.RecurrentState
+  initial_state: policies.RecurrentState
+  delayed_actions: embed.Action
 
 class RolloutWorker:
 
@@ -39,8 +41,13 @@ class RolloutWorker:
     self._agents = agents
     self._damage_ratio = damage_ratio
 
-    self._env_push_profiler = cProfile.Profile()
-    self._env_push_profiler = utils.Profiler()
+    # self._env_push_profiler = cProfile.Profile()
+    # self._env_push_profiler = utils.Profiler()
+
+    self._prev_actions = {
+        port: agent.default_controller
+        for port, agent in agents.items()
+    }
 
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
     if num_steps % self._env.num_steps != 0:
@@ -53,95 +60,99 @@ class RolloutWorker:
     }
     is_resetting: list[bool] = []
 
+    initial_states = {
+        port: agent._agent.hidden_state
+        for port, agent in self._agents.items()
+    }
+
     step_profiler = utils.Profiler()
     agent_profilers = {
         port: utils.Profiler() for port in self._agents}
+    env_push_profiler = utils.Profiler()
 
-    def record_state(port: Port, game: embed.Game):
-      state_action = embed.StateAction(
-          state=game,
-          # TODO: use actual controller from agent instead?
-          action=game.p0.controller,
-          name=self._agents[port]._agent._name_code,
-      )
-      state_actions[port].append(state_action)
-
-    # agent_state_queue_sizes = {port: [] for port in self._agents}
-    # env_queue_sizes = []
+    def record_state(output: env_lib.EnvOutput):
+      for port, game in output.gamestates.items():
+        state_action = embed.StateAction(
+            state=game,
+            # TODO: check that the prev action matches what the env has?
+            # action=game.p0.controller,
+            action=self._prev_actions[port],
+            name=self._agents[port]._agent._name_code,
+        )
+        state_actions[port].append(state_action)
+      is_resetting.append(output.needs_reset)
 
     for t in range(num_steps):
-      # Actions are auto-fed into the environment.
-      # We just need to pull gamestates and feed them back into the agents.
       # Note that there will always be a first gamestate before any actions
-      # are fed into the environment.
+      # are fed into the environment; either the initial state or the last
+      # state peeked on the previous rollout.
       with step_profiler:
         # env_queue_sizes.append(self._env._futures_queue.qsize())
-        gamestates, needs_reset = self._env.pop()
+        output = self._env.pop()
 
-      is_resetting.append(needs_reset)
+      record_state(output)
 
       # Asynchronously push the gamestates to the agents.
       for port, agent in self._agents.items():
-        # agent_state_queue_sizes[port].append(agent._state_queue.qsize())
-        game = gamestates[port]
-        agent.push(game, needs_reset)
-        record_state(port, game)
+        game = output.gamestates[port]
+        agent.push(game, output.needs_reset)
 
       # Feed the actions into the environment.
       # If the environment batches multiple steps, we need to make sure
-      # to feed many actions in ahead of time.
+      # to feed enough actions in ahead of time.
       if t % self._env.num_steps == 0:
         for _ in range(self._env.num_steps):
           actions = {}
           for port, agent in self._agents.items():
             with agent_profilers[port]:
               actions[port] = agent.pop()
-          with self._env_push_profiler:
+          self._prev_actions = actions
+
+          with env_push_profiler:
             self._env.push(actions)
 
-    # # TODO: record the last gamestate and delayed actions.
-    # for gamestates, needs_reset in self._env.peek():
-    #   is_resetting.append(needs_reset)
-    #   for port, game in gamestates.items():
-    #     record_state(port, game)
+    # Record the last gamestate and action.
+    record_state(self._env.peek())
 
-    # Batch everything up to be time-major.
-    is_resetting = np.array(is_resetting)
+    # Record the delayed actions.
+    delayed_actions = {}
+    for port, agent in self._agents.items():
+      delayed_actions[port] = agent.peek_delayed()
+      # Note: the above call to peek_delayed force the agent to process all
+      # of the `num_steps` states that it's been fed. This ensures that the
+      # agent's hidden state is the correct one on the next rollout.
+      if isinstance(agent, eval_lib.AsyncDelayedAgent):
+        # Assert that the agent has in fact processed all of the states.
+        assert agent._state_queue.empty()
 
+    # Note: here we could push the delayed actions to the environment, to
+    # allow it to run ahead before the next rollout. However we _can't_ push
+    # the resulting gamestates back to the agents, because the agents might get
+    # updated with new policy variables before the next rollout.
+
+    # Now batch everything up into time-major Trajectories.
     trajectories = {}
+    is_resetting = np.array(is_resetting)
     for port, state_action_list in state_actions.items():
-      # Trajectories are time-major.
       state_action = utils.batch_nest_nt(state_action_list)
       rewards = reward.compute_rewards(state_action.state, self._damage_ratio)
       frames = data.Frames(state_action=state_action, reward=rewards)
-      trajectories[port] = Trajectory(frames, is_resetting)
-
-    qs = np.array([1, 5, 10, 25, 50, 75, 100])
-    def percentile(a):
-      return dict(zip(qs, np.percentile(a, qs)))
-
-    # agent_state_queue_size_stats = {
-    #     port: percentile(sizes)
-    #     for port, sizes in agent_state_queue_sizes.items()
-    # }
+      trajectories[port] = Trajectory(
+          frames=frames,
+          is_resetting=is_resetting,
+          initial_state=initial_states[port],
+          delayed_actions=utils.batch_nest_nt(delayed_actions[port]))
 
     timings = {
         'env_pop': step_profiler.mean_time(),
-        # TODO: handle concurrency
-        'env_push': self._env_push_profiler.mean_time(),
+        'env_push': env_push_profiler.mean_time(),
         'agent_pop': {
             port: profiler.mean_time()
             for port, profiler in agent_profilers.items()},
-        # 'agent_state_queue_size': agent_state_queue_size_stats,
-        # 'agent_state_queue_pop': {
-        #     port: agent.state_queue_profiler.mean_time()
-        #     for port, agent in self._agents.items()
-        # },
         'agent_step': {
             port: agent.step_profiler.mean_time()
             for port, agent in self._agents.items()
         },
-        # 'env_queue': {q: p for q, p in zip(qs, ps)},
     }
 
     # self._env_push_profiler.dump_stats('env_push.prof')
