@@ -100,6 +100,19 @@ class Environment:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
 
+def safe_environment(
+    dolphin_kwargs: dict,
+    num_retries=2,
+) -> Environment:
+  """Create an environment, retrying with different ports on failure."""
+  def reset_port():
+    dolphin_kwargs['slippi_port'] = portpicker.pick_unused_port()
+
+  return utils.retry(
+      lambda: Environment(dolphin_kwargs),
+      on_exception={dolphin.ConnectFailed: reset_port},
+      num_retries=num_retries)
+
 def get_free_ports(n: int) -> list[int]:
   ports = [portpicker.pick_unused_port() for _ in range(n)]
   if len(set(ports)) < n:
@@ -124,7 +137,7 @@ class BatchedEnvironment:
     for slippi_port in slippi_ports:
       kwargs = env_kwargs.copy()
       kwargs.update(slippi_port=slippi_port)
-      env = Environment(kwargs)
+      env = safe_environment(kwargs)
       envs.append(env)
 
     self._envs = envs
@@ -187,49 +200,22 @@ def build_environment(
       assert len(slippi_ports) == 1
       env_kwargs = env_kwargs.copy()
       env_kwargs['slippi_port'] = slippi_ports[0]
-    return Environment(env_kwargs)
+    return safe_environment(env_kwargs)
 
   return BatchedEnvironment(num_envs, env_kwargs, slippi_ports)
 
 T = tp.TypeVar('T')
-E = tp.TypeVar('E', bound=Exception)
-
-def retry(
-    f: tp.Callable[[], T],
-    on_exception: tp.Mapping[type, tp.Callable[[], tp.Any]],
-    num_retries: int = 4,
-) -> T:
-  for _ in range(num_retries-1):
-    try:
-      return f()
-    except tuple(on_exception) as e:
-      logging.warning(f'Caught "{repr(e)}". Retrying...')
-      on_exception[type(e)]()
-
-  # Let any exception pass through on the last attempt.
-  return f()
-
-def safe_build_environment(
-    build_env_kwargs: dict,
-    num_retries=10,
-) -> tp.Union[Environment, BatchedEnvironment]:
-  return retry(
-      lambda: build_environment(**build_env_kwargs),
-      on_exception={dolphin.ConnectFailed: lambda: None},
-      num_retries=num_retries)
 
 class SafeEnvironment:
 
-  def __init__(self, build_env_kwargs: dict, num_retries: int = 4):
+  def __init__(self, build_env_kwargs: dict, num_retries: int = 2):
     self._build_env_kwargs = build_env_kwargs
     self._num_retries = num_retries
-    self._reset_env()
+    self._env = build_environment(**self._build_env_kwargs)
 
   def _reset_env(self):
-    if hasattr(self, '_env'):
-      self._env.stop()  # closes associated dolphin instances, freeing up ports
-    self._env = safe_build_environment(
-        self._build_env_kwargs, self._num_retries)
+    self._env.stop()  # closes associated dolphin instances, freeing up ports
+    self._env = build_environment(**self._build_env_kwargs)
 
   # def _retry(self, method: str, *args):
   #   return retry(
@@ -238,7 +224,7 @@ class SafeEnvironment:
   #       num_retries=self._num_retries)
 
   def _retry(self, f: tp.Callable[[], T]) -> T:
-    return retry(
+    return utils.retry(
         f,
         on_exception={EnetDisconnected: self._reset_env},
         num_retries=self._num_retries)

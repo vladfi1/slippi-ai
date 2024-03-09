@@ -1,6 +1,9 @@
+import collections
 import gc
+import logging
 import time
 import typing as tp
+import queue
 
 import tree
 
@@ -109,6 +112,23 @@ def map_nt(f, *nt: T) -> T:
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
   return map_nt(stack, *nests)
+
+E = tp.TypeVar('E', bound=Exception)
+
+def retry(
+    f: tp.Callable[[], T],
+    on_exception: tp.Mapping[type, tp.Callable[[], tp.Any]],
+    num_retries: int = 4,
+) -> T:
+  for _ in range(num_retries):
+    try:
+      return f()
+    except tuple(on_exception) as e:
+      logging.warning(f'Caught "{repr(e)}". Retrying...')
+      on_exception[type(e)]()
+
+  # Let any exception pass through on the last attempt.
+  return f()
 
 def ref_path_exists(
     srcs: list[object],
