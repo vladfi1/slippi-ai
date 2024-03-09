@@ -115,7 +115,11 @@ class Dolphin:
 
     logging.info('Connecting to console...')
     if not console.connect():
-      logging.error(f"Failed to connect to the console {console.temp_dir}")
+      import os
+      logging.error(
+          f"PID {os.getpid()}: failed to connect to the console"
+          f" {console.temp_dir} on port {slippi_port}")
+
       import time; time.sleep(1000)
       self.stop()
       raise ConnectFailed(f"Failed to connect to the console on port {slippi_port}.")
