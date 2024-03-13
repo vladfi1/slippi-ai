@@ -1,7 +1,7 @@
 if __name__ == '__main__':
   import itertools
 
-  from absl import flags
+  from absl import app, flags
   import fancyflags as ff
 
   from slippi_ai import eval_lib, dolphin
@@ -64,7 +64,7 @@ if __name__ == '__main__':
 
     results = []
 
-    for name1, name2 in list(matchups)[-1:]:
+    for name1, name2 in list(matchups):
       print(f'Evaluating {name1} vs {name2}')
       evaluator = evaluators.RemoteEvaluator(
           agent_kwargs={1: per_name_kwargs[name1], 2: per_name_kwargs[name2]},
@@ -78,11 +78,9 @@ if __name__ == '__main__':
           extra_env_kwargs = dict(num_steps=NUM_ENV_STEPS.value),
       )
 
-      metrics, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
+      with evaluator.run():
+        metrics, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
       print(timings)
-
-      # avoid OOM
-      evaluator._env.stop()
 
       total_reward = metrics[1].reward
       num_frames = ROLLOUT_LENGTH.value * NUM_ENVS.value
@@ -96,4 +94,4 @@ if __name__ == '__main__':
     for name1, name2, reward in results:
       print(f'{name1} vs {name2}: {reward:.2f}')
 
-  utils.gc_run(main)
+  app.run(main)

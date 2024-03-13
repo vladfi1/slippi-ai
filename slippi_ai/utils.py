@@ -146,7 +146,7 @@ class PeekableQueue(tp.Generic[T]):
   def qsize(self) -> int:
     return self.queue.qsize() + len(self._peeked)
 
-  def empty(self):
+  def empty(self) -> bool:
     return self.qsize() == 0
 
 E = tp.TypeVar('E', bound=Exception)

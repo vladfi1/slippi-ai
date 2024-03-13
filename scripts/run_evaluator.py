@@ -2,7 +2,7 @@
 # This allows child processing to avoid importing tensorflow,
 # which uses a lot of memory.
 if __name__ == '__main__':
-  from absl import flags
+  from absl import app, flags
   import fancyflags as ff
 
   from slippi_ai import eval_lib, dolphin, utils, evaluators
@@ -81,4 +81,4 @@ if __name__ == '__main__':
     fps = num_frames / timer.cumtime
     print(f'fps: {fps:.2f}')
 
-  utils.gc_run(main)
+  app.run(main)
