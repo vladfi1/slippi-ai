@@ -1,5 +1,6 @@
 import collections
 import contextlib
+import logging
 import multiprocessing as mp
 from multiprocessing.connection import Connection
 import typing as tp
@@ -87,20 +88,66 @@ class Environment:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
 
-def safe_environment(
-    dolphin_kwargs: dict,
-    num_retries=2,
-) -> Environment:
-  """Create an environment, retrying with different ports on failure."""
-  dolphin_kwargs = dolphin_kwargs.copy()
+T = tp.TypeVar('T')
 
-  def reset_port():
-    dolphin_kwargs['slippi_port'] = portpicker.pick_unused_port()
 
-  return utils.retry(
-      lambda: Environment(dolphin_kwargs),
-      on_exception={dolphin.ConnectFailed: reset_port},
-      num_retries=num_retries)
+class SafeEnvironment:
+  """Wraps an environment with retries on disconnect."""
+
+  def __init__(self, dolphin_kwargs: dict, num_retries: int = 2):
+    self._dolphin_kwargs = dolphin_kwargs.copy()
+    self._num_retries = num_retries
+    self._build_environment()
+
+  def _reset_port(self):
+    old_port = self._dolphin_kwargs['slippi_port']
+    new_port = portpicker.pick_unused_port()
+    logging.warning('Switching from port %d to port %d.', old_port, new_port)
+    self._dolphin_kwargs['slippi_port'] = new_port
+
+  def _build_environment(self):
+    self._env = utils.retry(
+        lambda: Environment(self._dolphin_kwargs),
+        on_exception={dolphin.ConnectFailed: self._reset_port},
+        num_retries=self._num_retries)
+
+  def _reset_env(self):
+    self._env.stop()  # closes associated dolphin instances, freeing up ports
+    self._build_environment()
+
+  # def _retry(self, method: str, *args):
+  #   return retry(
+  #       lambda: getattr(self._env, method)(*args),
+  #       on_exception={dolphin.ConnectFailed: self._reset_env},
+  #       num_retries=self._num_retries)
+
+  def _retry(self, f: tp.Callable[[], T]) -> T:
+    return utils.retry(
+        f,
+        on_exception={EnetDisconnected: self._reset_env},
+        num_retries=self._num_retries)
+
+  def current_state(self) -> EnvOutput:
+    return self._retry(lambda: self._env.current_state())
+
+  def multi_current_state(self) -> list[EnvOutput]:
+    return self._retry(lambda: self._env.multi_current_state())
+
+  def step(
+    self,
+    controllers: Mapping[int, Controller],
+  ) -> EnvOutput:
+    return self._retry(lambda: self._env.step(controllers))
+
+  def multi_step(
+    self,
+    controllers: list[Mapping[int, Controller]],
+  ) -> list[EnvOutput]:
+    return self._retry(lambda: self._env.multi_step(controllers))
+
+  def stop(self):
+    self._env.stop()
+
 
 def get_free_ports(n: int) -> list[int]:
   ports = [portpicker.pick_unused_port() for _ in range(n)]
@@ -122,11 +169,11 @@ class BatchedEnvironment:
     self._env_kwargs = env_kwargs
 
     slippi_ports = slippi_ports or get_free_ports(num_envs)
-    envs: list[Environment] = []
+    envs: list[SafeEnvironment] = []
     for slippi_port in slippi_ports:
       kwargs = env_kwargs.copy()
       kwargs.update(slippi_port=slippi_port)
-      env = safe_environment(kwargs)
+      env = SafeEnvironment(kwargs)
       envs.append(env)
 
     self._envs = envs
@@ -183,62 +230,16 @@ def build_environment(
     num_envs: int,
     env_kwargs: dict,
     slippi_ports: Optional[list[int]] = None,
-) -> tp.Union[Environment, BatchedEnvironment]:
+) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
     if slippi_ports:
       assert len(slippi_ports) == 1
       env_kwargs = env_kwargs.copy()
       env_kwargs['slippi_port'] = slippi_ports[0]
-    return safe_environment(env_kwargs)
+    return SafeEnvironment(env_kwargs)
 
-  # BatchedEnvironment calls safe_environment internally
+  # BatchedEnvironment uses SafeEnvironment internally
   return BatchedEnvironment(num_envs, env_kwargs, slippi_ports)
-
-T = tp.TypeVar('T')
-
-class SafeEnvironment:
-
-  def __init__(self, build_env_kwargs: dict, num_retries: int = 2):
-    self._build_env_kwargs = build_env_kwargs
-    self._num_retries = num_retries
-    self._env = build_environment(**self._build_env_kwargs)
-
-  def _reset_env(self):
-    self._env.stop()  # closes associated dolphin instances, freeing up ports
-    self._env = build_environment(**self._build_env_kwargs)
-
-  # def _retry(self, method: str, *args):
-  #   return retry(
-  #       lambda: getattr(self._env, method)(*args),
-  #       on_exception={dolphin.ConnectFailed: self._reset_env},
-  #       num_retries=self._num_retries)
-
-  def _retry(self, f: tp.Callable[[], T]) -> T:
-    return utils.retry(
-        f,
-        on_exception={EnetDisconnected: self._reset_env},
-        num_retries=self._num_retries)
-
-  def current_state(self) -> EnvOutput:
-    return self._retry(lambda: self._env.current_state())
-
-  def multi_current_state(self) -> list[EnvOutput]:
-    return self._retry(lambda: self._env.multi_current_state())
-
-  def step(
-    self,
-    controllers: Mapping[int, Controller],
-  ) -> EnvOutput:
-    return self._retry(lambda: self._env.step(controllers))
-
-  def multi_step(
-    self,
-    controllers: list[Mapping[int, Controller]],
-  ) -> list[EnvOutput]:
-    return self._retry(lambda: self._env.multi_step(controllers))
-
-  def stop(self):
-    self._env.stop()
 
 def _run_env(
     build_env_kwargs: dict,
@@ -247,7 +248,7 @@ def _run_env(
 ):
   env = None
   try:
-    env = SafeEnvironment(build_env_kwargs)
+    env = build_environment(**build_env_kwargs)
 
     # Push initial env state.
     initial_state = env.current_state()
