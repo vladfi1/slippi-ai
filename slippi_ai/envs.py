@@ -92,6 +92,8 @@ def safe_environment(
     num_retries=2,
 ) -> Environment:
   """Create an environment, retrying with different ports on failure."""
+  dolphin_kwargs = dolphin_kwargs.copy()
+
   def reset_port():
     dolphin_kwargs['slippi_port'] = portpicker.pick_unused_port()
 
@@ -189,6 +191,7 @@ def build_environment(
       env_kwargs['slippi_port'] = slippi_ports[0]
     return safe_environment(env_kwargs)
 
+  # BatchedEnvironment calls safe_environment internally
   return BatchedEnvironment(num_envs, env_kwargs, slippi_ports)
 
 T = tp.TypeVar('T')
@@ -334,18 +337,30 @@ class AsyncBatchedEnvironmentMP:
       num_envs: int,
       dophin_kwargs: dict,
       num_steps: int = 0,
-      # inner_batch_size: int = 1,
+      inner_batch_size: int = 1,
   ):
+    if num_envs % inner_batch_size != 0:
+      raise ValueError(
+          f'num_envs={num_envs} must be divisible by '
+          f'inner_batch_size={inner_batch_size}')
+
+    self._total_batch_size = num_envs
+    self._outer_batch_size = num_envs // inner_batch_size
+    self._inner_batch_size = inner_batch_size
+    self._slice = lambda i, x: x[i * inner_batch_size:(i + 1) * inner_batch_size]
+
     self._env_kwargs = dophin_kwargs
 
-    envs: list[AsyncEnvMP] = []
-    for slippi_port in get_free_ports(num_envs):
-      kwargs = dophin_kwargs.copy()
-      kwargs.update(slippi_port=slippi_port)
-      env = AsyncEnvMP(env_kwargs=kwargs, batch_time=(num_steps > 0))
-      envs.append(env)
-
-    self._envs = envs
+    self._envs: list[AsyncEnvMP] = []
+    slippi_ports = get_free_ports(num_envs)
+    for i in range(self._outer_batch_size):
+      env = AsyncEnvMP(
+          env_kwargs=dophin_kwargs,
+          num_envs=inner_batch_size,
+          batch_time=(num_steps > 0),
+          slippi_ports=self._slice(i, slippi_ports),
+      )
+      self._envs.append(env)
 
     self._num_steps = num_steps
     self._action_queue: list[Mapping[int, Controller]] = []
@@ -381,7 +396,8 @@ class AsyncBatchedEnvironmentMP:
 
   def _flush(self):
     # Returns a time-indexed list of controller dictionaries.
-    get_action = lambda i: utils.map_single_structure(lambda x: x[i], self._action_queue)
+    get_action = lambda i: utils.map_single_structure(
+        lambda x: self._slice(i, x), self._action_queue)
 
     for i, env in enumerate(self._envs):
       env.send(get_action(i))
@@ -391,7 +407,8 @@ class AsyncBatchedEnvironmentMP:
 
   def push(self, controllers: Mapping[int, Controller]):
     if self._num_steps == 0:
-      get_action = lambda i: utils.map_single_structure(lambda x: x[i], controllers)
+      get_action = lambda i: utils.map_single_structure(
+          lambda x: self._slice(i, x), self._action_queue)
       for i, env in enumerate(self._envs):
         env.send(get_action(i))
       self._num_in_transit += 1
@@ -405,14 +422,14 @@ class AsyncBatchedEnvironmentMP:
   def _receive(self):
     if self._num_steps == 0:
       outputs = [env.recv() for env in self._envs]
-      output = utils.batch_nest_nt(outputs)
+      output = utils.concat_nest_nt(outputs)
       self._state_queue.appendleft(output)
       self._num_in_transit -= 1
     else:
       batch_major = [env.recv() for env in self._envs]
       time_major = zip(*batch_major)
       for batch in time_major:
-        self._state_queue.appendleft(utils.batch_nest_nt(batch))
+        self._state_queue.appendleft(utils.concat_nest_nt(batch))
       self._num_in_transit -= self._num_steps
 
   def pop(self) -> EnvOutput:

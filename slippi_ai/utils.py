@@ -12,6 +12,9 @@ import numpy as np
 def stack(*vals):
   return np.stack(vals)
 
+def concat(*vals):
+  return np.concatenate(vals)
+
 def batch_nest(nests):
   return tree.map_structure(stack, *nests)
 
@@ -112,6 +115,10 @@ def map_nt(f, *nt: T) -> T:
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
   return map_nt(stack, *nests)
+
+def concat_nest_nt(nests: tp.Sequence[T]) -> T:
+  # More efficient than batch_nest
+  return map_nt(concat, *nests)
 
 def peek_deque(d: collections.deque, n: int) -> list:
   """Peek at the last n elements of a deque."""

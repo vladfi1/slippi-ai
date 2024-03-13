@@ -18,6 +18,8 @@ if __name__ == '__main__':
   RAY_ENVS = flags.DEFINE_boolean('ray_envs', False, 'Use ray environments.')
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
+  INNER_BATCH_SIZE = flags.DEFINE_integer(
+      'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
   ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', False, 'Use async inference.')
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
@@ -62,7 +64,10 @@ if __name__ == '__main__':
         async_inference=ASYNC_INFERENCE.value,
         num_steps_per_rollout=ROLLOUT_LENGTH.value,
         use_gpu=USE_GPU.value,
-        extra_env_kwargs=dict(num_steps=NUM_ENV_STEPS.value),
+        extra_env_kwargs=dict(
+            num_steps=NUM_ENV_STEPS.value,
+            inner_batch_size=INNER_BATCH_SIZE.value,
+        ),
     )
 
     with evaluator.run():
@@ -75,10 +80,10 @@ if __name__ == '__main__':
         stats, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
 
     print('rewards:', stats)
-    print('timings:', timings)
+    print('timings:', utils.map_single_structure(lambda f: f'{f:.3f}', timings))
 
-    num_frames = ROLLOUT_LENGTH.value * NUM_ENVS.value
-    fps = num_frames / timer.cumtime
-    print(f'fps: {fps:.2f}')
+    sps = ROLLOUT_LENGTH.value / timer.cumtime
+    fps = sps * NUM_ENVS.value
+    print(f'fps: {fps:.2f}, sps: {sps:.2f}')
 
   app.run(main)
