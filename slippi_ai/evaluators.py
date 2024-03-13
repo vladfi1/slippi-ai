@@ -1,5 +1,6 @@
 """Evaluates a policy."""
 
+import collections
 import contextlib
 import threading
 import typing as tp
@@ -41,20 +42,47 @@ class RolloutWorker:
     self._agents = agents
     self._damage_ratio = damage_ratio
 
+    self._agent_profilers = {
+        port: utils.Profiler() for port in self._agents}
     # self._env_push_profiler = cProfile.Profile()
-    # self._env_push_profiler = utils.Profiler()
+    self._env_push_profiler = utils.Profiler()
 
-    self._prev_actions = {
+    self._prev_actions = collections.deque()
+    self._prev_actions.append({
         port: agent.default_controller
         for port, agent in agents.items()
-    }
+    })
+
+    # Make sure that the buffer sizes aren't too big.
+    for agent in agents.values():
+      # We get one environment state (the initial one) for free.
+      slack = 1 + agent.delay
+
+      # Maximum number of items that could get stuck.
+      max_agent_buffer = agent.batch_steps - 1
+      max_env_buffer = self._env.num_steps - 1
+
+      if max_agent_buffer + max_env_buffer > slack:
+        raise ValueError(
+            f'Agent and environment step buffer sizes are too large: '
+            f'{max_agent_buffer} + {max_env_buffer} > {slack}')
+
+    # Get the environment to run ahead as much as possible.
+    self.min_delay = min(agent.delay for agent in agents.values())
+    for _ in range(self.min_delay):
+      self._push_actions()
+
+  def _push_actions(self):
+    """Pop actions from the agents and push them to the environment."""
+    actions = {}
+    for port, agent in self._agents.items():
+      with self._agent_profilers[port]:
+        actions[port] = agent.pop()
+    self._prev_actions.append(actions)
+    with self._env_push_profiler:
+      self._env.push(actions)
 
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
-    if num_steps % self._env.num_steps != 0:
-      raise ValueError(
-          f'rollout length {num_steps} must be a multiple of '
-          'environment time-batch-size {self._env.num_steps}')
-
     state_actions: dict[Port, list[embed.StateAction]] = {
         port: [] for port in self._agents
     }
@@ -66,17 +94,18 @@ class RolloutWorker:
     }
 
     step_profiler = utils.Profiler()
-    agent_profilers = {
-        port: utils.Profiler() for port in self._agents}
-    env_push_profiler = utils.Profiler()
+    # agent_profilers = {
+    #     port: utils.Profiler() for port in self._agents}
+    # env_push_profiler = utils.Profiler()
 
     def record_state(output: env_lib.EnvOutput):
+      prev_actions = self._prev_actions[0]
       for port, game in output.gamestates.items():
         state_action = embed.StateAction(
             state=game,
             # TODO: check that the prev action matches what the env has?
             # action=game.p0.controller,
-            action=self._prev_actions[port],
+            action=prev_actions[port],
             name=self._agents[port]._agent._name_code,
         )
         state_actions[port].append(state_action)
@@ -91,44 +120,35 @@ class RolloutWorker:
         output = self._env.pop()
 
       record_state(output)
+      self._prev_actions.popleft()
 
       # Asynchronously push the gamestates to the agents.
       for port, agent in self._agents.items():
         game = output.gamestates[port]
         agent.push(game, output.needs_reset)
 
-      # Feed the actions into the environment.
-      # If the environment batches multiple steps, we need to make sure
-      # to feed enough actions in ahead of time.
-      if t % self._env.num_steps == 0:
-        for _ in range(self._env.num_steps):
-          actions = {}
-          for port, agent in self._agents.items():
-            with agent_profilers[port]:
-              actions[port] = agent.pop()
-          self._prev_actions = actions
+      # Feed the actions from the agents into the environment.
+      self._push_actions()
 
-          with env_push_profiler:
-            self._env.push(actions)
-
-    # Record the last gamestate and action.
+    # Record the last gamestate and action, but also save them for the
+    # next rollout.
     record_state(self._env.peek())
 
     # Record the delayed actions.
-    delayed_actions = {}
+    assert len(self._prev_actions) == 1 + self.min_delay
+    remaining_actions = list(self._prev_actions)[1:]
+    delayed_actions: dict[Port, list[embed.Action]] = {}
     for port, agent in self._agents.items():
-      delayed_actions[port] = agent.peek_delayed()
-      # Note: the above call to peek_delayed force the agent to process all
+      delayed_actions[port] = [actions[port] for actions in remaining_actions]
+      num_left = agent.delay - self.min_delay
+      delayed_actions[port].extend(agent.peek_n(num_left))
+
+      # Note: the above call to peek_n forces the agent to process all
       # of the `num_steps` states that it's been fed. This ensures that the
       # agent's hidden state is the correct one on the next rollout.
       if isinstance(agent, eval_lib.AsyncDelayedAgent):
         # Assert that the agent has in fact processed all of the states.
         assert agent._state_queue.empty()
-
-    # Note: here we could push the delayed actions to the environment, to
-    # allow it to run ahead before the next rollout. However we _can't_ push
-    # the resulting gamestates back to the agents, because the agents might get
-    # updated with new policy variables before the next rollout.
 
     # Now batch everything up into time-major Trajectories.
     trajectories = {}
@@ -145,10 +165,10 @@ class RolloutWorker:
 
     timings = {
         'env_pop': step_profiler.mean_time(),
-        'env_push': env_push_profiler.mean_time(),
+        'env_push': self._env_push_profiler.mean_time(),
         'agent_pop': {
             port: profiler.mean_time()
-            for port, profiler in agent_profilers.items()},
+            for port, profiler in self._agent_profilers.items()},
         'agent_step': {
             port: agent.step_profiler.mean_time()
             for port, agent in self._agents.items()
@@ -217,20 +237,6 @@ class RemoteEvaluator:
       env_class = env_lib.AsyncBatchedEnvironmentMP
 
     self._env = env_class(num_envs, env_kwargs, **extra_env_kwargs)
-
-    # Make sure that the buffer sizes aren't too big.
-    for agent in agents.values():
-      # We get one environment state (the initial one) for free.
-      slack = 1 + agent.delay
-
-      # Maximum number of items that could get stuck.
-      max_agent_buffer = agent.batch_steps - 1
-      max_env_buffer = self._env.num_steps - 1
-
-      if max_agent_buffer + max_env_buffer > slack:
-        raise ValueError(
-            f'Agent and environment step buffer sizes are too large: '
-            f'{max_agent_buffer} + {max_env_buffer} > {slack}')
 
     self._agents = agents
     self._rollout_worker = RolloutWorker(

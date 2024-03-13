@@ -169,12 +169,10 @@ class DelayedAgent:
 
     # Break circular references.
     self.pop = self._controller_queue.get
+    self.peek_n = self._controller_queue.peek_n
 
     # TODO: put this in the BasicAgent?
     self.step_profiler = utils.Profiler(burnin=1)
-
-  def peek_delayed(self) -> list[embed.Action]:
-    return self._controller_queue.peek_n(self.delay)
 
   @property
   def batch_steps(self) -> int:
@@ -262,7 +260,8 @@ class AsyncDelayedAgent:
     self._embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
-    self._controller_queue = utils.PeekableQueue()
+    self._controller_queue: utils.PeekableQueue[embed.Action] \
+      = utils.PeekableQueue()
     self.default_controller = self._embed_controller.decode(
         self._embed_controller.dummy([batch_size]))
     for _ in range(self.delay):
@@ -273,6 +272,7 @@ class AsyncDelayedAgent:
     self._state_queue = queue.Queue()
 
     self.pop = self._controller_queue.get
+    self.peek_n = self._controller_queue.peek_n
 
   @property
   def batch_steps(self) -> int:
@@ -315,9 +315,6 @@ class AsyncDelayedAgent:
     # Return the action actually taken, in decoded form.
     delayed_controller = self._controller_queue.get()
     return delayed_controller
-
-  def peek_delayed(self) -> list[embed.Action]:
-    return self._controller_queue.peek_n(self.delay)
 
 class Agent:
   """Wraps a Policy to interact with Dolphin."""
