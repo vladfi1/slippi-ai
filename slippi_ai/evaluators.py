@@ -6,6 +6,7 @@ import typing as tp
 import cProfile
 
 import numpy as np
+import ray
 
 from slippi_ai import envs as env_lib
 from slippi_ai import (
@@ -19,6 +20,7 @@ from slippi_ai import (
 
 Port = int
 Timings = dict
+Params = tp.Sequence[np.ndarray]
 
 # Mimics data.Batch
 class Trajectory(tp.NamedTuple):
@@ -36,8 +38,9 @@ class RolloutWorker:
       num_envs: int,
       async_envs: bool = False,
       ray_envs: bool = False,
-      async_inference: bool = False,
       env_kwargs: dict = {},
+      async_inference: bool = False,
+      use_gpu: bool = False,
       damage_ratio: float = 0,  # For rewards.
   ):
     self._agents = {
@@ -45,6 +48,7 @@ class RolloutWorker:
             console_delay=dolphin_kwargs['online_delay'],
             batch_size=num_envs,
             async_inference=async_inference,
+            run_on_cpu=not use_gpu,
             **kwargs,
         )
         for port, kwargs in agent_kwargs.items()
@@ -206,7 +210,7 @@ class RolloutWorker:
     return trajectories, timings
 
   def update_variables(
-      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
+      self, updates: tp.Mapping[Port, Params],
   ):
     for port, values in updates.items():
       policy = self._agents[port]._policy
@@ -223,6 +227,7 @@ class RolloutWorker:
       yield
 
   def start(self):
+    # TODO: don't allow starting more than once, or running without starting.
     for agent in self._agents.values():
       agent.start()
 
@@ -238,6 +243,7 @@ class RolloutMetrics(tp.NamedTuple):
   def from_trajectory(cls, trajectory: Trajectory) -> 'RolloutMetrics':
     return cls(reward=np.sum(trajectory.frames.reward))
 
+
 class Evaluator:
 
   def __init__(
@@ -247,8 +253,9 @@ class Evaluator:
       num_envs: int,
       async_envs: bool = False,
       ray_envs: bool = False,
-      async_inference: bool = False,
       env_kwargs: dict = {},
+      async_inference: bool = False,
+      use_gpu: bool = False,
   ):
     self._rollout_worker = RolloutWorker(
         agent_kwargs=agent_kwargs,
@@ -256,16 +263,23 @@ class Evaluator:
         num_envs=num_envs,
         async_envs=async_envs,
         ray_envs=ray_envs,
-        async_inference=async_inference,
         env_kwargs=env_kwargs,
+        async_inference=async_inference,
+        use_gpu=use_gpu,
     )
+
+  def update_variables(
+      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
+  ):
+    self._rollout_worker.update_variables(updates)
 
   def rollout(
       self,
-      policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
       num_steps: int,
+      policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
-    self._rollout_worker.update_variables(policy_vars)
+    if policy_vars is not None:
+      self._rollout_worker.update_variables(policy_vars)
     trajectories, timings = self._rollout_worker.rollout(num_steps)
     metrics = {
         port: RolloutMetrics.from_trajectory(trajectory)
@@ -280,3 +294,84 @@ class Evaluator:
       yield
     finally:
       self._rollout_worker.stop()
+
+RayRolloutWorker = ray.remote(RolloutWorker)
+
+class RayEvaluator:
+  def __init__(
+      self,
+      agent_kwargs: tp.Mapping[Port, dict],
+      dolphin_kwargs: dict,
+      num_envs: int,  # per-worker
+      num_workers: int = 1,
+      async_envs: bool = False,
+      env_kwargs: dict = {},
+      ray_envs: bool = False,
+      async_inference: bool = False,
+      use_gpu: bool = False,
+      resources: tp.Mapping[str, float] = {},
+  ):
+    # TODO: Allow multiple gpu workers on the same machine. For this,
+    # we'll need to tell tensorflow not to reserve all gpu memory.
+    build_worker = RayRolloutWorker.options(
+        num_gpus=1 if use_gpu else 0,
+        resources=resources)
+
+    self._rollout_workers: list[ray.ObjectRef[RolloutWorker]] = []
+    for _ in range(num_workers):
+      self._rollout_workers.append(build_worker.remote(
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=num_envs,
+          async_envs=async_envs,
+          ray_envs=ray_envs,
+          env_kwargs=env_kwargs,
+          async_inference=async_inference,
+          use_gpu=use_gpu,
+      ))
+
+  def update_variables(
+      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
+  ):
+    ray.wait([
+        worker.update_variables.remote(updates)
+        for worker in self._rollout_workers])
+
+  def rollout(
+      self,
+      num_steps: int,
+      policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
+  ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
+    if policy_vars is not None:
+      for worker in self._rollout_workers:
+        worker.update_variables.remote(policy_vars)
+
+    rollout_futures = [
+        worker.rollout.remote(num_steps)
+        for worker in self._rollout_workers
+    ]
+    rollout_results = ray.get(rollout_futures)
+    trajectories, timings = zip(*rollout_results)
+
+    # Merge the results.
+    trajectories = utils.concat_nest_nt(trajectories)
+    # TODO: handle non-mean timings.
+    timings = utils.map_nt(lambda *args: np.mean(args), *timings)
+
+    metrics = {
+        port: RolloutMetrics.from_trajectory(trajectory)
+        for port, trajectory in trajectories.items()
+    }
+    return metrics, timings
+
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      ray.wait([worker.start.remote() for worker in self._rollout_workers])
+      yield
+    except KeyboardInterrupt:
+      # Properly shut down the workers. If we don't do this, the workers
+      # can get stuck, not sure why.
+      raise
+    finally:
+      ray.wait([worker.stop.remote() for worker in self._rollout_workers])

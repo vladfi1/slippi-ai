@@ -12,7 +12,6 @@ if __name__ == '__main__':
   ROLLOUT_LENGTH = flags.DEFINE_integer(
       'rollout_length', 60 * 60, 'number of steps per rollout')
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
-  SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
 
   ASYNC_ENVS = flags.DEFINE_boolean('async_envs', False, 'Use async environments.')
   RAY_ENVS = flags.DEFINE_boolean('ray_envs', False, 'Use ray environments.')
@@ -21,14 +20,14 @@ if __name__ == '__main__':
   INNER_BATCH_SIZE = flags.DEFINE_integer(
       'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
+  SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
   ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', False, 'Use async inference.')
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
-
   AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
 
-  culprits = []
+  NUM_WORKERS = flags.DEFINE_integer('num_workers', 0, 'Number of rollout workers.')
 
   def main(_):
 
@@ -49,10 +48,9 @@ if __name__ == '__main__':
     agent_kwargs.update(
         state=state,
         batch_steps=NUM_AGENT_STEPS.value,
-        run_on_cpu=not USE_GPU.value,
     )
 
-    evaluator = evaluators.Evaluator(
+    evaluator_kwargs = dict(
         agent_kwargs={
             port: agent_kwargs for port, player in players.items()
             if isinstance(player, dolphin.AI)},
@@ -60,22 +58,28 @@ if __name__ == '__main__':
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         ray_envs=RAY_ENVS.value,
-        async_inference=ASYNC_INFERENCE.value,
-        num_steps_per_rollout=ROLLOUT_LENGTH.value,
         env_kwargs=dict(
             num_steps=NUM_ENV_STEPS.value,
             inner_batch_size=INNER_BATCH_SIZE.value,
         ),
+        async_inference=ASYNC_INFERENCE.value,
+        use_gpu=USE_GPU.value,
     )
+
+    if NUM_WORKERS.value == 0:
+      evaluator = evaluators.Evaluator(**evaluator_kwargs)
+    else:
+      evaluator = evaluators.RayEvaluator(
+          num_workers=NUM_WORKERS.value, **evaluator_kwargs)
 
     with evaluator.run():
       # burnin
-      evaluator.rollout({}, 32)
+      evaluator.rollout(32)
       # import time; time.sleep(1000)
 
       timer = utils.Profiler(burnin=0)
       with timer:
-        stats, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
+        stats, timings = evaluator.rollout(ROLLOUT_LENGTH.value)
 
     print('rewards:', stats)
     print('timings:', utils.map_single_structure(lambda f: f'{f:.3f}', timings))

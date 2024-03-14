@@ -41,7 +41,6 @@ if __name__ == '__main__':
     agent_kwargs.update(
         state=state,
         batch_steps=NUM_AGENT_STEPS.value,
-        run_on_cpu=not USE_GPU.value,
     )
 
     num_names: int = agent_kwargs.pop('num_names')
@@ -77,13 +76,12 @@ if __name__ == '__main__':
           async_envs=ASYNC_ENVS.value,
           ray_envs=RAY_ENVS.value,
           async_inference=ASYNC_INFERENCE.value,
-          num_steps_per_rollout=ROLLOUT_LENGTH.value,
+          env_kwargs=dict(num_steps=NUM_ENV_STEPS.value),
           use_gpu=USE_GPU.value,
-          env_kwargs = dict(num_steps=NUM_ENV_STEPS.value),
       )
 
       with evaluator.run():
-        metrics, timings = evaluator.rollout({}, ROLLOUT_LENGTH.value)
+        metrics, timings = evaluator.rollout(ROLLOUT_LENGTH.value)
       print(timings)
 
       total_reward = metrics[1].reward
