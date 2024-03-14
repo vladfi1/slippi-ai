@@ -22,7 +22,7 @@ if __name__ == '__main__':
   AGENT_FLAGS['num_names'] = ff.Integer(4, 'Number of names to evaluate.')
 
   ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', True, 'Use async inference.')
-  USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for evaluation.')
+  USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
 
@@ -38,7 +38,11 @@ if __name__ == '__main__':
     state = eval_lib.load_state(
         path=agent_kwargs.pop('path'),
         tag=agent_kwargs.pop('tag'))
-    agent_kwargs['state'] = state
+    agent_kwargs.update(
+        state=state,
+        batch_steps=NUM_AGENT_STEPS.value,
+        run_on_cpu=not USE_GPU.value,
+    )
 
     num_names: int = agent_kwargs.pop('num_names')
     name_map: dict[str, int] = state['name_map']

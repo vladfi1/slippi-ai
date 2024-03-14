@@ -3,6 +3,9 @@
 Separate from non-TF utils to reduce memory usage.
 """
 
+import functools
+import typing as tp
+
 import numpy as np
 import tensorflow as tf
 
@@ -66,3 +69,14 @@ def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   rank = len(x.shape)
   cond = tf.expand_dims(cond, list(range(1, rank)))
   return tf.where(cond, x, y)
+
+T = tp.TypeVar('T')
+P = tp.ParamSpec('P')
+
+def run_on_cpu(fn: tp.Callable[P, T]) -> tp.Callable[P, T]:
+  """Decorator to run a function on the CPU."""
+  @functools.wraps(fn)
+  def wrapped(*args, **kwargs):
+    with tf.device('/cpu:0'):
+      return fn(*args, **kwargs)
+  return wrapped

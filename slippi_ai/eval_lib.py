@@ -34,6 +34,7 @@ class BasicAgent:
       name_code: int,
       sample_kwargs: dict = {},
       compile: bool = True,
+      run_on_cpu: bool = False,
   ):
     self._policy = policy
     self._name_code = name_code
@@ -76,12 +77,15 @@ class BasicAgent:
 
       return actions, hidden_state
 
+    if run_on_cpu:
+      sample = tf_utils.run_on_cpu(sample)
+      multi_sample = tf_utils.run_on_cpu(multi_sample)
     if compile:
-      self._sample = tf.function(sample)
-      self._multi_sample = tf.function(multi_sample)
-    else:
-      self._sample = sample
-      self._multi_sample = multi_sample
+      sample = tf.function(sample)
+      multi_sample = tf.function(multi_sample)
+
+    self._sample = sample
+    self._multi_sample = multi_sample
 
     self.hidden_state = self._policy.initial_state(batch_size)
 
@@ -349,6 +353,8 @@ AGENT_FLAGS = dict(
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     name=ff.String('Master Player', 'Name of the agent.'),
+    # Generally we want to set `run_on_cpu` once for all agents.
+    # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
 )
 
 def load_state(path: Optional[str], tag: Optional[str]) -> dict:

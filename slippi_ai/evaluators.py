@@ -205,13 +205,8 @@ class RemoteEvaluator:
       async_envs: bool = False,
       ray_envs: bool = False,
       async_inference: bool = False,
-      use_gpu: bool = False,
       extra_env_kwargs: dict = {},
   ):
-    # TODO: do this in a better way
-    if not use_gpu:
-      eval_lib.disable_gpus()
-
     agents = {
         port: eval_lib.build_delayed_agent(
             console_delay=env_kwargs['online_delay'],

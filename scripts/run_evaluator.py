@@ -31,7 +31,6 @@ if __name__ == '__main__':
   culprits = []
 
   def main(_):
-    # eval_lib.disable_gpus()
 
     players = {
         1: dolphin.AI(),
@@ -47,10 +46,10 @@ if __name__ == '__main__':
     state = eval_lib.load_state(
         path=agent_kwargs.pop('path'),
         tag=agent_kwargs.pop('tag'))
-
     agent_kwargs.update(
         state=state,
         batch_steps=NUM_AGENT_STEPS.value,
+        run_on_cpu=not USE_GPU.value,
     )
 
     evaluator = evaluators.RemoteEvaluator(
@@ -63,7 +62,6 @@ if __name__ == '__main__':
         ray_envs=RAY_ENVS.value,
         async_inference=ASYNC_INFERENCE.value,
         num_steps_per_rollout=ROLLOUT_LENGTH.value,
-        use_gpu=USE_GPU.value,
         extra_env_kwargs=dict(
             num_steps=NUM_ENV_STEPS.value,
             inner_batch_size=INNER_BATCH_SIZE.value,
