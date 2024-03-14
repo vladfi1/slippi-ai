@@ -52,17 +52,17 @@ if __name__ == '__main__':
         run_on_cpu=not USE_GPU.value,
     )
 
-    evaluator = evaluators.RemoteEvaluator(
+    evaluator = evaluators.Evaluator(
         agent_kwargs={
             port: agent_kwargs for port, player in players.items()
             if isinstance(player, dolphin.AI)},
-        env_kwargs=env_kwargs,
+        dolphin_kwargs=env_kwargs,
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         ray_envs=RAY_ENVS.value,
         async_inference=ASYNC_INFERENCE.value,
         num_steps_per_rollout=ROLLOUT_LENGTH.value,
-        extra_env_kwargs=dict(
+        env_kwargs=dict(
             num_steps=NUM_ENV_STEPS.value,
             inner_batch_size=INNER_BATCH_SIZE.value,
         ),

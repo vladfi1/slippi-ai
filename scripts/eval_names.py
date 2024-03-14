@@ -70,16 +70,16 @@ if __name__ == '__main__':
 
     for name1, name2 in list(matchups):
       print(f'Evaluating {name1} vs {name2}')
-      evaluator = evaluators.RemoteEvaluator(
+      evaluator = evaluators.Evaluator(
           agent_kwargs={1: per_name_kwargs[name1], 2: per_name_kwargs[name2]},
-          env_kwargs=env_kwargs,
+          dolphin_kwargs=env_kwargs,
           num_envs=NUM_ENVS.value,
           async_envs=ASYNC_ENVS.value,
           ray_envs=RAY_ENVS.value,
           async_inference=ASYNC_INFERENCE.value,
           num_steps_per_rollout=ROLLOUT_LENGTH.value,
           use_gpu=USE_GPU.value,
-          extra_env_kwargs = dict(num_steps=NUM_ENV_STEPS.value),
+          env_kwargs = dict(num_steps=NUM_ENV_STEPS.value),
       )
 
       with evaluator.run():

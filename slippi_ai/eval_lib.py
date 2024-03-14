@@ -274,6 +274,7 @@ class AsyncDelayedAgent:
     self.state_queue_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
     self._state_queue = queue.Queue()
+    self._worker_thread = None
 
     self.pop = self._controller_queue.get
     self.peek_n = self._controller_queue.peek_n
@@ -282,32 +283,42 @@ class AsyncDelayedAgent:
   def batch_steps(self) -> int:
     return self._batch_steps or 1
 
+  def start(self):
+    if self._worker_thread:
+      raise RuntimeError('Already started.')
+
+    self._worker_thread = threading.Thread(
+        target=_run_agent, kwargs=dict(
+            agent=self._agent,
+            state_queue=self._state_queue,
+            controller_queue=self._controller_queue,
+            batch_steps=self._batch_steps,
+            state_queue_profiler=self.state_queue_profiler,
+            step_profiler=self.step_profiler,
+        ))
+    self._worker_thread.start()
+
+  def stop(self):
+    if self._worker_thread:
+      self._state_queue.put(None)
+      self._worker_thread.join()
+      self._worker_thread = None
+
   @contextlib.contextmanager
   def run(self):
     try:
-      self._worker_thread = threading.Thread(
-          target=_run_agent, kwargs=dict(
-              agent=self._agent,
-              state_queue=self._state_queue,
-              controller_queue=self._controller_queue,
-              batch_steps=self._batch_steps,
-              state_queue_profiler=self.state_queue_profiler,
-              step_profiler=self.step_profiler,
-          ))
-      self._worker_thread.start()
+      self.start()
       yield self
     finally:
       print('actor run exit')
-      self._state_queue.put(None)
-      self._worker_thread.join()
+      self.stop()
 
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
-  # def __del__(self):
-  #   print('actor del')
-  #   self._state_queue.put(None)
-  #   self._worker_thread.join()
+  def __del__(self):
+    print('actor del')
+    self.stop()
 
   def step(
       self,

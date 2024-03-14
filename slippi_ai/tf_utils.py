@@ -76,7 +76,7 @@ P = tp.ParamSpec('P')
 def run_on_cpu(fn: tp.Callable[P, T]) -> tp.Callable[P, T]:
   """Decorator to run a function on the CPU."""
   @functools.wraps(fn)
-  def wrapped(*args, **kwargs):
+  def wrapped(*args: P.args, **kwargs: P.kwargs):
     with tf.device('/cpu:0'):
       return fn(*args, **kwargs)
   return wrapped

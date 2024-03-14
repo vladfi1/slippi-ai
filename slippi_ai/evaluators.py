@@ -2,7 +2,6 @@
 
 import collections
 import contextlib
-import threading
 import typing as tp
 import cProfile
 
@@ -31,15 +30,42 @@ class Trajectory(tp.NamedTuple):
 class RolloutWorker:
 
   def __init__(
-    self,
-    agents: tp.Mapping[Port, eval_lib.AsyncDelayedAgent],
-    batched_env: env_lib.AsyncBatchedEnvironmentMP,
-    num_steps_per_rollout: int,
-    damage_ratio: float = 0,
-  ) -> None:
-    self._env = batched_env
-    self._num_steps_per_rollout = num_steps_per_rollout
-    self._agents = agents
+      self,
+      agent_kwargs: tp.Mapping[Port, dict],
+      dolphin_kwargs: dict,
+      num_envs: int,
+      async_envs: bool = False,
+      ray_envs: bool = False,
+      async_inference: bool = False,
+      env_kwargs: dict = {},
+      damage_ratio: float = 0,  # For rewards.
+  ):
+    self._agents = {
+        port: eval_lib.build_delayed_agent(
+            console_delay=dolphin_kwargs['online_delay'],
+            batch_size=num_envs,
+            async_inference=async_inference,
+            **kwargs,
+        )
+        for port, kwargs in agent_kwargs.items()
+    }
+
+    dolphin_kwargs = dolphin_kwargs.copy()
+    for port, kwargs in agent_kwargs.items():
+      eval_lib.update_character(
+          dolphin_kwargs['players'][port],
+          kwargs['state']['config'])
+
+    if not async_envs:
+      env_class = env_lib.BatchedEnvironment
+    elif ray_envs:
+      raise NotImplementedError('Ray environments are not up to date.')
+      # env_class = env_lib.AsyncBatchedEnvironmentRay
+    else:
+      env_class = env_lib.AsyncBatchedEnvironmentMP
+
+    self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
+
     self._damage_ratio = damage_ratio
 
     self._agent_profilers = {
@@ -50,11 +76,11 @@ class RolloutWorker:
     self._prev_actions = collections.deque()
     self._prev_actions.append({
         port: agent.default_controller
-        for port, agent in agents.items()
+        for port, agent in self._agents.items()
     })
 
     # Make sure that the buffer sizes aren't too big.
-    for agent in agents.values():
+    for agent in self._agents.values():
       # We get one environment state (the initial one) for free.
       slack = 1 + agent.delay
 
@@ -68,7 +94,7 @@ class RolloutWorker:
             f'{max_agent_buffer} + {max_env_buffer} > {slack}')
 
     # Get the environment to run ahead as much as possible.
-    self.min_delay = min(agent.delay for agent in agents.values())
+    self.min_delay = min(agent.delay for agent in self._agents.values())
     for _ in range(self.min_delay):
       self._push_actions()
 
@@ -187,58 +213,6 @@ class RolloutWorker:
       for var, val in zip(policy.variables, values):
         var.assign(val)
 
-class RolloutMetrics(tp.NamedTuple):
-  reward: float
-
-  @classmethod
-  def from_trajectory(cls, trajectory: Trajectory) -> 'RolloutMetrics':
-    return cls(reward=np.sum(trajectory.frames.reward))
-
-class RemoteEvaluator:
-
-  def __init__(
-      self,
-      agent_kwargs: tp.Mapping[Port, dict],
-      env_kwargs: dict,
-      num_envs: int,
-      num_steps_per_rollout: int,
-      async_envs: bool = False,
-      ray_envs: bool = False,
-      async_inference: bool = False,
-      extra_env_kwargs: dict = {},
-  ):
-    agents = {
-        port: eval_lib.build_delayed_agent(
-            console_delay=env_kwargs['online_delay'],
-            batch_size=num_envs,
-            async_inference=async_inference,
-            **kwargs,
-        )
-        for port, kwargs in agent_kwargs.items()
-    }
-
-    env_kwargs = env_kwargs.copy()
-    for port, kwargs in agent_kwargs.items():
-      eval_lib.update_character(
-          env_kwargs['players'][port],
-          kwargs['state']['config'])
-
-    if not async_envs:
-      env_class = env_lib.BatchedEnvironment
-    elif ray_envs:
-      raise NotImplementedError('Ray environments are not up to date.')
-      # env_class = env_lib.AsyncBatchedEnvironmentRay
-    else:
-      env_class = env_lib.AsyncBatchedEnvironmentMP
-
-    self._env = env_class(num_envs, env_kwargs, **extra_env_kwargs)
-
-    self._agents = agents
-    self._rollout_worker = RolloutWorker(
-        agents, self._env, num_steps_per_rollout)
-
-    self._lock = threading.Lock()
-
   @contextlib.contextmanager
   def run(self):
     with contextlib.ExitStack() as stack:
@@ -248,12 +222,49 @@ class RemoteEvaluator:
         stack.enter_context(self._env.run())
       yield
 
+  def start(self):
+    for agent in self._agents.values():
+      agent.start()
+
+  def stop(self):
+    for agent in self._agents.values():
+      agent.stop()
+    self._env.stop()
+
+class RolloutMetrics(tp.NamedTuple):
+  reward: float
+
+  @classmethod
+  def from_trajectory(cls, trajectory: Trajectory) -> 'RolloutMetrics':
+    return cls(reward=np.sum(trajectory.frames.reward))
+
+class Evaluator:
+
+  def __init__(
+      self,
+      agent_kwargs: tp.Mapping[Port, dict],
+      dolphin_kwargs: dict,
+      num_envs: int,
+      async_envs: bool = False,
+      ray_envs: bool = False,
+      async_inference: bool = False,
+      env_kwargs: dict = {},
+  ):
+    self._rollout_worker = RolloutWorker(
+        agent_kwargs=agent_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
+        num_envs=num_envs,
+        async_envs=async_envs,
+        ray_envs=ray_envs,
+        async_inference=async_inference,
+        env_kwargs=env_kwargs,
+    )
+
   def rollout(
       self,
       policy_vars: tp.Mapping[Port, tp.Sequence[np.ndarray]],
       num_steps: int,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
-    # with self._lock:
     self._rollout_worker.update_variables(policy_vars)
     trajectories, timings = self._rollout_worker.rollout(num_steps)
     metrics = {
@@ -261,3 +272,11 @@ class RemoteEvaluator:
         for port, trajectory in trajectories.items()
     }
     return metrics, timings
+
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      self._rollout_worker.start()
+      yield
+    finally:
+      self._rollout_worker.stop()
