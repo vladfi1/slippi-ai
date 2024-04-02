@@ -53,6 +53,9 @@ class RolloutWorker:
         )
         for port, kwargs in agent_kwargs.items()
     }
+    for agent in self._agents.values():
+      if agent.delay == 0:
+        raise NotImplementedError('Need to batch 0-length lists :(')
 
     dolphin_kwargs = dolphin_kwargs.copy()
     for port, kwargs in agent_kwargs.items():

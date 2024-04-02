@@ -179,8 +179,10 @@ class BatchedEnvironment:
     self._envs = envs
 
     # Optional "async" interface for compatibility with the Async* Envs.
-    self._controller_queue = collections.deque()
-    self._controller_queue.appendleft(None)  # denotes initial state
+    self._state_queue = collections.deque()
+    self._state_queue.appendleft(self.current_state())
+    # self._controller_queue = collections.deque()
+    # self._controller_queue.appendleft(None)  # denotes initial state
 
   @property
   def num_steps(self) -> int:
@@ -218,13 +220,18 @@ class BatchedEnvironment:
     return [self.step(c) for c in controllers]
 
   def push(self, controllers: Mapping[int, Controller]):
-    self._controller_queue.appendleft(controllers)
+    self._state_queue.appendleft(self.step(controllers))
+    # self._controller_queue.appendleft(controllers)
 
   def pop(self) -> EnvOutput:
-    controllers = self._controller_queue.pop()
-    if controllers is None:
-      return self.current_state()
-    return self.step(controllers)
+    return self._state_queue.pop()
+    # controllers = self._controller_queue.pop()
+    # if controllers is None:
+    #   return self.current_state()
+    # return self.step(controllers)
+
+  def peek(self) -> EnvOutput:
+    return self._state_queue[-1]
 
 def build_environment(
     num_envs: int,

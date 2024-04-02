@@ -36,7 +36,7 @@ if __name__ == '__main__':
         2: dolphin.AI() if SELF_PLAY.value else dolphin.CPU(),
     }
 
-    env_kwargs = dict(
+    dolphin_kwargs = dict(
         players=players,
         **DOLPHIN.value,
     )
@@ -54,7 +54,7 @@ if __name__ == '__main__':
         agent_kwargs={
             port: agent_kwargs for port, player in players.items()
             if isinstance(player, dolphin.AI)},
-        dolphin_kwargs=env_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         ray_envs=RAY_ENVS.value,

@@ -1,5 +1,6 @@
 """Train (and test) a network via imitation learning."""
 
+import contextlib
 import collections
 import dataclasses
 import json
@@ -17,8 +18,12 @@ import tensorflow as tf
 
 import wandb
 
+import melee
+
 from slippi_ai import (
     controller_heads,
+    dolphin,
+    evaluators,
     flag_utils,
     nametags,
     networks,
@@ -45,8 +50,43 @@ class RuntimeConfig:
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
-  eval_every_n: int = 100  # number of training steps between evaluations
-  num_eval_steps: int = 10  # number of batches per evaluation
+  validate_every_n: int = 1000  # number of training steps between validations
+  num_valid_steps: int = 100  # number of batches per validation
+
+@dataclasses.dataclass
+class EvaluatorConfig:
+  run: bool = False
+  eval_every_n: int = 1000
+  rollout_length: int = 1 * 60 * 60  # one minute in-game time
+  agent_name: str = 'Master Player'  # TODO: evaluate multiple names
+  num_envs: int = 1
+  async_envs: bool = True
+  ray_envs: bool = False
+  num_env_steps: int = 0
+  inner_batch_size: int = 1
+  async_inference: bool = False
+  use_gpu: bool = True
+  num_agent_steps: int = 0
+
+  @property
+  def env_kwargs(self) -> dict:
+    kwargs = dict(num_steps=self.num_env_steps)
+    if self.async_envs:
+      kwargs.update(inner_batch_size=self.inner_batch_size)
+    return kwargs
+
+@dataclasses.dataclass
+class DolphinConfig:
+  """Configure dolphin for evaluation."""
+  path: str = None  # Path to folder containing the dolphin executable
+  iso: str = None  # Path to melee 1.02 iso.
+  stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
+  online_delay: int = 0  # Simulate online delay.
+  blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  save_replays: bool = False  # Save slippi replays to the usual location.
+  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
 
 @dataclasses.dataclass
 class FileCacheConfig:
@@ -79,6 +119,9 @@ class Config:
   value_function: ValueFunctionConfig = _field(ValueFunctionConfig)
 
   max_names: int = 16
+
+  dolphin: DolphinConfig = _field(DolphinConfig)
+  evaluator: EvaluatorConfig = _field(EvaluatorConfig)
 
   expt_root: str = 'experiments'
   expt_dir: tp.Optional[str] = None
@@ -240,17 +283,15 @@ def train(config: Config):
     s3_store = s3_lib.get_store()
     s3_keys = s3_lib.get_keys(tag)
 
-  def save():
-    # Local Save
-    tf_state = get_tf_state()
-
-    # easier to always bundle the config with the state
-    combined_state = dict(
-        state=tf_state,
+  def get_combined_state():
+    return dict(
+        state=get_tf_state(),
         config=dataclasses.asdict(config),
         name_map=name_map,
     )
-    pickled_state = pickle.dumps(combined_state)
+
+  def save():
+    pickled_state = pickle.dumps(get_combined_state())
 
     logging.info('saving state to %s', pickle_path)
     with open(pickle_path, 'wb') as f:
@@ -354,26 +395,26 @@ def train(config: Config):
           f' step={step_time:.3f}')
     print()
 
-  def maybe_eval():
+  def maybe_validate():
     total_steps = step.numpy()
-    if total_steps % runtime.eval_every_n != 0:
+    if total_steps % runtime.validate_every_n != 0:
       return
 
-    eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    valid_results = [test_manager.step() for _ in range(runtime.num_valid_steps)]
 
-    eval_stats, batches = zip(*eval_results)
-    eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
-    eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
+    valid_stats, batches = zip(*valid_results)
+    valid_stats = tf.nest.map_structure(tf_utils.to_numpy, valid_stats)
+    valid_stats = tf.nest.map_structure(utils.stack, *valid_stats)
 
-    to_log = dict(eval=eval_stats)
+    to_log = dict(validation=valid_stats)
     train_lib.log_stats(to_log, total_steps)
 
     # Log losses aggregated by name.
 
-    # Stats have shape [num_eval_steps, unroll_length, batch_size]
+    # Stats have shape [num_valid_steps, unroll_length, batch_size]
     time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['policy']['loss'])
-    assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
+    loss = time_mean(valid_stats['policy']['loss'])
+    assert loss.shape == (runtime.num_valid_steps, config.data.batch_size)
 
     # Metadata only has a batch dimension.
     metas: list[data_lib.ChunkMeta] = [batch.meta for batch in batches]
@@ -397,20 +438,79 @@ def train(config: Config):
         counts=np.array(counts, dtype=np.uint32),
     )
 
-    to_log = dict(eval_names=to_log)
+    to_log = dict(validation_names=to_log)
     train_lib.log_stats(to_log, total_steps, take_mean=False)
+
+  # Set up RL evaluation
+  if config.evaluator.run:
+    players = {
+        1: dolphin.AI(),
+        2: dolphin.CPU(),
+    }
+    dolphin_kwargs = dict(
+        players=players,
+        **dataclasses.asdict(config.dolphin),
+    )
+    agent_kwargs = dict(
+        state=get_combined_state(),
+        name=config.evaluator.agent_name,
+        batch_steps=config.evaluator.num_agent_steps,
+    )
+    evaluator = evaluators.Evaluator(
+        agent_kwargs={1: agent_kwargs},
+        dolphin_kwargs=dolphin_kwargs,
+        num_envs=config.evaluator.num_envs,
+        async_envs=config.evaluator.async_envs,
+        ray_envs=config.evaluator.ray_envs,
+        env_kwargs=config.evaluator.env_kwargs,
+        async_inference=config.evaluator.async_inference,
+        use_gpu=config.evaluator.use_gpu,
+    )
+    del players, dolphin_kwargs, agent_kwargs
+    evaluator_profiler = utils.Profiler()
+
+    # TODO: implement parallel evaluation
+    def maybe_evaluate():
+      total_steps = step.numpy()
+      if total_steps % config.evaluator.eval_every_n != 0:
+        return
+
+      policy_vars = [t.numpy() for t in policy.variables]
+
+      with evaluator_profiler:
+        metrics, _ = evaluator.rollout(
+            num_steps=config.evaluator.rollout_length,
+            policy_vars={1: policy_vars})
+
+      total_reward = metrics[1].reward
+      num_frames = config.evaluator.rollout_length * config.evaluator.num_envs
+      mean_reward = total_reward / num_frames
+      reward_per_minute = mean_reward * 60 * 60
+
+      logging.info('Reward per minute: %f', reward_per_minute)
+      logging.info('Evaluation timing: %.3f', evaluator_profiler.mean_time())
+
+      to_log = dict(evaluation=dict(reward_per_minute=reward_per_minute))
+      train_lib.log_stats(to_log, total_steps)
 
   start_time = time.time()
 
-  while time.time() - start_time < runtime.max_runtime:
-    train_stats, _ = train_manager.step()
-    step.assign_add(1)
-    maybe_log(train_stats)
-    maybe_eval()
+  with contextlib.ExitStack() as stack:
+    if config.evaluator.run:
+      stack.enter_context(evaluator.run())
 
-    save_path = maybe_save()
-    if save_path:
-      logging.info('Saved network to %s', save_path)
+    while time.time() - start_time < runtime.max_runtime:
+      train_stats, _ = train_manager.step()
+      step.assign_add(1)
+      maybe_log(train_stats)
+      maybe_validate()
+
+      if config.evaluator.run:
+        maybe_evaluate()
+
+      save_path = maybe_save()
+      if save_path:
+        logging.info('Saved network to %s', save_path)
 
 CONFIG = ff.DEFINE_dict(
     'config', **flag_utils.get_flags_from_dataclass(Config))

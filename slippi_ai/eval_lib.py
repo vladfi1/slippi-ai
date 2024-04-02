@@ -204,6 +204,12 @@ class DelayedAgent:
     """For compatibility with the async agent."""
     yield self
 
+  def start(self):
+    pass
+
+  def stop(self):
+    pass
+
 def _run_agent(
     agent: BasicAgent,
     state_queue: queue.Queue,
@@ -251,7 +257,7 @@ class AsyncDelayedAgent:
       policy: policies.Policy,
       batch_size: int,
       console_delay: int = 0,
-      batch_steps: int = 1,
+      batch_steps: int = 0,
       **agent_kwargs,
   ):
     self._batch_size = batch_size
@@ -363,7 +369,7 @@ AGENT_FLAGS = dict(
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
-    name=ff.String('Master Player', 'Name of the agent.'),
+    name=ff.String('Master Player', 'Name of the player to imitate.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
 )
