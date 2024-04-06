@@ -341,7 +341,7 @@ class Agent:
     action = self._agent.step(game, needs_reset)
     action = utils.map_nt(lambda x: x.item(), action)
     send_controller(self._controller, action)
-    return embed.StateAction(state=game, action=action)
+    return action
 
 AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
