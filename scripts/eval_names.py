@@ -16,6 +16,8 @@ if __name__ == '__main__':
   RAY_ENVS = flags.DEFINE_boolean('ray_envs', False, 'Use ray environments.')
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
+  INNER_BATCH_SIZE = flags.DEFINE_integer(
+      'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
   AGENT_FLAGS = eval_lib.AGENT_FLAGS.copy()
   del AGENT_FLAGS['name']
@@ -76,7 +78,10 @@ if __name__ == '__main__':
           async_envs=ASYNC_ENVS.value,
           ray_envs=RAY_ENVS.value,
           async_inference=ASYNC_INFERENCE.value,
-          env_kwargs=dict(num_steps=NUM_ENV_STEPS.value),
+          env_kwargs=dict(
+              num_steps=NUM_ENV_STEPS.value,
+              inner_batch_size=INNER_BATCH_SIZE.value,
+          ),
           use_gpu=USE_GPU.value,
       )
 
