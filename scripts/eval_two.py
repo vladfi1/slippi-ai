@@ -28,10 +28,11 @@ def main(_):
 
   dolphin = dolphin_lib.Dolphin(
       players=players,
+      log_level=0,
       **DOLPHIN.value,
   )
 
-  agents = []
+  agents: list[eval_lib.Agent] = []
 
   for port, opponent_port in zip(PORTS, reversed(PORTS)):
     player = players[port]
