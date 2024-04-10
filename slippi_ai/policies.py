@@ -88,9 +88,9 @@ class Policy(snt.Module):
     total_loss = policy_loss
 
     metrics = dict(
-        policy=dict(
+        loss=policy_loss,
+        controller=dict(
             types.nt_to_nest(distances),
-            loss=policy_loss,
         )
     )
 

@@ -32,6 +32,7 @@ from slippi_ai import (
 from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai.file_cache import FileCache
+from slippi_ai import value_function as vf_lib
 
 T = tp.TypeVar('T')
 
@@ -69,6 +70,7 @@ class Config:
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
   policy: policies.PolicyConfig = _field(policies.PolicyConfig)
+  separate_value_net: bool = False
 
   max_names: int = 16
 
@@ -104,12 +106,21 @@ def train(config: Config):
   policy = saving.policy_from_config(dataclasses.asdict(config))
   embed_controller = policy.controller_embedding
 
+  value_function = None
+  if config.separate_value_net:
+    # TODO: configure separate network for value function
+    value_function = vf_lib.ValueFunction(
+        network_config=config.network,
+        embed_state_action=policy.embed_state_action,
+    )
+
   learner_kwargs = dataclasses.asdict(config.learner)
   learning_rate = tf.Variable(
       learner_kwargs['learning_rate'], name='learning_rate', trainable=False)
   learner_kwargs.update(learning_rate=learning_rate)
   learner = learner_lib.Learner(
       policy=policy,
+      value_function=value_function,
       **learner_kwargs,
   )
 
@@ -198,6 +209,7 @@ def train(config: Config):
   tf_state = dict(
       step=step,
       policy=policy.variables,
+      value_function=value_function.variables if value_function else [],
       optimizer=learner.optimizer.variables,
       # TODO: add in learning_rate?
   )

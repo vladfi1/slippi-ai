@@ -31,7 +31,7 @@ class TrainManager:
   ):
     self.learner = learner
     self.data_source = data_source
-    self.hidden_state = learner.policy.initial_state(data_source.batch_size)
+    self.hidden_state = learner.initial_state(data_source.batch_size)
     self.step_kwargs = step_kwargs
     self.total_frames = 0
     self.data_profiler = utils.Profiler()
