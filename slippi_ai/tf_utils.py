@@ -54,12 +54,18 @@ def dynamic_rnn(core, inputs, initial_state):
 
   outputs = write_output(0, output_0)
 
-  for i in tf.range(1, unroll_length):
+  def loop_body(i, outputs, state):
     output, state = core(get_input(i), state)
     outputs = write_output(i, output)
+    return i + 1, outputs, state
+
+  condition = lambda i, outputs, state: i < unroll_length
+  _, outputs, state = tf.while_loop(
+      condition, loop_body, (1, outputs, state))
 
   outputs = tf.nest.map_structure(lambda ta: ta.stack(), outputs)
   return outputs, state
+
 
 def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   """Broadcasting tf.where, with cond of shape [B]."""

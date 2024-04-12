@@ -339,6 +339,24 @@ class ResidualWrapper(Network):
     outputs, final_state = self._net.unroll(inputs, prev_state)
     return inputs + outputs, final_state
 
+class RematWrapper(Network):
+  """Wraps a network with gradient rematerialization."""
+
+  def __init__(self, net: Network):
+    super().__init__(name='RematWrapper')
+    self._net = net
+    self._step = tf.recompute_grad(self._net.step)
+    self._unroll = tf.recompute_grad(self._net.unroll)
+
+  def initial_state(self, batch_size):
+    return self._net.initial_state(batch_size)
+
+  def step(self, inputs, prev_state):
+    return self._step(inputs, prev_state)
+
+  def unroll(self, inputs, prev_state):
+    return self._unroll(inputs, prev_state)
+
 class TransformerLike(Network):
   """Alternates recurrent and FFW layers."""
 
@@ -348,6 +366,7 @@ class TransformerLike(Network):
       ffw_multiplier=4,
       recurrent_layer='lstm',
       activation='gelu',
+      remat=False,
   )
 
   def __init__(
@@ -357,6 +376,7 @@ class TransformerLike(Network):
       ffw_multiplier: int,
       recurrent_layer: str,
       activation: str,
+      remat: bool,
   ):
     super().__init__(name=f'TransformerLike')
     self._hidden_size = hidden_size
@@ -384,6 +404,9 @@ class TransformerLike(Network):
           hidden_size, hidden_size * ffw_multiplier,
           activation=getattr(tf.nn, activation))
       layers.append(FFWWrapper(ffw_layer))
+
+    if remat:
+      layers = [RematWrapper(layer) for layer in layers]
 
     self._net = Sequential(layers)
 
