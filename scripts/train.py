@@ -56,6 +56,12 @@ class FileCacheConfig:
   version: str = 'test'
 
 @dataclasses.dataclass
+class ValueFunctionConfig:
+  train_separate_network: bool = True
+  separate_network_config: bool = True
+  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
+
+@dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
 
@@ -70,7 +76,7 @@ class Config:
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
   policy: policies.PolicyConfig = _field(policies.PolicyConfig)
-  separate_value_net: bool = False
+  value_function: ValueFunctionConfig = _field(ValueFunctionConfig)
 
   max_names: int = 16
 
@@ -107,10 +113,12 @@ def train(config: Config):
   embed_controller = policy.controller_embedding
 
   value_function = None
-  if config.separate_value_net:
-    # TODO: configure separate network for value function
+  if config.value_function.train_separate_network:
+    value_net_config = config.network
+    if config.value_function.separate_network_config:
+      value_net_config = config.value_function.network
     value_function = vf_lib.ValueFunction(
-        network_config=config.network,
+        network_config=value_net_config,
         embed_state_action=policy.embed_state_action,
     )
 
