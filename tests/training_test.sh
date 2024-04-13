@@ -1,15 +1,17 @@
 # create a tiny network and run for 10 seconds on demo data
 
-# don't write to mongodb by accident
-MONGO_URI=
+DATASET=data/toy_dataset
 
-python scripts/train.py with \
-  dataset.data_dir=data/pq/ \
-  dataset.test_ratio=0.5 \
-  data.compressed=False \
-  runtime.log_interval=4 \
-  runtime.max_runtime=10 \
-  runtime.eval_every_n=2 \
-  runtime.num_eval_steps=1 \
-  network.mlp.depth=1 \
-  network.mlp.width=1
+python scripts/train.py \
+  --config.dataset.data_dir=$DATASET/games \
+  --config.dataset.meta_path=$DATASET/meta.json \
+  --config.dataset.test_ratio=0.5 \
+  --config.data.compressed=True \
+  --config.runtime.log_interval=4 \
+  --config.runtime.max_runtime=10 \
+  --config.runtime.eval_every_n=2 \
+  --config.runtime.num_eval_steps=1 \
+  --config.network.mlp.depth=1 \
+  --config.network.mlp.width=1 \
+  --config.value_function.separate_network_config=False \
+  "$@"
