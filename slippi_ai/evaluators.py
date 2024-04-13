@@ -54,6 +54,11 @@ class RolloutWorker:
         for port, kwargs in agent_kwargs.items()
     }
 
+    self._batched_name_codes = {
+        port: np.full([num_envs], agent._agent._name_code, dtype=np.int32)
+        for port, agent in self._agents.items()
+    }
+
     dolphin_kwargs = dolphin_kwargs.copy()
     for port, kwargs in agent_kwargs.items():
       eval_lib.update_character(
@@ -136,7 +141,7 @@ class RolloutWorker:
             # TODO: check that the prev action matches what the env has?
             # action=game.p0.controller,
             action=prev_actions[port],
-            name=self._agents[port]._agent._name_code,
+            name=self._batched_name_codes[port],
         )
         state_actions[port].append(state_action)
       is_resetting.append(output.needs_reset)
@@ -191,7 +196,9 @@ class RolloutWorker:
           frames=frames,
           is_resetting=is_resetting,
           initial_state=initial_states[port],
-          delayed_actions=utils.batch_nest_nt(delayed_actions[port]))
+          # Note that delayed actions aren't batched, mainly to
+          # simplify the case where the delay is 0.
+          delayed_actions=delayed_actions[port])
 
     timings = {
         'env_pop': step_profiler.mean_time(),

@@ -204,6 +204,10 @@ class DelayedAgent:
     """For compatibility with the async agent."""
     yield self
 
+  def stop(self):
+    """For compatibility with the async agent."""
+
+
 def _run_agent(
     agent: BasicAgent,
     state_queue: queue.Queue,

@@ -161,17 +161,17 @@ class BatchedEnvironment:
   def __init__(
       self,
       num_envs: int,
-      env_kwargs: dict,
+      dolphin_kwargs: dict,
       slippi_ports: Optional[list[int]] = None,
       num_steps: int = 1,  # For compatibility
   ):
     del num_steps
-    self._env_kwargs = env_kwargs
+    self._dolphin_kwargs = dolphin_kwargs
 
     slippi_ports = slippi_ports or get_free_ports(num_envs)
     envs: list[SafeEnvironment] = []
     for slippi_port in slippi_ports:
-      kwargs = env_kwargs.copy()
+      kwargs = dolphin_kwargs.copy()
       kwargs.update(slippi_port=slippi_port)
       env = SafeEnvironment(kwargs)
       envs.append(env)
@@ -179,8 +179,8 @@ class BatchedEnvironment:
     self._envs = envs
 
     # Optional "async" interface for compatibility with the Async* Envs.
-    self._controller_queue = collections.deque()
-    self._controller_queue.appendleft(None)  # denotes initial state
+    self._output_queue = collections.deque()
+    self._output_queue.appendleft(self.current_state())
 
   @property
   def num_steps(self) -> int:
@@ -218,28 +218,28 @@ class BatchedEnvironment:
     return [self.step(c) for c in controllers]
 
   def push(self, controllers: Mapping[int, Controller]):
-    self._controller_queue.appendleft(controllers)
+    self._output_queue.appendleft(self.step(controllers))
 
   def pop(self) -> EnvOutput:
-    controllers = self._controller_queue.pop()
-    if controllers is None:
-      return self.current_state()
-    return self.step(controllers)
+    return self._output_queue.pop()
+
+  def peek(self) -> EnvOutput:
+    return self._output_queue[-1]
 
 def build_environment(
     num_envs: int,
-    env_kwargs: dict,
+    dolphin_kwargs: dict,
     slippi_ports: Optional[list[int]] = None,
 ) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
     if slippi_ports:
       assert len(slippi_ports) == 1
-      env_kwargs = env_kwargs.copy()
-      env_kwargs['slippi_port'] = slippi_ports[0]
-    return SafeEnvironment(env_kwargs)
+      dolphin_kwargs = dolphin_kwargs.copy()
+      dolphin_kwargs['slippi_port'] = slippi_ports[0]
+    return SafeEnvironment(dolphin_kwargs)
 
   # BatchedEnvironment uses SafeEnvironment internally
-  return BatchedEnvironment(num_envs, env_kwargs, slippi_ports)
+  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports)
 
 def _run_env(
     build_env_kwargs: dict,
@@ -283,7 +283,7 @@ class AsyncEnvMP:
 
   def __init__(
       self,
-      env_kwargs: dict,
+      dolphin_kwargs: dict,
       num_envs: int = 0,
       slippi_ports: Optional[list[int]] = None,
       batch_time: bool = False,
@@ -292,7 +292,7 @@ class AsyncEnvMP:
     self._parent_conn, child_conn = context.Pipe()
     builder_kwargs = dict(
         num_envs=num_envs,
-        env_kwargs=env_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
         slippi_ports=slippi_ports,
     )
     self._process = context.Process(
@@ -336,7 +336,7 @@ class AsyncBatchedEnvironmentMP:
   def __init__(
       self,
       num_envs: int,
-      dophin_kwargs: dict,
+      dolphin_kwargs: dict,
       num_steps: int = 0,
       inner_batch_size: int = 1,
   ):
@@ -350,13 +350,13 @@ class AsyncBatchedEnvironmentMP:
     self._inner_batch_size = inner_batch_size
     self._slice = lambda i, x: x[i * inner_batch_size:(i + 1) * inner_batch_size]
 
-    self._env_kwargs = dophin_kwargs
+    self._dolphin_kwargs = dolphin_kwargs
 
     self._envs: list[AsyncEnvMP] = []
     slippi_ports = get_free_ports(num_envs)
     for i in range(self._outer_batch_size):
       env = AsyncEnvMP(
-          env_kwargs=dophin_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
           num_envs=inner_batch_size,
           batch_time=(num_steps > 0),
           slippi_ports=self._slice(i, slippi_ports),
