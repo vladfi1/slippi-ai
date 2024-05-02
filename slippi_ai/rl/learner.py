@@ -57,7 +57,7 @@ class Learner:
         discount=self.discount,
     )
 
-    teacher_outputs = self._policy.unroll(
+    teacher_outputs = self._teacher.unroll(
         frames=trajectory.frames,
         initial_state=initial_teacher_states,
         discount=self.discount,
