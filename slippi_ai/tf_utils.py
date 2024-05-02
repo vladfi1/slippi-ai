@@ -3,6 +3,7 @@
 Separate from non-TF utils to reduce memory usage.
 """
 
+import contextlib
 import functools
 import typing as tp
 
@@ -80,3 +81,13 @@ def run_on_cpu(fn: tp.Callable[P, T]) -> tp.Callable[P, T]:
     with tf.device('/cpu:0'):
       return fn(*args, **kwargs)
   return wrapped
+
+def _create_non_trainable(next_creator, **kwargs) -> tf.Variable:
+  kwargs = kwargs.copy()
+  kwargs.update(trainable=False)
+  return next_creator(**kwargs)
+
+@contextlib.contextmanager
+def non_trainable_scope():
+  with tf.variable_creator_scope(_create_non_trainable):
+    yield

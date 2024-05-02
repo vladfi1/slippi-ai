@@ -44,6 +44,10 @@ class UtilsTest(unittest.TestCase):
 
     tf.nest.map_structure(assert_tensors_close, static_outputs, dynamic_outputs)
 
+  def test_non_trainable_scope(self):
+    with tf_utils.non_trainable_scope():
+      assert not tf.Variable(1.0).trainable
+
 class EmbedTest(unittest.TestCase):
 
   def test_flatten_and_unflatten(self):

@@ -9,7 +9,7 @@ from slippi_ai import (
     dolphin,
     flag_utils,
     saving,
-    utils,
+    tf_utils,
 )
 
 from slippi_ai import evaluators
@@ -70,7 +70,10 @@ CONFIG = ff.DEFINE_dict(
 def run(config: Config):
   pretraining_state = eval_lib.load_state(
       tag=config.agent.tag, path=config.agent.path)
-  teacher = saving.load_policy_from_state(pretraining_state)
+
+  # Make sure we don't train the teacher
+  with tf_utils.non_trainable_scope():
+    teacher = saving.load_policy_from_state(pretraining_state)
   policy = saving.load_policy_from_state(pretraining_state)
 
   rl_state = pretraining_state
