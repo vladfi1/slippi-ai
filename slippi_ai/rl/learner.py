@@ -51,6 +51,10 @@ class Learner:
       trajectory: Trajectory,
       initial_teacher_states: RecurrentState,
   ):
+    # TODO: take into account game resetting. This isn't necessary right
+    # now because we set the actors to infinite time, meaning there are
+    # never any resets except for the very first frame.
+
     policy_outputs = self._policy.unroll(
         frames=trajectory.frames,
         initial_state=trajectory.initial_state,
@@ -93,11 +97,11 @@ class Learner:
 
   def step(
       self,
-      bm_trajectories: Trajectory,
+      tm_trajectories: Trajectory,
   ) -> dict:
     with tf.GradientTape() as tape:
       loss, self._teacher_state, metrics = self.unroll(
-          bm_trajectories,
+          tm_trajectories,
           initial_teacher_states=self._teacher_state,
       )
 

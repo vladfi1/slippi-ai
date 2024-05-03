@@ -446,7 +446,7 @@ class DolphinConfig:
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
-
+  infinite_time: bool = True  # Infinite time no stocks.
 
 DOLPHIN_FLAGS = dict(
     path=ff.String(None, 'Path to folder containing the dolphin executable.'),
@@ -461,6 +461,7 @@ DOLPHIN_FLAGS = dict(
     replay_dir=ff.String(None, 'Directory to save replays to.'),
     headless=ff.Boolean(
         False, 'Headless configuration: exi + ffw, no graphics or audio.'),
+    infinite_time=ff.Boolean(False, 'Infinite time no stocks.'),
 )
 
 PLAYER_FLAGS = dict(

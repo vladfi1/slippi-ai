@@ -20,7 +20,7 @@ field = lambda f: dataclasses.field(default_factory=f)
 @dataclasses.dataclass
 class RuntimeConfig:
   max_step: int = 10  # maximum training step
-  max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_runtime: tp.Optional[int] = None  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
