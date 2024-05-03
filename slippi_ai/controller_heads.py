@@ -8,6 +8,14 @@ from slippi_ai import embed
 
 ControllerType = tp.TypeVar('ControllerType')
 
+class SampleOutputs(tp.NamedTuple):
+  controller_state: ControllerType
+  logits: ControllerType
+
+class DistanceOutputs(tp.NamedTuple):
+  distance: ControllerType
+  logits: ControllerType
+
 class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
 
   @abc.abstractmethod
@@ -16,7 +24,7 @@ class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
       inputs: tf.Tensor,
       prev_controller_state: ControllerType,
       temperature: tp.Optional[float] = None,
-  ) -> ControllerType:
+  ) -> SampleOutputs:
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod
@@ -25,7 +33,7 @@ class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
       inputs: tf.Tensor,
       prev_controller_state: ControllerType,
       target_controller_state: ControllerType,
-  ) -> ControllerType:
+  ) -> DistanceOutputs:
     """A struct of distances (generally, negative log probs)."""
 
   @abc.abstractmethod
@@ -55,22 +63,30 @@ class Independent(ControllerHead, snt.Module):
   def controller_embedding(self) -> embed.Embedding[embed.Controller, ControllerType]:
     return self.embed_controller
 
-  def controller_prediction(self, inputs, prev_controller_state):
+  def controller_prediction(self, inputs, prev_controller_state) -> ControllerType:
     controller_prediction = self.to_controller_input(inputs)
     if self.residual:
       prev_controller_flat = self.embed_controller(prev_controller_state)
       controller_prediction += self.residual_net(prev_controller_flat)
-    return controller_prediction
+
+    # TODO: come up with a better way to do this that generalizes nicely across
+    # Independent and AutoRegressive ControllerHeads.
+    embed_struct = self.embed_controller.map(lambda e: e)
+    embed_sizes = [e.size for e in self.embed_controller.flatten(embed_struct)]
+    leaf_logits = tf.split(controller_prediction, embed_sizes, axis=-1)
+    return self.embed_controller.unflatten(iter(leaf_logits))
 
   def sample(self, inputs, prev_controller_state, temperature=None):
-    return self.embed_controller.sample(
-        self.controller_prediction(inputs, prev_controller_state),
-        temperature=temperature)
+    logits = self.controller_prediction(inputs, prev_controller_state)
+    sample = self.embed_controller.map(
+        lambda e, l: e.sample(l, temperature=temperature), logits)
+    return SampleOutputs(controller_state=sample, logits=logits)
 
   def distance(self, inputs, prev_controller_state, target_controller_state):
-    return self.embed_controller.distance(
-        self.controller_prediction(inputs, prev_controller_state),
-        target_controller_state)
+    logits = self.controller_prediction(inputs, prev_controller_state)
+    distance = self.embed_controller.map(
+        lambda e, l, t: e.distance(l, t), logits, target_controller_state)
+    return DistanceOutputs(distance=distance, logits=logits)
 
 class AutoRegressiveComponent(snt.Module):
   """Autoregressive residual component."""
@@ -84,31 +100,31 @@ class AutoRegressiveComponent(snt.Module):
     # has full expressive power over the output
     self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
 
-  def sample(self, residual, prev_raw, **kwargs):
+  def sample(self, residual, prev_raw, **kwargs) -> tp.Tuple[tf.Tensor, SampleOutputs]:
     # directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw)
     input_ = tf.concat([residual, prev_embedding], -1)
     # project down to the size desired by the component
-    input_ = self.encoder(input_)
+    logits = self.encoder(input_)
     # sample the component
-    sample = self.embedder.sample(input_, **kwargs)
+    sample = self.embedder.sample(logits, **kwargs)
     # condition future components on the current sample
     sample_embedding = self.embedder(sample)
     residual += self.decoder(sample_embedding)
-    return residual, sample
+    return residual, SampleOutputs(controller_state=sample, logits=logits)
 
-  def distance(self, residual, prev_raw, target_raw):
+  def distance(self, residual, prev_raw, target_raw) -> tp.Tuple[tf.Tensor, DistanceOutputs]:
     # directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw)
     input_ = tf.concat([residual, prev_embedding], -1)
     # project down to the size desired by the component
-    input_ = self.encoder(input_)
+    logits = self.encoder(input_)
     # compute the distance between prediction and target
-    distance = self.embedder.distance(input_, target_raw)
+    distance = self.embedder.distance(logits, target_raw)
     # auto-regress using the target (aka teacher forcing)
     target_embedding = self.embedder(target_raw)
     residual += self.decoder(target_embedding)
-    return residual, distance
+    return residual, DistanceOutputs(distance=distance, logits=logits)
 
 class AutoRegressive(ControllerHead, snt.Module):
   """Samples components sequentially conditioned on past samples."""
@@ -140,25 +156,33 @@ class AutoRegressive(ControllerHead, snt.Module):
     residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
 
-    samples = []
+    samples: list[SampleOutputs] = []
     for res_block, prev in zip(self.res_blocks, prev_controller_flat):
       residual, sample = res_block.sample(residual, prev, temperature=temperature)
       samples.append(sample)
 
-    return self.embed_controller.unflatten(iter(samples))
+    samples, logits = zip(*samples)
+    return SampleOutputs(
+        controller_state=self.embed_controller.unflatten(iter(samples)),
+        logits=self.embed_controller.unflatten(iter(logits)),
+    )
 
   def distance(self, inputs, prev_controller_state, target_controller_state):
     residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
     target_controller_flat = self.embed_controller.flatten(target_controller_state)
 
-    distances = []
+    distances: list[DistanceOutputs] = []
     for res_block, prev, target in zip(
         self.res_blocks, prev_controller_flat, target_controller_flat):
       residual, distance = res_block.distance(residual, prev, target)
       distances.append(distance)
 
-    return self.embed_controller.unflatten(iter(distances))
+    distances, logits = zip(*distances)
+    return DistanceOutputs(
+        distance=self.embed_controller.unflatten(iter(distances)),
+        logits=self.embed_controller.unflatten(iter(logits)),
+    )
 
 CONSTRUCTORS = dict(
     independent=Independent,

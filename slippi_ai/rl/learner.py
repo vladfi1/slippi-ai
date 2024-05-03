@@ -4,6 +4,8 @@ import typing as tp
 import sonnet as snt
 import tensorflow as tf
 
+from slippi_ai.data import Frames
+from slippi_ai.embed import StateAction
 from slippi_ai.policies import Policy
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
@@ -51,38 +53,72 @@ class Learner:
       trajectory: Trajectory,
       initial_teacher_states: RecurrentState,
   ):
+    if trajectory.delayed_actions:
+      raise NotImplementedError('Delayed actions not supported yet.')
+
     # TODO: take into account game resetting. This isn't necessary right
     # now because we set the actors to infinite time, meaning there are
     # never any resets except for the very first frame.
 
+    state_action = StateAction(
+        state=trajectory.states,
+        action=trajectory.actions.controller_state,
+        name=trajectory.name,
+    )
+    frames = Frames(state_action, trajectory.rewards)
+
     policy_outputs = self._policy.unroll(
-        frames=trajectory.frames,
+        frames=frames,
         initial_state=trajectory.initial_state,
         discount=self.discount,
     )
 
     teacher_outputs = self._teacher.unroll(
-        frames=trajectory.frames,
+        # TODO: use the teacher's name instead?
+        frames=frames,
         initial_state=initial_teacher_states,
         discount=self.discount,
     )
+
+    controller_embedding = self._policy.controller_embedding
+
+    def get_distribution(logits):
+      """Returns a Controller-shaped structure of distributions."""
+      # TODO: return an actual JointDistribution instead?
+      return controller_embedding.map(lambda e, t: e.distribution(t), logits)
+
+    # Drop the first action which precedes the first frame.
+    actor_logits = tf.nest.map_structure(lambda t: t[1:], trajectory.actions.logits)
+    actor_distribution = get_distribution(actor_logits)
+    policy_distribution = get_distribution(policy_outputs.distances.logits)
+    # No stop_gradient needed as the teacher's variables aren't trainable.
+    teacher_distribution = get_distribution(teacher_outputs.distances.logits)
+
+    def compute_kl(dist1, dist2):
+      kls = controller_embedding.map(
+          lambda _, d1, d2: d1.kl_divergence(d2),
+          dist1, dist2)
+      return tf.add_n(list(controller_embedding.flatten(kls)))
+
+    # Actor KL measures how
+    actor_kl = compute_kl(actor_distribution, policy_distribution)
+
+    # We take the "forward" KL to the teacher, which a) is more correct as the
+    # trajectory and autoregressive actions are samples according to the
+    # learned policy and b) incentivizes the agent to refine what humans do as
+    # opposed to the usual "reverse" KL from supervised learning which forces
+    # the policy to imitate all behaviors of the teacher, including mistakes.
+    teacher_kl = compute_kl(policy_distribution, teacher_distribution)
 
     returns = policy_outputs.metrics['value']['return']
     advantages = returns - policy_outputs.values
     pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
 
-    # TODO: this is a high-variance estimator; we can do better by
-    # including the logits from policy and teacher.
-    kl = policy_outputs.log_probs - teacher_outputs.log_probs
-
-    # grad-exp trick
-    kl_teacher_loss = policy_outputs.log_probs * tf.stop_gradient(kl)
-
     metrics = policy_outputs.metrics
 
     losses = [
         pg_loss,
-        self._config.kl_teacher_weight * kl_teacher_loss,
+        self._config.kl_teacher_weight * teacher_kl,
         self._config.value_cost * metrics['value']['loss'],
     ]
 
@@ -90,7 +126,8 @@ class Learner:
 
     metrics.update(
         total_loss=total_loss,
-        kl=kl,
+        teacher_kl=teacher_kl,
+        actor_kl=actor_kl,
     )
 
     return total_loss, teacher_outputs.final_state, metrics

@@ -5,19 +5,19 @@ import typing as tp
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai.controller_heads import ControllerHead
+from slippi_ai.controller_heads import (
+    ControllerHead,
+    DistanceOutputs,
+    SampleOutputs,
+)
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import data, networks, embed, types, utils, tf_utils
+from slippi_ai import data, networks, embed, types, tf_utils
 
 RecurrentState = networks.RecurrentState
 
-class SampleOutputs(tp.NamedTuple):
-  action: embed.Action
-  log_prob: float
-  next_state: RecurrentState
-
 class UnrollOutputs(tp.NamedTuple):
-  log_probs: tf.Tensor  # [T-1, B]
+  log_probs: tf.Tensor  # [T, B]
+  distances: DistanceOutputs  # Struct of [T, B]
   values: tf.Tensor  # [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
@@ -94,8 +94,9 @@ class Policy(snt.Module):
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
-    distances = self.controller_head.distance(
+    distance_outputs = self.controller_head.distance(
         outputs, prev_action, next_action)
+    distances = distance_outputs.distance
     policy_loss = tf.add_n(tf.nest.flatten(distances))
     log_probs = -policy_loss
 
@@ -140,6 +141,7 @@ class Policy(snt.Module):
 
     return UnrollOutputs(
         log_probs=log_probs,
+        distances=distance_outputs,
         values=values,
         final_state=final_state,
         metrics=metrics)
@@ -173,7 +175,7 @@ class Policy(snt.Module):
       state_action: embed.StateAction,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> tp.Tuple[embed.Action, RecurrentState]:
+  ) -> tp.Tuple[SampleOutputs, RecurrentState]:
     input = self.embed_state_action(state_action)
     output, final_state = self.network.step(input, initial_state)
 
@@ -189,7 +191,7 @@ class Policy(snt.Module):
       name_code: int,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> Tuple[list[embed.Action], RecurrentState]:
+  ) -> Tuple[list[SampleOutputs], RecurrentState]:
     actions = []
     hidden_state = initial_state
     for game in range(states):

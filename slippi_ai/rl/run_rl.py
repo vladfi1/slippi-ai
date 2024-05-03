@@ -128,7 +128,8 @@ def run(config: Config):
     del timings
 
     metrics = learner.step(trajectories[PORT])
-    print(metrics['kl'].numpy().mean())
+    for key in ['teacher_kl', 'actor_kl']:
+      print(key, metrics[key].numpy().mean())
 
   actor.stop()
 

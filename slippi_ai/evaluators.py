@@ -17,6 +17,8 @@ from slippi_ai import (
     reward,
     utils,
 )
+from slippi_ai.types import Game
+from slippi_ai.controller_heads import SampleOutputs
 
 Port = int
 Timings = dict
@@ -24,10 +26,13 @@ Params = tp.Sequence[np.ndarray]
 
 # Mimics data.Batch
 class Trajectory(tp.NamedTuple):
-  frames: data.Frames
-  is_resetting: bool
-  initial_state: policies.RecurrentState
-  delayed_actions: embed.Action
+  states: Game  # [T, B]
+  name: np.ndarray  # [B]
+  actions: SampleOutputs  # [T, B]
+  rewards: np.ndarray  # [T-1, B]
+  is_resetting: bool  # [T, B]
+  initial_state: policies.RecurrentState  # [B]
+  delayed_actions: list[SampleOutputs]  # [D, B]
 
 
 class RolloutWorker:
@@ -54,12 +59,6 @@ class RolloutWorker:
         )
         for port, kwargs in agent_kwargs.items()
     }
-
-    self._batched_name_codes = {
-        port: np.full([num_envs], agent._agent._name_code, dtype=np.int32)
-        for port, agent in self._agents.items()
-    }
-
     dolphin_kwargs = dolphin_kwargs.copy()
     for port, kwargs in agent_kwargs.items():
       eval_lib.update_character(
@@ -75,6 +74,7 @@ class RolloutWorker:
       env_class = env_lib.AsyncBatchedEnvironmentMP
 
     self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
+    self._num_envs = num_envs
 
     self._damage_ratio = damage_ratio
 
@@ -83,9 +83,9 @@ class RolloutWorker:
     # self._env_push_profiler = cProfile.Profile()
     self._env_push_profiler = utils.Profiler()
 
-    self._prev_actions = collections.deque()
-    self._prev_actions.append({
-        port: agent.default_controller
+    self._prev_agent_outputs = collections.deque()
+    self._prev_agent_outputs.append({
+        port: agent.dummy_sample_outputs
         for port, agent in self._agents.items()
     })
 
@@ -110,16 +110,25 @@ class RolloutWorker:
 
   def _push_actions(self):
     """Pop actions from the agents and push them to the environment."""
-    actions = {}
+    outputs: dict[Port, SampleOutputs] = {}
     for port, agent in self._agents.items():
       with self._agent_profilers[port]:
-        actions[port] = agent.pop()
-    self._prev_actions.append(actions)
+        outputs[port] = agent.pop()
+    self._prev_agent_outputs.append(outputs)
+
+    decoded_actions = {
+        port: self._agents[port].embed_controller.decode(action.controller_state)
+        for port, action in outputs.items()
+    }
     with self._env_push_profiler:
-      self._env.push(actions)
+      self._env.push(decoded_actions)
 
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
-    state_actions: dict[Port, list[embed.StateAction]] = {
+    # Buffers for per-frame data.
+    gamestates: dict[Port, list[Game]] = {
+        port: [] for port in self._agents
+    }
+    sample_outputs: dict[Port, list[SampleOutputs]] = {
         port: [] for port in self._agents
     }
     is_resetting: list[bool] = []
@@ -130,49 +139,42 @@ class RolloutWorker:
     }
 
     step_profiler = utils.Profiler()
-    # agent_profilers = {
-    #     port: utils.Profiler() for port in self._agents}
-    # env_push_profiler = utils.Profiler()
 
-    def record_state(output: env_lib.EnvOutput):
-      prev_actions = self._prev_actions[0]
-      for port, game in output.gamestates.items():
-        state_action = embed.StateAction(
-            state=game,
-            # TODO: check that the prev action matches what the env has?
-            # action=game.p0.controller,
-            action=prev_actions[port],
-            name=self._batched_name_codes[port],
-        )
-        state_actions[port].append(state_action)
-      is_resetting.append(output.needs_reset)
+    def record_state(
+        env_output: env_lib.EnvOutput,
+        prev_agent_outputs: dict[Port, SampleOutputs],
+    ):
+      for port, game in env_output.gamestates.items():
+        gamestates[port].append(game)
+        sample_outputs[port].append(prev_agent_outputs[port])
+      is_resetting.append(env_output.needs_reset)
 
-    for t in range(num_steps):
+    for _ in range(num_steps):
       # Note that there will always be a first gamestate before any actions
       # are fed into the environment; either the initial state or the last
       # state peeked on the previous rollout.
       with step_profiler:
-        # env_queue_sizes.append(self._env._futures_queue.qsize())
         output = self._env.pop()
 
-      record_state(output)
-      self._prev_actions.popleft()
+      record_state(output, self._prev_agent_outputs.popleft())
 
       # Asynchronously push the gamestates to the agents.
       for port, agent in self._agents.items():
         game = output.gamestates[port]
+        # TODO: use the policy's game embedding
+        game = embed.default_embed_game.from_state(game)
         agent.push(game, output.needs_reset)
 
       # Feed the actions from the agents into the environment.
       self._push_actions()
 
-    # Record the last gamestate and action, but also save them for the
-    # next rollout.
-    record_state(self._env.peek())
+    # Record the last gamestate and action, but don't pop them as we will
+    # also use them to begin next rollout.
+    record_state(self._env.peek(), self._prev_agent_outputs[0])
 
     # Record the delayed actions.
-    assert len(self._prev_actions) == 1 + self.min_delay
-    remaining_actions = list(self._prev_actions)[1:]
+    assert len(self._prev_agent_outputs) == 1 + self.min_delay
+    remaining_actions = list(self._prev_agent_outputs)[1:]
     delayed_actions: dict[Port, list[embed.Action]] = {}
     for port, agent in self._agents.items():
       delayed_actions[port] = [actions[port] for actions in remaining_actions]
@@ -189,15 +191,19 @@ class RolloutWorker:
     # Now batch everything up into time-major Trajectories.
     trajectories = {}
     is_resetting = np.array(is_resetting)
-    for port, state_action_list in state_actions.items():
-      state_action = utils.batch_nest_nt(state_action_list)
-      rewards = reward.compute_rewards(state_action.state, self._damage_ratio)
-      frames = data.Frames(state_action=state_action, reward=rewards)
+    for port, agent in self._agents.items():
+      states=utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
-          frames=frames,
+          states=embed.default_embed_game.from_state(states),
+          name=np.full(
+              [num_steps + 1, self._num_envs],
+              agent._agent._name_code,
+              dtype=embed.NAME_DTYPE),
+          actions=utils.batch_nest_nt(sample_outputs[port]),
+          rewards=reward.compute_rewards(states, self._damage_ratio),
           is_resetting=is_resetting,
           initial_state=initial_states[port],
-          # Note that delayed actions aren't batched, mainly to
+          # Note that delayed actions aren't time-concatenated, mainly to
           # simplify the case where the delay is 0.
           delayed_actions=delayed_actions[port])
 
@@ -248,7 +254,7 @@ class RolloutMetrics(tp.NamedTuple):
 
   @classmethod
   def from_trajectory(cls, trajectory: Trajectory) -> 'RolloutMetrics':
-    return cls(reward=np.sum(trajectory.frames.reward))
+    return cls(reward=np.sum(trajectory.rewards))
 
 
 class Evaluator:
@@ -296,11 +302,8 @@ class Evaluator:
 
   @contextlib.contextmanager
   def run(self):
-    try:
-      self._rollout_worker.start()
+    with self._rollout_worker.run():
       yield
-    finally:
-      self._rollout_worker.stop()
 
 RayRolloutWorker = ray.remote(RolloutWorker)
 

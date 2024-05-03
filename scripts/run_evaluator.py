@@ -2,6 +2,9 @@
 # This allows child processing to avoid importing tensorflow,
 # which uses a lot of memory.
 if __name__ == '__main__':
+  # https://github.com/python/cpython/issues/87115
+  __spec__ = None
+
   from absl import app, flags
   import fancyflags as ff
 
@@ -36,7 +39,7 @@ if __name__ == '__main__':
         2: dolphin.AI() if SELF_PLAY.value else dolphin.CPU(),
     }
 
-    env_kwargs = dict(
+    dolphin_kwargs = dict(
         players=players,
         **DOLPHIN.value,
     )
@@ -50,18 +53,22 @@ if __name__ == '__main__':
         batch_steps=NUM_AGENT_STEPS.value,
     )
 
+    env_kwargs = {}
+    if ASYNC_ENVS.value:
+      env_kwargs.update(
+          num_steps=NUM_ENV_STEPS.value,
+          inner_batch_size=INNER_BATCH_SIZE.value,
+      )
+
     evaluator_kwargs = dict(
         agent_kwargs={
             port: agent_kwargs for port, player in players.items()
             if isinstance(player, dolphin.AI)},
-        dolphin_kwargs=env_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         ray_envs=RAY_ENVS.value,
-        env_kwargs=dict(
-            num_steps=NUM_ENV_STEPS.value,
-            inner_batch_size=INNER_BATCH_SIZE.value,
-        ),
+        env_kwargs=env_kwargs,
         async_inference=ASYNC_INFERENCE.value,
         use_gpu=USE_GPU.value,
     )

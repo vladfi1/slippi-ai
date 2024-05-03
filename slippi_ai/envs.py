@@ -163,9 +163,7 @@ class BatchedEnvironment:
       num_envs: int,
       dolphin_kwargs: dict,
       slippi_ports: Optional[list[int]] = None,
-      num_steps: int = 1,  # For compatibility
   ):
-    del num_steps
     self._dolphin_kwargs = dolphin_kwargs
 
     slippi_ports = slippi_ports or get_free_ports(num_envs)

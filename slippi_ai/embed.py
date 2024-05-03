@@ -25,7 +25,7 @@ class Embedding(Generic[In, Out], abc.ABC):
   """Embeds game type (In) into tf-ready type Out."""
 
   def from_state(self, state: In) -> Out:
-    """Takes a parsed state and returns"""
+    """Encodes a parsed state."""
     return self.dtype(state)
 
   @abc.abstractmethod
@@ -42,6 +42,7 @@ class Embedding(Generic[In, Out], abc.ABC):
     return next(seq)
 
   def decode(self, out: Out) -> In:
+    """Inverse of `from_state`."""
     return out
 
   # def preprocess(self, x: In):
@@ -51,6 +52,20 @@ class Embedding(Generic[In, Out], abc.ABC):
   def dummy(self, shape: Sequence[int] = ()) -> Out:
     """A dummy value."""
     return np.zeros(shape, self.dtype)
+
+  def dummy_embedding(self, shape: Sequence[int] = ()):
+    return np.zeros(shape + [self.size], np.float32)
+
+  def sample(self, embedded: tf.Tensor, **kwargs) -> Out:
+    raise NotImplementedError
+
+  def distance(self, embedded: tf.Tensor, target: Out) -> Out:
+    """Negative log-prob of the target sample."""
+    raise NotImplementedError
+
+  def distribution(self, embedded: tf.Tensor):
+    raise NotImplementedError
+
 
 class BoolEmbedding(Embedding[bool, np.bool_]):
   size = 1
@@ -75,6 +90,10 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
       t = t / temperature
     dist = tfp.distributions.Bernoulli(logits=t, dtype=tf.bool)
     return dist.sample()
+
+  def distribution(self, embedded: tf.Tensor):
+    logits = tf.squeeze(embedded, -1)
+    return tfp.distributions.Bernoulli(logits=logits, dtype=tf.bool)
 
 embed_bool = BoolEmbedding()
 
@@ -134,7 +153,10 @@ class OneHotEmbedding(Embedding[int, np.int32]):
     self.dtype = dtype
     self.tf_dtype = tf.dtypes.as_dtype(dtype)
 
-  def __call__(self, t, residual=False, **_):
+  def __call__(self, t: tf.Tensor, residual=False, **_):
+    if t.dtype != self.tf_dtype:
+      raise ValueError(f"Expected {self.tf_dtype}, got {t.dtype}.")
+
     one_hot = tf.one_hot(t, self.size)
 
     if residual:
@@ -161,6 +183,9 @@ class OneHotEmbedding(Embedding[int, np.int32]):
       logits = logits / temperature
     dist = tfp.distributions.Categorical(logits=logits, dtype=self.tf_dtype)
     return dist.sample()
+
+  def distribution(self, embedded: tf.Tensor):
+    return tfp.distributions.Categorical(logits=embedded, dtype=self.tf_dtype)
 
 class NullEmbedding(Embedding[In, None]):
   size = 0
@@ -220,7 +245,6 @@ class StructEmbedding(Embedding[NT, NT]):
       self.size += op.size
 
   def map(self, f, *args: NT) -> NT:
-    # return self.type(*map(lambda e, *xs: e.map(f, *xs), self.embedding, *args))
     result = {
         k: e.map(f, *(self.getter(x, k) for x in args))
         for k, e in self.embedding}
@@ -229,8 +253,6 @@ class StructEmbedding(Embedding[NT, NT]):
   def flatten(self, struct: NT):
     for k, e in self.embedding:
       yield from e.flatten(self.getter(struct, k))
-    # for e, x in zip(self.embedding, struct):
-    #   yield from e.flatten(x)
 
   def unflatten(self, seq: Iterator[Any]) -> NT:
     return self.builder({k: e.unflatten(seq) for k, e in self.embedding})
@@ -238,9 +260,6 @@ class StructEmbedding(Embedding[NT, NT]):
   def from_state(self, state: NT) -> NT:
     struct = {k: e.from_state(self.getter(state, k)) for k, e in self.embedding}
     return self.builder(struct)
-
-  def input_signature(self):
-    return {k: e.input_signature() for k, e in self.embedding}
 
   def __call__(self, struct: NT, **kwargs) -> tf.Tensor:
     embed = []
@@ -252,28 +271,32 @@ class StructEmbedding(Embedding[NT, NT]):
     assert embed
     return tf.concat(axis=-1, values=embed)
 
-  def split(self, embedded: tf.Tensor) -> Mapping[str, tf.Tensor]:
-    fields, ops = zip(*self.embedding)
-    sizes = [op.size for op in ops]
-    splits = tf.split(embedded, sizes, -1)
-    return dict(zip(fields, splits))
+  # def split(self, embedded: tf.Tensor) -> Mapping[str, tf.Tensor]:
+  #   fields, ops = zip(*self.embedding)
+  #   sizes = [op.size for op in ops]
+  #   splits = tf.split(embedded, sizes, -1)
+  #   return dict(zip(fields, splits))
 
-  def distance(self, embedded: tf.Tensor, target: NT) -> NT:
-    distances = {}
-    split = self.split(embedded)
-    for field, op in self.embedding:
-      distances[field] = op.distance(split[field], self.getter(target, field))
-    return self.builder(distances)
+  # def distance(self, embedded: tf.Tensor, target: NT) -> NT:
+  #   distances = {}
+  #   split = self.split(embedded)
+  #   for field, op in self.embedding:
+  #     distances[field] = op.distance(split[field], self.getter(target, field))
+  #   return self.builder(distances)
 
-  def sample(self, embedded: tf.Tensor, **kwargs):
-    samples = {}
-    split = self.split(embedded)
-    for field, op in self.embedding:
-      samples[field] = op.sample(split[field], **kwargs)
-    return self.builder(samples)
+  # def sample(self, embedded: tf.Tensor, **kwargs):
+  #   """Samples sub-components independently."""
+  #   samples = {}
+  #   split = self.split(embedded)
+  #   for field, op in self.embedding:
+  #     samples[field] = op.sample(split[field], **kwargs)
+  #   return self.builder(samples)
 
   def dummy(self, shape):
     return self.map(lambda e: e.dummy(shape))
+
+  def dummy_embedding(self, shape):
+    return self.map(lambda e: e.dummy_embedding(shape))
 
   def decode(self, struct: NT) -> NT:
     return self.map(lambda e, x: e.decode(x), struct)
@@ -480,6 +503,8 @@ class StateAction(NamedTuple):
   # Encoded name
   name: int
 
+NAME_DTYPE = np.int32
+
 def get_state_action_embedding(
   embed_game: Embedding[Game, Any],
   embed_action: Embedding[Action, Any],
@@ -488,7 +513,7 @@ def get_state_action_embedding(
   embedding = StateAction(
       state=embed_game,
       action=embed_action,
-      name=OneHotEmbedding('name', num_names),
+      name=OneHotEmbedding('name', num_names, dtype=NAME_DTYPE),
   )
   return struct_embedding_from_nt("state_action", embedding)
 
