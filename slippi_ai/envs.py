@@ -17,6 +17,9 @@ from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
 from slippi_db.parse_libmelee import get_game
 
+Port = int
+Controllers = Mapping[Port, Controller]
+
 def is_initial_frame(gamestate: GameState) -> bool:
   return gamestate.frame == -123
 
@@ -62,7 +65,7 @@ class Environment:
 
   def step(
     self,
-    controllers: Mapping[int, Controller],
+    controllers: Controllers,
     batch_index: Optional[int] = None,
   ) -> EnvOutput:
     """Send controllers for each AI. Return the next state."""
@@ -80,7 +83,7 @@ class Environment:
 
   def multi_step(
     self,
-    controllers: list[Mapping[int, Controller]],
+    controllers: list[Controllers],
   ) -> list[EnvOutput]:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
@@ -132,13 +135,13 @@ class SafeEnvironment:
 
   def step(
     self,
-    controllers: Mapping[int, Controller],
+    controllers: Controllers,
   ) -> EnvOutput:
     return self._retry(lambda: self._env.step(controllers))
 
   def multi_step(
     self,
-    controllers: list[Mapping[int, Controller]],
+    controllers: list[Controllers],
   ) -> list[EnvOutput]:
     return self._retry(lambda: self._env.multi_step(controllers))
 
@@ -194,7 +197,7 @@ class BatchedEnvironment:
 
   def step(
     self,
-    controllers: Mapping[int, Controller],
+    controllers: Controllers,
   ) -> EnvOutput:
     get_action = lambda i: utils.map_single_structure(
         lambda x: x[i], controllers)
@@ -207,12 +210,12 @@ class BatchedEnvironment:
 
   def multi_step(
     self,
-    controllers: list[Mapping[int, Controller]],
+    controllers: list[Controllers],
   ) -> list[EnvOutput]:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
 
-  def push(self, controllers: Mapping[int, Controller]):
+  def push(self, controllers: Controllers):
     self._output_queue.appendleft(self.step(controllers))
 
   def pop(self) -> EnvOutput:
@@ -316,8 +319,7 @@ class AsyncEnvMP:
   def __del__(self):
     self.stop()
 
-  def send(self, controllers: Mapping[int, Controller]):
-    assert isinstance(controllers, dict)
+  def send(self, controllers: tp.Union[Controllers, list[Controllers]]):
     self._parent_conn.send(controllers)
 
   def recv(self) -> EnvOutput:
@@ -361,7 +363,7 @@ class AsyncBatchedEnvironmentMP:
       self._envs.append(env)
 
     self._num_steps = num_steps
-    self._action_queue: list[Mapping[int, Controller]] = []
+    self._action_queue: list[Controllers] = []
     self._state_queue = collections.deque()
     self._num_in_transit = 1  # take into account initial state
 
@@ -403,7 +405,7 @@ class AsyncBatchedEnvironmentMP:
     self._action_queue.clear()
     self._num_in_transit += self._num_steps
 
-  def push(self, controllers: Mapping[int, Controller]):
+  def push(self, controllers: Controllers):
     if self._num_steps == 0:
       get_action = lambda i: utils.map_single_structure(
           lambda x: self._slice(i, x), controllers)
