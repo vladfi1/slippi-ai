@@ -8,8 +8,10 @@ from slippi_ai import (
     eval_lib,
     dolphin,
     flag_utils,
+    reward,
     saving,
     tf_utils,
+    utils,
 )
 
 from slippi_ai import evaluators
@@ -120,22 +122,48 @@ def run(config: Config):
       use_gpu=config.actor.gpu_inference,
   )
 
-  for _ in range(config.runtime.max_step):
-    policy_vars = {PORT: learner.policy_variables()}
-    actor.update_variables(policy_vars)
+  rollout_profiler = utils.Profiler()
 
-    trajectories, timings = actor.rollout(config.actor.rollout_length)
-    del timings
+  def log(
+      trajectory: evaluators.Trajectory,
+      learner_metrics: dict,
+  ):
+    if rollout_profiler.num_calls > 0:
+      rollout_time = rollout_profiler.mean_time()
+      steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
+      fps = steps_per_rollout / rollout_time
+      mps = fps / (60 * 60)  # in-game minutes per second
+      print(f"rollout: {rollout_time:.2f}, fps: {fps:.0f}, mps: {mps:.0f}")
 
-    metrics = learner.step(trajectories[PORT])
+    kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
+    kos_per_minute = kos.mean() * (60 * 60)
+    print(f'KO_diff_per_minute: {kos_per_minute:.3f}')
+
     for key in ['teacher_kl', 'actor_kl']:
-      print(key, metrics[key].numpy().mean())
+      print(key, learner_metrics[key].numpy().mean())
 
-  actor.stop()
+  maybe_log = utils.Periodically(log, config.runtime.log_interval)
+
+  with actor.run():
+    for _ in range(config.runtime.max_step):
+      policy_vars = {PORT: learner.policy_variables()}
+      actor.update_variables(policy_vars)
+
+      with rollout_profiler:
+        trajectories, timings = actor.rollout(config.actor.rollout_length)
+      del timings
+
+      metrics = learner.step(trajectories[PORT])
+
+      maybe_log(
+          trajectory=trajectories[PORT],
+          learner_metrics=metrics,
+      )
 
 def main(_):
   config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
   run(config)
 
 if __name__ == '__main__':
+  __spec__ = None  # https://github.com/python/cpython/issues/87115
   app.run(main)
