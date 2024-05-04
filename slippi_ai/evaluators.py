@@ -227,12 +227,11 @@ class RolloutWorker:
 
   @contextlib.contextmanager
   def run(self):
-    with contextlib.ExitStack() as stack:
-      for agent in self._agents.values():
-        stack.enter_context(agent.run())
-      if isinstance(self._env, env_lib.AsyncBatchedEnvironmentMP):
-        stack.enter_context(self._env.run())
+    try:
+      self.start()
       yield
+    finally:
+      self.stop()
 
   def start(self):
     # TODO: don't allow starting more than once, or running without starting.

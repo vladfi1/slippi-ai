@@ -205,6 +205,9 @@ class DelayedAgent:
     """For compatibility with the async agent."""
     yield self
 
+  def start(self):
+    """For compatibility with the async agent."""
+
   def stop(self):
     """For compatibility with the async agent."""
 
