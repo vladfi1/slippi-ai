@@ -1,5 +1,5 @@
 # Make sure not to import things unless we're the main module.
-# This allows child processing to avoid importing tensorflow,
+# This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115

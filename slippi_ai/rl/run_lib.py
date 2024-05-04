@@ -1,13 +1,9 @@
 import dataclasses
 import typing as tp
 
-from absl import app
-import fancyflags as ff
-
 from slippi_ai import (
     eval_lib,
     dolphin,
-    flag_utils,
     reward,
     saving,
     tf_utils,
@@ -62,11 +58,6 @@ class Config:
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
-
-
-CONFIG = ff.DEFINE_dict(
-    'config',
-    **flag_utils.get_flags_from_dataclass(Config))
 
 
 def run(config: Config):
@@ -159,11 +150,3 @@ def run(config: Config):
           trajectory=trajectories[PORT],
           learner_metrics=metrics,
       )
-
-def main(_):
-  config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
-  run(config)
-
-if __name__ == '__main__':
-  __spec__ = None  # https://github.com/python/cpython/issues/87115
-  app.run(main)
