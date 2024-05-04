@@ -11,6 +11,7 @@ from slippi_ai import (
 )
 
 from slippi_ai import evaluators
+from slippi_ai.train_lib import log_stats
 from slippi_ai.rl import learner as learner_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -114,17 +115,30 @@ def run(config: Config):
   )
 
   rollout_profiler = utils.Profiler()
+  learner_profiler = utils.Profiler()
 
   def log(
+      step: int,
       trajectory: evaluators.Trajectory,
       learner_metrics: dict,
   ):
+    print('\nStep:', step)
+
+    timings = {}
     if rollout_profiler.num_calls > 0:
       rollout_time = rollout_profiler.mean_time()
       steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
       fps = steps_per_rollout / rollout_time
       mps = fps / (60 * 60)  # in-game minutes per second
       print(f"rollout: {rollout_time:.2f}, fps: {fps:.0f}, mps: {mps:.0f}")
+
+      timings.update(
+          rollout=rollout_time,
+          fps=fps,
+          mps=mps,
+      )
+    if learner_profiler.num_calls > 0:
+      timings.update(learner=learner_profiler.mean_time())
 
     kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)
@@ -133,10 +147,17 @@ def run(config: Config):
     for key in ['teacher_kl', 'actor_kl']:
       print(key, learner_metrics[key].numpy().mean())
 
+    to_log = dict(
+        ko_diff=kos_per_minute,
+        timings=timings,
+        learner=learner_metrics,
+    )
+    log_stats(to_log, step)
+
   maybe_log = utils.Periodically(log, config.runtime.log_interval)
 
   with actor.run():
-    for _ in range(config.runtime.max_step):
+    for step in range(config.runtime.max_step):
       policy_vars = {PORT: learner.policy_variables()}
       actor.update_variables(policy_vars)
 
@@ -144,9 +165,11 @@ def run(config: Config):
         trajectories, timings = actor.rollout(config.actor.rollout_length)
       del timings
 
-      metrics = learner.step(trajectories[PORT])
+      with learner_profiler:
+        metrics = learner.step(trajectories[PORT])
 
       maybe_log(
+          step=step,
           trajectory=trajectories[PORT],
           learner_metrics=metrics,
       )

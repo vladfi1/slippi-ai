@@ -63,7 +63,6 @@ def mean(value):
 def log_stats(
     stats: tree.Structure,
     step: Optional[int] = None,
-    sep: str ='.',
     take_mean: bool = True,
 ):
   if take_mean:

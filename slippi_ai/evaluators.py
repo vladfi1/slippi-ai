@@ -86,6 +86,7 @@ class RolloutWorker:
     })
 
     # Make sure that the buffer sizes aren't too big.
+    # TODO: do this check before env/agent creation
     for agent in self._agents.values():
       # We get one environment state (the initial one) for free.
       slack = 1 + agent.delay
