@@ -3,9 +3,10 @@ import contextlib
 import logging
 import multiprocessing as mp
 from multiprocessing.connection import Connection
+from queue import Queue
+import traceback
 import typing as tp
 from typing import Mapping, Optional
-from queue import Queue
 
 import portpicker
 import ray
@@ -266,8 +267,9 @@ def _run_env(
   except KeyboardInterrupt:
     # exit quietly without spamming stderr
     return
-  except Exception as e:
-    conn.send(e)
+  except Exception:
+    conn.send(EnvError(traceback.format_exc()))
+    # conn.send(e)
     # conn.close()
   finally:
     if env:
@@ -319,6 +321,7 @@ class AsyncEnvMP:
     self.stop()
 
   def send(self, controllers: Mapping[int, Controller]):
+    assert isinstance(controllers, dict)
     self._parent_conn.send(controllers)
 
   def recv(self) -> EnvOutput:
@@ -407,14 +410,13 @@ class AsyncBatchedEnvironmentMP:
   def push(self, controllers: Mapping[int, Controller]):
     if self._num_steps == 0:
       get_action = lambda i: utils.map_single_structure(
-          lambda x: self._slice(i, x), self._action_queue)
+          lambda x: self._slice(i, x), controllers)
       for i, env in enumerate(self._envs):
         env.send(get_action(i))
       self._num_in_transit += 1
       return
 
     self._action_queue.append(controllers)
-
     if len(self._action_queue) == self._num_steps:
       self._flush()
 
