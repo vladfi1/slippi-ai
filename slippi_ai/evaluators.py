@@ -43,7 +43,6 @@ class RolloutWorker:
       dolphin_kwargs: dict,
       num_envs: int,
       async_envs: bool = False,
-      ray_envs: bool = False,
       env_kwargs: dict = {},
       async_inference: bool = False,
       use_gpu: bool = False,
@@ -67,9 +66,6 @@ class RolloutWorker:
 
     if not async_envs:
       env_class = env_lib.BatchedEnvironment
-    elif ray_envs:
-      raise NotImplementedError('Ray environments are not up to date.')
-      # env_class = env_lib.AsyncBatchedEnvironmentRay
     else:
       env_class = env_lib.AsyncBatchedEnvironmentMP
 
@@ -265,7 +261,6 @@ class Evaluator:
       dolphin_kwargs: dict,
       num_envs: int,
       async_envs: bool = False,
-      ray_envs: bool = False,
       env_kwargs: dict = {},
       async_inference: bool = False,
       use_gpu: bool = False,
@@ -275,7 +270,6 @@ class Evaluator:
         dolphin_kwargs=dolphin_kwargs,
         num_envs=num_envs,
         async_envs=async_envs,
-        ray_envs=ray_envs,
         env_kwargs=env_kwargs,
         async_inference=async_inference,
         use_gpu=use_gpu,
@@ -316,7 +310,6 @@ class RayEvaluator:
       num_workers: int = 1,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      ray_envs: bool = False,
       async_inference: bool = False,
       use_gpu: bool = False,
       resources: tp.Mapping[str, float] = {},
@@ -334,7 +327,6 @@ class RayEvaluator:
           dolphin_kwargs=dolphin_kwargs,
           num_envs=num_envs,
           async_envs=async_envs,
-          ray_envs=ray_envs,
           env_kwargs=env_kwargs,
           async_inference=async_inference,
           use_gpu=use_gpu,

@@ -17,7 +17,6 @@ if __name__ == '__main__':
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
   ASYNC_ENVS = flags.DEFINE_boolean('async_envs', False, 'Use async environments.')
-  RAY_ENVS = flags.DEFINE_boolean('ray_envs', False, 'Use ray environments.')
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
   INNER_BATCH_SIZE = flags.DEFINE_integer(
@@ -67,7 +66,6 @@ if __name__ == '__main__':
         dolphin_kwargs=dolphin_kwargs,
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
-        ray_envs=RAY_ENVS.value,
         env_kwargs=env_kwargs,
         async_inference=ASYNC_INFERENCE.value,
         use_gpu=USE_GPU.value,

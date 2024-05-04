@@ -3,13 +3,11 @@ import contextlib
 import logging
 import multiprocessing as mp
 from multiprocessing.connection import Connection
-from queue import Queue
 import traceback
 import typing as tp
 from typing import Mapping, Optional
 
 import portpicker
-import ray
 
 from melee.slippstream import EnetDisconnected
 from melee import GameState
@@ -30,8 +28,6 @@ class Environment:
   """Wraps dolphin to provide an RL interface."""
 
   def __init__(self, dolphin_kwargs: dict):
-    # raise RuntimeError('test')
-
     self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
     self.players = self._dolphin._players
 
@@ -447,88 +443,3 @@ class AsyncBatchedEnvironmentMP:
     if not self._state_queue:
       self._receive()
     return self._state_queue[-1]
-
-# This would raise an annoying exception when Environment subclassed
-# Dolphin due to ray erroneously calling __del__ on the wrong object.
-# See https://github.com/ray-project/ray/issues/32952
-RemoteEnvironment = ray.remote(SafeEnvironment)
-
-class AsyncBatchedEnvironmentRay:
-  """A set of asynchronous environments with batched input/output."""
-
-  def __init__(
-      self,
-      num_envs: int,
-      dophin_kwargs: dict,
-      num_steps: int = 1,
-  ):
-    self._env_kwargs = dophin_kwargs
-
-    envs = []
-    for slippi_port in get_free_ports(num_envs):
-      env_kwargs = dophin_kwargs.copy()
-      env_kwargs.update(slippi_port=slippi_port)
-      build_kwargs = dict(
-          num_envs=0,
-          env_kwargs=env_kwargs,
-      )
-      env = RemoteEnvironment.remote(build_kwargs)
-      envs.append(env)
-
-    self._envs = envs
-
-    self._num_steps = num_steps
-    self._action_queue: list[Mapping[int, Controller]] = []
-    self._state_queue = collections.deque()
-
-    self._futures_queue = Queue()
-
-    # Push initial states which are resetting.
-    if self._num_steps == 0:
-      self._futures_queue.put(
-          [env.current_state.remote() for env in self._envs])
-    else:
-      self._futures_queue.put(
-          [env.multi_current_state.remote() for env in self._envs])
-
-  def _flush(self):
-    # Returns a time-indexed list of controller dictionaries.
-    get_action = lambda i: utils.map_single_structure(lambda x: x[i], self._action_queue)
-
-    self._futures_queue.put([
-        env.multi_step.remote(get_action(i))
-        for i, env in enumerate(self._envs)])
-
-    self._action_queue.clear()
-
-  def push(self, controllers: Mapping[int, Controller]):
-    if self._num_steps == 0:
-      controllers_ref = ray.put(controllers)
-      self._futures_queue.put([
-          env.step.remote(controllers_ref, batch_index=i)
-          for i, env in enumerate(self._envs)])
-      # get_action = lambda i: utils.map_single_structure(lambda x: x[i], controllers)
-      # self._futures_queue.put([
-      #     env.step.remote(get_action(i))
-      #     for i, env in enumerate(self._envs)])
-      return
-
-    self._action_queue.append(controllers)
-
-    if len(self._action_queue) == self._num_steps:
-      self._flush()
-
-  def pop(self, timeout: Optional[float] = None) -> EnvOutput:
-    if self._num_steps == 0:
-      futures = self._futures_queue.get(timeout=timeout)
-      batch = ray.get(futures, timeout=timeout)
-      return utils.batch_nest_nt(batch)
-
-    if not self._state_queue:
-      futures = self._futures_queue.get(timeout=timeout)
-      batch_major = ray.get(futures, timeout=timeout)
-      time_major = zip(*batch_major)
-      for batch in time_major:
-        self._state_queue.appendleft(utils.batch_nest_nt(batch))
-
-    return self._state_queue.pop()
