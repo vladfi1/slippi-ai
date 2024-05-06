@@ -23,6 +23,9 @@ class RuntimeConfig:
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
+  # Periodically reset the environments to deal with memory leaks in dolphin.
+  reset_every_n_steps: tp.Optional[int] = None
+
 @dataclasses.dataclass
 class ActorConfig:
   rollout_length: int = 64
@@ -104,7 +107,7 @@ def run(config: Config):
         inner_batch_size=config.actor.inner_batch_size,
     )
 
-  actor = evaluators.RolloutWorker(
+  build_actor = lambda: evaluators.RolloutWorker(
       agent_kwargs={PORT: agent_kwargs},
       dolphin_kwargs=dolphin_kwargs,
       env_kwargs=env_kwargs,
@@ -162,20 +165,35 @@ def run(config: Config):
 
   maybe_log = utils.Periodically(log, config.runtime.log_interval)
 
-  with actor.run():
+  reset_interval = config.runtime.reset_every_n_steps
+
+  actor = build_actor()
+  actor.start()
+
+  try:
     for step in range(config.runtime.max_step):
-      policy_vars = {PORT: learner.policy_variables()}
-      actor.update_variables(policy_vars)
 
       with rollout_profiler:
+
+        if reset_interval and step > 0 and step % reset_interval == 0:
+          actor.stop()
+          actor = build_actor()
+          actor.start()
+
+        policy_vars = {PORT: learner.policy_variables()}
+        actor.update_variables(policy_vars)
+
         trajectories, timings = actor.rollout(config.actor.rollout_length)
-      del timings
+        trajectory = trajectories[PORT]
+        del timings
 
       with learner_profiler:
-        metrics = learner.step(trajectories[PORT])
+        metrics = learner.step(trajectory)
 
       maybe_log(
           step=step,
-          trajectory=trajectories[PORT],
+          trajectory=trajectory,
           learner_metrics=metrics,
       )
+  finally:
+    actor.stop()
