@@ -125,20 +125,26 @@ def run(config: Config):
     print('\nStep:', step)
 
     timings = {}
-    if rollout_profiler.num_calls > 0:
+    if step > 0:
       rollout_time = rollout_profiler.mean_time()
+      learner_time = learner_profiler.mean_time()
+      total_time = rollout_time + learner_time
+
       steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-      fps = steps_per_rollout / rollout_time
+      fps = steps_per_rollout / total_time
       mps = fps / (60 * 60)  # in-game minutes per second
-      print(f"rollout: {rollout_time:.2f}, fps: {fps:.0f}, mps: {mps:.0f}")
 
       timings.update(
           rollout=rollout_time,
+          learner=learner_time,
           fps=fps,
           mps=mps,
       )
-    if learner_profiler.num_calls > 0:
       timings.update(learner=learner_profiler.mean_time())
+
+      timing_str = ', '.join(
+          ['{k}: {v:.2f}'.format(k=k, v=v) for k, v in timings.items()])
+      print(timing_str)
 
     kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)

@@ -115,6 +115,7 @@ class Learner:
     pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
 
     metrics = policy_outputs.metrics
+    del metrics['loss'], metrics['controller']
 
     losses = [
         pg_loss,
