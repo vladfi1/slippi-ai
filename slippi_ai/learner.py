@@ -21,7 +21,6 @@ class LearnerConfig:
   decay_rate: float = 0.
   value_cost: float = 0.5
   reward_halflife: float = 2
-  predict: int = 0
 
 
 # TODO: should this be a snt.Module?
@@ -36,7 +35,6 @@ class Learner:
       value_function: Optional[vf_lib.ValueFunction] = None,
       optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
-      predict: int = 0,
   ):
     self.policy = policy
     self.value_function = value_function or vf_lib.FakeValueFunction()

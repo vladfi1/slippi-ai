@@ -11,7 +11,6 @@ import ray
 from slippi_ai import envs as env_lib
 from slippi_ai import (
     embed,
-    data,
     eval_lib,
     policies,
     reward,
@@ -26,11 +25,12 @@ Params = tp.Sequence[np.ndarray]
 
 # Mimics data.Batch
 class Trajectory(tp.NamedTuple):
-  states: Game  # [T, B]
-  name: np.ndarray  # [B]
-  actions: SampleOutputs  # [T, B]
-  rewards: np.ndarray  # [T-1, B]
-  is_resetting: bool  # [T, B]
+  # The [T+1, ...] arrays overlap in time by 1.
+  states: Game  # [T+1, B]
+  name: np.ndarray  # [T+1, B]
+  actions: SampleOutputs  # [T+1, B]
+  rewards: np.ndarray  # [T, B]
+  is_resetting: bool  # [T+1, B]
   initial_state: policies.RecurrentState  # [B]
   delayed_actions: list[SampleOutputs]  # [D, B]
 

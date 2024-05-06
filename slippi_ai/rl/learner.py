@@ -10,6 +10,7 @@ from slippi_ai.policies import Policy
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
 from slippi_ai import value_function as vf_lib
+from slippi_ai import tf_utils
 
 @dataclasses.dataclass
 class LearnerConfig:
@@ -34,6 +35,7 @@ class Learner:
     self._config = config
     self._policy = policy
     self._teacher = teacher
+    self._batch_size = batch_size
     self._value_function = value_function or vf_lib.FakeValueFunction()
 
     # TODO: init from the imitation optimizer
@@ -71,6 +73,15 @@ class Learner:
         frames=frames,
         initial_state=trajectory.initial_state,
         discount=self.discount,
+    )
+
+    # Currently, resetting states can only occur on the first frame, which
+    # conveniently means we don't have to deal with resets inside `unroll`.
+    is_resetting = trajectory.is_resetting[0]  # [B]
+    initial_teacher_states = tf.nest.map_structure(
+        lambda x, y: tf_utils.where(is_resetting, x, y),
+        self._teacher.initial_state(self._batch_size),
+        initial_teacher_states,
     )
 
     teacher_outputs = self._teacher.unroll(
