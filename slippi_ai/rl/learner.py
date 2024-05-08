@@ -71,11 +71,14 @@ class Learner:
 
     # Currently, resetting states can only occur on the first frame, which
     # conveniently means we don't have to deal with resets inside `unroll`.
+    # Note that we also have to reset the policy state; this isn't visible to
+    # the actor as it happens inside the agent (eval_lib.BasicAgent).
     is_resetting = trajectory.is_resetting[0]  # [B]
-    initial_state = tf.nest.map_structure(
+    initial_state, initial_policy_state = tf.nest.map_structure(
         lambda x, y: tf_utils.where(is_resetting, x, y),
-        self.initial_state(self._batch_size),
-        initial_state,
+        (self.initial_state(self._batch_size),
+         self._policy.initial_state(self._batch_size)),
+        (initial_state, trajectory.initial_state),
     )
 
     state_action = StateAction(
@@ -87,7 +90,7 @@ class Learner:
 
     policy_outputs = self._policy.unroll(
         frames=frames,
-        initial_state=trajectory.initial_state,
+        initial_state=initial_policy_state,
         discount=self.discount,
     )
 
