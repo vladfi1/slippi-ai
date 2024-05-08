@@ -95,9 +95,18 @@ def dataclass_from_dict(cls: tp.Type[T], nest: dict) -> T:
   recursed = {}
 
   for field in dataclasses.fields(cls):
-    value = nest[field.name]  # TODO: handle missing keys?
-    if dataclasses.is_dataclass(field.type):
-      value = dataclass_from_dict(field.type, value)
+    if field.name not in nest:
+      if field.default is not dataclasses.MISSING:
+        value = field.default
+      elif field.default_factory is not dataclasses.MISSING:
+        value = field.default_factory()
+      else:
+        raise ValueError(f'No value specified for {cls.__name__}.{field.name}')
+    else:
+      value = nest[field.name]
+      if dataclasses.is_dataclass(field.type):
+        value = dataclass_from_dict(field.type, value)
+
     recursed[field.name] = value
 
   return cls(**recursed)
