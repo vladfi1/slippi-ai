@@ -69,6 +69,18 @@ class Config:
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
 
+  restore_optimizer_state: bool = True
+
+class LearnerManager:
+
+  def __init__(self, learner: learner_lib.Learner, batch_size: int):
+    self._learner = learner
+    self._hidden_state = learner.initial_state(batch_size)
+
+  def step(self, trajectory: evaluators.Trajectory):
+    self._hidden_state, metrics = self._learner.compiled_step(
+        trajectory, self._hidden_state)
+    return metrics
 
 def run(config: Config):
   pretraining_state = eval_lib.load_state(
@@ -100,6 +112,7 @@ def run(config: Config):
 
   # TODO: we only keep this here for save/restore compatibility with imitation
   # learning. We should get rid of "Variable" learning_rates in both places.
+  # The learning_rate Variable for some reason shows up in optimizer.variables.
   learning_rate = tf.Variable(
       config.learner.learning_rate,
       name='learning_rate',
@@ -113,31 +126,33 @@ def run(config: Config):
       teacher=teacher,
       policy=policy,
       value_function=value_function,
-      batch_size=batch_size,
   )
+  learner_manager = LearnerManager(learner, batch_size)
 
   # Initialize variables before restoring.
   embedders = dict(policy.embed_state_action.embedding)
   embed_controller = policy.controller_embedding
   dummy_trajectory = evaluators.Trajectory(
-      states=embedders['state'].dummy([2, batch_size]),
-      name=embedders['name'].dummy([2, batch_size]),
-      actions=eval_lib.dummy_sample_outputs(embed_controller, [2, batch_size]),
-      rewards=np.full([1, batch_size], 0, dtype=np.float32),
-      is_resetting=np.full([2, batch_size], False),
-      initial_state=policy.initial_state(batch_size),
+      states=embedders['state'].dummy([2, 1]),
+      name=embedders['name'].dummy([2, 1]),
+      actions=eval_lib.dummy_sample_outputs(embed_controller, [2, 1]),
+      rewards=np.full([1, 1], 0, dtype=np.float32),
+      is_resetting=np.full([2, 1], False),
+      initial_state=policy.initial_state(1),
       delayed_actions=[
-          eval_lib.dummy_sample_outputs(embed_controller, [batch_size])
+          eval_lib.dummy_sample_outputs(embed_controller, [1])
       ] * policy.delay,
   )
-  learner.step(dummy_trajectory)
+  learner.initialize(dummy_trajectory)
 
   # Restore variables from pretraining state.
   tf_state = dict(
       policy=policy.variables,
       value_function=value_function.variables if value_function else [],
-      optimizer=learner.optimizer.variables,
   )
+
+  if config.restore_optimizer_state:
+    tf_state.update(optimizer=learner.optimizer.variables)
 
   # Drop "step".
   # TODO: add a separate RL "step"?
@@ -257,7 +272,7 @@ def run(config: Config):
         del timings
 
       with learner_profiler:
-        metrics = learner.compiled_step(trajectory)
+        metrics = learner_manager.step(trajectory)
 
       maybe_log(
           step=step,

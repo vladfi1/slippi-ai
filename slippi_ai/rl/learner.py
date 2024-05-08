@@ -33,13 +33,11 @@ class Learner:
       config: LearnerConfig,
       policy: Policy,
       teacher: Policy,
-      batch_size: int,
       value_function: tp.Optional[vf_lib.ValueFunction] = None,
   ) -> None:
     self._config = config
     self._policy = policy
     self._teacher = teacher
-    self._batch_size = batch_size
     self._use_separate_vf = value_function is not None
     self._value_function = value_function or vf_lib.FakeValueFunction()
 
@@ -49,8 +47,6 @@ class Learner:
     self.discount = 0.5 ** (1 / config.reward_halflife * 60)
 
     self.compiled_step = tf.function(self.step) if config.compile else self.step
-
-    self._hidden_state = self.initial_state(batch_size)
 
   def initial_state(self, batch_size: int) -> LearnerState:
     return LearnerState(
@@ -65,7 +61,7 @@ class Learner:
       self,
       trajectory: Trajectory,
       initial_state: LearnerState,
-  ):
+  ) -> tp.Tuple[tf.Tensor, LearnerState, dict]:
     if trajectory.delayed_actions:
       raise NotImplementedError('Delayed actions not supported yet.')
 
@@ -74,10 +70,11 @@ class Learner:
     # Note that we also have to reset the policy state; this isn't visible to
     # the actor as it happens inside the agent (eval_lib.BasicAgent).
     is_resetting = trajectory.is_resetting[0]  # [B]
+    batch_size = is_resetting.shape[0]
     initial_state, initial_policy_state = tf.nest.map_structure(
         lambda x, y: tf_utils.where(is_resetting, x, y),
-        (self.initial_state(self._batch_size),
-         self._policy.initial_state(self._batch_size)),
+        (self.initial_state(batch_size),
+         self._policy.initial_state(batch_size)),
         (initial_state, trajectory.initial_state),
     )
 
@@ -177,21 +174,36 @@ class Learner:
   def step(
       self,
       tm_trajectories: Trajectory,
-  ) -> dict:
+      initial_state: LearnerState,
+  ) -> tuple[LearnerState, dict]:
     with tf.GradientTape() as tape:
-      loss, self._hidden_state, metrics = self.unroll(
+      loss, final_state, metrics = self.unroll(
           tm_trajectories,
-          initial_state=self._hidden_state,
+          initial_state=initial_state,
       )
 
     params: tp.Sequence[tf.Variable] = tape.watched_variables()
     watched_names = [p.name for p in params]
-    trainable_variables = (
-        self._policy.trainable_variables +
-        self._value_function.trainable_variables)
-    trainable_names = [v.name for v in trainable_variables]
+    trainable_names = [v.name for v in self.trainable_variables]
     assert set(watched_names) == set(trainable_names)
     grads = tape.gradient(loss, params)
     self.optimizer.apply(grads, params)
 
-    return metrics
+    return final_state, metrics
+
+  @property
+  def trainable_variables(self) -> tp.Sequence[tf.Variable]:
+    return (self._policy.trainable_variables +
+            self._value_function.trainable_variables)
+
+  def initialize(self, trajectory: Trajectory):
+    """Initialize model and optimizer variables."""
+    # Note: we need to initialize the optimizer variables in the same order as
+    # imitation learning to support restoration of the optimizer state. To
+    # accomplish this we rely on RL using the variables in the same order as
+    # imitation, which is very brittle!
+    batch_size = trajectory.is_resetting.shape[1]
+    with tf.GradientTape() as tape:
+      self.unroll(trajectory, self.initial_state(batch_size))
+    params = tape.watched_variables()
+    self.optimizer._initialize(params)
