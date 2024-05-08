@@ -257,7 +257,7 @@ def run(config: Config):
         del timings
 
       with learner_profiler:
-        metrics = learner.step(trajectory)
+        metrics = learner.compiled_step(trajectory)
 
       maybe_log(
           step=step,
