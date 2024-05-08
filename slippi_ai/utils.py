@@ -175,6 +175,51 @@ def retry(
   # Let any exception pass through on the last attempt.
   return f()
 
+def _check_same_structure(s1, s2) -> list[tuple[list, str]]:
+  # t1 = type(s1)
+  # t2 = type(s2)
+  # if t1 != t2:
+  #   return [([], f'type mismatch: {t1} != {t2}')]
+
+  errors: list[tuple[list, str]] = []
+
+  if isinstance(s1, dict) and isinstance(s2, dict):
+    keys1 = set(s1)
+    keys2 = set(s2)
+
+    for k1 in keys1 - keys2:
+      errors.append(([k1], 'only in first'))
+    for k2 in keys2 - keys1:
+      errors.append(([k2], 'only in second'))
+
+    for k in keys1.union(keys2):
+      sub_errors = check_same_structure(s1[k], s2[k])
+      for path, _ in sub_errors:
+        path.append(k)
+      errors.extend(sub_errors)
+    return errors
+
+  if isinstance(s1, tp.Sequence) and isinstance(s2, tp.Sequence):
+    if len(s1) != len(s2):
+      errors.append(([], f'different lengths: {len(s1)} != {len(s2)}'))
+      return errors
+
+    for i, (x1, x2) in enumerate(zip(s1, s2)):
+      sub_errors = _check_same_structure(x1, x2)
+      for path, _ in sub_errors:
+        path.append(i)
+      errors.extend(sub_errors)
+    return errors
+
+  return []
+
+def check_same_structure(s1, s2) -> list[tuple[list, str]]:
+  errors = _check_same_structure(s1, s2)
+  for path, _ in errors:
+    path.reverse()
+  return errors
+
+
 def ref_path_exists(
     srcs: list[object],
     dsts: list[object],
