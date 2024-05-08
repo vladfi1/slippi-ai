@@ -82,14 +82,14 @@ class Learner:
       delay = self.policy.delay
       value_frames = tf.nest.map_structure(
           lambda t: t[:t.shape[0]-delay], tm_frames)
-      value_loss, value_final_states, value_metrics = self.value_function.loss(
+      value_outputs, value_final_states = self.value_function.loss(
           value_frames, value_initial_states, self.discount)
 
-      loss = policy_loss + value_loss
+      loss = policy_loss + value_outputs.loss
       final_states = (policy_final_states, value_final_states)
       metrics = dict(
           policy=policy_metrics,
-          value=value_metrics,
+          value=value_outputs.metrics,
           total_loss=loss,
       )
 

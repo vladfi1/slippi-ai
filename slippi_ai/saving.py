@@ -12,19 +12,25 @@ from slippi_ai import (
     s3_lib,
 )
 
-VERSION = 1
+VERSION = 2
 
 def upgrade_config(config: dict):
   """Upgrades a config to the latest version."""
-  config = dict(config)  # config may be a Sacred ReadOnlyDict
-  version = config.get('version')
 
-  if version is None:
+  if config.get('version') is None:
     assert 'policy' not in config
     config['policy'] = dict(
       train_value_head=False,
     )
     config['version'] = 1
+
+  if config['version'] == 1:
+    if 'value_function' not in config:
+      config['value_function'] = dict(
+        train_separate_network=False,
+      )
+
+    config['version'] = 2
 
   assert config['version'] == VERSION
   return config

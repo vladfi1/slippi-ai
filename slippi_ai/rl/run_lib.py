@@ -1,17 +1,23 @@
 import dataclasses
 import typing as tp
 
+import numpy as np
+import tensorflow as tf
+
 from slippi_ai import (
-    eval_lib,
+    data,
     dolphin,
+    eval_lib,
+    evaluators,
+    flag_utils,
     reward,
     saving,
     tf_utils,
+    train_lib,
     utils,
 )
 
-from slippi_ai import evaluators
-from slippi_ai.train_lib import log_stats
+from slippi_ai import value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -68,6 +74,10 @@ def run(config: Config):
   pretraining_state = eval_lib.load_state(
       tag=config.agent.tag, path=config.agent.path)
 
+  saving.upgrade_config(pretraining_state['config'])
+  pretraining_config = flag_utils.dataclass_from_dict(
+      train_lib.Config, pretraining_state['config'])
+
   # Make sure we don't train the teacher
   with tf_utils.non_trainable_scope():
     teacher = saving.load_policy_from_state(pretraining_state)
@@ -76,13 +86,71 @@ def run(config: Config):
   rl_state = pretraining_state
   rl_state['step'] = 0
 
+  # TODO: put this code into saving.py or train_lib.py
+  vf_config = pretraining_config.value_function
+  value_function = None
+  if vf_config.train_separate_network:
+    value_net_config = pretraining_config.network
+    if vf_config.separate_network_config:
+      value_net_config = vf_config.network
+    value_function = vf_lib.ValueFunction(
+        network_config=value_net_config,
+        embed_state_action=policy.embed_state_action,
+    )
+
+  # TODO: we only keep this here for save/restore compatibility with imitation
+  # learning. We should get rid of "Variable" learning_rates in both places.
+  learning_rate = tf.Variable(
+      config.learner.learning_rate,
+      name='learning_rate',
+      trainable=False)
+  learner_config = dataclasses.replace(
+      config.learner, learning_rate=learning_rate)
+
   batch_size = config.actor.num_envs
   learner = learner_lib.Learner(
-      config=config.learner,
+      config=learner_config,
       teacher=teacher,
       policy=policy,
+      value_function=value_function,
       batch_size=batch_size,
   )
+
+  # Initialize variables before restoring.
+  embedders = dict(policy.embed_state_action.embedding)
+  embed_controller = policy.controller_embedding
+  dummy_trajectory = evaluators.Trajectory(
+      states=embedders['state'].dummy([2, batch_size]),
+      name=embedders['name'].dummy([2, batch_size]),
+      actions=eval_lib.dummy_sample_outputs(embed_controller, [2, batch_size]),
+      rewards=np.full([1, batch_size], 0, dtype=np.float32),
+      is_resetting=np.full([2, batch_size], False),
+      initial_state=policy.initial_state(batch_size),
+      delayed_actions=[
+          eval_lib.dummy_sample_outputs(embed_controller, [batch_size])
+      ] * policy.delay,
+  )
+  learner.step(dummy_trajectory)
+
+  # Restore variables from pretraining state.
+  tf_state = dict(
+      policy=policy.variables,
+      value_function=value_function.variables if value_function else [],
+      optimizer=learner.optimizer.variables,
+  )
+
+  # Drop "step".
+  # TODO: add a separate RL "step"?
+  pretraining_tf_state = {
+      k: pretraining_state['state'][k]
+      for k in tf_state
+  }
+
+  tf.nest.map_structure(
+      lambda var, val: var.assign(val),
+      tf_state, pretraining_tf_state)
+  # Hack: restoration from IL will overwrite the RL learning rate.
+  learning_rate.assign(config.learner.learning_rate)
 
   PORT = 1
   ENEMY_PORT = 2
@@ -154,14 +222,15 @@ def run(config: Config):
     print(f'KO_diff_per_minute: {kos_per_minute:.3f}')
 
     for key in ['teacher_kl', 'actor_kl']:
-      print(key, learner_metrics[key].numpy().mean())
+      print(f'{key}: {learner_metrics[key].numpy().mean():.3f}')
+    print(f'uev: {learner_metrics["value"]["uev"].numpy().mean():.3f}')
 
     to_log = dict(
         ko_diff=kos_per_minute,
         timings=timings,
         learner=learner_metrics,
     )
-    log_stats(to_log, step)
+    train_lib.log_stats(to_log, step)
 
   maybe_log = utils.Periodically(log, config.runtime.log_interval)
 

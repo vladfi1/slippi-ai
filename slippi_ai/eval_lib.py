@@ -25,6 +25,15 @@ Sample = Callable[
     [embed.StateAction, policies.RecurrentState],
     Tuple[embed.Action, policies.RecurrentState]]
 
+def dummy_sample_outputs(
+    controller_embedding: embed.Embedding[tp.Any, embed.Action],
+    shape: tp.Sequence[int],
+):
+  return SampleOutputs(
+      controller_state=controller_embedding.dummy(shape),
+      logits=controller_embedding.dummy_embedding(shape),
+  )
+
 
 class BasicAgent:
   """Wraps a Policy to track hidden state."""
@@ -174,10 +183,8 @@ class DelayedAgent:
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
       = utils.PeekableQueue()
 
-    self.dummy_sample_outputs = SampleOutputs(
-        controller_state=self.embed_controller.dummy([batch_size]),
-        logits=self.embed_controller.dummy_embedding([batch_size]),
-    )
+    self.dummy_sample_outputs = dummy_sample_outputs(
+        self.embed_controller, [batch_size])
     for _ in range(self.delay):
       self._output_queue.put(self.dummy_sample_outputs)
 
@@ -283,10 +290,8 @@ class AsyncDelayedAgent:
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
       = utils.PeekableQueue()
 
-    self.dummy_sample_outputs = SampleOutputs(
-        controller_state=self.embed_controller.dummy([batch_size]),
-        logits=self.embed_controller.dummy_embedding([batch_size]),
-    )
+    self.dummy_sample_outputs = dummy_sample_outputs(
+        self.embed_controller, [batch_size])
     for _ in range(self.delay):
       self._output_queue.put(self.dummy_sample_outputs)
 

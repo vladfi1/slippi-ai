@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+import typing as tp
 
 import tensorflow as tf
 import sonnet as snt
@@ -7,6 +7,11 @@ from slippi_ai import data, embed, networks, tf_utils
 from slippi_ai.rl_lib import discounted_returns
 from slippi_ai.networks import RecurrentState
 
+class ValueOutputs(tp.NamedTuple):
+  returns: tf.Tensor  # [T, B]
+  advantages: tf.Tensor  # [T, B]
+  loss: tf.Tensor
+  metrics: dict
 
 class ValueFunction(snt.Module):
 
@@ -26,7 +31,7 @@ class ValueFunction(snt.Module):
       frames: data.Frames,
       initial_state: RecurrentState,
       discount: float = 0.99,
-  ) -> Tuple[tf.Tensor, RecurrentState, dict]:
+  ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Computes prediction loss on a batch of frames.
 
     Args:
@@ -53,7 +58,8 @@ class ValueFunction(snt.Module):
         discounts=discounts,
         bootstrap=last_value)
     value_targets = tf.stop_gradient(value_targets)
-    value_loss = tf.square(value_targets - values)
+    advantages = value_targets - values
+    value_loss = tf.square(advantages)
 
     _, value_variance = tf_utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
@@ -67,13 +73,19 @@ class ValueFunction(snt.Module):
             max=tf.reduce_max(rewards),
             min=tf.reduce_min(rewards),
         ),
-        'return': value_targets,
         'loss': value_loss,
         'variance': value_variance,
         'uev': uev,  # unexplained variance
     }
 
-    return value_loss, final_state, metrics
+    outputs = ValueOutputs(
+        returns=value_targets,
+        advantages=advantages,
+        loss=value_loss,
+        metrics=metrics,
+    )
+
+    return outputs, final_state
 
 
 class FakeValueFunction(snt.Module):

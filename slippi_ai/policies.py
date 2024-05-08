@@ -12,13 +12,14 @@ from slippi_ai.controller_heads import (
 )
 from slippi_ai.rl_lib import discounted_returns
 from slippi_ai import data, networks, embed, types, tf_utils
+from slippi_ai.value_function import ValueOutputs
 
 RecurrentState = networks.RecurrentState
 
 class UnrollOutputs(tp.NamedTuple):
   log_probs: tf.Tensor  # [T, B]
   distances: DistanceOutputs  # Struct of [T, B]
-  values: tf.Tensor  # [T, B]
+  value_outputs: ValueOutputs
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
@@ -119,7 +120,8 @@ class Policy(snt.Module):
         discounts=discounts,
         bootstrap=last_value)
     value_targets = tf.stop_gradient(value_targets)
-    value_loss = tf.square(value_targets - values)
+    advantages = value_targets - values
+    value_loss = tf.square(advantages)
 
     _, value_variance = tf_utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
@@ -133,16 +135,22 @@ class Policy(snt.Module):
             max=tf.reduce_max(rewards),
             min=tf.reduce_min(rewards),
         ),
-        'return': value_targets,
         'loss': value_loss,
-        'variance': value_variance,
+        'return': value_targets,
         'uev': uev,  # unexplained variance
     }
+
+    value_outputs = ValueOutputs(
+        returns=value_targets,
+        advantages=advantages,
+        loss=value_loss,
+        metrics=metrics['value'],
+    )
 
     return UnrollOutputs(
         log_probs=log_probs,
         distances=distance_outputs,
-        values=values,
+        value_outputs=value_outputs,
         final_state=final_state,
         metrics=metrics)
 

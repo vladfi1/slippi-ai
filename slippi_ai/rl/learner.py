@@ -21,6 +21,10 @@ class LearnerConfig:
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
 
+class LearnerState(tp.NamedTuple):
+  teacher: RecurrentState
+  value_function: RecurrentState
+
 class Learner:
   """Implements A2C."""
 
@@ -36,6 +40,7 @@ class Learner:
     self._policy = policy
     self._teacher = teacher
     self._batch_size = batch_size
+    self._use_separate_vf = value_function is not None
     self._value_function = value_function or vf_lib.FakeValueFunction()
 
     # TODO: init from the imitation optimizer
@@ -45,7 +50,13 @@ class Learner:
 
     self.compiled_step = tf.function(self.step) if config.compile else self.step
 
-    self._teacher_state = self._teacher.initial_state(batch_size)
+    self._hidden_state = self.initial_state(batch_size)
+
+  def initial_state(self, batch_size: int) -> LearnerState:
+    return LearnerState(
+        teacher=self._teacher.initial_state(batch_size),
+        value_function=self._value_function.initial_state(batch_size),
+    )
 
   def policy_variables(self) -> tp.Sequence[tf.Variable]:
     return self._policy.variables
@@ -53,14 +64,19 @@ class Learner:
   def unroll(
       self,
       trajectory: Trajectory,
-      initial_teacher_states: RecurrentState,
+      initial_state: LearnerState,
   ):
     if trajectory.delayed_actions:
       raise NotImplementedError('Delayed actions not supported yet.')
 
-    # TODO: take into account game resetting. This isn't necessary right
-    # now because we set the actors to infinite time, meaning there are
-    # never any resets except for the very first frame.
+    # Currently, resetting states can only occur on the first frame, which
+    # conveniently means we don't have to deal with resets inside `unroll`.
+    is_resetting = trajectory.is_resetting[0]  # [B]
+    initial_state = tf.nest.map_structure(
+        lambda x, y: tf_utils.where(is_resetting, x, y),
+        self.initial_state(self._batch_size),
+        initial_state,
+    )
 
     state_action = StateAction(
         state=trajectory.states,
@@ -75,19 +91,10 @@ class Learner:
         discount=self.discount,
     )
 
-    # Currently, resetting states can only occur on the first frame, which
-    # conveniently means we don't have to deal with resets inside `unroll`.
-    is_resetting = trajectory.is_resetting[0]  # [B]
-    initial_teacher_states = tf.nest.map_structure(
-        lambda x, y: tf_utils.where(is_resetting, x, y),
-        self._teacher.initial_state(self._batch_size),
-        initial_teacher_states,
-    )
-
     teacher_outputs = self._teacher.unroll(
         # TODO: use the teacher's name instead?
         frames=frames,
-        initial_state=initial_teacher_states,
+        initial_state=initial_state.teacher,
         discount=self.discount,
     )
 
@@ -121,42 +128,56 @@ class Learner:
     # the policy to imitate all behaviors of the teacher, including mistakes.
     teacher_kl = compute_kl(policy_distribution, teacher_distribution)
 
-    returns = policy_outputs.metrics['value']['return']
-    advantages = returns - policy_outputs.values
-    pg_loss = - policy_outputs.log_probs * tf.stop_gradient(advantages)
+    if self._use_separate_vf:
+      value_ouputs, final_value_state = self._value_function.loss(
+          frames=frames,
+          initial_state=initial_state.value_function,
+          discount=self.discount,
+      )
+    else:
+      value_ouputs = policy_outputs.value_outputs
+      final_value_state = initial_state.value_function
 
-    metrics = policy_outputs.metrics
-    del metrics['loss'], metrics['controller']
+    advantages = tf.stop_gradient(value_ouputs.advantages)
+    pg_loss = - policy_outputs.log_probs * advantages
 
     losses = [
         pg_loss,
         self._config.kl_teacher_weight * teacher_kl,
-        self._config.value_cost * metrics['value']['loss'],
+        self._config.value_cost * value_ouputs.loss,
     ]
 
     total_loss = tf.add_n(losses)
 
-    metrics.update(
-        total_loss=total_loss,
+    metrics = dict(
         teacher_kl=teacher_kl,
         actor_kl=actor_kl,
+        value=value_ouputs.metrics,
     )
 
-    return total_loss, teacher_outputs.final_state, metrics
+    final_state = LearnerState(
+        teacher=teacher_outputs.final_state,
+        value_function=final_value_state,
+    )
+
+    return total_loss, final_state, metrics
 
   def step(
       self,
       tm_trajectories: Trajectory,
   ) -> dict:
     with tf.GradientTape() as tape:
-      loss, self._teacher_state, metrics = self.unroll(
+      loss, self._hidden_state, metrics = self.unroll(
           tm_trajectories,
-          initial_teacher_states=self._teacher_state,
+          initial_state=self._hidden_state,
       )
 
     params: tp.Sequence[tf.Variable] = tape.watched_variables()
     watched_names = [p.name for p in params]
-    trainable_names = [v.name for v in self._policy.trainable_variables]
+    trainable_variables = (
+        self._policy.trainable_variables +
+        self._value_function.trainable_variables)
+    trainable_names = [v.name for v in trainable_variables]
     assert set(watched_names) == set(trainable_names)
     grads = tape.gradient(loss, params)
     self.optimizer.apply(grads, params)
