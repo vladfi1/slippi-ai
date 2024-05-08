@@ -121,7 +121,11 @@ class Learner:
           dist1, dist2)
       return tf.add_n(list(controller_embedding.flatten(kls)))
 
-    # Actor KL measures how
+    def compute_entropy(dist):
+      entropies = controller_embedding.map(lambda _, d: d.entropy(), dist)
+      return tf.add_n(list(controller_embedding.flatten(entropies)))
+
+    # Actor KL measures how off-policy the data is.
     actor_kl = compute_kl(actor_distribution, policy_distribution)
 
     # We take the "forward" KL to the teacher, which a) is more correct as the
@@ -130,6 +134,9 @@ class Learner:
     # opposed to the usual "reverse" KL from supervised learning which forces
     # the policy to imitate all behaviors of the teacher, including mistakes.
     teacher_kl = compute_kl(policy_distribution, teacher_distribution)
+    # Also compute reverse KL for logging.
+    reverse_teacher_kl = compute_kl(teacher_distribution, policy_distribution)
+    entropy = compute_entropy(actor_distribution)
 
     if self._use_separate_vf:
       value_ouputs, final_value_state = self._value_function.loss(
@@ -154,6 +161,8 @@ class Learner:
 
     metrics = dict(
         teacher_kl=teacher_kl,
+        reverse_teacher_kl=reverse_teacher_kl,
+        entropy=entropy,
         actor_kl=actor_kl,
         value=value_ouputs.metrics,
     )
