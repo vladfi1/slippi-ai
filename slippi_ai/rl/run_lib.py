@@ -31,6 +31,10 @@ class RuntimeConfig:
 
   # Periodically reset the environments to deal with memory leaks in dolphin.
   reset_every_n_steps: tp.Optional[int] = None
+  # Without burnin, we see a spike in teacher_kl after every reset. My guess is
+  # that this is because the trajectories and therefore gradients become highly
+  # correlated, which is bad. Empirically 10 is a good value to set this to.
+  burnin_steps_after_reset: int = 0
 
 @dataclasses.dataclass
 class ActorConfig:
@@ -73,14 +77,49 @@ class Config:
 
 class LearnerManager:
 
-  def __init__(self, learner: learner_lib.Learner, batch_size: int):
+  def __init__(
+      self,
+      learner: learner_lib.Learner,
+      batch_size: int,
+      unroll_length: int,
+      build_actor: tp.Callable[[], evaluators.RolloutWorker],
+      port: int,
+      burnin_steps_after_reset: int = 0,
+  ):
     self._learner = learner
     self._hidden_state = learner.initial_state(batch_size)
+    self._build_actor = build_actor
+    self._unroll_length = unroll_length
+    self._port = port
+    self._burnin_steps_after_reset = burnin_steps_after_reset
 
-  def step(self, trajectory: evaluators.Trajectory):
-    self._hidden_state, metrics = self._learner.compiled_step(
-        trajectory, self._hidden_state)
-    return metrics
+    self.learner_profilers = {True: utils.Profiler(), False: utils.Profiler()}
+    self.rollout_profiler = utils.Profiler()
+    self.reset_profiler = utils.Profiler(burnin=0)
+
+    with self.reset_profiler:
+      self.initialize_actor()
+
+  def initialize_actor(self):
+    self.actor = self._build_actor()
+    self.actor.start()
+    for _ in range(self._burnin_steps_after_reset):
+      self.step(train=False)
+
+  def reset(self):
+    with self.reset_profiler:
+      self.actor.stop()
+      self.initialize_actor()
+
+  def step(self, train: bool = True) -> tuple[evaluators.Trajectory, dict]:
+    with self.rollout_profiler:
+      trajectories, timings = self.actor.rollout(self._unroll_length)
+      trajectory = trajectories[self._port]
+
+    with self.learner_profilers[train]:
+      self._hidden_state, metrics = self._learner.compiled_step(
+          trajectory, self._hidden_state, train=train)
+    return trajectory, dict(learner=metrics, actor_timing=timings)
 
 def run(config: Config):
   pretraining_state = eval_lib.load_state(
@@ -127,7 +166,6 @@ def run(config: Config):
       policy=policy,
       value_function=value_function,
   )
-  learner_manager = LearnerManager(learner, batch_size)
 
   # Initialize variables before restoring.
   embedders = dict(policy.embed_state_action.embedding)
@@ -200,37 +238,47 @@ def run(config: Config):
       use_gpu=config.actor.gpu_inference,
   )
 
-  rollout_profiler = utils.Profiler()
-  learner_profiler = utils.Profiler()
+  learner_manager = LearnerManager(
+      learner=learner,
+      batch_size=batch_size,
+      unroll_length=config.actor.rollout_length,
+      port=PORT,
+      build_actor=build_actor,
+      burnin_steps_after_reset=config.runtime.burnin_steps_after_reset,
+  )
+
+  step_profiler = utils.Profiler()
 
   def log(
       step: int,
       trajectory: evaluators.Trajectory,
-      learner_metrics: dict,
+      metrics: dict,
   ):
     print('\nStep:', step)
 
     timings = {}
     if step > 0:
-      rollout_time = rollout_profiler.mean_time()
-      learner_time = learner_profiler.mean_time()
-      total_time = rollout_time + learner_time
+      step_time = step_profiler.mean_time()
 
       steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-      fps = steps_per_rollout / total_time
+      fps = steps_per_rollout / step_time
       mps = fps / (60 * 60)  # in-game minutes per second
 
       timings.update(
-          rollout=rollout_time,
-          learner=learner_time,
+          rollout=learner_manager.rollout_profiler.mean_time(),
+          learner=learner_manager.learner_profilers[True].mean_time(),
+          reset=learner_manager.reset_profiler.mean_time(),
+          total=step_time,
           fps=fps,
           mps=mps,
       )
-      timings.update(learner=learner_profiler.mean_time())
 
       timing_str = ', '.join(
           ['{k}: {v:.2f}'.format(k=k, v=v) for k, v in timings.items()])
       print(timing_str)
+
+    timings.update(actor=metrics['actor_timing'])
+    learner_metrics = metrics['learner']
 
     kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)
@@ -249,35 +297,21 @@ def run(config: Config):
 
   maybe_log = utils.Periodically(log, config.runtime.log_interval)
 
-  reset_interval = config.runtime.reset_every_n_steps
-
-  actor = build_actor()
-  actor.start()
-
   try:
     for step in range(config.runtime.max_step):
-
-      with rollout_profiler:
-
-        if reset_interval and step > 0 and step % reset_interval == 0:
-          actor.stop()
-          actor = build_actor()
-          actor.start()
+      with step_profiler:
+        if step > 0 and step % config.runtime.reset_every_n_steps == 0:
+          learner_manager.reset()
 
         policy_vars = {PORT: learner.policy_variables()}
-        actor.update_variables(policy_vars)
+        learner_manager.actor.update_variables(policy_vars)
 
-        trajectories, timings = actor.rollout(config.actor.rollout_length)
-        trajectory = trajectories[PORT]
-        del timings
-
-      with learner_profiler:
-        metrics = learner_manager.step(trajectory)
+        trajectory, metrics = learner_manager.step()
 
       maybe_log(
           step=step,
           trajectory=trajectory,
-          learner_metrics=metrics,
+          metrics=metrics,
       )
   finally:
-    actor.stop()
+    learner_manager.actor.stop()

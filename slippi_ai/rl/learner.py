@@ -175,6 +175,7 @@ class Learner:
       self,
       tm_trajectories: Trajectory,
       initial_state: LearnerState,
+      train: bool = True,
   ) -> tuple[LearnerState, dict]:
     with tf.GradientTape() as tape:
       loss, final_state, metrics = self.unroll(
@@ -182,12 +183,13 @@ class Learner:
           initial_state=initial_state,
       )
 
-    params: tp.Sequence[tf.Variable] = tape.watched_variables()
-    watched_names = [p.name for p in params]
-    trainable_names = [v.name for v in self.trainable_variables]
-    assert set(watched_names) == set(trainable_names)
-    grads = tape.gradient(loss, params)
-    self.optimizer.apply(grads, params)
+    if train:
+      params: tp.Sequence[tf.Variable] = tape.watched_variables()
+      watched_names = [p.name for p in params]
+      trainable_names = [v.name for v in self.trainable_variables]
+      assert set(watched_names) == set(trainable_names)
+      grads = tape.gradient(loss, params)
+      self.optimizer.apply(grads, params)
 
     return final_state, metrics
 
