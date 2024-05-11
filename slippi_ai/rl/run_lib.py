@@ -124,6 +124,21 @@ class LearnerManager:
           trajectory, self._hidden_state, train=train)
     return trajectory, dict(learner=metrics, actor_timing=timings)
 
+class Logger:
+
+  def __init__(self):
+    self.buffer = []
+
+  def record(self, to_log):
+    to_log = utils.map_single_structure(train_lib.mean, to_log)
+    self.buffer.append(to_log)
+
+  def flush(self, step: int) -> dict:
+    to_log = tf.nest.map_structure(lambda *xs: np.mean(xs), *self.buffer)
+    train_lib.log_stats(to_log, step, take_mean=False)
+    self.buffer = []
+    return to_log
+
 def run(config: Config):
   pretraining_state = eval_lib.load_state(
       tag=config.agent.tag, path=config.agent.path)
@@ -252,58 +267,68 @@ def run(config: Config):
 
   step_profiler = utils.Profiler()
 
-  def log(
-      step: int,
+  def get_log_data(
       trajectory: evaluators.Trajectory,
       metrics: dict,
   ):
-    print('\nStep:', step)
-
     timings = {}
-    if step > 0:
-      step_time = step_profiler.mean_time()
 
-      steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-      fps = steps_per_rollout / step_time
-      mps = fps / (60 * 60)  # in-game minutes per second
+    # TODO: we shouldn't take the mean over these timings
+    step_time = step_profiler.mean_time()
+    steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
+    fps = steps_per_rollout / step_time
+    mps = fps / (60 * 60)  # in-game minutes per second
 
-      timings.update(
-          rollout=learner_manager.rollout_profiler.mean_time(),
-          learner=learner_manager.learner_profilers[True].mean_time(),
-          reset=learner_manager.reset_profiler.mean_time(),
-          total=step_time,
-          fps=fps,
-          mps=mps,
-      )
+    timings.update(
+        rollout=learner_manager.rollout_profiler.mean_time(),
+        learner=learner_manager.learner_profilers[True].mean_time(),
+        reset=learner_manager.reset_profiler.mean_time(),
+        total=step_time,
+        fps=fps,
+        mps=mps,
+    )
+    actor_timing = metrics['actor_timing']
+    for key in ['env_pop', 'env_push']:
+      timings[key] = actor_timing[key]
+    for key in ['agent_pop', 'agent_step']:
+      timings[key] = actor_timing[key][PORT]
 
-      timing_str = ', '.join(
-          ['{k}: {v:.2f}'.format(k=k, v=v) for k, v in timings.items()])
-      print(timing_str)
-
-    timings.update(actor=metrics['actor_timing'])
     learner_metrics = metrics['learner']
-
     kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)
-    print(f'KO_diff_per_minute: {kos_per_minute:.3f}')
 
-    for key in ['teacher_kl', 'actor_kl']:
-      print(f'{key}: {learner_metrics[key].numpy().mean():.3f}')
-    print(f'uev: {learner_metrics["value"]["uev"].numpy().mean():.3f}')
-
-    to_log = dict(
+    return dict(
         ko_diff=kos_per_minute,
         timings=timings,
         learner=learner_metrics,
     )
-    train_lib.log_stats(to_log, step)
 
-  maybe_log = utils.Periodically(log, config.runtime.log_interval)
+  logger = Logger()
+
+  @utils.periodically(config.runtime.log_interval)
+  def maybe_flush(step):
+    print('\nStep:', step)
+
+    metrics = logger.flush(step)
+
+    timings = metrics['timings']
+    timing_str = ', '.join(
+        ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
+    print(timing_str)
+
+    ko_diff = metrics['ko_diff']
+    print(f'KO_diff_per_minute: {ko_diff:.3f}')
+
+    learner_metrics = metrics['learner']
+    for key in ['teacher_kl', 'actor_kl']:
+      print(f'{key}: {learner_metrics[key]:.3f}')
+    print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
 
   try:
     for step in range(config.runtime.max_step):
       with step_profiler:
-        if step > 0 and step % config.runtime.reset_every_n_steps == 0:
+        log_interval = config.runtime.reset_every_n_steps
+        if step > 0 and log_interval and step % log_interval == 0:
           learner_manager.reset()
 
         policy_vars = {PORT: learner.policy_variables()}
@@ -316,10 +341,8 @@ def run(config: Config):
 
         trajectory, metrics = learner_manager.step()
 
-      maybe_log(
-          step=step,
-          trajectory=trajectory,
-          metrics=metrics,
-      )
+      if step > 0:
+        logger.record(get_log_data(trajectory, metrics))
+        maybe_flush(step)
   finally:
     learner_manager.actor.stop()
