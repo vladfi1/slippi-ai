@@ -74,6 +74,9 @@ class Config:
   agent: AgentConfig = field(AgentConfig)
 
   restore_optimizer_state: bool = True
+  # Take learner steps without changing the parameters to burn-in the
+  # optimizer state for RL.
+  learner_burnin_steps: int = 0
 
 class LearnerManager:
 
@@ -305,6 +308,11 @@ def run(config: Config):
 
         policy_vars = {PORT: learner.policy_variables()}
         learner_manager.actor.update_variables(policy_vars)
+
+        if step < config.learner_burnin_steps:
+          learning_rate.assign(0)
+        else:
+          learning_rate.assign(config.learner.learning_rate)
 
         trajectory, metrics = learner_manager.step()
 
