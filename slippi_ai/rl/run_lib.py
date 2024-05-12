@@ -109,7 +109,7 @@ class LearnerManager:
     for _ in range(self._burnin_steps_after_reset):
       self.step(train=False)
 
-  def reset(self):
+  def reset_actor(self):
     with self.reset_profiler:
       self.actor.stop()
       self.initialize_actor()
@@ -329,7 +329,7 @@ def run(config: Config):
       with step_profiler:
         log_interval = config.runtime.reset_every_n_steps
         if step > 0 and log_interval and step % log_interval == 0:
-          learner_manager.reset()
+          learner_manager.reset_actor()
 
         policy_vars = {PORT: learner.policy_variables()}
         learner_manager.actor.update_variables(policy_vars)

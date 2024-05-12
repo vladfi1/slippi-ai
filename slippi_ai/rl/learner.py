@@ -17,7 +17,9 @@ class LearnerConfig:
   # TODO: unify this with the imitation config?
   learning_rate: float = 1e-4
   compile: bool = True
+  policy_gradient_weight: float = 1
   kl_teacher_weight: float = 1e-1
+  entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
 
@@ -149,9 +151,10 @@ class Learner:
     pg_loss = - policy_outputs.log_probs * advantages
 
     losses = [
-        pg_loss,
+        self._config.policy_gradient_weight * pg_loss,
         self._config.kl_teacher_weight * teacher_kl,
         self._config.value_cost * value_ouputs.loss,
+        -self._config.entropy_weight * entropy,
     ]
 
     total_loss = tf.add_n(losses)
