@@ -6,9 +6,10 @@ import tensorflow as tf
 
 from slippi_ai.data import Frames
 from slippi_ai.embed import StateAction
-from slippi_ai.policies import Policy
+from slippi_ai.policies import Policy, UnrollOutputs
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
+from slippi_ai.controller_heads import ControllerType
 from slippi_ai import value_function as vf_lib
 from slippi_ai import tf_utils
 
@@ -26,6 +27,11 @@ class LearnerConfig:
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
   value_function: RecurrentState
+
+class LearnerOutputs(tp.NamedTuple):
+  total_loss: tf.Tensor
+  policy: UnrollOutputs
+  metrics: dict
 
 class Learner:
   """Implements A2C."""
@@ -59,11 +65,23 @@ class Learner:
   def policy_variables(self) -> tp.Sequence[tf.Variable]:
     return self._policy.variables
 
+  def _get_distribution(self, logits):
+    """Returns a Controller-shaped structure of distributions."""
+    # TODO: return an actual JointDistribution instead?
+    return self._policy.controller_embedding.map(
+        lambda e, t: e.distribution(t), logits)
+
+  def _compute_kl(self, dist1, dist2):
+    kls = self._policy.controller_embedding.map(
+        lambda _, d1, d2: d1.kl_divergence(d2),
+        dist1, dist2)
+    return tf.add_n(list(self._policy.controller_embedding.flatten(kls)))
+
   def unroll(
       self,
       trajectory: Trajectory,
       initial_state: LearnerState,
-  ) -> tp.Tuple[tf.Tensor, LearnerState, dict]:
+  ) -> tp.Tuple[LearnerOutputs, LearnerState]:
     if trajectory.delayed_actions:
       raise NotImplementedError('Delayed actions not supported yet.')
 
@@ -102,39 +120,28 @@ class Learner:
 
     controller_embedding = self._policy.controller_embedding
 
-    def get_distribution(logits):
-      """Returns a Controller-shaped structure of distributions."""
-      # TODO: return an actual JointDistribution instead?
-      return controller_embedding.map(lambda e, t: e.distribution(t), logits)
-
     # Drop the first action which precedes the first frame.
     actor_logits = tf.nest.map_structure(lambda t: t[1:], trajectory.actions.logits)
-    actor_distribution = get_distribution(actor_logits)
-    policy_distribution = get_distribution(policy_outputs.distances.logits)
+    actor_distribution = self._get_distribution(actor_logits)
+    policy_distribution = self._get_distribution(policy_outputs.distances.logits)
     # No stop_gradient needed as the teacher's variables aren't trainable.
-    teacher_distribution = get_distribution(teacher_outputs.distances.logits)
-
-    def compute_kl(dist1, dist2):
-      kls = controller_embedding.map(
-          lambda _, d1, d2: d1.kl_divergence(d2),
-          dist1, dist2)
-      return tf.add_n(list(controller_embedding.flatten(kls)))
+    teacher_distribution = self._get_distribution(teacher_outputs.distances.logits)
 
     def compute_entropy(dist):
       entropies = controller_embedding.map(lambda _, d: d.entropy(), dist)
       return tf.add_n(list(controller_embedding.flatten(entropies)))
 
     # Actor KL measures how off-policy the data is.
-    actor_kl = compute_kl(actor_distribution, policy_distribution)
+    actor_kl = self._compute_kl(actor_distribution, policy_distribution)
 
     # We take the "forward" KL to the teacher, which a) is more correct as the
     # trajectory and autoregressive actions are samples according to the
     # learned policy and b) incentivizes the agent to refine what humans do as
     # opposed to the usual "reverse" KL from supervised learning which forces
     # the policy to imitate all behaviors of the teacher, including mistakes.
-    teacher_kl = compute_kl(policy_distribution, teacher_distribution)
+    teacher_kl = self._compute_kl(policy_distribution, teacher_distribution)
     # Also compute reverse KL for logging.
-    reverse_teacher_kl = compute_kl(teacher_distribution, policy_distribution)
+    reverse_teacher_kl = self._compute_kl(teacher_distribution, policy_distribution)
     entropy = compute_entropy(actor_distribution)
 
     if self._use_separate_vf:
@@ -172,27 +179,49 @@ class Learner:
         value_function=final_value_state,
     )
 
-    return total_loss, final_state, metrics
+    outputs = LearnerOutputs(
+        total_loss=total_loss,
+        policy=policy_outputs,
+        metrics=metrics,
+    )
+
+    return outputs, final_state
 
   def step(
       self,
       tm_trajectories: Trajectory,
       initial_state: LearnerState,
       train: bool = True,
+      # Computing post-update metrics adds some overhead.
+      with_post_update_metrics: bool = True,
   ) -> tuple[LearnerState, dict]:
     with tf.GradientTape() as tape:
-      loss, final_state, metrics = self.unroll(
+      outputs, final_state = self.unroll(
           tm_trajectories,
           initial_state=initial_state,
       )
+
+    metrics = outputs.metrics
 
     if train:
       params: tp.Sequence[tf.Variable] = tape.watched_variables()
       watched_names = [p.name for p in params]
       trainable_names = [v.name for v in self.trainable_variables]
       assert set(watched_names) == set(trainable_names)
-      grads = tape.gradient(loss, params)
+      grads = tape.gradient(outputs.total_loss, params)
       self.optimizer.apply(grads, params)
+
+      if with_post_update_metrics:
+        post_update_outputs, _ = self.unroll(tm_trajectories, initial_state)
+        pre_update_dist = self._get_distribution(
+            outputs.policy.distances.logits)
+        post_update_dist = self._get_distribution(
+            post_update_outputs.policy.distances.logits)
+        post_update_kl = self._compute_kl(pre_update_dist, post_update_dist)
+        metrics.update(post_update_kl=dict(
+            mean=tf.reduce_mean(post_update_kl),
+            max=tf.reduce_max(post_update_kl),
+        ))
 
     return final_state, metrics
 
