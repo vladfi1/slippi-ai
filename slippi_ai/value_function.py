@@ -94,6 +94,14 @@ class FakeValueFunction(snt.Module):
     del batch_size
     return ()
 
-  def loss(self, frames, initial_state, discount):
-    del frames, initial_state, discount
-    return tf.constant(0.), (), {}
+  def loss(self, frames: data.Frames, initial_state, discount):
+    del discount
+
+    outputs = ValueOutputs(
+        returns=tf.zeros_like(frames.reward),
+        loss=tf.constant(0, dtype=tf.float32),
+        advantages=tf.zeros_like(frames.reward),
+        metrics={},
+    )
+
+    return outputs, initial_state
