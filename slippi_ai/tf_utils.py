@@ -91,3 +91,16 @@ def _create_non_trainable(next_creator, **kwargs) -> tf.Variable:
 def non_trainable_scope():
   with tf.variable_creator_scope(_create_non_trainable):
     yield
+
+def assert_same_variables(
+    xs: tp.Sequence[tf.Variable],
+    ys: tp.Sequence[tf.Variable],
+) -> bool:
+  if len(xs) != len(ys):
+    raise ValueError('different lengths')
+
+  xs = sorted(xs, key=lambda v: v.name)
+  ys = sorted(ys, key=lambda v: v.name)
+
+  for x, y in zip(xs, ys):
+    assert x is y

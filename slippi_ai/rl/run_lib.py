@@ -99,6 +99,7 @@ class LearnerManager:
     self._port = port
     self._burnin_steps_after_reset = burnin_steps_after_reset
 
+    self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profilers = {True: utils.Profiler(), False: utils.Profiler()}
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
@@ -117,14 +118,23 @@ class LearnerManager:
       self.actor.stop()
       self.initialize_actor()
 
-  def step(self, train: bool = True) -> tuple[evaluators.Trajectory, dict]:
+  def step(self, train: bool = True, ppo_steps: int = None) -> tuple[evaluators.Trajectory, dict]:
+    with self.update_profiler:
+      variables = {self._port: self._learner.policy_variables()}
+      self.actor.update_variables(variables)
+
     with self.rollout_profiler:
       trajectories, timings = self.actor.rollout(self._unroll_length)
       trajectory = trajectories[self._port]
 
     with self.learner_profilers[train]:
-      self._hidden_state, metrics = self._learner.compiled_step(
-          trajectory, self._hidden_state, train=train)
+      if train:
+        self._hidden_state, metrics = self._learner.compiled_ppo(
+            trajectory, self._hidden_state, num_ppo_steps=ppo_steps)
+      else:
+        _, self._hidden_state = self._learner.compiled_unroll(
+            trajectory, self._hidden_state)
+        metrics = {}
     return trajectory, dict(learner=metrics, actor_timing=timings)
 
 class Logger:
@@ -136,7 +146,10 @@ class Logger:
     to_log = utils.map_single_structure(train_lib.mean, to_log)
     self.buffer.append(to_log)
 
-  def flush(self, step: int) -> dict:
+  def flush(self, step: int) -> tp.Optional[dict]:
+    if not self.buffer:
+      return None
+
     to_log = tf.nest.map_structure(lambda *xs: np.mean(xs), *self.buffer)
     train_lib.log_stats(to_log, step, take_mean=False)
     self.buffer = []
@@ -285,13 +298,14 @@ def run(config: Config):
 
   logger = Logger()
 
-  @utils.periodically(config.runtime.log_interval)
-  def maybe_flush(step):
+  def flush(step: int):
+    metrics = logger.flush(step)
+    if metrics is None:
+      return
+
     print('\nStep:', step)
 
-    metrics = logger.flush(step)
-
-    timings = metrics['timings']
+    timings: dict = metrics['timings']
     timing_str = ', '.join(
         ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
     print(timing_str)
@@ -300,26 +314,46 @@ def run(config: Config):
     print(f'KO_diff_per_minute: {ko_diff:.3f}')
 
     learner_metrics = metrics['learner']
-    for key in ['teacher_kl', 'actor_kl']:
-      print(f'{key}: {learner_metrics[key]:.3f}')
+    pre_update = learner_metrics['ppo_step']['0']
+    actor_kl = pre_update['actor_kl']['mean']
+    print(f'actor_kl: {actor_kl:.3g}')
+    teacher_kl = pre_update['teacher_kl']
+    print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
 
+  maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
+
   try:
-    for step in range(config.runtime.max_step):
+    # Optimizer burnin
+    learning_rate.assign(0)
+    for _ in range(config.optimizer_burnin_steps):
+      learner_manager.step(ppo_steps=1)
+
+    step = 0
+
+    # Value function burnin.
+    learning_rate.assign(config.learner.learning_rate)
+    for _ in range(config.value_burnin_steps):
       with step_profiler:
-        log_interval = config.runtime.reset_every_n_steps
-        if step > 0 and log_interval and step % log_interval == 0:
+        trajectory, metrics = learner_manager.step(ppo_steps=0)
+
+      if step > 0:
+        logger.record(get_log_data(trajectory, metrics))
+        maybe_flush(step)
+
+      step += 1
+
+    # Need flush here because logging structure changes based on ppo_steps.
+    flush(step)
+
+    # Main training loop.
+    for _ in range(config.runtime.max_step):
+      with step_profiler:
+        reset_interval = config.runtime.reset_every_n_steps
+        if step > 0 and reset_interval and step % reset_interval == 0:
           learner_manager.reset_actor()
-
-        policy_vars = {PORT: learner.policy_variables()}
-        learner_manager.actor.update_variables(policy_vars)
-
-        if step < config.learner_burnin_steps:
-          learning_rate.assign(0)
-        else:
-          learning_rate.assign(config.learner.learning_rate)
-
         trajectory, metrics = learner_manager.step()
+        step += 1
 
       if step > 0:
         logger.record(get_log_data(trajectory, metrics))
