@@ -73,10 +73,13 @@ class Config:
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
 
-  restore_optimizer_state: bool = True
   # Take learner steps without changing the parameters to burn-in the
   # optimizer state for RL.
-  learner_burnin_steps: int = 0
+  optimizer_burnin_steps: int = 0
+  # Take some steps to update just the value function before doing RL.
+  # Useful if we're training against the level 9 cpu.
+  value_burnin_steps: int = 0
+
 
 class LearnerManager:
 
@@ -167,9 +170,7 @@ def run(config: Config):
         embed_state_action=policy.embed_state_action,
     )
 
-  # TODO: we only keep this here for save/restore compatibility with imitation
-  # learning. We should get rid of "Variable" learning_rates in both places.
-  # The learning_rate Variable for some reason shows up in optimizer.variables.
+  # This allows us to only update the optimizer state.
   learning_rate = tf.Variable(
       config.learner.learning_rate,
       name='learning_rate',
@@ -185,7 +186,7 @@ def run(config: Config):
       value_function=value_function,
   )
 
-  # Initialize variables before restoring.
+  # Initialize and restore variables
   embedders = dict(policy.embed_state_action.embedding)
   embed_controller = policy.controller_embedding
   dummy_trajectory = evaluators.Trajectory(
@@ -199,29 +200,8 @@ def run(config: Config):
           eval_lib.dummy_sample_outputs(embed_controller, [1])
       ] * policy.delay,
   )
-  learner.initialize(dummy_trajectory)
 
-  # Restore variables from pretraining state.
-  tf_state = dict(
-      policy=policy.variables,
-      value_function=value_function.variables if value_function else [],
-  )
-
-  if config.restore_optimizer_state:
-    tf_state.update(optimizer=learner.optimizer.variables)
-
-  # Drop "step".
-  # TODO: add a separate RL "step"?
-  pretraining_tf_state = {
-      k: pretraining_state['state'][k]
-      for k in tf_state
-  }
-
-  tf.nest.map_structure(
-      lambda var, val: var.assign(val),
-      tf_state, pretraining_tf_state)
-  # Hack: restoration from IL will overwrite the RL learning rate.
-  learning_rate.assign(config.learner.learning_rate)
+  learner.initialize(dummy_trajectory, pretraining_state['state'])
 
   PORT = 1
   ENEMY_PORT = 2
