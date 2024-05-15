@@ -17,7 +17,7 @@ def stack(*vals):
 def concat(*vals):
   return np.concatenate(vals)
 
-def batch_nest(nests):
+def batch_nest(nests: tp.Sequence[T]) -> T:
   return tree.map_structure(stack, *nests)
 
 

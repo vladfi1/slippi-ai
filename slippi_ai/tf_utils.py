@@ -51,16 +51,28 @@ def dynamic_rnn(core, inputs, initial_state):
           dtype=t.dtype, size=unroll_length, element_shape=t.shape),
       output_0)
 
-  def write_output(index, output):
+  def write_output(index, output, buffers):
     return tf.nest.map_structure(
         lambda ta, t: ta.write(index, t),
-        outputs, output)
+        buffers, output)
 
-  outputs = write_output(0, output_0)
+  outputs = write_output(0, output_0, outputs)
 
-  for i in tf.range(1, unroll_length):
-    output, state = core(get_input(i), state)
-    outputs = write_output(i, output)
+  cond = lambda i, *_: i < unroll_length
+
+  def body(index, buffers, state):
+    output, state = core(get_input(index), state)
+    buffers = write_output(index, output, buffers)
+    return index + 1, buffers, state
+
+  loop_vars = (1, outputs, state)
+
+  _, outputs, state = tf.while_loop(
+      cond, body, loop_vars, parallel_iterations=1)
+
+  # for i in tf.range(1, unroll_length):
+  #   output, state = core(get_input(i), state)
+  #   outputs = write_output(i, output)
 
   outputs = tf.nest.map_structure(lambda ta: ta.stack(), outputs)
   return outputs, state

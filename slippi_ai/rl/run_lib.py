@@ -91,6 +91,7 @@ class LearnerManager:
       unroll_length: int,
       build_actor: tp.Callable[[], evaluators.RolloutWorker],
       port: int,
+      num_ppo_batches: int = 1,
       burnin_steps_after_reset: int = 0,
   ):
     self._learner = learner
@@ -98,6 +99,7 @@ class LearnerManager:
     self._build_actor = build_actor
     self._unroll_length = unroll_length
     self._port = port
+    self._num_ppo_batches = num_ppo_batches
     self._burnin_steps_after_reset = burnin_steps_after_reset
 
     self.update_profiler = utils.Profiler(burnin=0)
@@ -112,31 +114,43 @@ class LearnerManager:
     self.actor = self._build_actor()
     self.actor.start()
     for _ in range(self._burnin_steps_after_reset):
-      self.step(train=False)
+      self.unroll()
 
   def reset_actor(self):
     with self.reset_profiler:
       self.actor.stop()
       self.initialize_actor()
 
-  def step(self, train: bool = True, ppo_steps: int = None) -> tuple[evaluators.Trajectory, dict]:
+  def unroll(self):
+    with self.rollout_profiler:
+      trajectories, _ = self.actor.rollout(self._unroll_length)
+      trajectory = trajectories[self._port]
+
+    with self.learner_profilers[False]:
+      _, self._hidden_state = self._learner.compiled_unroll(
+          trajectory, self._hidden_state)
+
+  def step(self, ppo_steps: int = None) -> tuple[list[evaluators.Trajectory], dict]:
     with self.update_profiler:
       variables = {self._port: self._learner.policy_variables()}
       self.actor.update_variables(variables)
 
     with self.rollout_profiler:
-      trajectories, timings = self.actor.rollout(self._unroll_length)
-      trajectory = trajectories[self._port]
+      trajectories = []
+      actor_timings = []
+      for _ in range(self._num_ppo_batches):
+        trajectory, timings = self.actor.rollout(self._unroll_length)
+        trajectories.append(trajectory[self._port])
+        actor_timings.append(timings)
 
-    with self.learner_profilers[train]:
-      if train:
-        self._hidden_state, metrics = self._learner.compiled_ppo(
-            trajectory, self._hidden_state, num_ppo_steps=ppo_steps)
-      else:
-        _, self._hidden_state = self._learner.compiled_unroll(
-            trajectory, self._hidden_state)
-        metrics = {}
-    return trajectory, dict(learner=metrics, actor_timing=timings)
+      actor_timings = tf.nest.map_structure(
+          lambda *xs: np.mean(xs), *actor_timings)
+
+    with self.learner_profilers[True]:
+      self._hidden_state, metrics = self._learner.ppo(
+          trajectories, self._hidden_state, num_epochs=ppo_steps)
+
+    return trajectories, dict(learner=metrics, actor_timing=actor_timings)
 
 class Logger:
 
@@ -293,12 +307,13 @@ def run(config: Config):
       port=PORT,
       build_actor=build_actor,
       burnin_steps_after_reset=config.runtime.burnin_steps_after_reset,
+      num_ppo_batches=config.learner.ppo.num_batches,
   )
 
   step_profiler = utils.Profiler()
 
   def get_log_data(
-      trajectory: evaluators.Trajectory,
+      trajectories: list[evaluators.Trajectory],
       metrics: dict,
   ):
     timings = {}
@@ -306,7 +321,7 @@ def run(config: Config):
     # TODO: we shouldn't take the mean over these timings
     step_time = step_profiler.mean_time()
     steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-    fps = steps_per_rollout / step_time
+    fps = len(trajectories) * steps_per_rollout / step_time
     mps = fps / (60 * 60)  # in-game minutes per second
 
     timings.update(
@@ -324,7 +339,12 @@ def run(config: Config):
       timings[key] = actor_timing[key][PORT]
 
     learner_metrics = metrics['learner']
-    kos = reward.compute_rewards(trajectory.states, damage_ratio=0)
+
+    # concatenate along the batch dimension
+    states = tf.nest.map_structure(
+        lambda *xs: np.concatenate(xs, axis=1),
+        *[t.states for t in trajectories])
+    kos = reward.compute_rewards(states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)
 
     return dict(
@@ -336,7 +356,7 @@ def run(config: Config):
   logger = Logger()
 
   def flush(step: int):
-    metrics = logger.flush(step)
+    metrics = logger.flush(step * steps_per_epoch)
     if metrics is None:
       return
 
@@ -361,21 +381,28 @@ def run(config: Config):
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
   try:
+    steps_per_epoch = config.learner.ppo.num_batches
+
+    reset_interval = config.runtime.reset_every_n_steps
+    if reset_interval:
+      reset_interval = reset_interval // steps_per_epoch
+
     # Optimizer burnin
     learning_rate.assign(0)
-    for _ in range(config.optimizer_burnin_steps):
+    for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
       learner_manager.step(ppo_steps=1)
 
     step = 0
 
-    # Value function burnin.
+    print('Value function burnin')
+
     learning_rate.assign(config.learner.learning_rate)
-    for _ in range(config.value_burnin_steps):
+    for _ in range(config.value_burnin_steps // steps_per_epoch):
       with step_profiler:
-        trajectory, metrics = learner_manager.step(ppo_steps=0)
+        trajectories, metrics = learner_manager.step(ppo_steps=0)
 
       if step > 0:
-        logger.record(get_log_data(trajectory, metrics))
+        logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
 
       step += 1
@@ -383,17 +410,20 @@ def run(config: Config):
     # Need flush here because logging structure changes based on ppo_steps.
     flush(step)
 
-    # Main training loop.
+    print('Main training loop')
+
     for _ in range(config.runtime.max_step):
       with step_profiler:
-        reset_interval = config.runtime.reset_every_n_steps
         if step > 0 and reset_interval and step % reset_interval == 0:
+          print('Resetting environments')
           learner_manager.reset_actor()
-        trajectory, metrics = learner_manager.step()
-        step += 1
+        trajectories, metrics = learner_manager.step()
 
       if step > 0:
-        logger.record(get_log_data(trajectory, metrics))
+        logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
+
+      step += 1
+
   finally:
     learner_manager.actor.stop()

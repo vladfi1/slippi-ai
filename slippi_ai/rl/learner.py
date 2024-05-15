@@ -1,6 +1,7 @@
 import dataclasses
 import typing as tp
 
+import numpy as np
 import sonnet as snt
 import tensorflow as tf
 
@@ -11,15 +12,18 @@ from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
 from slippi_ai.controller_heads import ControllerType
 from slippi_ai import value_function as vf_lib
-from slippi_ai import tf_utils
+from slippi_ai import tf_utils, utils
 
 field = lambda f: dataclasses.field(default_factory=f)
 
 @dataclasses.dataclass
 class PPOConfig:
-  num_steps: int = 1
+  num_epochs: int = 1
+  num_batches: int = 1
   epsilon: float = 1e-2
   beta: float = 0
+  minibatched: bool = False
+  # target_kl: float = 1e-3
 
 @dataclasses.dataclass
 class LearnerConfig:
@@ -48,6 +52,11 @@ def get_frames(trajectory: Trajectory) -> Frames:
       name=trajectory.name,
   )
   return Frames(state_action, trajectory.rewards)
+
+def combine_grads(x: tp.Optional[tf.Tensor], y: tp.Optional[tf.Tensor]):
+  if x is None or y is None:
+    return None
+  return x + y
 
 class Learner:
   """Implements A2C."""
@@ -109,6 +118,7 @@ class Learner:
       self,
       trajectory: Trajectory,
       initial_state: LearnerState,
+      train_value_function: bool = False,
   ) -> tp.Tuple[LearnerOutputs, LearnerState]:
     if trajectory.delayed_actions:
       raise NotImplementedError('Delayed actions not supported yet.')
@@ -131,11 +141,15 @@ class Learner:
         discount=self.discount,
     )
 
-    value_ouputs, final_value_state = self._value_function.loss(
-        frames=frames,
-        initial_state=initial_state.value_function,
-        discount=self.discount,
-    )
+    with tf.GradientTape() as tape:
+      value_ouputs, final_value_state = self._value_function.loss(
+          frames=frames,
+          initial_state=initial_state.value_function,
+          discount=self.discount,
+      )
+      if train_value_function:
+        grads = tape.gradient(value_ouputs.loss, self._value_vars)
+        self.value_optimizer.apply(grads, self._value_vars)
 
     final_state = LearnerState(
         teacher=teacher_outputs.final_state,
@@ -149,17 +163,8 @@ class Learner:
 
     return outputs, final_state
 
-  def ppo(
-      self,
-      trajectory: Trajectory,
-      initial_state: LearnerState,
-      num_ppo_steps: tp.Optional[int] = None,
-  ) -> tuple[LearnerState, dict]:
-    assert self._use_separate_vf
-    with tf.GradientTape() as tape:
-      outputs, final_state = self.unroll(trajectory, initial_state)
-      grads = tape.gradient(outputs.value.loss, self._value_vars)
-      self.value_optimizer.apply(grads, self._value_vars)
+  @tf.function
+  def ppo_grads(self, outputs: LearnerOutputs, trajectory: Trajectory):
     advantages = tf.stop_gradient(outputs.value.advantages)
 
     frames = get_frames(trajectory)
@@ -179,69 +184,203 @@ class Learner:
         lambda t: t[1:], trajectory.actions.controller_state)
     actor_log_probs = self._get_log_prob(actor_logits, actions)
 
-    def ppo_step(train: bool = True) -> dict:
-      with tf.GradientTape() as tape:
-        policy_outputs = self._policy.unroll(
-            frames=frames,
-            initial_state=initial_policy_state,
-            discount=self.discount,
-        )
-        policy_distribution = self._get_distribution(policy_outputs.distances.logits)
-        entropy = self._compute_entropy(policy_distribution)
-
-        # We take the "forward" KL to the teacher, which a) is more correct as the
-        # trajectory and autoregressive actions are samples according to the
-        # learned policy and b) incentivizes the agent to refine what humans do as
-        # opposed to the usual "reverse" KL from supervised learning which forces
-        # the policy to imitate all behaviors of the teacher, including mistakes.
-        teacher_kl = self._compute_kl(policy_distribution, teacher_distribution)
-        actor_kl = self._compute_kl(actor_distribution, policy_distribution)
-
-        log_rhos = policy_outputs.log_probs - actor_log_probs
-        rhos = tf.exp(log_rhos)
-
-        eps = self._config.ppo.epsilon
-        clipped_log_rhos = tf.clip_by_value(log_rhos, -eps, eps)
-        clipped_rhos = tf.exp(clipped_log_rhos)
-
-        ppo_objective = tf.minimum(rhos * advantages, clipped_rhos * advantages)
-
-        weighted_losses = [
-            - self._config.policy_gradient_weight * ppo_objective,
-            self._config.ppo.beta * actor_kl,
-            self._config.kl_teacher_weight * teacher_kl,
-            -self._config.entropy_weight * entropy,
-        ]
-        loss = tf.add_n(weighted_losses)
-
-        if train:
-          grads = tape.gradient(loss, self._policy_vars)
-          self.policy_optimizer.apply(grads, self._policy_vars)
-
-      return dict(
-          ppo_objective=ppo_objective,
-          teacher_kl=teacher_kl,
-          entropy=entropy,
-          actor_kl=dict(
-              mean=tf.reduce_mean(actor_kl),
-              max=tf.reduce_max(actor_kl),
-          ),
+    with tf.GradientTape() as tape:
+      policy_outputs = self._policy.unroll(
+          frames=frames,
+          initial_state=initial_policy_state,
+          discount=self.discount,
       )
+      policy_distribution = self._get_distribution(policy_outputs.distances.logits)
+      entropy = self._compute_entropy(policy_distribution)
 
-    ppo_outputs = []
-    num_ppo_steps = num_ppo_steps or self._config.ppo.num_steps
-    for _ in range(num_ppo_steps):
-      ppo_outputs.append(ppo_step(train=True))
-    # Last step is just for logging purposes.
-    ppo_outputs.append(ppo_step(train=False))
+      # We take the "forward" KL to the teacher, which a) is more correct as the
+      # trajectory and autoregressive actions are samples according to the
+      # learned policy and b) incentivizes the agent to refine what humans do as
+      # opposed to the usual "reverse" KL from supervised learning which forces
+      # the policy to imitate all behaviors of the teacher, including mistakes.
+      teacher_kl = self._compute_kl(policy_distribution, teacher_distribution)
+      actor_kl = self._compute_kl(actor_distribution, policy_distribution)
+
+      log_rhos = policy_outputs.log_probs - actor_log_probs
+      rhos = tf.exp(log_rhos)
+
+      eps = self._config.ppo.epsilon
+      clipped_log_rhos = tf.clip_by_value(log_rhos, -eps, eps)
+      clipped_rhos = tf.exp(clipped_log_rhos)
+
+      ppo_objective = tf.minimum(rhos * advantages, clipped_rhos * advantages)
+
+      weighted_losses = [
+          - self._config.policy_gradient_weight * ppo_objective,
+          self._config.ppo.beta * actor_kl,
+          self._config.kl_teacher_weight * teacher_kl,
+          -self._config.entropy_weight * entropy,
+      ]
+      loss = tf.add_n(weighted_losses)
+      grads = tape.gradient(loss, self._policy_vars)
+      grads = [tf.zeros_like(v) if g is None else g for g, v in zip(grads, self._policy_vars)]
 
     metrics = dict(
-        ppo_step={str(i): d for i, d in enumerate(ppo_outputs)},
-        post_update=ppo_outputs[-1],
-        value=outputs.value.metrics,
+        total_loss=loss,
+        ppo_objective=ppo_objective,
+        teacher_kl=teacher_kl,
+        entropy=entropy,
+        actor_kl=actor_kl,
     )
 
-    return final_state, metrics
+    return grads, metrics
+
+  @tf.function
+  def ppo_grads_acc(self, outputs: LearnerOutputs, trajectory: Trajectory, grads_acc: list):
+    grads, metrics = self.ppo_grads(outputs, trajectory)
+    grads_acc = [a + g for a, g in zip(grads_acc, grads)]
+    return metrics, grads_acc
+
+  @tf.function
+  def apply_grads(self, grads, scale: float = 1):
+    grads = [g * scale for g in grads]
+    self.policy_optimizer.apply(grads, self._policy_vars)
+
+  def ppo_epoch_full(
+      self,
+      learner_outputs: list[LearnerOutputs],
+      trajectories: list[Trajectory],
+      train: bool,
+  ):
+    # Could cache this?
+    grads_acc = [np.zeros(v.shape, dtype=v.dtype.as_numpy_dtype()) for v in self._policy_vars]
+    metrics_acc = []
+
+    metrics_acc = []
+    for outputs, trajectory in zip(learner_outputs, trajectories):
+      metrics, grads_acc = self.ppo_grads_acc(outputs, trajectory, grads_acc)
+      metrics_acc.append(metrics)
+
+    if train:
+      self.apply_grads(grads_acc, scale=1 / len(learner_outputs))
+
+    metrics_acc = tf.nest.map_structure(lambda t: t.numpy(), metrics_acc)
+    metrics = utils.batch_nest(metrics_acc)
+
+    # Make sure to take max over whole epoch, not just over the minibatch.
+    actor_kl = metrics['actor_kl']
+    metrics['actor_kl'] = dict(
+        mean=np.mean(actor_kl),
+        max=np.amax(actor_kl),
+    )
+    return metrics
+
+  @tf.function(autograph=False)
+  def ppo_epoch_full_tf(
+      self,
+      learner_outputs: list[LearnerOutputs],
+      trajectories: list[Trajectory],
+      train: bool,
+  ):
+    # Accumulate gradients across the entire batch.
+    grads_acc = [tf.zeros_like(v) for v in self._policy_vars]
+
+    # def body(inputs, grads_acc: list):
+    #   learner_output, trajectory = inputs
+    #   grads, metrics = self.ppo_grads(learner_output, trajectory)
+    #   grads_acc = [combine_grads(a, g) for a, g in zip(grads_acc, grads)]
+    #   return metrics, grads_acc
+
+    # metrics, grads = tf_utils.dynamic_rnn(
+    #     body, (learner_outputs, trajectories), grads_acc)
+
+    metrics_acc = []
+    for outputs, trajectory in zip(learner_outputs, trajectories):
+      with tf.control_dependencies(grads_acc):
+        metrics, grads_acc = self.ppo_grads_acc(outputs, trajectory, grads_acc)
+        metrics_acc.append(metrics)
+
+    metrics = tf.nest.map_structure(lambda *xs: tf.stack(xs), *metrics_acc)
+
+    if train:
+      self.policy_optimizer.apply(grads_acc, self._policy_vars)
+
+    # Make sure to take max over whole epoch, not just over the minibatch.
+    actor_kl = metrics['actor_kl']
+    metrics['actor_kl'] = dict(
+        mean=tf.reduce_mean(actor_kl),
+        max=tf.reduce_max(actor_kl),
+    )
+    return metrics
+
+  @tf.function
+  def ppo_batch(self, outputs: LearnerOutputs, trajectory: Trajectory, train: bool):
+    grads, metrics = self.ppo_grads(outputs, trajectory)
+    if train:
+      self.policy_optimizer.apply(grads, self._policy_vars)
+    return metrics
+
+  def ppo_epoch_batched(
+      self,
+      learner_outputs: list[LearnerOutputs],
+      trajectories: list[Trajectory],
+      train: bool,
+  ):
+    """Per-minibatch gradients."""
+    metrics = []
+    for outputs, trajectory in zip(learner_outputs, trajectories):
+      metrics.append(self.ppo_batch(outputs, trajectory, train))
+
+    metrics = tf.nest.map_structure(lambda t: t.numpy(), metrics)
+    metrics = utils.batch_nest(metrics)
+
+    # Make sure to take max over whole epoch, not just over the minibatch.
+    actor_kl = metrics['actor_kl']
+    metrics['actor_kl'] = dict(
+        mean=np.mean(actor_kl),
+        max=np.amax(actor_kl),
+    )
+    return metrics
+
+  def ppo(
+      self,
+      trajectories: list[Trajectory],
+      initial_state: LearnerState,
+      num_epochs: int = None,
+  ) -> tuple[LearnerState, dict]:
+    assert self._use_separate_vf
+
+    learner_outputs: list[LearnerOutputs] = []
+
+    hidden_state = initial_state
+    for trajectory in trajectories:
+      outputs, hidden_state = self.compiled_unroll(
+          trajectory, hidden_state, train_value_function=True)
+      learner_outputs.append(outputs)
+
+    value_metrics = [outputs.value.metrics for outputs in learner_outputs]
+    value_metrics = utils.map_single_structure(
+        lambda t: t.numpy(), value_metrics)
+    value_metrics = utils.batch_nest(value_metrics)
+
+    if num_epochs is None:
+      num_epochs = self._config.ppo.num_epochs
+    # learner_outputs = utils.batch_nest(learner_outputs)
+    # trajectories = utils.batch_nest(trajectories)
+
+    if self._config.ppo.minibatched:
+      ppo_epoch = self.ppo_epoch_batched
+    else:
+      ppo_epoch = self.ppo_epoch_full
+
+    per_epoch_metrics = []
+    for _ in range(num_epochs):
+      per_epoch_metrics.append(ppo_epoch(learner_outputs, trajectories, train=True))
+    # Just for logging.
+    per_epoch_metrics.append(ppo_epoch(learner_outputs, trajectories, train=False))
+
+    metrics = dict(
+        ppo_step={str(i): d for i, d in enumerate(per_epoch_metrics)},
+        post_update=per_epoch_metrics[-1],
+        value=value_metrics,
+    )
+
+    return hidden_state, metrics
 
   @property
   def trainable_variables(self) -> tp.Sequence[tf.Variable]:
