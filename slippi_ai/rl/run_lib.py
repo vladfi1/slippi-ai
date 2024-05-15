@@ -5,11 +5,11 @@ import numpy as np
 import tensorflow as tf
 
 from slippi_ai import (
-    data,
     dolphin,
     eval_lib,
     evaluators,
     flag_utils,
+    policies,
     reward,
     saving,
     tf_utils,
@@ -28,6 +28,7 @@ class RuntimeConfig:
   max_runtime: tp.Optional[int] = None  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
+  use_fake_data: bool = False
 
   # Periodically reset the environments to deal with memory leaks in dolphin.
   reset_every_n_steps: tp.Optional[int] = None
@@ -155,6 +156,52 @@ class Logger:
     self.buffer = []
     return to_log
 
+def dummy_trajectory(
+    policy: policies.Policy,
+    unroll_length: int,
+    batch_size: int,
+) -> evaluators.Trajectory:
+  embedders = dict(policy.embed_state_action.embedding)
+  embed_controller = policy.controller_embedding
+  shape = [unroll_length + 1, batch_size]
+  return evaluators.Trajectory(
+      states=embedders['state'].dummy(shape),
+      name=embedders['name'].dummy(shape),
+      actions=eval_lib.dummy_sample_outputs(embed_controller, shape),
+      rewards=np.full([unroll_length, batch_size], 0, dtype=np.float32),
+      is_resetting=np.full(shape, False),
+      initial_state=policy.initial_state(batch_size),
+      delayed_actions=[
+          eval_lib.dummy_sample_outputs(embed_controller, [batch_size])
+      ] * policy.delay,
+  )
+
+class DummyActor:
+
+  def __init__(self, policy: policies.Policy, batch_size: int, port: int):
+    self.policy = policy
+    self.batch_size = batch_size
+    self.port = port
+
+  def rollout(self, unroll_length: int) -> tuple[evaluators.Trajectory, dict]:
+    trajectory = dummy_trajectory(self.policy, unroll_length, self.batch_size)
+    timings = {
+        'env_pop': 0,
+        'env_push': 0,
+        'agent_pop': {self.port: 0},
+        'agent_step': {self.port: 0},
+    }
+    return {self.port: trajectory}, timings
+
+  def update_variables(self, variables):
+    del variables
+
+  def start(self):
+    pass
+
+  def stop(self):
+    pass
+
 def run(config: Config):
   pretraining_state = eval_lib.load_state(
       tag=config.agent.tag, path=config.agent.path)
@@ -200,21 +247,7 @@ def run(config: Config):
   )
 
   # Initialize and restore variables
-  embedders = dict(policy.embed_state_action.embedding)
-  embed_controller = policy.controller_embedding
-  dummy_trajectory = evaluators.Trajectory(
-      states=embedders['state'].dummy([2, 1]),
-      name=embedders['name'].dummy([2, 1]),
-      actions=eval_lib.dummy_sample_outputs(embed_controller, [2, 1]),
-      rewards=np.full([1, 1], 0, dtype=np.float32),
-      is_resetting=np.full([2, 1], False),
-      initial_state=policy.initial_state(1),
-      delayed_actions=[
-          eval_lib.dummy_sample_outputs(embed_controller, [1])
-      ] * policy.delay,
-  )
-
-  learner.initialize(dummy_trajectory, pretraining_state['state'])
+  learner.initialize(dummy_trajectory(policy, 1, 1), pretraining_state['state'])
 
   PORT = 1
   ENEMY_PORT = 2
@@ -226,28 +259,32 @@ def run(config: Config):
       **dataclasses.asdict(config.dolphin),
   )
 
-  agent_kwargs = dict(
-      state=rl_state,
-      compile=config.agent.compile,
-      name=config.agent.name,
-  )
-
-  env_kwargs = {}
-  if config.actor.async_envs:
-    env_kwargs.update(
-        num_steps=config.actor.num_env_steps,
-        inner_batch_size=config.actor.inner_batch_size,
+  if config.runtime.use_fake_data:
+    build_actor = lambda: DummyActor(
+        policy, batch_size=config.actor.num_envs, port=PORT)
+  else:
+    agent_kwargs = dict(
+        state=rl_state,
+        compile=config.agent.compile,
+        name=config.agent.name,
     )
 
-  build_actor = lambda: evaluators.RolloutWorker(
-      agent_kwargs={PORT: agent_kwargs},
-      dolphin_kwargs=dolphin_kwargs,
-      env_kwargs=env_kwargs,
-      num_envs=config.actor.num_envs,
-      async_envs=config.actor.async_envs,
-      async_inference=config.actor.async_inference,
-      use_gpu=config.actor.gpu_inference,
-  )
+    env_kwargs = {}
+    if config.actor.async_envs:
+      env_kwargs.update(
+          num_steps=config.actor.num_env_steps,
+          inner_batch_size=config.actor.inner_batch_size,
+      )
+
+    build_actor = lambda: evaluators.RolloutWorker(
+        agent_kwargs={PORT: agent_kwargs},
+        dolphin_kwargs=dolphin_kwargs,
+        env_kwargs=env_kwargs,
+        num_envs=config.actor.num_envs,
+        async_envs=config.actor.async_envs,
+        async_inference=config.actor.async_inference,
+        use_gpu=config.actor.gpu_inference,
+    )
 
   learner_manager = LearnerManager(
       learner=learner,
