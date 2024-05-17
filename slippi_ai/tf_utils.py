@@ -15,6 +15,16 @@ def mean_and_variance(xs: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
   variance = tf.reduce_mean(tf.square(xs - mean))
   return mean, variance
 
+def get_stats(x):
+  mean, variance = mean_and_variance(x)
+  return dict(
+      mean=mean,
+      variance=variance,
+      stddev=tf.sqrt(variance),
+      min=tf.reduce_min(x),
+      max=tf.reduce_max(x),
+  )
+
 def to_numpy(x) -> np.ndarray:
   if isinstance(x, tf.Tensor):
     return x.numpy()

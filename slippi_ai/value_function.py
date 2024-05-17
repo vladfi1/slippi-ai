@@ -13,6 +13,7 @@ class ValueOutputs(tp.NamedTuple):
   loss: tf.Tensor
   metrics: dict
 
+
 class ValueFunction(snt.Module):
 
   def __init__(
@@ -64,15 +65,9 @@ class ValueFunction(snt.Module):
     _, value_variance = tf_utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
 
-    reward_mean, reward_variance = tf_utils.mean_and_variance(rewards)
-
     metrics = {
-        'reward': dict(
-            mean=reward_mean,
-            variance=reward_variance,
-            max=tf.reduce_max(rewards),
-            min=tf.reduce_min(rewards),
-        ),
+        'reward': tf_utils.get_stats(rewards),
+        'return': tf_utils.get_stats(value_targets),
         'loss': value_loss,
         'variance': value_variance,
         'uev': uev,  # unexplained variance
