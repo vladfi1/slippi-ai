@@ -41,7 +41,7 @@ class Learner:
     self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
     self.decay_rate = decay_rate
     self.value_cost = value_cost
-    self.discount = 0.5 ** (1 / reward_halflife * 60)
+    self.discount = 0.5 ** (1 / (reward_halflife * 60))
     self.compiled_step = tf.function(self.step) if compile else self.step
 
   def initial_state(self, batch_size: int) -> RecurrentState:

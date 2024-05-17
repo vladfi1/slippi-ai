@@ -77,7 +77,7 @@ class Learner:
     self.policy_optimizer = snt.optimizers.Adam(config.learning_rate)
     self.value_optimizer = snt.optimizers.Adam(config.learning_rate)
 
-    self.discount = 0.5 ** (1 / config.reward_halflife * 60)
+    self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
 
     self.compiled_unroll = tf.function(self.unroll) if config.compile else self.unroll
     self.compiled_ppo = tf.function(self.ppo) if config.compile else self.ppo
