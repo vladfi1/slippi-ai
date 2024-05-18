@@ -379,7 +379,8 @@ class Agent:
 
     sample_outputs = self._agent.step(game, needs_reset)
     action = sample_outputs.controller_state
-    action = utils.map_nt(lambda x: x.item(), action)
+    # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
+    action = utils.map_nt(lambda x: x[0], action)
     action = self._agent.embed_controller.decode(action)
     send_controller(self._controller, action)
     return sample_outputs
