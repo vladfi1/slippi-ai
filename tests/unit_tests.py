@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from slippi_ai import embed, tf_utils
+from slippi_ai import embed, utils, tf_utils
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]
@@ -23,7 +23,7 @@ def static_rnn(core, inputs, initial_state):
 def assert_tensors_close(t1, t2):
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
 
-class UtilsTest(unittest.TestCase):
+class TFUtilsTest(unittest.TestCase):
   def test_dynamic_rnn(self):
 
     def nested_core(input_, state):
@@ -47,6 +47,29 @@ class UtilsTest(unittest.TestCase):
   def test_non_trainable_scope(self):
     with tf_utils.non_trainable_scope():
       assert not tf.Variable(1.0).trainable
+
+class UtilsTest(unittest.TestCase):
+
+  def test_peekable_queue(self):
+    q = utils.PeekableQueue()
+    for i in range(5):
+      q.put(i)
+
+    for i in range(5):
+      n = i + 1
+      self.assertListEqual(q.peek_n(n), list(range(n)))
+
+    for i in range(5, 10):
+      q.put(i)
+
+    for i in range(10):
+      n = i + 1
+      self.assertListEqual(q.peek_n(n), list(range(n)))
+
+    for i in range(10):
+      self.assertEqual(q.get(), i)
+
+    self.assertTrue(q.empty())
 
 class EmbedTest(unittest.TestCase):
 

@@ -126,8 +126,7 @@ def peek_deque(d: collections.deque, n: int) -> list:
   """Peek at the last n elements of a deque."""
   assert len(d) >= n
   items = [d.pop() for _ in range(n)]
-  items.reverse()
-  d.extend(items)
+  d.extend(reversed(items))
   return items
 
 class PeekableQueue(tp.Generic[T]):
