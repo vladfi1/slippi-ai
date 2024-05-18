@@ -34,6 +34,22 @@ class Trajectory(tp.NamedTuple):
   initial_state: policies.RecurrentState  # [B]
   delayed_actions: list[SampleOutputs]  # [D, B]
 
+  @classmethod
+  def batch(cls, trajectories: list['Trajectory']) -> 'Trajectory':
+    # TODO: test?
+    batch_dims = Trajectory(
+        states=1,
+        name=1,
+        actions=1,
+        rewards=1,
+        is_resetting=1,
+        initial_state=0,
+        delayed_actions=0,
+    )
+    return utils.map_nt(
+        lambda axis, *ts: utils.concat_nest_nt(ts, axis),
+        batch_dims, *trajectories)
+
 
 class RolloutWorker:
 

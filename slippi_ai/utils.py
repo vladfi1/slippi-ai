@@ -118,9 +118,9 @@ def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
   return map_nt(stack, *nests)
 
-def concat_nest_nt(nests: tp.Sequence[T]) -> T:
+def concat_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
-  return map_nt(concat, *nests)
+  return map_nt(lambda *xs: np.concatenate(xs, axis), *nests)
 
 def peek_deque(d: collections.deque, n: int) -> list:
   """Peek at the last n elements of a deque."""

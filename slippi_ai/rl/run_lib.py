@@ -82,6 +82,23 @@ class OpponentConfig:
   type: OpponentType = OpponentType.CPU
   other: AgentConfig = field(AgentConfig)
 
+  # Update self-play parameters every N steps.
+  update_interval: tp.Optional[int] = None
+  # Train on opponent's data. Implies update_interval=1.
+  train: bool = False
+
+  def should_update(self, step: int):
+    if self.type is not OpponentType.SELF:
+      return False
+    if self.train:
+      return True
+    if self.update_interval is None:
+      return False
+    return step % self.update_interval == 0
+
+  def should_train(self):
+    return self.type is OpponentType.SELF and self.train
+
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = field(RuntimeConfig)
@@ -106,23 +123,27 @@ class LearnerManager:
   def __init__(
       self,
       learner: learner_lib.Learner,
-      batch_size: int,
-      unroll_length: int,
+      config: Config,
       build_actor: tp.Callable[[], evaluators.RolloutWorker],
       port: int,
-      num_ppo_batches: int = 1,
-      burnin_steps_after_reset: int = 0,
+      enemy_port: int,
   ):
+    self._config = config
     self._learner = learner
-    self._hidden_state = learner.initial_state(batch_size)
     self._build_actor = build_actor
-    self._unroll_length = unroll_length
+    self._unroll_length = config.actor.rollout_length
     self._port = port
-    self._num_ppo_batches = num_ppo_batches
-    self._burnin_steps_after_reset = burnin_steps_after_reset
+    self._enemy_port = enemy_port
+    self._num_ppo_batches = config.learner.ppo.num_batches
+    self._burnin_steps_after_reset = config.runtime.burnin_steps_after_reset
+
+    batch_size = config.actor.num_envs
+    if config.opponent.should_train():
+      batch_size *= 2
+    self._hidden_state = learner.initial_state(batch_size)
 
     self.update_profiler = utils.Profiler(burnin=0)
-    self.learner_profilers = {True: utils.Profiler(), False: utils.Profiler()}
+    self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
 
@@ -140,32 +161,42 @@ class LearnerManager:
       self.actor.stop()
       self.initialize_actor()
 
-  def unroll(self):
-    with self.rollout_profiler:
-      trajectories, _ = self.actor.rollout(self._unroll_length)
+  def _rollout(self) -> tuple[evaluators.Trajectory, dict]:
+    trajectories, timings = self.actor.rollout(self._unroll_length)
+
+    if self._config.opponent.should_train():
+      ports = [self._port, self._enemy_port]
+      trajectories = [trajectories[p] for p in ports]
+      trajectory = evaluators.Trajectory.batch(trajectories)
+    else:
       trajectory = trajectories[self._port]
 
-    with self.learner_profilers[False]:
-      _, self._hidden_state = self._learner.compiled_unroll(
-          trajectory, self._hidden_state)
+    return trajectory, timings
 
-  def step(self, ppo_steps: int = None) -> tuple[list[evaluators.Trajectory], dict]:
+  def unroll(self):
+    trajectory, _ = self._rollout()
+    _, self._hidden_state = self._learner.compiled_unroll(
+        trajectory, self._hidden_state)
+
+  def step(self, step: int, ppo_steps: int = None) -> tuple[list[evaluators.Trajectory], dict]:
     with self.update_profiler:
       variables = {self._port: self._learner.policy_variables()}
+      if self._config.opponent.should_update(step):
+        variables[self._enemy_port] = self._learner.policy_variables()
       self.actor.update_variables(variables)
 
     with self.rollout_profiler:
       trajectories = []
       actor_timings = []
       for _ in range(self._num_ppo_batches):
-        trajectory, timings = self.actor.rollout(self._unroll_length)
-        trajectories.append(trajectory[self._port])
+        trajectory, timings = self._rollout()
+        trajectories.append(trajectory)
         actor_timings.append(timings)
 
       actor_timings = tf.nest.map_structure(
           lambda *xs: np.mean(xs), *actor_timings)
 
-    with self.learner_profilers[True]:
+    with self.learner_profiler:
       self._hidden_state, metrics = self._learner.ppo(
           trajectories, self._hidden_state, num_epochs=ppo_steps)
 
@@ -211,20 +242,24 @@ def dummy_trajectory(
 
 class DummyActor:
 
-  def __init__(self, policy: policies.Policy, batch_size: int, port: int):
-    self.policy = policy
+  def __init__(self, policies: dict[int, policies.Policy], batch_size: int):
+    self.policies = policies
     self.batch_size = batch_size
-    self.port = port
 
   def rollout(self, unroll_length: int) -> tuple[evaluators.Trajectory, dict]:
-    trajectory = dummy_trajectory(self.policy, unroll_length, self.batch_size)
+    # TODO: actually run the policies just with fake data. This will allow
+    # test scripts to check for things like actor_kl == 0.
+    trajectories = {
+        port: dummy_trajectory(policy, unroll_length, self.batch_size)
+        for port, policy in self.policies.items()
+    }
     timings = {
         'env_pop': 0,
         'env_push': 0,
-        'agent_pop': {self.port: 0},
-        'agent_step': {self.port: 0},
+        'agent_pop': {port: 0 for port in self.policies},
+        'agent_step': {port: 0 for port in self.policies},
     }
-    return {self.port: trajectory}, timings
+    return trajectories, timings
 
   def update_variables(self, variables):
     del variables
@@ -280,7 +315,6 @@ def run(config: Config):
   learner_config = dataclasses.replace(
       config.learner, learning_rate=learning_rate)
 
-  batch_size = config.actor.num_envs
   learner = learner_lib.Learner(
       config=learner_config,
       teacher=teacher,
@@ -306,8 +340,12 @@ def run(config: Config):
   )
 
   if config.runtime.use_fake_data:
+    policies = {PORT: policy}
+    if config.opponent.type is OpponentType.SELF:
+      policies[ENEMY_PORT] = policy
+
     build_actor = lambda: DummyActor(
-        policy, batch_size=config.actor.num_envs, port=PORT)
+        policies, batch_size=config.actor.num_envs)
   else:
     main_agent_kwargs = dict(
         state=rl_state,
@@ -339,13 +377,11 @@ def run(config: Config):
     )
 
   learner_manager = LearnerManager(
+      config=config,
       learner=learner,
-      batch_size=batch_size,
-      unroll_length=config.actor.rollout_length,
       port=PORT,
+      enemy_port=ENEMY_PORT,
       build_actor=build_actor,
-      burnin_steps_after_reset=config.runtime.burnin_steps_after_reset,
-      num_ppo_batches=config.learner.ppo.num_batches,
   )
 
   step_profiler = utils.Profiler()
@@ -364,7 +400,7 @@ def run(config: Config):
 
     timings.update(
         rollout=learner_manager.rollout_profiler.mean_time(),
-        learner=learner_manager.learner_profilers[True].mean_time(),
+        learner=learner_manager.learner_profiler.mean_time(),
         reset=learner_manager.reset_profiler.mean_time(),
         total=step_time,
         fps=fps,
@@ -456,7 +492,7 @@ def run(config: Config):
     # Optimizer burnin
     learning_rate.assign(0)
     for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
-      learner_manager.step(ppo_steps=1)
+      learner_manager.step(0, ppo_steps=1)
 
     step = 0
 
@@ -465,7 +501,7 @@ def run(config: Config):
     learning_rate.assign(config.learner.learning_rate)
     for _ in range(config.value_burnin_steps // steps_per_epoch):
       with step_profiler:
-        trajectories, metrics = learner_manager.step(ppo_steps=0)
+        trajectories, metrics = learner_manager.step(step, ppo_steps=0)
 
       if step > 0:
         logger.record(get_log_data(trajectories, metrics))
@@ -483,7 +519,8 @@ def run(config: Config):
         if step > 0 and reset_interval and step % reset_interval == 0:
           logging.info('Resetting environments')
           learner_manager.reset_actor()
-        trajectories, metrics = learner_manager.step()
+
+        trajectories, metrics = learner_manager.step(step)
 
       if step > 0:
         logger.record(get_log_data(trajectories, metrics))
