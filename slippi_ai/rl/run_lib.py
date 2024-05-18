@@ -1,4 +1,8 @@
 import dataclasses
+import enum
+import logging
+import os
+import pickle
 import typing as tp
 
 import numpy as np
@@ -24,6 +28,10 @@ field = lambda f: dataclasses.field(default_factory=f)
 
 @dataclasses.dataclass
 class RuntimeConfig:
+  expt_root: str = 'experiments/rl'
+  expt_dir: tp.Optional[str] = None
+  tag: tp.Optional[str] = None
+
   max_step: int = 10  # maximum training step
   max_runtime: tp.Optional[int] = None  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
@@ -217,6 +225,15 @@ class DummyActor:
     pass
 
 def run(config: Config):
+  tag = config.runtime.tag or train_lib.get_experiment_tag()
+  # Might want to use wandb.run.dir instead, but it doesn't seem
+  # to be set properly even when we try to override it.
+  expt_dir = config.runtime.expt_dir
+  if expt_dir is None:
+    expt_dir = os.path.join(config.runtime.expt_root, tag)
+    os.makedirs(expt_dir, exist_ok=True)
+  logging.info('experiment directory: %s', expt_dir)
+
   pretraining_state = eval_lib.load_state(
       tag=config.agent.tag, path=config.agent.path)
 
@@ -261,7 +278,8 @@ def run(config: Config):
   )
 
   # Initialize and restore variables
-  learner.initialize(dummy_trajectory(policy, 1, 1), pretraining_state['state'])
+  learner.initialize(dummy_trajectory(policy, 1, 1))
+  learner.restore_from_imitation(pretraining_state['state'])
 
   PORT = 1
   ENEMY_PORT = 2
@@ -380,6 +398,27 @@ def run(config: Config):
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
+  pickle_path = os.path.join(expt_dir, 'latest.pkl')
+
+  def save(step: int):
+    # Note: this state is valid as an imitation state.
+    combined_state = dict(
+        state=learner.get_state(),
+        config=pretraining_state['config'],
+        name_map=pretraining_state['name_map'],
+        step=step,
+        rl_config=dataclasses.asdict(config),
+    )
+    pickled_state = pickle.dumps(combined_state)
+
+    logging.info('saving state to %s', pickle_path)
+    with open(pickle_path, 'wb') as f:
+      f.write(pickled_state)
+
+    # TODO: save to s3?
+
+  maybe_save = utils.Periodically(save, config.runtime.save_interval)
+
   try:
     steps_per_epoch = config.learner.ppo.num_batches
 
@@ -394,7 +433,7 @@ def run(config: Config):
 
     step = 0
 
-    print('Value function burnin')
+    logging.info('Value function burnin')
 
     learning_rate.assign(config.learner.learning_rate)
     for _ in range(config.value_burnin_steps // steps_per_epoch):
@@ -410,12 +449,12 @@ def run(config: Config):
     # Need flush here because logging structure changes based on ppo_steps.
     flush(step)
 
-    print('Main training loop')
+    logging.info('Main training loop')
 
     for _ in range(config.runtime.max_step):
       with step_profiler:
         if step > 0 and reset_interval and step % reset_interval == 0:
-          print('Resetting environments')
+          logging.info('Resetting environments')
           learner_manager.reset_actor()
         trajectories, metrics = learner_manager.step()
 
@@ -424,6 +463,9 @@ def run(config: Config):
         maybe_flush(step)
 
       step += 1
+      maybe_save(step)
+
+    save(step)
 
   finally:
     learner_manager.actor.stop()

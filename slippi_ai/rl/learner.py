@@ -387,7 +387,7 @@ class Learner:
     return (self._policy.trainable_variables +
             self._value_function.trainable_variables)
 
-  def initialize(self, trajectory: Trajectory, pretraining_state: dict):
+  def initialize(self, trajectory: Trajectory):
     """Initialize model and optimizer variables."""
     # Note: restore optimizer state, we need the optimizer to be initialized
     # in the same way as imitation learning. Imitation uses the variables in
@@ -408,6 +408,7 @@ class Learner:
         self._policy_vars, self._policy.trainable_variables)
     self.policy_optimizer._initialize(self._policy_vars)
 
+  def restore_from_imitation(self, imitation_state: dict):
     # Imitation uses a single optimizer for both policy and value, constructing
     # the policy variables first. So to restore, we first create a dummy
     # optimizer which will mirror the imitation optimizer, and then copy over
@@ -427,11 +428,10 @@ class Learner:
     )
 
     # Restore variables from pretraining state into fake optimizer.
-    pretraining_state = {
-        k: v for k, v in pretraining_state.items() if k in tf_state}
+    state = {k: v for k, v in imitation_state.items() if k in tf_state}
     tf.nest.map_structure(
         lambda var, val: var.assign(val),
-        tf_state, pretraining_state)
+        tf_state, state)
 
     # Now set the actual optimizer variables
     n = len(self._policy_vars)
@@ -462,3 +462,16 @@ class Learner:
     tf.nest.map_structure(
         lambda var, val: var.assign(val),
         optimizer_state, to_restore)
+
+  def get_vars(self) -> dict:
+    return dict(
+        policy=self._policy.variables,
+        value_function=self._value_function.variables,
+        optimizers=dict(
+            policy=self.policy_optimizer.variables,
+            value=self.value_optimizer.variables,
+        ),
+    )
+
+  def get_state(self) -> dict:
+    return tf.nest.map_structure(lambda t: t.numpy(), self.get_vars())
