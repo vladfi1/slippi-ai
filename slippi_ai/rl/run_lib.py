@@ -73,9 +73,9 @@ class AgentConfig:
     )
 
 class OpponentType(enum.Enum):
-  CPU = enum.auto()
-  SELF = enum.auto()
-  OTHER = enum.auto()
+  CPU = 'cpu'
+  SELF = 'self'
+  OTHER = 'other'
 
 @dataclasses.dataclass
 class OpponentConfig:
@@ -420,6 +420,13 @@ def run(config: Config):
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
+  # The OpponentType enum sadly needs to be converted.
+  rl_config_jsonnable = dataclasses.asdict(config)
+  rl_config_jsonnable = tf.nest.map_structure(
+      lambda x: x.value if isinstance(x, enum.Enum) else x,
+      rl_config_jsonnable
+  )
+
   def save(step: int):
     # Note: this state is valid as an imitation state.
     combined_state = dict(
@@ -427,7 +434,7 @@ def run(config: Config):
         config=pretraining_state['config'],
         name_map=pretraining_state['name_map'],
         step=step,
-        rl_config=dataclasses.asdict(config),
+        rl_config=rl_config_jsonnable,
     )
     pickled_state = pickle.dumps(combined_state)
 
