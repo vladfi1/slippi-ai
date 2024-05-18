@@ -463,6 +463,4 @@ def train(config: Config):
     maybe_log(train_stats)
     maybe_eval()
 
-    save_path = maybe_save()
-    if save_path:
-      logging.info('Saved network to %s', save_path)
+    maybe_save()

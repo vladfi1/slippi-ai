@@ -26,7 +26,7 @@ if __name__ == '__main__':
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
-      tags=ff.StringList(['vs_cpu']),
+      tags=ff.StringList([]),
   )
 
   def main(_):

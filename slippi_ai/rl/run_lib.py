@@ -72,6 +72,16 @@ class AgentConfig:
         name=self.name,
     )
 
+class OpponentType(enum.Enum):
+  CPU = enum.auto()
+  SELF = enum.auto()
+  OTHER = enum.auto()
+
+@dataclasses.dataclass
+class OpponentConfig:
+  type: OpponentType = OpponentType.CPU
+  other: AgentConfig = field(AgentConfig)
+
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = field(RuntimeConfig)
@@ -81,6 +91,7 @@ class Config:
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
+  opponent: OpponentConfig = field(OpponentConfig)
 
   # Take learner steps without changing the parameters to burn-in the
   # optimizer state for RL.
@@ -283,10 +294,13 @@ def run(config: Config):
 
   PORT = 1
   ENEMY_PORT = 2
+
   dolphin_kwargs = dict(
       players={
           PORT: dolphin.AI(),
-          ENEMY_PORT: dolphin.CPU(),
+          ENEMY_PORT: (
+              dolphin.CPU() if config.opponent.type is OpponentType.CPU
+              else dolphin.AI()),
       },
       **dataclasses.asdict(config.dolphin),
   )
@@ -295,11 +309,17 @@ def run(config: Config):
     build_actor = lambda: DummyActor(
         policy, batch_size=config.actor.num_envs, port=PORT)
   else:
-    agent_kwargs = dict(
+    main_agent_kwargs = dict(
         state=rl_state,
         compile=config.agent.compile,
         name=config.agent.name,
     )
+    agent_kwargs = {PORT: main_agent_kwargs}
+
+    if config.opponent.type is OpponentType.SELF:
+      agent_kwargs[ENEMY_PORT] = main_agent_kwargs
+    elif config.opponent.type is OpponentType.OTHER:
+      agent_kwargs[ENEMY_PORT] = config.opponent.other.get_kwargs()
 
     env_kwargs = {}
     if config.actor.async_envs:
@@ -309,7 +329,7 @@ def run(config: Config):
       )
 
     build_actor = lambda: evaluators.RolloutWorker(
-        agent_kwargs={PORT: agent_kwargs},
+        agent_kwargs=agent_kwargs,
         dolphin_kwargs=dolphin_kwargs,
         env_kwargs=env_kwargs,
         num_envs=config.actor.num_envs,
