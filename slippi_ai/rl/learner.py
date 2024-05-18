@@ -7,7 +7,7 @@ import tensorflow as tf
 
 from slippi_ai.data import Frames
 from slippi_ai.embed import StateAction
-from slippi_ai.policies import Policy, UnrollOutputs
+from slippi_ai.policies import Policy, UnrollOutputs, SampleOutputs
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
 from slippi_ai.controller_heads import ControllerType
@@ -53,6 +53,35 @@ def get_frames(trajectory: Trajectory) -> Frames:
   )
   return Frames(state_action, trajectory.rewards)
 
+def get_delayed_frames(trajectory: Trajectory) -> Frames:
+  """Delay frames to prepare trajectory for policy unroll."""
+  delay = len(trajectory.delayed_actions)
+
+  delayed_actions = [
+      sample_output.controller_state
+      for sample_output in trajectory.delayed_actions
+  ]
+  # Add time dimension
+  delayed_actions = tf.nest.map_structure(
+      lambda t: tf.expand_dims(t, 0), delayed_actions)
+
+  # Concatenate everything together.
+  actions = tf.nest.map_structure(
+      lambda *ts: tf.concat(ts, 0),
+      trajectory.actions.controller_state, *delayed_actions)
+  # Chop off the beginning _after_ concatenation to handle the case where
+  # trajectory length < delay, which happens during initialization.
+  actions = tf.nest.map_structure(lambda t: t[delay:], actions)
+
+  state_action = StateAction(
+      state=trajectory.states,
+      action=actions,
+      name=trajectory.name,
+  )
+  # Trajectory.rewards is technically wrong, but it's fine because
+  # we don't use the policy's builtin value function anyways.
+  return Frames(state_action, trajectory.rewards)
+
 def combine_grads(x: tp.Optional[tf.Tensor], y: tp.Optional[tf.Tensor]):
   if x is None or y is None:
     return None
@@ -79,8 +108,12 @@ class Learner:
 
     self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
 
-    self.compiled_unroll = tf.function(self.unroll) if config.compile else self.unroll
-    self.compiled_ppo = tf.function(self.ppo) if config.compile else self.ppo
+    maybe_compile = tf.function if config.compile else lambda f: f
+
+    self.compiled_unroll = maybe_compile(self.unroll)
+    self.compiled_ppo_grads = maybe_compile(self.ppo_grads)
+    self.compiled_ppo_grads_acc = maybe_compile(self.ppo_grads_acc)
+    self.compiled_ppo = maybe_compile(self.ppo)
 
   def initial_state(self, batch_size: int) -> LearnerState:
     return LearnerState(
@@ -120,30 +153,26 @@ class Learner:
       initial_state: LearnerState,
       train_value_function: bool = False,
   ) -> tp.Tuple[LearnerOutputs, LearnerState]:
-    if trajectory.delayed_actions:
-      raise NotImplementedError('Delayed actions not supported yet.')
+    assert len(trajectory.delayed_actions) == self._policy.delay
 
     # Currently, resetting states can only occur on the first frame, which
     # conveniently means we don't have to deal with resets inside `unroll`.
-    # Note that we also have to reset the policy state; this isn't visible to
-    # the actor as it happens inside the agent (eval_lib.BasicAgent).
     is_resetting = trajectory.is_resetting[0]  # [B]
     batch_size = is_resetting.shape[0]
     initial_state = tf.nest.map_structure(
         lambda x, y: tf_utils.where(is_resetting, x, y),
         self.initial_state(batch_size), initial_state)
-    frames = get_frames(trajectory)
 
     teacher_outputs = self._teacher.unroll(
         # TODO: use the teacher's name instead?
-        frames=frames,
+        frames=get_delayed_frames(trajectory),
         initial_state=initial_state.teacher,
         discount=self.discount,
     )
 
     with tf.GradientTape() as tape:
       value_ouputs, final_value_state = self._value_function.loss(
-          frames=frames,
+          frames=get_frames(trajectory),
           initial_state=initial_state.value_function,
           discount=self.discount,
       )
@@ -163,30 +192,53 @@ class Learner:
 
     return outputs, final_state
 
-  @tf.function
   def ppo_grads(self, outputs: LearnerOutputs, trajectory: Trajectory):
-    advantages = tf.stop_gradient(outputs.value.advantages)
+    # Value function outputs are for [0, U] while policy outputs are for
+    # [D, U+D]. This means we can only train on steps [D, U].
 
-    frames = get_frames(trajectory)
+    delay = self._policy.delay  # "D"
+    remove_first = lambda t: t[delay:]
+    remove_last = lambda t: t[:t.shape[0] - delay]
+
+    advantages = outputs.value.advantages[delay:]  # [0, U] -> [D, U]
+
+    # Teacher logits are between [D, U+D]; truncate to [D, U]
+    # Note: no stop_gradient needed as the teacher's variables aren't trainable.
+    teacher_logits = tf.nest.map_structure(
+        remove_last, outputs.teacher.distances.logits)
+    teacher_distribution = self._get_distribution(teacher_logits)
+
+    del outputs
+
+    # We also have to reset the policy state; this isn't visible to
+    # the actor as it happens inside the agent (eval_lib.BasicAgent).
     is_resetting = trajectory.is_resetting[0]  # [B]
     batch_size = is_resetting.shape[0]
     initial_policy_state = tf.nest.map_structure(
         lambda x, y: tf_utils.where(is_resetting, x, y),
         self._policy.initial_state(batch_size), trajectory.initial_state)
 
-    # No stop_gradient needed as the teacher's variables aren't trainable.
-    teacher_distribution = self._get_distribution(outputs.teacher.distances.logits)
+    policy_frames = Frames(
+        state_action=StateAction(
+            state=tf.nest.map_structure(remove_last, trajectory.states),
+            action=tf.nest.map_structure(
+                remove_first, trajectory.actions.controller_state),
+            name=remove_last(trajectory.name),
+        ),
+        reward=remove_first(trajectory.rewards),
+    )
 
-    # Drop the first action which precedes the first frame.
-    actor_logits = tf.nest.map_structure(lambda t: t[1:], trajectory.actions.logits)
-    actor_distribution = self._get_distribution(actor_logits)
-    actions = tf.nest.map_structure(
-        lambda t: t[1:], trajectory.actions.controller_state)
-    actor_log_probs = self._get_log_prob(actor_logits, actions)
+    # For the actor, also drop the first action which precedes the first frame.
+    actions: SampleOutputs = tf.nest.map_structure(
+        lambda t: t[1+delay:], trajectory.actions)
+    actor_distribution = self._get_distribution(actions.logits)
+    actor_log_probs = self._get_log_prob(
+        actions.logits, actions.controller_state)
+    del trajectory
 
     with tf.GradientTape() as tape:
       policy_outputs = self._policy.unroll(
-          frames=frames,
+          frames=policy_frames,
           initial_state=initial_policy_state,
           discount=self.discount,
       )
@@ -218,7 +270,10 @@ class Learner:
       ]
       loss = tf.add_n(weighted_losses)
       grads = tape.gradient(loss, self._policy_vars)
-      grads = [tf.zeros_like(v) if g is None else g for g, v in zip(grads, self._policy_vars)]
+      # tf.while_loop doesn't like None's in the loop vars
+      grads = [
+          tf.zeros_like(v) if g is None else g
+          for g, v in zip(grads, self._policy_vars)]
 
     metrics = dict(
         total_loss=loss,
@@ -230,9 +285,8 @@ class Learner:
 
     return grads, metrics
 
-  @tf.function
   def ppo_grads_acc(self, outputs: LearnerOutputs, trajectory: Trajectory, grads_acc: list):
-    grads, metrics = self.ppo_grads(outputs, trajectory)
+    grads, metrics = self.compiled_ppo_grads(outputs, trajectory)
     grads_acc = [a + g for a, g in zip(grads_acc, grads)]
     return metrics, grads_acc
 
@@ -253,7 +307,7 @@ class Learner:
 
     metrics_acc = []
     for outputs, trajectory in zip(learner_outputs, trajectories):
-      metrics, grads_acc = self.ppo_grads_acc(outputs, trajectory, grads_acc)
+      metrics, grads_acc = self.compiled_ppo_grads_acc(outputs, trajectory, grads_acc)
       metrics_acc.append(metrics)
 
     if train:
@@ -292,7 +346,7 @@ class Learner:
     metrics_acc = []
     for outputs, trajectory in zip(learner_outputs, trajectories):
       with tf.control_dependencies(grads_acc):
-        metrics, grads_acc = self.ppo_grads_acc(outputs, trajectory, grads_acc)
+        metrics, grads_acc = self.compiled_ppo_grads_acc(outputs, trajectory, grads_acc)
         metrics_acc.append(metrics)
 
     metrics = tf.nest.map_structure(lambda *xs: tf.stack(xs), *metrics_acc)
@@ -310,7 +364,7 @@ class Learner:
 
   @tf.function
   def ppo_batch(self, outputs: LearnerOutputs, trajectory: Trajectory, train: bool):
-    grads, metrics = self.ppo_grads(outputs, trajectory)
+    grads, metrics = self.compiled_ppo_grads(outputs, trajectory)
     if train:
       self.policy_optimizer.apply(grads, self._policy_vars)
     return metrics

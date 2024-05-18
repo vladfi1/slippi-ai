@@ -23,6 +23,7 @@ class UnrollOutputs(tp.NamedTuple):
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
+
 class Policy(snt.Module):
 
   def __init__(
@@ -56,42 +57,21 @@ class Policy(snt.Module):
   ) -> UnrollOutputs:
     """Computes prediction loss on a batch of frames.
 
+    Assumes that actions and rewards are delayed, and that one extra
+    "overlap" frame is tacked on at the end.
+
     Args:
       frames: Time-major batch of states, actions, and rewards.
       initial_state: Batch of initial recurrent states.
       value_cost: Weighting of value function loss.
       discount: Per-frame discount factor for returns.
     """
-    # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
-    # is D + 1). Then the first trajectory has game states [0, U + D] and the
-    # second trajectory has game states [U, 2U + D]. That means that we want to
-    # use states [0, U-1] to predict actions [D + 1, U + D] (with previous
-    # actions being [D, U + D - 1]). The final hidden state should be the one
-    # preceding timestep U, meaning we compute it from game states [0, U-1]. We
-    # will use game state U to bootstrap the value function.
-
-    delay = self.delay
-    state_action = frames.state_action
-
-    # Includes "overlap" frame.
-    unroll_length = state_action.state.stage.shape[0] - delay
-
-    # Match state t with action t + delay.
-    delayed_state_action = embed.StateAction(
-        state=tf.nest.map_structure(
-            lambda t: t[:unroll_length], state_action.state),
-        action=tf.nest.map_structure(
-            lambda t: t[delay:], state_action.action),
-        name=state_action.name[delay:],
-    )
-    del state_action
-
-    all_inputs = self.embed_state_action(delayed_state_action)
+    all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
     outputs, final_state = self.network.unroll(inputs, initial_state)
 
     # Predict next action.
-    action = delayed_state_action.action
+    action = frames.state_action.action
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
@@ -108,8 +88,7 @@ class Policy(snt.Module):
         )
     )
 
-    # Only use rewards that follow actions.
-    rewards = frames.reward[delay:]
+    rewards = frames.reward
 
     values = tf.squeeze(self.value_head(outputs), -1)
     last_output, _ = self.network.step(last_input, final_state)
@@ -161,6 +140,30 @@ class Policy(snt.Module):
       discount: float = 0.99,
       value_cost: float = 0.5,
   ) -> tp.Tuple[tf.Tensor, RecurrentState, dict]:
+    # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
+    # is D + 1). Then the first trajectory has game states [0, U + D] and the
+    # second trajectory has game states [U, 2U + D]. That means that we want to
+    # use states [0, U-1] to predict actions [D + 1, U + D] (with previous
+    # actions being [D, U + D - 1]). The final hidden state should be the one
+    # preceding timestep U, meaning we compute it from game states [0, U-1]. We
+    # will use game state U to bootstrap the value function.
+
+    state_action = frames.state_action
+    # Includes "overlap" frame.
+    unroll_length = state_action.state.stage.shape[0] - self.delay
+
+    frames = data.Frames(
+        state_action=embed.StateAction(
+            state=tf.nest.map_structure(
+                lambda t: t[:unroll_length], state_action.state),
+            action=tf.nest.map_structure(
+                lambda t: t[self.delay:], state_action.action),
+            name=state_action.name[self.delay:],
+        ),
+        # Only use rewards that follow actions.
+        reward=frames.reward[self.delay:],
+    )
+
     unroll_outputs = self.unroll(
         frames, initial_state,
         discount=discount,

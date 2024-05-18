@@ -83,6 +83,7 @@ class ValueFunction(snt.Module):
     return outputs, final_state
 
 
+@snt.allow_empty_variables
 class FakeValueFunction(snt.Module):
 
   def initial_state(self, batch_size: int) -> RecurrentState:

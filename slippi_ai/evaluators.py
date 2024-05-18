@@ -172,7 +172,7 @@ class RolloutWorker:
     # Record the delayed actions.
     assert len(self._prev_agent_outputs) == 1 + self.min_delay
     remaining_actions = list(self._prev_agent_outputs)[1:]
-    delayed_actions: dict[Port, list[embed.Action]] = {}
+    delayed_actions: dict[Port, list[SampleOutputs]] = {}
     for port, agent in self._agents.items():
       delayed_actions[port] = [actions[port] for actions in remaining_actions]
       num_left = agent.delay - self.min_delay
