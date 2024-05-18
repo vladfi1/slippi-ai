@@ -273,8 +273,10 @@ def train(config: Config):
       step=step,
       policy=policy.variables,
       value_function=value_function.variables if value_function else [],
-      optimizer=learner.optimizer.variables,
-      # TODO: add in learning_rate?
+      optimizers=dict(
+          policy=learner.policy_optimizer.variables,
+          value=learner.value_optimizer.variables,
+      ),
   )
 
   def get_tf_state():

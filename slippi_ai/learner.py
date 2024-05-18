@@ -7,6 +7,7 @@ import tensorflow as tf
 from slippi_ai.data import Batch, Frames
 from slippi_ai.policies import Policy, RecurrentState
 from slippi_ai import value_function as vf_lib
+from slippi_ai import tf_utils
 
 def swap_axes(t, axis1=0, axis2=1):
   permutation = list(range(len(t.shape)))
@@ -33,12 +34,12 @@ class Learner:
       value_cost: float,
       reward_halflife: float,
       value_function: Optional[vf_lib.ValueFunction] = None,
-      optimizer: Optional[snt.Optimizer] = None,
       decay_rate: Optional[float] = None,
   ):
     self.policy = policy
     self.value_function = value_function or vf_lib.FakeValueFunction()
-    self.optimizer = optimizer or snt.optimizers.Adam(learning_rate)
+    self.policy_optimizer = snt.optimizers.Adam(learning_rate)
+    self.value_optimizer = snt.optimizers.Adam(learning_rate)
     self.decay_rate = decay_rate
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
@@ -78,6 +79,13 @@ class Learner:
           tm_frames, policy_initial_states,
           self.value_cost, self.discount)
 
+      if train:
+        policy_params = self.policy.trainable_variables
+        tf_utils.assert_same_variables(tape.watched_variables(), policy_params)
+        policy_grads = tape.gradient(policy_loss, policy_params)
+        self.policy_optimizer.apply(policy_grads, policy_params)
+
+    with tf.GradientTape() as tape:
       # Drop the delayed frames from the value function.
       delay = self.policy.delay
       value_frames = tf.nest.map_structure(
@@ -85,32 +93,26 @@ class Learner:
       value_outputs, value_final_states = self.value_function.loss(
           value_frames, value_initial_states, self.discount)
 
-      loss = policy_loss + value_outputs.loss
-      final_states = (policy_final_states, value_final_states)
-      metrics = dict(
-          policy=policy_metrics,
-          value=value_outputs.metrics,
-          total_loss=loss,
-      )
+      if train:
+        value_params = self.value_function.trainable_variables
+        tf_utils.assert_same_variables(tape.watched_variables(), value_params)
+        value_grads = tape.gradient(value_outputs.loss, value_params)
+        self.value_optimizer.apply(value_grads, value_params)
+
+    if train and self.decay_rate:
+      for param in policy_params + value_params:
+        param.assign((1 - self.decay_rate) * param)
+
+    final_states = (policy_final_states, value_final_states)
+    metrics = dict(
+        total_loss=policy_loss + value_outputs.loss,
+        policy=policy_metrics,
+        value=value_outputs.metrics,
+    )
 
     # convert metrics to batch-major
     # metrics: dict = tf.nest.map_structure(
     #   lambda t: swap_axes(t) if len(t.shape) >= 2 else t,
     #   metrics)
-
-    if train:
-      params: List[tf.Variable] = tape.watched_variables()
-      watched_names = [p.name for p in params]
-      trainable_variables = (
-          self.policy.trainable_variables +
-          self.value_function.trainable_variables)
-      trainable_names = [v.name for v in trainable_variables]
-      assert set(watched_names) == set(trainable_names)
-      grads = tape.gradient(loss, params)
-      self.optimizer.apply(grads, params)
-
-      if self.decay_rate:
-        for param in params:
-          param.assign((1 - self.decay_rate) * param)
 
     return metrics, final_states
