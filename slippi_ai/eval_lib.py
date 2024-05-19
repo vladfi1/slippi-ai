@@ -484,6 +484,7 @@ DOLPHIN_FLAGS = dict(
     headless=ff.Boolean(
         False, 'Headless configuration: exi + ffw, no graphics or audio.'),
     infinite_time=ff.Boolean(False, 'Infinite time no stocks.'),
+    mainline_headless=ff.Boolean(False),
 )
 
 PLAYER_FLAGS = dict(

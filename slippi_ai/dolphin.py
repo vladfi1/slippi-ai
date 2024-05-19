@@ -2,7 +2,7 @@ import abc
 import atexit
 from dataclasses import dataclass
 import logging
-from typing import Dict, Mapping
+from typing import Dict, Mapping, Optional
 
 import melee
 
@@ -67,7 +67,8 @@ class Dolphin:
       render=True,
       save_replays=False,  # Override default in Console
       env_vars=None,
-      headless=False,
+      headless: bool = False,
+      mainline_headless: bool = False,
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -79,7 +80,13 @@ class Dolphin:
           disable_audio=True,
           use_exi_inputs=True,
           enable_ffw=True,
+          emulation_speed=0,  # unlimited speed
       )
+
+    platform = None
+    if mainline_headless:
+      render = False
+      platform = 'headless'
 
     console = melee.Console(
         path=path,
@@ -111,6 +118,7 @@ class Dolphin:
     console.run(
         iso_path=iso,
         environment_vars=env_vars,
+        platform=platform,
     )
 
     logging.info('Connecting to console...')
