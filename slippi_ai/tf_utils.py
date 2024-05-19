@@ -94,12 +94,12 @@ def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   return tf.where(cond, x, y)
 
 T = tp.TypeVar('T')
-P = tp.ParamSpec('P')
+# P = tp.ParamSpec('P')
 
-def run_on_cpu(fn: tp.Callable[P, T]) -> tp.Callable[P, T]:
+def run_on_cpu(fn: tp.Callable[..., T]) -> tp.Callable[..., T]:
   """Decorator to run a function on the CPU."""
   @functools.wraps(fn)
-  def wrapped(*args: P.args, **kwargs: P.kwargs):
+  def wrapped(*args, **kwargs):
     with tf.device('/cpu:0'):
       return fn(*args, **kwargs)
   return wrapped
