@@ -364,14 +364,14 @@ class Agent:
   ):
     self._controller = controller
     self._port = controller.port
-    self._players = (self._port, opponent_port)
+    self.players = (self._port, opponent_port)
     self.config = config
 
     self._agent = DelayedAgent(batch_size=1, **agent_kwargs)
 
   def step(self, gamestate: melee.GameState) -> embed.StateAction:
     needs_reset = np.array([gamestate.frame == -123])
-    game = get_game(gamestate, ports=self._players)
+    game = get_game(gamestate, ports=self.players)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
     # TODO: use the policy's game embedding
     game = embed.default_embed_game.from_state(game)

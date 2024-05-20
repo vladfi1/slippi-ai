@@ -71,6 +71,7 @@ class Dolphin:
       env_vars=None,
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
+      connect_code: Optional[str] = None,
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -112,6 +113,7 @@ class Dolphin:
     self.controllers: Mapping[int, melee.Controller] = {}
     self._menuing_controllers: list[tuple[melee.Controller, Player]] = []
     self._autostart = True
+    self._connect_code = connect_code
 
     for port, player in players.items():
       controller = melee.Controller(
@@ -162,7 +164,7 @@ class Dolphin:
         melee.MenuHelper.menu_helper_simple(
             gamestate, controller,
             stage_selected=self._stage,
-            connect_code=None,
+            connect_code=self._connect_code,
             autostart=self._autostart and i == 0 and menu_frames > 180,
             swag=False,
             costume=i,
