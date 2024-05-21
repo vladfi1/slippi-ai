@@ -80,13 +80,18 @@ class Dolphin:
           disable_audio=True,
           use_exi_inputs=True,
           enable_ffw=True,
-          emulation_speed=0,  # unlimited speed
       )
 
     platform = None
     if mainline_headless:
       render = False
       platform = 'headless'
+      console_kwargs.update(
+          is_mainline=True,
+          disable_audio=True,
+          emulation_speed=0,  # unlimited speed
+          # mainline doesn't support exi/ffw yet
+      )
 
     console = melee.Console(
         path=path,
@@ -128,8 +133,6 @@ class Dolphin:
           f"PID {os.getpid()}: failed to connect to the console"
           f" {console.temp_dir} on port {slippi_port}")
 
-      # import time; time.sleep(1000)
-      # self.stop()
       raise ConnectFailed(f"Failed to connect to the console on port {slippi_port}.")
 
     for controller in self.controllers.values():
