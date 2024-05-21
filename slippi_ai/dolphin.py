@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Mapping, Optional
 
 import melee
+from melee.console import is_mainline_dolphin
 
 
 class Player(abc.ABC):
@@ -68,30 +69,27 @@ class Dolphin:
       save_replays=False,  # Override default in Console
       env_vars=None,
       headless: bool = False,
-      mainline_headless: bool = False,
       **console_kwargs,
   ) -> None:
     self._players = players
     self._stage = stage
 
+    platform = None
+    is_mainline = is_mainline_dolphin(path)
+
     if headless:
       render = False
       console_kwargs.update(
           disable_audio=True,
-          use_exi_inputs=True,
-          enable_ffw=True,
       )
-
-    platform = None
-    if mainline_headless:
-      render = False
-      platform = 'headless'
-      console_kwargs.update(
-          is_mainline=True,
-          disable_audio=True,
-          emulation_speed=0,  # unlimited speed
-          # mainline doesn't support exi/ffw yet
-      )
+      if is_mainline:
+        platform = 'headless'
+        console_kwargs.update(emulation_speed=0)
+      else:
+        console_kwargs.update(
+            use_exi_inputs=True,
+            enable_ffw=True,
+        )
 
     console = melee.Console(
         path=path,
