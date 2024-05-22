@@ -67,10 +67,10 @@ class Dolphin:
       online_delay=0,
       blocking_input=True,
       slippi_port=51441,
-      render=True,
       save_replays=False,  # Override default in Console
       env_vars=None,
       headless: bool = False,
+      render: Optional[bool] = None,  # Render even when running headless.
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -79,8 +79,10 @@ class Dolphin:
     platform = None
     is_mainline = is_mainline_dolphin(path)
 
+    if render is None:
+      render = not headless
+
     if headless:
-      render = False
       console_kwargs.update(
           disable_audio=True,
       )
@@ -193,7 +195,7 @@ class DolphinConfig:
   blocking_input: bool = True  # Have game wait for AIs to send inputs.
   slippi_port: int = 51441  # Local ip port to communicate with dolphin.
   fullscreen: bool = False # Run dolphin in full screen mode
-  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
@@ -223,7 +225,7 @@ DOLPHIN_FLAGS = dict(
     blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
     slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
     fullscreen=ff.Boolean(False, 'Run dolphin in full screen mode.'),
-    render=ff.Boolean(True, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
+    render=ff.Boolean(None, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
     save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
     replay_dir=ff.String(None, 'Directory to save replays to.'),
     headless=ff.Boolean(
