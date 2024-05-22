@@ -32,8 +32,7 @@ def main(_):
 
   dolphin = dolphin_lib.Dolphin(
       players=players,
-      log_level=0,
-      **DOLPHIN.value,
+      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
   )
 
   agents: list[eval_lib.Agent] = []

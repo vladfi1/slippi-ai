@@ -1,12 +1,12 @@
 import abc
 import atexit
-from dataclasses import dataclass
+import dataclasses
 import logging
 from typing import Dict, Mapping, Optional
 
 import fancyflags as ff
 import melee
-from melee.console import is_mainline_dolphin
+from melee.console import is_mainline_dolphin, DumpConfig
 
 
 
@@ -29,7 +29,7 @@ class Human(Player):
   def menuing_kwargs(self) -> Dict:
       return {}
 
-@dataclass
+@dataclasses.dataclass
 class CPU(Player):
   character: melee.Character = melee.Character.FOX
   level: int = 9
@@ -40,7 +40,7 @@ class CPU(Player):
   def menuing_kwargs(self) -> Dict:
       return dict(character_selected=self.character, cpu_level=self.level)
 
-@dataclass
+@dataclasses.dataclass
 class AI(Player):
   character: melee.Character = melee.Character.FOX
 
@@ -181,8 +181,9 @@ class Dolphin:
     for _ in range(n):
       self.step()
 
+_field = lambda f: dataclasses.field(default_factory=f)
 
-@dataclass
+@dataclasses.dataclass
 class DolphinConfig:
   """Configure dolphin for evaluation."""
   path: Optional[str] = None  # Path to folder containing the dolphin executable
@@ -197,6 +198,21 @@ class DolphinConfig:
   replay_dir: Optional[str] = None  # Directory to save replays to.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
   infinite_time: bool = True  # Infinite time no stocks.
+  log_level: int = 3  # WARN; 0 to disable
+  dump: DumpConfig = _field(DumpConfig)  # For framedumping.
+
+  def to_kwargs(self) -> dict:
+    kwargs = dataclasses.asdict(self)
+    del kwargs['dump']
+    kwargs['dump_config'] = self.dump
+    return kwargs
+
+  @classmethod
+  def kwargs_from_flags(cls, flags: dict) -> dict:
+    kwargs = flags.copy()
+    del kwargs['dump']
+    kwargs['dump_config'] = DumpConfig(**flags['dump'])
+    return kwargs
 
 # TODO: replace usage with the above dataclass
 DOLPHIN_FLAGS = dict(
