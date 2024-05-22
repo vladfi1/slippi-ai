@@ -42,6 +42,12 @@ def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
   logging.warn(f'Unsupported field of type {field_type}')
   return None
 
+def is_leaf(type_: type) -> bool:
+  type_ = maybe_undo_optional(type_)
+  if issubclass(type_, dict) or dataclasses.is_dataclass(type_):
+    return False
+  return True
+
 def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
   if isinstance(default, dict):
     result = {}
@@ -51,7 +57,17 @@ def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
         result[k] = flag
     return result
 
-  # TODO: handle dataclasses
+  if dataclasses.is_dataclass(default):
+    result = {}
+    for field in dataclasses.fields(default):
+      if is_leaf(field.type):
+        flag = get_leaf_flag(field.type, getattr(default, field.name))
+        if flag is not None:
+          result[field.name] = flag
+      else:
+        result[field.name] = get_flags_from_default(getattr(default, field.name))
+    return result
+
   field_type = type(default)
   return get_leaf_flag(field_type, default)
 
