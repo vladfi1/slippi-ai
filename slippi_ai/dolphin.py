@@ -174,6 +174,8 @@ class Dolphin:
     return gamestate
 
   def stop(self):
+    for controller in self.controllers.values():
+      controller.disconnect()
     self.console.stop()
 
   def __del__(self):
