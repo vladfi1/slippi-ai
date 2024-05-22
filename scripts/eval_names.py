@@ -1,3 +1,6 @@
+import slippi_ai.dolphin
+
+
 if __name__ == '__main__':
   import itertools
 
@@ -7,7 +10,7 @@ if __name__ == '__main__':
   from slippi_ai import eval_lib, dolphin
   from slippi_ai import evaluators, utils
 
-  DOLPHIN_FLAGS = eval_lib.DOLPHIN_FLAGS.copy()
+  DOLPHIN_FLAGS = slippi_ai.dolphin.DOLPHIN_FLAGS.copy()
   DOLPHIN_FLAGS['headless'].default = True
   DOLPHIN = ff.DEFINE_dict('dolphin', **DOLPHIN_FLAGS)
 

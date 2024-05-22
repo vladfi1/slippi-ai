@@ -104,7 +104,7 @@ class Config:
   runtime: RuntimeConfig = field(RuntimeConfig)
 
   # num_actors: int = 1
-  dolphin: eval_lib.DolphinConfig = field(eval_lib.DolphinConfig)
+  dolphin: dolphin.DolphinConfig = field(dolphin.DolphinConfig)
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)

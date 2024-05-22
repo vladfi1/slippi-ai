@@ -4,8 +4,10 @@ from dataclasses import dataclass
 import logging
 from typing import Dict, Mapping, Optional
 
+import fancyflags as ff
 import melee
 from melee.console import is_mainline_dolphin
+
 
 
 class Player(abc.ABC):
@@ -178,3 +180,37 @@ class Dolphin:
   def multi_step(self, n: int):
     for _ in range(n):
       self.step()
+
+
+@dataclass
+class DolphinConfig:
+  """Configure dolphin for evaluation."""
+  path: Optional[str] = None  # Path to folder containing the dolphin executable
+  iso: Optional[str] = None  # Path to melee 1.02 iso.
+  stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
+  online_delay: int = 0  # Simulate online delay.
+  blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  fullscreen: bool = False # Run dolphin in full screen mode
+  render: bool = True  # Render frames. Only disable if using vladfi1\'s slippi fork.
+  save_replays: bool = False  # Save slippi replays to the usual location.
+  replay_dir: Optional[str] = None  # Directory to save replays to.
+  headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+  infinite_time: bool = True  # Infinite time no stocks.
+
+# TODO: replace usage with the above dataclass
+DOLPHIN_FLAGS = dict(
+    path=ff.String(None, 'Path to folder containing the dolphin executable.'),
+    iso=ff.String(None, 'Path to melee 1.02 iso.'),
+    stage=ff.EnumClass(melee.Stage.RANDOM_STAGE, melee.Stage, 'Which stage to play on.'),
+    online_delay=ff.Integer(0, 'Simulate online delay.'),
+    blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
+    slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
+    fullscreen=ff.Boolean(False, 'Run dolphin in full screen mode.'),
+    render=ff.Boolean(True, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
+    save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
+    replay_dir=ff.String(None, 'Directory to save replays to.'),
+    headless=ff.Boolean(
+        False, 'Headless configuration: exi + ffw, no graphics or audio.'),
+    infinite_time=ff.Boolean(False, 'Infinite time no stocks.'),
+)

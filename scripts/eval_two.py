@@ -4,15 +4,19 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
-from melee import enums
-from slippi_ai import eval_lib
+from slippi_ai import eval_lib, flag_utils
 from slippi_ai import dolphin as dolphin_lib
 
 PORTS = (1, 2)
 
 PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **eval_lib.PLAYER_FLAGS) for p in PORTS}
 
-DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
+dolphin_config = dolphin_lib.DolphinConfig(
+    headless=False,
+    infinite_time=False,
+)
+DOLPHIN = ff.DEFINE_dict(
+    'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
 
 flags.DEFINE_integer('runtime', 300, 'Running time, in seconds.')
 

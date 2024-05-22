@@ -5,10 +5,9 @@ from absl import flags
 import fancyflags as ff
 
 from melee.enums import Button
-from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
-DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
+DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_lib.DOLPHIN_FLAGS)
 
 FLAGS = flags.FLAGS
 

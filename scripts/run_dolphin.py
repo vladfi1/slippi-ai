@@ -4,11 +4,10 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
-from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
 FLAGS = flags.FLAGS
-DOLPHIN = ff.DEFINE_dict('dolphin', **eval_lib.DOLPHIN_FLAGS)
+DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_lib.DOLPHIN_FLAGS)
 flags.DEFINE_integer('N', 1, 'number of dolphin instances')
 flags.DEFINE_integer('frames', 1 * 60 * 60, 'number of frames to run for')
 flags.DEFINE_boolean('render', False, 'render graphics')
