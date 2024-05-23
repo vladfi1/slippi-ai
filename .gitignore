@@ -1,5 +1,8 @@
-# Project specifics
-./data/training_data/*
+# Ignore all files in data/training_data/
+data/training_data/*
+
+# But keep the .keep file
+!data/training_data/.keep
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
