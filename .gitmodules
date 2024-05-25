@@ -1,0 +1,3 @@
+[submodule "docker_slippi"]
+	path = docker_slippi
+	url = https://github.com/IAmAbszol/docker-slippi.git

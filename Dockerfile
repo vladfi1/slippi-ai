@@ -1,22 +1,28 @@
-FROM python:3.9-buster
+FROM slippi-emulator:headless
 
-RUN pip install ray[default]
+ENV PATH /opt/conda/bin:$PATH
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    /bin/bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh && \
+    /opt/conda/bin/conda clean -a
 
-RUN apt update
-RUN apt install -y p7zip-full rsync
+RUN conda create -n slippiai python=3.10 pip && conda clean -a
 
-# RUN pip install tensorflow
+ENV CONDA_DEFAULT_ENV=slippiai
+ENV PATH /opt/conda/envs/$CONDA_DEFAULT_ENV/bin:$PATH
 
-# slippi-specific
+RUN echo "source activate slippiai" > ~/.bashrc
 
-WORKDIR /install
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN /bin/bash -c "source activate slippiai && conda install -c conda-forge cudatoolkit=11.8.0 cudnn=8.9 -y"
 
-# build the wheel externally with `maturin build` in the peppy-py repo
-# ARG PEPPI_PY_WHL=peppi_py-0.4.3-cp39-abi3-linux_x86_64.whl
-# COPY docker/$PEPPI_PY_WHL .
-# RUN pip install $PEPPI_PY_WHL
+COPY . /install
 
-# use peppi-py from pypi
-RUN pip install peppi-py
+RUN cd /install && \
+    apt update && \
+    apt install -y p7zip-full rsync && \
+    pip install ray[default] -r requirements.txt peppi-py && \
+    pip install .
+
+WORKDIR /mnt/slippi-ai/
+
+CMD ["/bin/echo", "Provide command for slippi ai training environment."]

@@ -2,5 +2,8 @@
 *
 
 # allow only these
+!slippi_ai
 !requirements.txt
-!docker/
+!setup.cfg
+!slippi_db
+!pyproject.toml
