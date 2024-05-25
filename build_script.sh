@@ -13,7 +13,7 @@ fi
 echo "slippi-emulator:headless image built successfully."
 
 echo "Building final Docker image..."
-docker build --no-cache -t slippi-ai:latest -f $FINAL_DOCKERFILE .
+docker build -t slippi-ai:latest -f $FINAL_DOCKERFILE .
 if [ $? -ne 0 ]; then
     echo "Failed to build slippi-ai Docker image"
     exit 1
