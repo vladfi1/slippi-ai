@@ -394,7 +394,7 @@ AGENT_FLAGS = dict(
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
 )
 
-def load_state(path: Optional[str], tag: Optional[str]) -> dict:
+def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
   if path:
     return saving.load_state_from_disk(path)
   elif tag:

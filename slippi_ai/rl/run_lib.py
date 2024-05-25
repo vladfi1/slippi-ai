@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 
 from slippi_ai import (
-    dolphin,
+    dolphin as dolphin_lib,
     eval_lib,
     evaluators,
     flag_utils,
@@ -104,7 +104,7 @@ class Config:
   runtime: RuntimeConfig = field(RuntimeConfig)
 
   # num_actors: int = 1
-  dolphin: dolphin.DolphinConfig = field(dolphin.DolphinConfig)
+  dolphin: dolphin_lib.DolphinConfig = field(dolphin_lib.DolphinConfig)
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
@@ -331,10 +331,10 @@ def run(config: Config):
 
   dolphin_kwargs = dict(
       players={
-          PORT: dolphin.AI(),
+          PORT: dolphin_lib.AI(),
           ENEMY_PORT: (
-              dolphin.CPU() if config.opponent.type is OpponentType.CPU
-              else dolphin.AI()),
+              dolphin_lib.CPU() if config.opponent.type is OpponentType.CPU
+              else dolphin_lib.AI()),
       },
       **dataclasses.asdict(config.dolphin),
   )
