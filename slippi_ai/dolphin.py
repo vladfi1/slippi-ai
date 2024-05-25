@@ -89,7 +89,7 @@ class Dolphin:
       )
       if is_mainline:
         platform = 'headless'
-        console_kwargs.update(emulation_speed=0)
+        # console_kwargs.update(emulation_speed=0)
       else:
         console_kwargs.update(
             use_exi_inputs=True,
@@ -206,6 +206,10 @@ class DolphinConfig:
   infinite_time: bool = True  # Infinite time no stocks.
   log_level: int = 3  # WARN; 0 to disable
   dump: DumpConfig = _field(DumpConfig)  # For framedumping.
+
+  # For online play
+  connect_code: Optional[str] = None
+  user_json_path: Optional[str] = None
 
   def to_kwargs(self) -> dict:
     kwargs = dataclasses.asdict(self)

@@ -7,9 +7,6 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
-import melee
-from melee import Button
-
 from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
@@ -36,7 +33,6 @@ def main(_):
 
   dolphin = dolphin_lib.Dolphin(
       players={port: player},
-      log_level=0,
       **DOLPHIN.value,
   )
 
