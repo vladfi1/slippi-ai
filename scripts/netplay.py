@@ -71,17 +71,20 @@ def main(_):
   agent.players = (actual_port, opponent_port)
 
   # Main loop
-  for _ in range(total_frames):
-    # "step" to the next frame
-    gamestate = dolphin.step()
+  agent.start()
+  try:
+    for _ in range(total_frames):
+      # "step" to the next frame
+      gamestate = dolphin.step()
 
-    # if gamestate.frame == -123: # initial frame
-    #   controller.release_all()
+      # if gamestate.frame == -123: # initial frame
+      #   controller.release_all()
 
-    for agent in agents:
-      agent.step(gamestate)
-
-  dolphin.stop()
+      for agent in agents:
+        agent.step(gamestate)
+  finally:
+    agent.stop()
+    dolphin.stop()
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115

@@ -132,12 +132,9 @@ class BasicAgent:
       self,
       states: list[tuple[embed.Game, np.ndarray]],
   ) -> list[SampleOutputs]:
-    prev_controller = self._policy.controller_embedding.from_state(
-        self._prev_controller)
-
     sample_outputs: list[SampleOutputs]
     sample_outputs, self.hidden_state = self._multi_sample(
-        states, prev_controller, self.hidden_state)
+        states, self._prev_controller, self.hidden_state)
     sample_outputs = utils.map_single_structure(
         lambda t: t.numpy(), sample_outputs)
 
@@ -273,7 +270,7 @@ class AsyncDelayedAgent:
       policy: policies.Policy,
       batch_size: int,
       console_delay: int = 0,
-      batch_steps: int = 1,
+      batch_steps: int = 0,
       **agent_kwargs,
   ):
     self._batch_size = batch_size
@@ -352,48 +349,6 @@ class AsyncDelayedAgent:
     delayed_controller = self._output_queue.get()
     return delayed_controller
 
-class Agent:
-  """Wraps a Policy to interact with Dolphin."""
-
-  def __init__(
-      self,
-      controller: melee.Controller,
-      opponent_port: int,
-      config: dict,  # use train.Config instead
-      **agent_kwargs,
-  ):
-    self._controller = controller
-    self._port = controller.port
-    self.players = (self._port, opponent_port)
-    self.config = config
-
-    self._agent = DelayedAgent(batch_size=1, **agent_kwargs)
-
-  def step(self, gamestate: melee.GameState) -> embed.StateAction:
-    needs_reset = np.array([gamestate.frame == -123])
-    game = get_game(gamestate, ports=self.players)
-    game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
-    # TODO: use the policy's game embedding
-    game = embed.default_embed_game.from_state(game)
-
-    sample_outputs = self._agent.step(game, needs_reset)
-    action = sample_outputs.controller_state
-    # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
-    action = utils.map_nt(lambda x: x[0], action)
-    action = self._agent.embed_controller.decode(action)
-    send_controller(self._controller, action)
-    return sample_outputs
-
-AGENT_FLAGS = dict(
-    path=ff.String(None, 'Local path to pickled agent state.'),
-    tag=ff.String(None, 'Tag used to save state in s3.'),
-    sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
-    compile=ff.Boolean(True, 'Compile the sample function.'),
-    name=ff.String('Master Player', 'Name of the agent.'),
-    # Generally we want to set `run_on_cpu` once for all agents.
-    # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
-)
-
 def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
   if path:
     return saving.load_state_from_disk(path)
@@ -426,6 +381,43 @@ def build_delayed_agent(
       **agent_kwargs,
   )
 
+class Agent:
+  """Wraps a Policy to interact with Dolphin."""
+
+  def __init__(
+      self,
+      controller: melee.Controller,
+      opponent_port: int,
+      config: dict,  # use train.Config instead
+      **agent_kwargs,
+  ):
+    self._controller = controller
+    self._port = controller.port
+    self.players = (self._port, opponent_port)
+    self.config = config
+
+    self._agent = build_delayed_agent(batch_size=1, **agent_kwargs)
+    # Forward async interface
+    self.run = self._agent.run
+    self.start = self._agent.start
+    self.stop = self._agent.stop
+
+  def step(self, gamestate: melee.GameState) -> embed.StateAction:
+    needs_reset = np.array([gamestate.frame == -123])
+    game = get_game(gamestate, ports=self.players)
+    game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
+    # TODO: use the policy's game embedding
+    game = embed.default_embed_game.from_state(game)
+
+    sample_outputs = self._agent.step(game, needs_reset)
+    action = sample_outputs.controller_state
+    # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
+    action = utils.map_nt(lambda x: x[0], action)
+    action = self._agent.embed_controller.decode(action)
+    send_controller(self._controller, action)
+    return sample_outputs
+
+
 def build_agent(
     controller: melee.Controller,
     opponent_port: int,
@@ -433,24 +425,32 @@ def build_agent(
     state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
-    sample_temperature: float = 1.0,
-    console_delay: int = 0,
     **agent_kwargs,
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
-  policy = saving.load_policy_from_state(state)
 
   return Agent(
       controller=controller,
       opponent_port=opponent_port,
-      policy=policy,
       config=state['config'],
-      console_delay=console_delay,
-      name_code=get_name_code(state, name),
-      sample_kwargs=dict(temperature=sample_temperature),
+      # The rest are passed through to build_delayed_agent
+      state=state,
+      name=name,
       **agent_kwargs,
   )
+
+AGENT_FLAGS = dict(
+    path=ff.String(None, 'Local path to pickled agent state.'),
+    tag=ff.String(None, 'Tag used to save state in s3.'),
+    sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
+    compile=ff.Boolean(True, 'Compile the sample function.'),
+    name=ff.String('Master Player', 'Name of the agent.'),
+    # arg to build_delayed_agent
+    async_inference=ff.Boolean(False, 'run agent asynchronously'),
+    # Generally we want to set `run_on_cpu` once for all agents.
+    # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
+)
 
 PLAYER_FLAGS = dict(
     type=ff.Enum('ai', ('ai', 'human', 'cpu'), 'Player type.'),

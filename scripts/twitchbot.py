@@ -107,12 +107,14 @@ def run_bot(
   agent.players = (actual_port, opponent_port)
 
   # Main loop
-  while not stop.is_set():
-    # "step" to the next frame
-    gamestate = dolphin.step()
-    agent.step(gamestate)
-
-  dolphin.stop()
+  agent.start()
+  try:
+    while not stop.is_set():
+      gamestate = dolphin.step()
+      agent.step(gamestate)
+  finally:
+    agent.stop()
+    dolphin.stop()
 
 HELP_MESSAGE = """
 !help: Display this message.

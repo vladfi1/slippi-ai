@@ -1,10 +1,12 @@
 """Test a trained model."""
 
+import logging
+
 from absl import app
 from absl import flags
 import fancyflags as ff
 
-from slippi_ai import eval_lib, flag_utils
+from slippi_ai import eval_lib, flag_utils, utils
 from slippi_ai import dolphin as dolphin_lib
 
 PORTS = (1, 2)
@@ -46,24 +48,34 @@ def main(_):
           console_delay=DOLPHIN.value['online_delay'],
           **PLAYERS[port].value['ai'],
       )
+      agent.start()
       agents.append(agent)
 
       eval_lib.update_character(player, agent.config)
 
   total_frames = 60 * FLAGS.runtime
 
+  step_timer = utils.Profiler()
+
   # Main loop
-  for _ in range(total_frames):
-    # "step" to the next frame
-    gamestate = dolphin.step()
+  try:
+    for i in range(total_frames):
+      # "step" to the next frame
+      gamestate = dolphin.step()
 
-    # if gamestate.frame == -123: # initial frame
-    #   controller.release_all()
+      # if gamestate.frame == -123: # initial frame
+      #   controller.release_all()
 
+      with step_timer:
+        for agent in agents:
+          agent.step(gamestate)
+
+      if i > 0 and i % (15 * 60) == 0:
+        logging.info(f'step_time: {step_timer.mean_time():.3f}')
+  finally:
     for agent in agents:
-      agent.step(gamestate)
-
-  dolphin.stop()
+      agent.stop()
+    dolphin.stop()
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
