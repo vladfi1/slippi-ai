@@ -3,6 +3,13 @@
 HEADLESS_DOCKERFILE="./docker_slippi/Dockerfile_headless"
 FINAL_DOCKERFILE="./Dockerfile"
 
+echo "Initializing and updating git submodules..."
+git submodule update --init --recursive
+if [ $? -ne 0 ]; then
+    echo "Failed to initialize and update submodules"
+    exit 1
+fi
+
 echo "Building slippi-emulator:headless image..."
 docker build -t slippi-emulator:headless -f $HEADLESS_DOCKERFILE ./docker_slippi
 if [ $? -ne 0 ]; then
