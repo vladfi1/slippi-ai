@@ -164,6 +164,7 @@ HELP_MESSAGE = """
 !stop: Stop the bot after you are done.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
+At most {max_players} players can be active at once, with one player on stream.
 """.strip()
 
 @dataclasses.dataclass
@@ -173,6 +174,9 @@ class SessionInfo:
   twitch_name: str
   connect_code: str
 
+def format_td(td: datetime.timedelta) -> str:
+  """Chop off microseconds."""
+  return str(td).split('.')[0]
 
 class Bot(commands.Bot):
 
@@ -181,6 +185,7 @@ class Bot(commands.Bot):
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       max_sessions: int = 5,
+      menu_timeout: float = 5,  # in minutes
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -188,16 +193,20 @@ class Bot(commands.Bot):
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
+    self._menu_timeout = menu_timeout
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
 
-    self.lock = threading.Lock()
+    self.lock = threading.RLock()
 
     with open(dolphin_config.user_json_path) as f:
       user_json = json.load(f)
 
-    self.help_message = HELP_MESSAGE.format(bot_code=user_json['connectCode'])
+    self.help_message = HELP_MESSAGE.format(
+        max_players=max_sessions,
+        bot_code=user_json['connectCode'],
+    )
 
   async def event_ready(self):
     # Notify us when everything is ready!
@@ -223,6 +232,8 @@ class Bot(commands.Bot):
   @commands.command()
   async def play(self, ctx: commands.Context):
     with self.lock:
+      self._gc_sessions()
+
       if len(self._sessions) == self._max_sessions:
         await ctx.send('Sorry, too many sessions already active.')
         return
@@ -255,7 +266,7 @@ class Bot(commands.Bot):
       config.slippi_port = portpicker.pick_unused_port()
       config.connect_code = connect_code
       config.render = render
-      config.headless = render
+      config.headless = not render
       extra_dolphin_kwargs = {}
       if render:
         # TODO: don't hardcode this
@@ -273,15 +284,19 @@ class Bot(commands.Bot):
       await ctx.send(f'Bot name: {agent_name}')
 
       if not self._sessions:
-        await ctx.send('Not currently running.')
+        await ctx.send('No active sessions.')
         return
 
       now = datetime.datetime.now()
       for session_info in self._sessions.values():
-        timedelta = now - session_info.start_time
+        timedelta = format_td(now - session_info.start_time)
         is_stream = session_info.twitch_name == self._streaming_against
         on_off = "on" if is_stream else "off"
-        ctx.send(f'Playing against {session_info.twitch_name} {on_off} stream, duration {timedelta}')
+        menu_frames = ray.get(session_info.session.num_menu_frames.remote())
+        menu_time = format_td(datetime.timedelta(seconds=menu_frames / 60))
+        await ctx.send(
+            f'Playing against {session_info.twitch_name} {on_off} stream.'
+            f' Duration {timedelta}, in menu for {menu_time}.')
 
   @commands.command()
   async def help(self, ctx: commands.Context):
@@ -289,11 +304,37 @@ class Bot(commands.Bot):
       await ctx.send(line)
 
   def stop_all(self):
+    self._stop_sessions(list(self._sessions.values()))
+
+  def _stop_sessions(self, infos: list[SessionInfo]):
     with self.lock:
-      logging.info('stop_all')
-      ray.wait([info.session.stop.remote() for info in self._sessions.values()])
-      self._sessions = {}
-      self._streaming_against = None
+      ray.wait([info.session.stop.remote() for info in infos])
+
+      for info in infos:
+        del self._sessions[info.twitch_name]
+        if self._streaming_against == info.twitch_name:
+          self._streaming_against = None
+
+  def _gc_sessions(self) -> list[SessionInfo]:
+    """Stop sessions that have been in the menu for too long."""
+    with self.lock:
+      to_gc = []
+      for info in self._sessions.values():
+        num_menu_frames = ray.get(info.session.num_menu_frames.remote())
+        menu_minutes = num_menu_frames / (60 * 60)
+        if menu_minutes > self._menu_timeout:
+          to_gc.append(info)
+
+      self._stop_sessions(to_gc)
+      logging.info(f'GCed {len(to_gc)} sessions.')
+      return to_gc
+
+  @commands.command()
+  async def gc(self, ctx: commands.Context):
+    infos = self._gc_sessions()
+    names = [info.twitch_name for info in infos]
+    names = ", ".join(names)
+    await ctx.send(f"GCed ({names})")
 
 def main(_):
   eval_lib.disable_gpus()
