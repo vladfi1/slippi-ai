@@ -138,6 +138,7 @@ class Dolphin:
           f" {console.temp_dir} on port {slippi_port}")
 
       raise ConnectFailed(f"Failed to connect to the console on port {slippi_port}.")
+    logging.info('Connected to console')
 
     for controller in self.controllers.values():
       if not controller.connect():

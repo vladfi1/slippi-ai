@@ -190,6 +190,7 @@ class Bot(commands.Bot):
         return
 
       self.stop_bot()
+      await ctx.send('Bot stopped')
 
   @commands.command()
   async def play(self, ctx: commands.Context):
@@ -197,6 +198,7 @@ class Bot(commands.Bot):
       if self.process is not None:
         # TODO: implement a timeout
         await ctx.send('Sorry, already playing')
+        return
 
       connect_code = ctx.message.content.split(' ')[1]
       logging.info(f'Connecting to {connect_code}')
