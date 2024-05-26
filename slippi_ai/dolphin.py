@@ -68,7 +68,7 @@ class Dolphin:
       blocking_input=True,
       slippi_port=51441,
       save_replays=False,  # Override default in Console
-      env_vars=None,
+      env_vars: Optional[dict] = None,
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
       connect_code: Optional[str] = None,
