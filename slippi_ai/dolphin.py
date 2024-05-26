@@ -2,7 +2,7 @@ import abc
 import atexit
 import dataclasses
 import logging
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Iterator
 
 import fancyflags as ff
 import melee
@@ -50,7 +50,7 @@ class AI(Player):
   def menuing_kwargs(self) -> Dict:
       return dict(character_selected=self.character)
 
-def _is_menu_state(gamestate: melee.GameState) -> bool:
+def is_menu_state(gamestate: melee.GameState) -> bool:
   return gamestate.menu_state not in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]
 
 class ConnectFailed(Exception):
@@ -159,7 +159,7 @@ class Dolphin:
     #     print("WARNING: Last frame took " + str(self.console.processingtime*1000) + "ms to process.")
 
     menu_frames = 0
-    while _is_menu_state(gamestate):
+    while is_menu_state(gamestate):
       for i, (controller, player) in enumerate(self._menuing_controllers):
 
         melee.MenuHelper.menu_helper_simple(
@@ -175,6 +175,31 @@ class Dolphin:
       menu_frames += 1
 
     return gamestate
+
+  def iter_gamestates(self, skip_menu_frames: bool = True) -> Iterator[melee.GameState]:
+    while True:
+      gamestate = self.next_gamestate()
+
+      menu_frames = 0
+      while is_menu_state(gamestate):
+        if not skip_menu_frames:
+          yield gamestate
+
+        for i, (controller, player) in enumerate(self._menuing_controllers):
+
+          melee.MenuHelper.menu_helper_simple(
+              gamestate, controller,
+              stage_selected=self._stage,
+              connect_code=self._connect_code,
+              autostart=self._autostart and i == 0 and menu_frames > 180,
+              swag=False,
+              costume=i,
+              **player.menuing_kwargs())
+
+        gamestate = self.next_gamestate()
+        menu_frames += 1
+
+      yield gamestate
 
   def stop(self):
     for controller in self.controllers.values():

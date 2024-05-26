@@ -109,9 +109,12 @@ def run_bot(
   # Main loop
   agent.start()
   try:
+    # Don't block in the menu so that we can stop if asked to.
+    gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
     while not stop.is_set():
-      gamestate = dolphin.step()
-      agent.step(gamestate)
+      gamestate = next(gamestates)
+      if not dolphin_lib.is_menu_state(gamestate):
+        agent.step(gamestate)
   finally:
     agent.stop()
     dolphin.stop()
@@ -174,7 +177,7 @@ class Bot(commands.Bot):
       self.process.join(timeout=10)
       if self.process.is_alive():
         logging.warning('Forcibly terminating bot process.')
-        self.process.kill()
+        self.process.terminate()
         self.process.join()
       self.process = None
 
