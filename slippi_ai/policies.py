@@ -42,8 +42,9 @@ class Policy(snt.Module):
     self.train_value_head = train_value_head
     self.delay = delay
 
-    if train_value_head:
-      self.value_head = snt.Linear(1, name='value_head')
+    self.value_head = snt.Linear(1, name='value_head')
+    if not train_value_head:
+      self.value_head = snt.Sequential([tf.stop_gradient, self.value_head])
 
   @property
   def controller_embedding(self) -> embed.Embedding[embed.Controller, embed.Action]:
@@ -105,15 +106,8 @@ class Policy(snt.Module):
     _, value_variance = tf_utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
 
-    reward_mean, reward_variance = tf_utils.mean_and_variance(rewards)
-
     metrics['value'] = {
-        'reward': dict(
-            mean=reward_mean,
-            variance=reward_variance,
-            max=tf.reduce_max(rewards),
-            min=tf.reduce_min(rewards),
-        ),
+        'reward': tf_utils.get_stats(rewards),
         'loss': value_loss,
         'return': value_targets,
         'uev': uev,  # unexplained variance
@@ -171,9 +165,10 @@ class Policy(snt.Module):
 
     metrics = unroll_outputs.metrics
 
-    total_loss = metrics['loss']
+    total_loss = -tf.reduce_mean(unroll_outputs.log_probs)
     if self.train_value_head:
-      total_loss += value_cost * metrics['value']['loss']
+      value_loss = tf.reduce_mean(unroll_outputs.value_outputs.loss)
+      total_loss += value_cost * value_loss
 
     metrics.update(
         total_loss=total_loss,
