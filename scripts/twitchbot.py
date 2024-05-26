@@ -34,7 +34,7 @@ _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
 
-# MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
+MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 
 AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
 # MODEL = flags.DEFINE_string('model', None, 'Path to pickled model.', required=True)
@@ -162,6 +162,8 @@ HELP_MESSAGE = """
 !status: Displays current status.
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done.
+!agents: List available agents to play against.
+!agent <name>: Select an agent to play against.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
 At most {max_players} players can be active at once, with one player on stream.
@@ -184,6 +186,7 @@ class Bot(commands.Bot):
       self, token: str, prefix: str, channel: str,
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
+      models_path: str,
       max_sessions: int = 5,
       menu_timeout: float = 5,  # in minutes
   ):
@@ -207,6 +210,37 @@ class Bot(commands.Bot):
         max_players=max_sessions,
         bot_code=user_json['connectCode'],
     )
+
+    self._models_path = models_path
+    self._reload_models()
+
+    self._requested_agents = {}
+
+  def _reload_models(self):
+    self._models = os.listdir(self._models_path)
+
+  @commands.command()
+  async def reload(self, ctx: commands.Context):
+    with self.lock:
+      self._reload_models()
+    models_str = ", ".join(self._models)
+    await ctx.send(f'Available agents: {models_str}')
+
+  @commands.command()
+  async def agents(self, ctx: commands.Context):
+    models_str = ", ".join(self._models)
+    await ctx.send(f'Available agents: {models_str}')
+
+  @commands.command()
+  async def agent(self, ctx: commands.Context):
+    agent = ctx.message.content.split(' ')[1]
+    if agent not in self._models:
+      await ctx.send(f'{agent} is not a valid agent')
+      models_str = ", ".join(self._models)
+      await ctx.send(f'Available agents: {models_str}')
+      return
+
+    self._requested_agents[ctx.author.name] = agent
 
   async def event_ready(self):
     # Notify us when everything is ready!
@@ -247,7 +281,11 @@ class Bot(commands.Bot):
       logging.info(message)
       await ctx.send(message)
 
-      session = self._start_session(connect_code, render=is_stream)
+      session = self._start_session(
+          connect_code,
+          render=is_stream,
+          agent=self._requested_agents.get(name),
+      )
       self._sessions[name] = SessionInfo(
           session=session,
           start_time=datetime.datetime.now(),
@@ -261,6 +299,7 @@ class Bot(commands.Bot):
       self,
       connect_code: str,
       render: bool = False,
+      agent: Optional[str] = None,
   ) -> Session:
       config = dataclasses.replace(self.dolphin_config)
       config.slippi_port = portpicker.pick_unused_port()
@@ -272,16 +311,22 @@ class Bot(commands.Bot):
         # TODO: don't hardcode this
         extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
+      agent_kwargs = self.agent_kwargs.copy()
+      if agent:
+        agent_kwargs['path'] = os.path.join(self._models_path, agent)
+
       return RemoteSession.remote(
-          config, self.agent_kwargs,
+          config, agent_kwargs,
           extra_dolphin_kwargs=extra_dolphin_kwargs,
       )
 
   @commands.command()
   async def status(self, ctx: commands.Context):
     with self.lock:
-      agent_name = os.path.basename(self.agent_kwargs['path'])
-      await ctx.send(f'Bot name: {agent_name}')
+      default_agent_name = os.path.basename(self.agent_kwargs['path'])
+      agent_name = self._requested_agents.get(
+          ctx.author.name, default_agent_name)
+      await ctx.send(f'Selected bot: {agent_name}')
 
       if not self._sessions:
         await ctx.send('No active sessions.')
@@ -347,6 +392,7 @@ def main(_):
       token=ACCESS_TOKEN.value,
       prefix='!',
       channel=CHANNEL.value,
+      models_path=MODELS_PATH.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
