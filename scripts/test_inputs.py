@@ -6,10 +6,9 @@ import fancyflags as ff
 import tqdm
 
 from melee.enums import Button
-from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
-dolphin_flags = eval_lib.DOLPHIN_FLAGS.copy()
+dolphin_flags = dolphin_lib.DOLPHIN_FLAGS.copy()
 del dolphin_flags['infinite_time']
 DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
 
