@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
@@ -421,7 +422,7 @@ class Agent:
 def build_agent(
     controller: melee.Controller,
     opponent_port: int,
-    name: str,
+    name: Optional[str] = None,
     state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
@@ -429,6 +430,13 @@ def build_agent(
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
+
+  # For RL, we know the name that was used during training.
+  if 'rl_config' in state:
+    name = state['rl_config']['agent']['name']
+    logging.info(f'Setting agent name to "{name}" from RL.')
+  elif name is None:
+    raise ValueError("Must provide a name for the agent to use.")
 
   return Agent(
       controller=controller,

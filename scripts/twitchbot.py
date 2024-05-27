@@ -11,12 +11,11 @@ from typing import Optional
 
 from absl import app, flags
 import fancyflags as ff
-from twitchio.ext import commands
+from twitchio.ext import commands, routines
 import portpicker
 import ray
 
 from slippi_ai import train_lib
-from slippi_ai.rl import run_lib
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
@@ -36,9 +35,71 @@ DOLPHIN = ff.DEFINE_dict(
 
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 
+# Serves as the default agent people play against, and the "screensaver" agent.
 AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
-# MODEL = flags.DEFINE_string('model', None, 'Path to pickled model.', required=True)
 
+
+class BotSession:
+  """Session between two bots playing locally."""
+
+  def __init__(
+      self,
+      dolphin_config: dolphin_lib.DolphinConfig,
+      agent_kwargs: dict,
+      extra_dolphin_kwargs: dict = {},
+  ):
+    eval_lib.disable_gpus()
+    self.dolphin_config = dolphin_config
+    self.agent_kwargs = agent_kwargs
+    self.stop_requested = threading.Event()
+
+    ports = (1, 2)
+    dolphin_kwargs = dolphin_config.to_kwargs()
+    dolphin_kwargs.update(extra_dolphin_kwargs)
+
+    players = {p: dolphin_lib.AI() for p in ports}
+    dolphin = dolphin_lib.Dolphin(
+        players=players,
+        **dolphin_kwargs,
+    )
+
+    agents: dict[int, eval_lib.Agent] = {}
+    for port, opponent_port in zip(ports, reversed(ports)):
+      agents[port] = eval_lib.build_agent(
+          controller=dolphin.controllers[port],
+          opponent_port=opponent_port,
+          run_on_cpu=True,
+          **agent_kwargs,
+      )
+
+      eval_lib.update_character(players[port], agents[port].config)
+
+    def run():
+      # Don't block in the menu so that we can stop if asked to.
+      gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
+
+      # Main loop
+      for agent in agents.values():
+        agent.start()
+      try:
+        while not self.stop_requested.is_set():
+          gamestate = next(gamestates)
+          if not dolphin_lib.is_menu_state(gamestate):
+            for agent in agents.values():
+              agent.step(gamestate)
+      finally:
+        for agent in agents.values():
+          agent.stop()
+        dolphin.stop()
+
+    self._thread = threading.Thread(target=run)
+    self._thread.start()
+
+  def stop(self):
+    self.stop_requested.set()
+    self._thread.join()
+
+RemoteBotSession = ray.remote(BotSession)
 
 class Session:
 
@@ -70,13 +131,6 @@ class Session:
     dolphin_config.online_delay = console_delay
     logging.info(f'Setting console delay to {console_delay}')
 
-    # For RL, we know the name that was used during training.
-    if 'rl_config' in agent_state:
-      rl_config = flag_utils.dataclass_from_dict(
-          run_lib.Config, agent_state['rl_config'])
-      agent_kwargs['name'] = rl_config.agent.name
-      logging.info(f'Setting agent name to "{rl_config.agent.name}"')
-
     port = 1
     dolphin_kwargs = dolphin_config.to_kwargs()
     dolphin_kwargs.update(extra_dolphin_kwargs)
@@ -92,6 +146,7 @@ class Session:
         opponent_port=None,  # will be set later
         console_delay=console_delay,
         run_on_cpu=True,
+        state=agent_state,
         **agent_kwargs,
     )
 
@@ -122,6 +177,7 @@ class Session:
 
         self._num_menu_frames += 1
 
+      # Now we have access to the display names to set the correct ports.
       name_to_port = {
           player.displayName: port for port, player in gamestate.players.items()
       }
@@ -187,8 +243,9 @@ class Bot(commands.Bot):
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       models_path: str,
-      max_sessions: int = 5,
-      menu_timeout: float = 5,  # in minutes
+      max_sessions: int = 5,  # Includes stream session.
+      menu_timeout: float = 3,  # in minutes
+      start_bot_session_interval: float = 2, # in minutes
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -197,9 +254,12 @@ class Bot(commands.Bot):
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
+    self._start_bot_session_interval = start_bot_session_interval
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
+    self._last_stream_time: Optional[float] = None
+    self._bot_session: Optional[BotSession] = None  # actually RemoteBotSession
 
     self.lock = threading.RLock()
 
@@ -215,6 +275,12 @@ class Bot(commands.Bot):
     self._reload_models()
 
     self._requested_agents = {}
+    self._do_chores.start()
+
+  @commands.command()
+  async def help(self, ctx: commands.Context):
+    for line in self.help_message.split('\n'):
+      await ctx.send(line)
 
   def _reload_models(self):
     self._models = os.listdir(self._models_path)
@@ -256,23 +322,23 @@ class Bot(commands.Bot):
         await ctx.send(f"{name}, you're not playing right now.")
         return
 
-      session = self._sessions.pop(name).session
-      ray.wait([session.stop.remote()])
+      self._stop_sessions([self._sessions[name]])
       await ctx.send(f'Stopped playing against {name}')
-
-      if name == self._streaming_against:
-        self._streaming_against = None
 
   @commands.command()
   async def play(self, ctx: commands.Context):
     with self.lock:
-      self._gc_sessions()
+      await self._gc_sessions()
 
       if len(self._sessions) == self._max_sessions:
         await ctx.send('Sorry, too many sessions already active.')
         return
 
       is_stream = self._streaming_against is None
+
+      if is_stream:
+        self._stop_bot_session()
+
       name = ctx.author.name
       connect_code = ctx.message.content.split(' ')[1]
 
@@ -301,24 +367,63 @@ class Bot(commands.Bot):
       render: bool = False,
       agent: Optional[str] = None,
   ) -> Session:
-      config = dataclasses.replace(self.dolphin_config)
-      config.slippi_port = portpicker.pick_unused_port()
-      config.connect_code = connect_code
-      config.render = render
-      config.headless = not render
-      extra_dolphin_kwargs = {}
-      if render:
-        # TODO: don't hardcode this
-        extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
+    config = dataclasses.replace(self.dolphin_config)
+    config.slippi_port = portpicker.pick_unused_port()
+    config.connect_code = connect_code
+    config.render = render
+    config.headless = not render
+    extra_dolphin_kwargs = {}
+    if render:
+      # TODO: don't hardcode this
+      extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-      agent_kwargs = self.agent_kwargs.copy()
-      if agent:
-        agent_kwargs['path'] = os.path.join(self._models_path, agent)
+    agent_kwargs = self.agent_kwargs.copy()
+    if agent:
+      agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
-      return RemoteSession.remote(
-          config, agent_kwargs,
-          extra_dolphin_kwargs=extra_dolphin_kwargs,
-      )
+    return RemoteSession.remote(
+        config, agent_kwargs,
+        extra_dolphin_kwargs=extra_dolphin_kwargs,
+    )
+
+  def _start_bot_session(self, render: bool = True) -> BotSession:
+    config = dataclasses.replace(self.dolphin_config)
+    config.slippi_port = portpicker.pick_unused_port()
+    config.connect_code = None
+    config.render = render
+    config.headless = not render
+    config.save_replays = False
+    # extra_dolphin_kwargs = {}
+    # if render:
+    #   # TODO: don't hardcode this
+    #   extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
+
+    return RemoteBotSession.remote(config, self.agent_kwargs)
+
+  def _maybe_start_bot_session(self) -> bool:
+    with self.lock:
+      if self._streaming_against is not None:
+        return False
+
+      if self._bot_session is not None:
+        return False
+
+      if self._last_stream_time is not None:
+        time_since_last_stream = time.time() - self._last_stream_time
+        if time_since_last_stream < self._start_bot_session_interval * 60:
+          return False
+
+      self._bot_session = self._start_bot_session()
+      logging.info('Started bot session.')
+      return True
+
+  @commands.command()
+  async def start_bot_session(self, ctx: commands.Context):
+    started = self._maybe_start_bot_session()
+    if started:
+      await ctx.send('Started bot session on stream.')
+    else:
+      await ctx.send('Did not start bot session on stream.')
 
   @commands.command()
   async def status(self, ctx: commands.Context):
@@ -327,6 +432,9 @@ class Bot(commands.Bot):
       agent_name = self._requested_agents.get(
           ctx.author.name, default_agent_name)
       await ctx.send(f'Selected bot: {agent_name}')
+
+      if self._bot_session:
+        await ctx.send('Bot vs. bot on stream.')
 
       if not self._sessions:
         await ctx.send('No active sessions.')
@@ -343,15 +451,8 @@ class Bot(commands.Bot):
             f'Playing against {session_info.twitch_name} {on_off} stream.'
             f' Duration {timedelta}, in menu for {menu_time}.')
 
-  @commands.command()
-  async def help(self, ctx: commands.Context):
-    for line in self.help_message.split('\n'):
-      await ctx.send(line)
-
-  def stop_all(self):
-    self._stop_sessions(list(self._sessions.values()))
-
   def _stop_sessions(self, infos: list[SessionInfo]):
+    """All (non-bot) session stops go through this method."""
     with self.lock:
       ray.wait([info.session.stop.remote() for info in infos])
 
@@ -359,11 +460,29 @@ class Bot(commands.Bot):
         del self._sessions[info.twitch_name]
         if self._streaming_against == info.twitch_name:
           self._streaming_against = None
+          self._last_stream_time = time.time()
 
-  def _gc_sessions(self) -> list[SessionInfo]:
+  def _stop_bot_session(self):
+    with self.lock:
+      if not self._bot_session:
+        return
+      logging.info('Stopping bot session.')
+      ray.wait([self._bot_session.stop.remote()])
+      self._bot_session = None
+
+  @commands.command()
+  async def stop_bot_session(self, ctx: commands.Context):
+    if not self._bot_session:
+      await ctx.send('Bot session not running.')
+      return
+
+    self._stop_bot_session()
+    await ctx.send('Stopped bot session.')
+
+  async def _gc_sessions(self) -> list[SessionInfo]:
     """Stop sessions that have been in the menu for too long."""
     with self.lock:
-      to_gc = []
+      to_gc: list[SessionInfo] = []
       for info in self._sessions.values():
         num_menu_frames = ray.get(info.session.num_menu_frames.remote())
         menu_minutes = num_menu_frames / (60 * 60)
@@ -372,14 +491,29 @@ class Bot(commands.Bot):
 
       self._stop_sessions(to_gc)
       logging.info(f'GCed {len(to_gc)} sessions.')
+      chan = self.get_channel(self.owner)
+      for info in to_gc:
+        chan.send(f'Stopped idle session against {info.twitch_name}')
       return to_gc
 
   @commands.command()
   async def gc(self, ctx: commands.Context):
-    infos = self._gc_sessions()
+    infos = await self._gc_sessions()
     names = [info.twitch_name for info in infos]
     names = ", ".join(names)
     await ctx.send(f"GCed ({names})")
+
+  @routines.routine(minutes=1)
+  async def _do_chores(self):
+    with self.lock:
+      await self._gc_sessions()
+      self._maybe_start_bot_session()
+
+  def shutdown(self):
+    with self.lock:
+      self._stop_sessions(list(self._sessions.values()))
+      self._stop_bot_session()
+      self._do_chores.stop()
 
 def main(_):
   eval_lib.disable_gpus()
@@ -401,7 +535,7 @@ def main(_):
   try:
     bot.run()
   finally:
-    bot.stop_all()
+    bot.shutdown()
 
 if __name__ == '__main__':
     app.run(main)
