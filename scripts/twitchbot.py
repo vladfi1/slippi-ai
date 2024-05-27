@@ -26,6 +26,10 @@ ACCESS_TOKEN = flags.DEFINE_string(
     required=default_access_token is None)
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
 
+BOT_SESSION_INTERVAL = flags.DEFINE_float(
+    'bot_session_interval', 1,
+    'minutes before starting a bot session, negative means disabled')
+
 # Bot settings
 _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
@@ -219,10 +223,11 @@ HELP_MESSAGE = """
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !agents: List available agents to play against.
+!info <agent>: Dump info about a particular agent.
 !agent <name>: Select an agent to play against.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
-At most {max_players} players can be active at once, with one player on stream.
+At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
 """.strip()
 
 @dataclasses.dataclass
@@ -245,7 +250,7 @@ class Bot(commands.Bot):
       models_path: str,
       max_sessions: int = 5,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
-      start_bot_session_interval: float = 1, # in minutes
+      bot_session_interval: float = 1, # in minutes
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -254,7 +259,7 @@ class Bot(commands.Bot):
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
-    self._start_bot_session_interval = start_bot_session_interval
+    self._bot_session_interval = bot_session_interval
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -285,7 +290,14 @@ class Bot(commands.Bot):
       await ctx.send(line)
 
   def _reload_models(self):
-    self._models = os.listdir(self._models_path)
+    self._models: dict[str, dict] = {}
+    agents = os.listdir(self._models_path)
+
+    for agent in agents:
+      path = os.path.join(self._models_path, agent)
+      state = eval_lib.load_state(path=path)
+      state = {k: state[k] for k in ['step', 'config', 'rl_config'] if k in state}
+      self._models[agent] = state
 
   @commands.command()
   async def reload(self, ctx: commands.Context):
@@ -293,6 +305,26 @@ class Bot(commands.Bot):
       self._reload_models()
     models_str = ", ".join(self._models)
     await ctx.send(f'Available agents: {models_str}')
+
+  @commands.command()
+  async def info(self, ctx: commands.Context):
+    words = ctx.message.content.split(' ')
+    if len(words) != 2:
+      await ctx.send('You must specify an agent.')
+      return
+
+    agent = words[1]
+    if agent not in self._models:
+      await ctx.send(f'{agent} is not a valid agent')
+      models_str = ", ".join(self._models)
+      await ctx.send(f'Available agents: {models_str}')
+      return
+
+    message = json.dumps(self._models[agent])
+    chunk_size = 500
+
+    for i in range(0, len(message), chunk_size):
+      await ctx.send(message[i:i+chunk_size])
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
@@ -429,15 +461,20 @@ class Bot(commands.Bot):
       if self._bot_session is not None:
         return False
 
+      if self._bot_session_interval < 0:
+        return False
+
       if self._last_stream_time is not None:
         time_since_last_stream = time.time() - self._last_stream_time
-        if time_since_last_stream < self._start_bot_session_interval * 60:
+        if time_since_last_stream < self._bot_session_interval * 60:
           return False
 
       self._bot_session = self._start_bot_session()
       logging.info('Started bot session.')
       chan = self.get_channel(self.owner)
-      await chan.send('Started bot session on stream.')
+      if chan:
+        # Might be None if we haven't logged in yet
+        await chan.send('Started bot session on stream.')
       return True
 
   @commands.command()
@@ -553,6 +590,7 @@ def main(_):
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
+      bot_session_interval=BOT_SESSION_INTERVAL.value,
   )
 
   try:
