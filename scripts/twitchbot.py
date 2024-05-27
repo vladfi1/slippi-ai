@@ -223,7 +223,7 @@ HELP_MESSAGE = """
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !agents: List available agents to play against.
-!info <agent>: Dump info about a particular agent.
+!config <agent>: Dump info about a particular agent.
 !agent <name>: Select an agent to play against.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
@@ -236,6 +236,7 @@ class SessionInfo:
   start_time: datetime.datetime
   twitch_name: str
   connect_code: str
+  agent: str
 
 def format_td(td: datetime.timedelta) -> str:
   """Chop off microseconds."""
@@ -279,6 +280,7 @@ class Bot(commands.Bot):
     self._models_path = models_path
     self._reload_models()
 
+    self._default_agent_name = os.path.basename(agent_kwargs['path'])
     self._requested_agents = {}
     self._play_codes = {}
 
@@ -307,7 +309,7 @@ class Bot(commands.Bot):
     await ctx.send(f'Available agents: {models_str}')
 
   @commands.command()
-  async def info(self, ctx: commands.Context):
+  async def config(self, ctx: commands.Context):
     words = ctx.message.content.split(' ')
     if len(words) != 2:
       await ctx.send('You must specify an agent.')
@@ -400,16 +402,18 @@ class Bot(commands.Bot):
       logging.info(message)
       await ctx.send(message)
 
+      agent = self._get_opponent(name)
       session = self._start_session(
           connect_code,
           render=is_stream,
-          agent=self._requested_agents.get(name),
+          agent=agent,
       )
       self._sessions[name] = SessionInfo(
           session=session,
           start_time=datetime.datetime.now(),
           twitch_name=name,
           connect_code=connect_code,
+          agent=agent,
       )
       if is_stream:
         self._streaming_against = name
@@ -417,8 +421,8 @@ class Bot(commands.Bot):
   def _start_session(
       self,
       connect_code: str,
+      agent: str,
       render: bool = False,
-      agent: Optional[str] = None,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
     config.slippi_port = portpicker.pick_unused_port()
@@ -431,8 +435,7 @@ class Bot(commands.Bot):
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
     agent_kwargs = self.agent_kwargs.copy()
-    if agent:
-      agent_kwargs['path'] = os.path.join(self._models_path, agent)
+    agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
     return RemoteSession.remote(
         config, agent_kwargs,
@@ -485,12 +488,14 @@ class Bot(commands.Bot):
     else:
       await ctx.send('Did not start bot session on stream.')
 
+  def _get_opponent(self, name: str) -> str:
+    return self._requested_agents.get(name, self._default_agent_name)
+
   @commands.command()
   async def status(self, ctx: commands.Context):
     with self.lock:
-      default_agent_name = os.path.basename(self.agent_kwargs['path'])
-      agent_name = self._requested_agents.get(
-          ctx.author.name, default_agent_name)
+
+      agent_name = self._get_opponent(ctx.author.name)
       await ctx.send(f'Selected bot: {agent_name}')
 
       if self._bot_session:
@@ -507,9 +512,11 @@ class Bot(commands.Bot):
         on_off = "on" if is_stream else "off"
         menu_frames = ray.get(session_info.session.num_menu_frames.remote())
         menu_time = format_td(datetime.timedelta(seconds=menu_frames / 60))
+        player = session_info.twitch_name
+        agent = session_info.agent
         await ctx.send(
-            f'Playing against {session_info.twitch_name} {on_off} stream.'
-            f' Duration {timedelta}, in menu for {menu_time}.')
+            f'Playing against {player} as {agent} {on_off} stream'
+            f' for {timedelta} (in menu for {menu_time}).')
 
   def _stop_sessions(self, infos: list[SessionInfo]):
     """All (non-bot) session stops go through this method."""
@@ -550,10 +557,11 @@ class Bot(commands.Bot):
           to_gc.append(info)
 
       self._stop_sessions(to_gc)
-      logging.info(f'GCed {len(to_gc)} sessions.')
+      if to_gc:
+        logging.info(f'GCed {len(to_gc)} sessions.')
       chan = self.get_channel(self.owner)
       for info in to_gc:
-        chan.send(f'Stopped idle session against {info.twitch_name}')
+        await chan.send(f'Stopped idle session against {info.twitch_name}')
       return to_gc
 
   @commands.command()
