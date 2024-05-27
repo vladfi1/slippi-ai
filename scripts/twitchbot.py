@@ -217,7 +217,7 @@ HELP_MESSAGE = """
 !help: Display this message.
 !status: Displays current status.
 !play <code>: Have the bot connect to you.
-!stop: Stop the bot after you are done.
+!stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !agents: List available agents to play against.
 !agent <name>: Select an agent to play against.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
@@ -245,7 +245,7 @@ class Bot(commands.Bot):
       models_path: str,
       max_sessions: int = 5,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
-      start_bot_session_interval: float = 2, # in minutes
+      start_bot_session_interval: float = 1, # in minutes
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -275,6 +275,8 @@ class Bot(commands.Bot):
     self._reload_models()
 
     self._requested_agents = {}
+    self._play_codes = {}
+
     self._do_chores.start()
 
   @commands.command()
@@ -299,7 +301,13 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
-    agent = ctx.message.content.split(' ')[1]
+    words = ctx.message.content.split(' ')
+
+    if len(words) != 2:
+      await ctx.send('You must specify a single agent.')
+      return
+
+    agent = words[1]
     if agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
       models_str = ", ".join(self._models)
@@ -340,7 +348,20 @@ class Bot(commands.Bot):
         self._stop_bot_session()
 
       name = ctx.author.name
-      connect_code = ctx.message.content.split(' ')[1]
+
+      words = ctx.message.content.split(' ')
+
+      if len(words) == 1:
+        connect_code = self._play_codes.get(name)
+        if connect_code is None:
+          await ctx.send('You must specify a connect code')
+          return
+      else:
+        connect_code = words[1]
+        if '#' not in connect_code:
+          await ctx.send(f'{connect_code} is invalid')
+          return
+        self._play_codes[name] = connect_code
 
       on_off = "on" if is_stream else "off"
       message = f"Connecting to {name} ({connect_code}) {on_off} stream."
@@ -400,7 +421,7 @@ class Bot(commands.Bot):
 
     return RemoteBotSession.remote(config, self.agent_kwargs)
 
-  def _maybe_start_bot_session(self) -> bool:
+  async def _maybe_start_bot_session(self) -> bool:
     with self.lock:
       if self._streaming_against is not None:
         return False
@@ -415,11 +436,13 @@ class Bot(commands.Bot):
 
       self._bot_session = self._start_bot_session()
       logging.info('Started bot session.')
+      chan = self.get_channel(self.owner)
+      await chan.send('Started bot session on stream.')
       return True
 
   @commands.command()
   async def start_bot_session(self, ctx: commands.Context):
-    started = self._maybe_start_bot_session()
+    started = await self._maybe_start_bot_session()
     if started:
       await ctx.send('Started bot session on stream.')
     else:
@@ -507,7 +530,7 @@ class Bot(commands.Bot):
   async def _do_chores(self):
     with self.lock:
       await self._gc_sessions()
-      self._maybe_start_bot_session()
+      await self._maybe_start_bot_session()
 
   def shutdown(self):
     with self.lock:
