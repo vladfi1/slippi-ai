@@ -222,12 +222,19 @@ HELP_MESSAGE = """
 !status: Displays current status.
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
+!reset: Have the bot stop and reconnect with you. Useful after choosing an agent.
 !agents: List available agents to play against.
-!config <agent>: Dump info about a particular agent.
 !agent <name>: Select an agent to play against.
+!about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
+""".strip()
+
+ABOUT_MESSAGE = """
+Melee AI trained with a combination of imitation learning from slippi replays and self-play reinforcement learning.
+ Replays are mostly from ranked, with some tournaments and personal dumps.
+ Code at https://github.com/vladfi1/slippi-ai.
 """.strip()
 
 @dataclasses.dataclass
@@ -290,6 +297,10 @@ class Bot(commands.Bot):
   async def help(self, ctx: commands.Context):
     for line in self.help_message.split('\n'):
       await ctx.send(line)
+
+  @commands.command()
+  async def about(self, ctx: commands.Context):
+    await ctx.send(ABOUT_MESSAGE)
 
   def _reload_models(self):
     self._models: dict[str, dict] = {}
@@ -367,21 +378,19 @@ class Bot(commands.Bot):
       self._stop_sessions([self._sessions[name]])
       await ctx.send(f'Stopped playing against {name}')
 
-  @commands.command()
-  async def play(self, ctx: commands.Context):
+  async def _play(self, ctx: commands.Context):
     with self.lock:
+      name = ctx.author.name
+
+      if name in self._sessions:
+        await ctx.send(f'{name}, you are already playing')
+        return
+
       await self._gc_sessions()
 
       if len(self._sessions) == self._max_sessions:
         await ctx.send('Sorry, too many sessions already active.')
         return
-
-      is_stream = self._streaming_against is None
-
-      if is_stream:
-        self._stop_bot_session()
-
-      name = ctx.author.name
 
       words = ctx.message.content.split(' ')
 
@@ -396,6 +405,10 @@ class Bot(commands.Bot):
           await ctx.send(f'{connect_code} is invalid')
           return
         self._play_codes[name] = connect_code
+
+      is_stream = self._streaming_against is None
+      if is_stream:
+        self._stop_bot_session()
 
       on_off = "on" if is_stream else "off"
       message = f"Connecting to {name} ({connect_code}) {on_off} stream."
@@ -417,6 +430,24 @@ class Bot(commands.Bot):
       )
       if is_stream:
         self._streaming_against = name
+
+  @commands.command()
+  async def play(self, ctx: commands.Context):
+    await self._play(ctx)
+
+  @commands.command()
+  async def reset(self, ctx: commands.Context):
+    with self.lock:
+      name = ctx.author.name
+
+      if name not in self._sessions:
+        await ctx.send(f"{name}, you're not playing right now.")
+        return
+
+      self._stop_sessions([self._sessions[name]])
+
+      # Reusing the context here is a bit of a hack.
+      await self._play(ctx)
 
   def _start_session(
       self,
