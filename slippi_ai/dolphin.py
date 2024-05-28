@@ -66,6 +66,7 @@ class Dolphin:
       stage: melee.Stage = melee.Stage.FINAL_DESTINATION,
       online_delay=0,
       blocking_input=True,
+      console_timeout: Optional[float] = None,
       slippi_port=51441,
       save_replays=False,  # Override default in Console
       env_vars: Optional[dict] = None,
@@ -100,6 +101,8 @@ class Dolphin:
         path=path,
         online_delay=online_delay,
         blocking_input=blocking_input,
+        polling_mode=console_timeout is not None,
+        polling_timeout=console_timeout,
         slippi_port=slippi_port,
         gfx_backend='' if render else 'Null',
         copy_home_directory=False,
@@ -147,7 +150,8 @@ class Dolphin:
 
   def next_gamestate(self) -> melee.GameState:
     gamestate = self.console.step()
-    assert gamestate is not None
+    if gamestate is None:
+      raise TimeoutError('Console timed out.')
     return gamestate
 
   def step(self) -> melee.GameState:
@@ -223,6 +227,7 @@ class DolphinConfig:
   stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
   online_delay: int = 0  # Simulate online delay.
   blocking_input: bool = True  # Have game wait for AIs to send inputs.
+  console_timeout: Optional[float] = None  # Seconds to wait for console inpouts before throwing an error.
   slippi_port: int = 51441  # Local ip port to communicate with dolphin.
   fullscreen: bool = False # Run dolphin in full screen mode
   render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
