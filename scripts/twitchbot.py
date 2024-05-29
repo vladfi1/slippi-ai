@@ -105,6 +105,11 @@ class BotSession:
 
 RemoteBotSession = ray.remote(BotSession)
 
+@dataclasses.dataclass
+class SessionStatus:
+  num_menu_frames: int
+  is_alive: bool
+
 class Session:
 
   def __init__(
@@ -211,6 +216,12 @@ class Session:
   def num_menu_frames(self) -> int:
     return self._num_menu_frames
 
+  def status(self) -> SessionStatus:
+    return SessionStatus(
+        num_menu_frames=self._num_menu_frames,
+        is_alive=self._thread.is_alive(),
+    )
+
   def stop(self):
     self.stop_requested.set()
     self._thread.join()
@@ -256,7 +267,7 @@ class Bot(commands.Bot):
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       models_path: str,
-      max_sessions: int = 5,  # Includes stream session.
+      max_sessions: int = 4,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
       bot_session_interval: float = 1, # in minutes
   ):
@@ -582,17 +593,17 @@ class Bot(commands.Bot):
     with self.lock:
       to_gc: list[SessionInfo] = []
       for info in self._sessions.values():
-        num_menu_frames = ray.get(info.session.num_menu_frames.remote())
-        menu_minutes = num_menu_frames / (60 * 60)
-        if menu_minutes > self._menu_timeout:
+        status: SessionStatus = ray.get(info.session.status.remote())
+        menu_minutes = status.num_menu_frames / (60 * 60)
+        if not status.is_alive or menu_minutes > self._menu_timeout:
           to_gc.append(info)
 
       self._stop_sessions(to_gc)
       if to_gc:
-        logging.info(f'GCed {len(to_gc)} sessions.')
-      chan = self.get_channel(self.owner)
-      for info in to_gc:
-        await chan.send(f'Stopped idle session against {info.twitch_name}')
+        names = ", ".join([info.twitch_name for info in to_gc])
+        logging.info(f'GCed sessions: {names}')
+        chan = self.get_channel(self.owner)
+        await chan.send(f'Stopped idle session against {names}')
       return to_gc
 
   @commands.command()
