@@ -60,7 +60,6 @@ class RolloutWorker:
       num_envs: int,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      async_inference: bool = False,
       use_gpu: bool = False,
       damage_ratio: float = 0,  # For rewards.
   ):
@@ -68,7 +67,6 @@ class RolloutWorker:
         port: eval_lib.build_delayed_agent(
             console_delay=dolphin_kwargs['online_delay'],
             batch_size=num_envs,
-            async_inference=async_inference,
             run_on_cpu=not use_gpu,
             **kwargs,
         )
@@ -279,7 +277,6 @@ class Evaluator:
       num_envs: int,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      async_inference: bool = False,
       use_gpu: bool = False,
   ):
     self._rollout_worker = RolloutWorker(
@@ -288,7 +285,6 @@ class Evaluator:
         num_envs=num_envs,
         async_envs=async_envs,
         env_kwargs=env_kwargs,
-        async_inference=async_inference,
         use_gpu=use_gpu,
     )
 
@@ -327,7 +323,6 @@ class RayEvaluator:
       num_workers: int = 1,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      async_inference: bool = False,
       use_gpu: bool = False,
       resources: tp.Mapping[str, float] = {},
   ):
@@ -345,7 +340,6 @@ class RayEvaluator:
           num_envs=num_envs,
           async_envs=async_envs,
           env_kwargs=env_kwargs,
-          async_inference=async_inference,
           use_gpu=use_gpu,
       ))
 

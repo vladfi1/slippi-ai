@@ -26,7 +26,6 @@ if __name__ == '__main__':
       'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
-  ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', False, 'Use async inference.')
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
@@ -70,7 +69,6 @@ if __name__ == '__main__':
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         env_kwargs=env_kwargs,
-        async_inference=ASYNC_INFERENCE.value,
         use_gpu=USE_GPU.value,
     )
 
