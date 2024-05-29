@@ -19,6 +19,7 @@ if __name__ == '__main__':
       'rollout_length', 60 * 60, 'number of steps per rollout')
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
+  FAKE_ENVS = flags.DEFINE_boolean('fake_envs', False, 'Use fake environments.')
   ASYNC_ENVS = flags.DEFINE_boolean('async_envs', False, 'Use async environments.')
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
@@ -70,6 +71,7 @@ if __name__ == '__main__':
         async_envs=ASYNC_ENVS.value,
         env_kwargs=env_kwargs,
         use_gpu=USE_GPU.value,
+        use_fake_envs=FAKE_ENVS.value,
     )
 
     if NUM_WORKERS.value == 0:

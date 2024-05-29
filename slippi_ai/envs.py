@@ -7,6 +7,7 @@ import traceback
 import typing as tp
 from typing import Mapping, Optional
 
+import numpy as np
 import portpicker
 
 from melee.slippstream import EnetDisconnected
@@ -445,3 +446,35 @@ class AsyncBatchedEnvironmentMP:
     if not self._state_queue:
       self._receive()
     return self._state_queue[-1]
+
+reified_game = utils.reify_tuple_type(Game)
+
+class FakeBatchedEnvironment:
+  def __init__(
+      self,
+      num_envs: int,
+      players: tp.Collection[int],
+  ):
+    game = utils.map_nt(
+        lambda t: np.full([num_envs], 0, dtype=t), reified_game)
+    self._output = EnvOutput(
+        gamestates={p: game for p in players},
+        needs_reset=np.full([num_envs], False),
+    )
+    self.num_steps = 0
+
+  def stop(self):
+    pass
+
+  def pop(self) -> EnvOutput:
+    return self._output
+
+  def push(self, controllers: Controllers):
+    del controllers
+
+  def step(self, controllers: Controllers):
+    del controllers
+    return self._output
+
+  def peek(self) -> EnvOutput:
+    return self._output

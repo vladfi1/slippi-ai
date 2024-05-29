@@ -62,6 +62,7 @@ class RolloutWorker:
       env_kwargs: dict = {},
       use_gpu: bool = False,
       damage_ratio: float = 0,  # For rewards.
+      use_fake_envs: bool = False,
   ):
     self._agents = {
         port: eval_lib.build_delayed_agent(
@@ -78,13 +79,16 @@ class RolloutWorker:
           dolphin_kwargs['players'][port],
           kwargs['state']['config'])
 
-    if not async_envs:
-      env_class = env_lib.BatchedEnvironment
-    else:
-      env_class = env_lib.AsyncBatchedEnvironmentMP
-
-    self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
     self._num_envs = num_envs
+    if use_fake_envs:
+      self._env = env_lib.FakeBatchedEnvironment(
+          num_envs, players=list(agent_kwargs))
+    else:
+      if not async_envs:
+        env_class = env_lib.BatchedEnvironment
+      else:
+        env_class = env_lib.AsyncBatchedEnvironmentMP
+      self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
 
     self._damage_ratio = damage_ratio
 
@@ -268,30 +272,7 @@ class RolloutMetrics(tp.NamedTuple):
     return cls(reward=np.sum(trajectory.rewards))
 
 
-class Evaluator:
-
-  def __init__(
-      self,
-      agent_kwargs: tp.Mapping[Port, dict],
-      dolphin_kwargs: dict,
-      num_envs: int,
-      async_envs: bool = False,
-      env_kwargs: dict = {},
-      use_gpu: bool = False,
-  ):
-    self._rollout_worker = RolloutWorker(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        num_envs=num_envs,
-        async_envs=async_envs,
-        env_kwargs=env_kwargs,
-        use_gpu=use_gpu,
-    )
-
-  def update_variables(
-      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
-  ):
-    self._rollout_worker.update_variables(updates)
+class Evaluator(RolloutWorker):
 
   def rollout(
       self,
@@ -299,18 +280,13 @@ class Evaluator:
       policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
     if policy_vars is not None:
-      self._rollout_worker.update_variables(policy_vars)
-    trajectories, timings = self._rollout_worker.rollout(num_steps)
+      self.update_variables(policy_vars)
+    trajectories, timings = super().rollout(num_steps)
     metrics = {
         port: RolloutMetrics.from_trajectory(trajectory)
         for port, trajectory in trajectories.items()
     }
     return metrics, timings
-
-  @contextlib.contextmanager
-  def run(self):
-    with self._rollout_worker.run():
-      yield
 
 RayRolloutWorker = ray.remote(RolloutWorker)
 
