@@ -33,6 +33,25 @@ def dummy_sample_outputs(
       logits=controller_embedding.dummy_embedding(shape),
   )
 
+class FakeAgent:
+
+  def __init__(
+      self,
+      policy: policies.Policy,
+      batch_size: int,
+  ):
+    self._sample_outputs = dummy_sample_outputs(
+        policy.controller_embedding, [batch_size])
+    self.hidden_state = policy.initial_state(batch_size)
+    self._name_code = embed.NAME_DTYPE(0)
+
+  def step(
+      self,
+      game: embed.Game,
+      needs_reset: np.ndarray
+  ) -> SampleOutputs:
+    del game, needs_reset
+    return self._sample_outputs
 
 class BasicAgent:
   """Wraps a Policy to track hidden state."""
@@ -153,6 +172,16 @@ class BasicAgent:
     batched_action = self.step(batched_game, batched_needs_reset)
     return tf.nest.map_structure(lambda x: x.item(), batched_action)
 
+def build_basic_agent(
+    policy: policies.Policy,
+    batch_size: int,
+    fake: bool = False,
+    **kwargs,
+) -> tp.Union[FakeAgent, BasicAgent]:
+  if fake:
+    return FakeAgent(policy, batch_size)
+  return BasicAgent(policy, batch_size, **kwargs)
+
 class DelayedAgent:
   """Wraps a BasicAgent with delay."""
 
@@ -168,7 +197,7 @@ class DelayedAgent:
       raise NotImplementedError('batch_steps not supported for DelayedAgent.')
     del batch_steps
 
-    self._agent = BasicAgent(
+    self._agent = build_basic_agent(
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
@@ -194,6 +223,14 @@ class DelayedAgent:
   @property
   def batch_steps(self) -> int:
     return 1
+
+  @property
+  def hidden_state(self):
+    return self._agent.hidden_state
+
+  @property
+  def name_code(self):
+    return self._agent._name_code
 
   def step(
       self,
@@ -275,7 +312,7 @@ class AsyncDelayedAgent:
   ):
     self._batch_size = batch_size
     self._batch_steps = batch_steps
-    self._agent = BasicAgent(
+    self._agent = build_basic_agent(
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
@@ -302,6 +339,14 @@ class AsyncDelayedAgent:
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
+
+  @property
+  def hidden_state(self):
+    return self._agent.hidden_state
+
+  @property
+  def name_code(self):
+    return self._agent._name_code
 
   def start(self):
     if self._worker_thread:
@@ -330,14 +375,12 @@ class AsyncDelayedAgent:
       self.start()
       yield self
     finally:
-      print('actor run exit')
       self.stop()
 
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
   def __del__(self):
-    print('actor del')
     self.stop()
 
   def step(
@@ -372,6 +415,7 @@ def build_delayed_agent(
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   policy = saving.load_policy_from_state(state)
+
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
@@ -448,6 +492,7 @@ AGENT_FLAGS = dict(
     name=ff.String('Master Player', 'Name of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
+    fake=ff.Boolean(False, 'Use fake agents.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
 )

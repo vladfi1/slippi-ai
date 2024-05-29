@@ -149,7 +149,7 @@ class RolloutWorker:
     is_resetting: list[bool] = []
 
     initial_states = {
-        port: agent._agent.hidden_state
+        port: agent.hidden_state
         for port, agent in self._agents.items()
     }
 
@@ -212,7 +212,7 @@ class RolloutWorker:
           states=embed.default_embed_game.from_state(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
-              agent._agent._name_code,
+              agent.name_code,
               dtype=embed.NAME_DTYPE),
           actions=utils.batch_nest_nt(sample_outputs[port]),
           rewards=reward.compute_rewards(states, self._damage_ratio),
