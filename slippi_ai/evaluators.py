@@ -119,8 +119,14 @@ class RolloutWorker:
             f'{max_agent_buffer} + {max_env_buffer} > {slack}')
 
     # Get the environment to run ahead as much as possible.
-    self.min_delay = min(agent.delay for agent in self._agents.values())
-    for _ in range(self.min_delay):
+    # Because we push env states to the agents once per main loop iteration,
+    # we need to leave each agent with at least batch_steps - 1 actions in its
+    # buffer. This ensures that the agent will have enough env states pushed to
+    # take a multi_step just as its output queue runs out.
+    self.env_runahead = min(
+        agent.delay - (agent.batch_steps - 1)
+        for agent in self._agents.values())
+    for _ in range(self.env_runahead):
       self._push_actions()
 
   def _push_actions(self):
@@ -139,6 +145,11 @@ class RolloutWorker:
       self._env.push(decoded_actions)
 
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+    # This ensures that the agent can process all of the states it will be fed.
+    for agent in self._agents.values():
+      if num_steps % agent.batch_steps != 0:
+        raise ValueError('Agent batch steps must divide rollout length.')
+
     # Buffers for per-frame data.
     gamestates: dict[Port, list[Game]] = {
         port: [] for port in self._agents
@@ -188,12 +199,12 @@ class RolloutWorker:
     record_state(self._env.peek(), self._prev_agent_outputs[0])
 
     # Record the delayed actions.
-    assert len(self._prev_agent_outputs) == 1 + self.min_delay
+    assert len(self._prev_agent_outputs) == 1 + self.env_runahead
     remaining_actions = list(self._prev_agent_outputs)[1:]
     delayed_actions: dict[Port, list[SampleOutputs]] = {}
     for port, agent in self._agents.items():
       delayed_actions[port] = [actions[port] for actions in remaining_actions]
-      num_left = agent.delay - self.min_delay
+      num_left = agent.delay - self.env_runahead
       delayed_actions[port].extend(agent.peek_n(num_left))
 
       # Note: the above call to peek_n forces the agent to process all

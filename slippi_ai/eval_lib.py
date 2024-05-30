@@ -193,9 +193,8 @@ class DelayedAgent:
       batch_steps: int = 0,
       **agent_kwargs,
   ):
-    if batch_steps != 0:
-      raise NotImplementedError('batch_steps not supported for DelayedAgent.')
-    del batch_steps
+    self._batch_steps = batch_steps
+    self._input_queue = []
 
     self._agent = build_basic_agent(
         policy=policy,
@@ -222,7 +221,7 @@ class DelayedAgent:
 
   @property
   def batch_steps(self) -> int:
-    return 1
+    return self._batch_steps or 1
 
   @property
   def hidden_state(self):
@@ -245,8 +244,17 @@ class DelayedAgent:
   # Present the same interface as the async agent.
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     with self.step_profiler:
-      sampled_controller = self._agent.step(game, needs_reset)
-    self._output_queue.put(sampled_controller)
+      if self._batch_steps == 0:
+        sampled_controller = self._agent.step(game, needs_reset)
+        self._output_queue.put(sampled_controller)
+        return
+
+      self._input_queue.append((game, needs_reset))
+      if len(self._input_queue) == self._batch_steps:
+        sample_outputs = self._agent.multi_step(self._input_queue)
+        for output in sample_outputs:
+          self._output_queue.put(output)
+        self._input_queue = []
 
   @contextlib.contextmanager
   def run(self):
