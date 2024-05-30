@@ -1,8 +1,7 @@
 # Make sure not to import things unless we're the main module.
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
-import slippi_ai.dolphin
-
+import math
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
@@ -13,7 +12,7 @@ if __name__ == '__main__':
 
   from slippi_ai import eval_lib, dolphin, utils, evaluators
 
-  DOLPHIN = ff.DEFINE_dict('dolphin', **slippi_ai.dolphin.DOLPHIN_FLAGS)
+  DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin.DOLPHIN_FLAGS)
 
   ROLLOUT_LENGTH = flags.DEFINE_integer(
       'rollout_length', 60 * 60, 'number of steps per rollout')
@@ -82,8 +81,9 @@ if __name__ == '__main__':
 
     with evaluator.run():
       # burnin
-      evaluator.rollout(32)
-      # import time; time.sleep(1000)
+      batch_steps = NUM_AGENT_STEPS.value or 1
+      burnin_steps = math.ceil(32 / batch_steps) * batch_steps
+      evaluator.rollout(burnin_steps)
 
       timer = utils.Profiler(burnin=0)
       with timer:
