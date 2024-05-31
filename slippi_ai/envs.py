@@ -476,5 +476,11 @@ class FakeBatchedEnvironment:
     del controllers
     return self._output
 
+  def multi_step(
+    self,
+    controllers: list[Controllers],
+  ) -> list[EnvOutput]:
+    return [self._output] * len(controllers)
+
   def peek(self) -> EnvOutput:
     return self._output

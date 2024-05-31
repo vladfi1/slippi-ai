@@ -53,6 +53,12 @@ class FakeAgent:
     del game, needs_reset
     return self._sample_outputs
 
+  def multi_step(
+      self,
+      states: list[tuple[embed.Game, np.ndarray]],
+  ) -> list[SampleOutputs]:
+    return [self._sample_outputs] * len(states)
+
 class BasicAgent:
   """Wraps a Policy to track hidden state."""
 
