@@ -52,9 +52,7 @@ class ActorConfig:
   async_envs: bool = False
   num_env_steps: int = 0
   inner_batch_size: int = 1
-  async_inference: bool = False
   gpu_inference: bool = False
-  num_agent_steps: int = 0
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -63,6 +61,8 @@ class AgentConfig:
   tag: tp.Optional[str] = None
   compile: bool = True
   name: str = 'Master Player'
+  batch_steps: int = 0
+  async_inference: bool = False
 
   def get_kwargs(self) -> dict:
     state = eval_lib.load_state(path=self.path, tag=self.tag)
@@ -70,6 +70,8 @@ class AgentConfig:
         state=state,
         compile=self.compile,
         name=self.name,
+        batch_steps=self.batch_steps,
+        async_inference=self.async_inference,
     )
 
 class OpponentType(enum.Enum):
@@ -389,7 +391,6 @@ def run(config: Config):
         env_kwargs=env_kwargs,
         num_envs=config.actor.num_envs,
         async_envs=config.actor.async_envs,
-        async_inference=config.actor.async_inference,
         use_gpu=config.actor.gpu_inference,
     )
 
