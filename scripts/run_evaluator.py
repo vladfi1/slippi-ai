@@ -10,9 +10,11 @@ if __name__ == '__main__':
   from absl import app, flags
   import fancyflags as ff
 
-  from slippi_ai import eval_lib, dolphin, utils, evaluators
+  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils
 
-  DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin.DOLPHIN_FLAGS)
+  default_dolphin_config = dolphin.DolphinConfig(infinite_time=False)
+  DOLPHIN = ff.DEFINE_dict(
+      'dolphin', **flag_utils.get_flags_from_default(default_dolphin_config))
 
   ROLLOUT_LENGTH = flags.DEFINE_integer(
       'rollout_length', 60 * 60, 'number of steps per rollout')
@@ -40,10 +42,8 @@ if __name__ == '__main__':
         2: dolphin.AI() if SELF_PLAY.value else dolphin.CPU(),
     }
 
-    dolphin_kwargs = dict(
-        players=players,
-        **DOLPHIN.value,
-    )
+    dolphin_kwargs = dolphin.DolphinConfig.kwargs_from_flags(DOLPHIN.value)
+    dolphin_kwargs.update(players=players)
 
     agent_kwargs: dict = AGENT.value.copy()
     state = eval_lib.load_state(
