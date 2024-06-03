@@ -286,6 +286,12 @@ def run(config: Config):
     os.makedirs(expt_dir, exist_ok=True)
   logging.info('experiment directory: %s', expt_dir)
 
+  # Restore from existing save file if it exists.
+  pickle_path = os.path.join(expt_dir, 'latest.pkl')
+  if not config.restore and os.path.exists(pickle_path):
+    logging.info('Setting restore path to %s', pickle_path)
+    config.restore = pickle_path
+
   if config.teacher:
     if config.restore:
       raise ValueError('Must pass exactly one of "teacher" and "restore".')
@@ -471,8 +477,6 @@ def run(config: Config):
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
-
-  pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
   # The OpponentType enum sadly needs to be converted.
   rl_config_jsonnable = dataclasses.asdict(config)
