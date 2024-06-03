@@ -110,7 +110,7 @@ class SafeEnvironment:
     self._env = utils.retry(
         lambda: Environment(self._dolphin_kwargs),
         on_exception={dolphin.ConnectFailed: self._reset_port},
-        num_retries=self._num_retries)
+        num_retries=2)
 
   def _reset_env(self):
     self._env.stop()  # closes associated dolphin instances, freeing up ports
@@ -167,6 +167,7 @@ class BatchedEnvironment:
       num_envs: int,
       dolphin_kwargs: dict,
       slippi_ports: Optional[list[int]] = None,
+      num_retries: int = 2,
   ):
     self._dolphin_kwargs = dolphin_kwargs
 
@@ -175,7 +176,7 @@ class BatchedEnvironment:
     for slippi_port in slippi_ports:
       kwargs = dolphin_kwargs.copy()
       kwargs.update(slippi_port=slippi_port)
-      env = SafeEnvironment(kwargs)
+      env = SafeEnvironment(kwargs, num_retries=num_retries)
       envs.append(env)
 
     self._envs = envs
@@ -232,16 +233,17 @@ def build_environment(
     num_envs: int,
     dolphin_kwargs: dict,
     slippi_ports: Optional[list[int]] = None,
+    num_retries: int = 2,
 ) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
     if slippi_ports:
       assert len(slippi_ports) == 1
       dolphin_kwargs = dolphin_kwargs.copy()
       dolphin_kwargs['slippi_port'] = slippi_ports[0]
-    return SafeEnvironment(dolphin_kwargs)
+    return SafeEnvironment(dolphin_kwargs, num_retries=num_retries)
 
   # BatchedEnvironment uses SafeEnvironment internally
-  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports)
+  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports, num_retries)
 
 def _run_env(
     build_env_kwargs: dict,
@@ -287,8 +289,9 @@ class AsyncEnvMP:
   def __init__(
       self,
       dolphin_kwargs: dict,
-      num_envs: int = 0,
+      num_envs: int = 0,  # zero means non-batched env
       slippi_ports: Optional[list[int]] = None,
+      num_retries: int = 2,
       batch_time: bool = False,
   ):
     context = mp.get_context('forkserver')
@@ -297,6 +300,7 @@ class AsyncEnvMP:
         num_envs=num_envs,
         dolphin_kwargs=dolphin_kwargs,
         slippi_ports=slippi_ports,
+        num_retries=num_retries,
     )
     self._process = context.Process(
         target=_run_env,
@@ -342,6 +346,7 @@ class AsyncBatchedEnvironmentMP:
       dolphin_kwargs: dict,
       num_steps: int = 0,
       inner_batch_size: int = 1,
+      num_retries: int = 2,
   ):
     if num_envs % inner_batch_size != 0:
       raise ValueError(
@@ -363,6 +368,7 @@ class AsyncBatchedEnvironmentMP:
           num_envs=inner_batch_size,
           batch_time=(num_steps > 0),
           slippi_ports=self._slice(i, slippi_ports),
+          num_retries=num_retries,
       )
       self._envs.append(env)
 
@@ -395,7 +401,6 @@ class AsyncBatchedEnvironmentMP:
     try:
       yield self
     finally:
-      print('AsyncBatchedEnvironmentMP.__exit__')
       self.stop()
 
   def _flush(self):
