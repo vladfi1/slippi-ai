@@ -125,7 +125,10 @@ class SafeEnvironment:
   def _retry(self, f: tp.Callable[[], T]) -> T:
     return utils.retry(
         f,
-        on_exception={EnetDisconnected: self._reset_env},
+        on_exception={
+            EnetDisconnected: self._reset_env,
+            TimeoutError: self._reset_env,
+        },
         num_retries=self._num_retries)
 
   def current_state(self) -> EnvOutput:
