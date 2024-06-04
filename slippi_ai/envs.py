@@ -153,12 +153,6 @@ class SafeEnvironment:
     self._env.stop()
 
 
-def get_free_ports(n: int) -> list[int]:
-  ports = [portpicker.pick_unused_port() for _ in range(n)]
-  if len(set(ports)) < n:
-    raise ValueError('Not enough free ports')
-  return ports
-
 class BatchedEnvironment:
   """A set of synchronous environments with batched input/output."""
 
@@ -171,7 +165,7 @@ class BatchedEnvironment:
   ):
     self._dolphin_kwargs = dolphin_kwargs
 
-    slippi_ports = slippi_ports or get_free_ports(num_envs)
+    slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
     envs: list[SafeEnvironment] = []
     for slippi_port in slippi_ports:
       kwargs = dolphin_kwargs.copy()
@@ -361,7 +355,7 @@ class AsyncBatchedEnvironmentMP:
     self._dolphin_kwargs = dolphin_kwargs
 
     self._envs: list[AsyncEnvMP] = []
-    slippi_ports = get_free_ports(num_envs)
+    slippi_ports = utils.find_open_udp_ports(num_envs)
     for i in range(self._outer_batch_size):
       env = AsyncEnvMP(
           dolphin_kwargs=dolphin_kwargs,

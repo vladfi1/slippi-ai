@@ -1,9 +1,11 @@
 import collections
 import gc
 import logging
+import queue
+import random
+import subprocess
 import time
 import typing as tp
-import queue
 
 import tree
 
@@ -229,6 +231,30 @@ def check_same_structure(s1, s2) -> list[tuple[list, str]]:
   for path, _ in errors:
     path.reverse()
   return errors
+
+def find_open_udp_ports(num: int):
+  min_port = 10_000
+  max_port = 2 ** 16
+
+  netstat = subprocess.check_output(['netstat', '-a', '--numeric-ports'])
+  lines = netstat.decode().split('\n')
+
+  used_ports = set()
+  for line in lines:
+    words = line.split()
+    if not words or words[0] != 'udp':
+      continue
+
+    address, port = words[3].split(':')
+    if address == 'localhost':
+      used_ports.add(int(port))
+
+  available_ports = set(range(min_port, max_port)) - used_ports
+
+  if len(available_ports) < num:
+    raise RuntimeError('Not enough available ports.')
+
+  return random.sample(available_ports, num)
 
 
 def ref_path_exists(
