@@ -268,7 +268,7 @@ class Learner:
           self._config.kl_teacher_weight * teacher_kl,
           -self._config.entropy_weight * entropy,
       ]
-      loss = tf.add_n(weighted_losses)
+      loss = tf.reduce_mean(tf.add_n(weighted_losses))
       grads = tape.gradient(loss, self._policy_vars)
       # tf.while_loop doesn't like None's in the loop vars
       grads = [
