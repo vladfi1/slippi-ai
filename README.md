@@ -7,32 +7,29 @@ This repo requires Tensorflow 2.0 or higher which requires CUDA 10.0 or higher.
 An easy way to get started is with Google Cloud Platform. Launch a VM with the 'Deep Learning VM' Debian 9 instance template by Google with CUDA 11.0 and Tensorflow 2.3. It comes with python 3.7.8 and a bunch of standard packages installed. Then, install the rest of the required packages with:
 
 ```bash
+conda env create -f environment.yaml # (optional)
 pip install --user -r requirements.txt
 ```
 
-We use Sacred and MongoDB for logging experiments. While Sacred is installed through requirements.txt, MongoDB needs to be installed separately. Instructions for installing MongoDB on Debian 9 are available here: https://docs.mongodb.com/manual/tutorial/install-mongodb-on-debian/. These commands worked for us:
+## Wandb
+
+**Sacred is no longer supported, wandb is the new logging platform used.**
+
+Create an account on [wandb](https://wandb.ai/site), running online for the first time will allow you to login to your account by providing the API key.
+
+Try training a simple model, run
 
 ```bash
-wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add -
-echo "deb http://repo.mongodb.org/apt/debian stretch/mongodb-org/4.4 main" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list
-sudo apt-get update
-sudo apt-get install -y mongodb-org
-sudo systemctl start mongod
+python scripts/train.py --wandb.mode=online # default is "disabled"
 ```
 
-To ensure that MongoDB can start at instance startup, run:
+Afterwards you can access the data from your teams organization page.
 
-```bash
-sudo systemctl enable mongod.service
-```
+### Additional Options
 
-To try training a simple model, run
-
-```bash
-python scripts/train.py
-```
-
-To view the results, you can use [omniboard](https://github.com/vivekratnavel/omniboard), although several [other options](https://github.com/IDSIA/sacred#frontends) are available.
+* **disabled**: **Default**, doesn't log any data to disk or cloud.
+* **offline**: Logs data to disk, able to be uploaded to wandb.
+* **online**: Logs data live to wandb.
 
 ## Training Data
 
