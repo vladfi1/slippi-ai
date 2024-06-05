@@ -6,9 +6,8 @@ from typing import Dict, Mapping, Optional, Iterator
 
 import fancyflags as ff
 import melee
+from melee.bad_ffw_combinations import check_ffw_combination
 from melee.console import is_mainline_dolphin, DumpConfig
-
-
 
 class Player(abc.ABC):
 
@@ -64,15 +63,16 @@ class Dolphin:
       iso: str,
       players: Mapping[int, Player],
       stage: melee.Stage = melee.Stage.FINAL_DESTINATION,
-      online_delay=0,
-      blocking_input=True,
+      online_delay: int = 0,  # overrides Console's default of 2
+      blocking_input: bool = True,
       console_timeout: Optional[float] = None,
-      slippi_port=51441,
+      slippi_port: int = 51441,
       save_replays=False,  # Override default in Console
       env_vars: Optional[dict] = None,
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
       connect_code: Optional[str] = None,
+      validate_ffw_combination: bool = True,
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -96,6 +96,15 @@ class Dolphin:
             use_exi_inputs=True,
             enable_ffw=True,
         )
+
+    if validate_ffw_combination and console_kwargs.get('enable_ffw'):
+      chars = {}
+      for port, player in players.items():
+        if isinstance(player, AI) or isinstance(player, CPU):
+          chars[port] = player.character
+
+      if set(chars) == {1, 2}:
+        check_ffw_combination(chars[1], chars[2], stage)
 
     console = melee.Console(
         path=path,

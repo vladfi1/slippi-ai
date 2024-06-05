@@ -32,18 +32,13 @@ def main(_):
       for port, player in PLAYERS.items()
   }
 
-  dolphin = dolphin_lib.Dolphin(
-      players=players,
-      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
-  )
-
   agents: list[eval_lib.Agent] = []
 
   for port, opponent_port in zip(PORTS, reversed(PORTS)):
     player = players[port]
     if isinstance(player, dolphin_lib.AI):
       agent = eval_lib.build_agent(
-          controller=dolphin.controllers[port],
+          port=port,
           opponent_port=opponent_port,
           console_delay=DOLPHIN.value['online_delay'],
           **PLAYERS[port].value['ai'],
@@ -52,6 +47,14 @@ def main(_):
       agents.append(agent)
 
       eval_lib.update_character(player, agent.config)
+
+  dolphin = dolphin_lib.Dolphin(
+      players=players,
+      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
+  )
+
+  for agent in agents:
+    agent.set_controller(dolphin.controllers[agent._port])
 
   total_frames = 60 * FLAGS.runtime
 

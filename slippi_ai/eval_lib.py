@@ -445,13 +445,20 @@ class Agent:
 
   def __init__(
       self,
-      controller: melee.Controller,
       opponent_port: int,
       config: dict,  # use train.Config instead
+      port: tp.Optional[int] = None,
+      controller: tp.Optional[melee.Controller] = None,
       **agent_kwargs,
   ):
     self._controller = controller
-    self._port = controller.port
+    if controller:
+      self._port = controller.port
+    elif port:
+      self._port = port
+    else:
+      raise ValueError('Must provide either controller or port.')
+
     self.players = (self._port, opponent_port)
     self.config = config
 
@@ -460,6 +467,11 @@ class Agent:
     self.run = self._agent.run
     self.start = self._agent.start
     self.stop = self._agent.stop
+
+  def set_controller(self, controller: melee.Controller):
+    if controller.port != self._port:
+      raise ValueError('Controller has wrong port.')
+    self._controller = controller
 
   def step(self, gamestate: melee.GameState) -> embed.StateAction:
     needs_reset = np.array([gamestate.frame == -123])
@@ -478,9 +490,10 @@ class Agent:
 
 
 def build_agent(
-    controller: melee.Controller,
     opponent_port: int,
     name: str,
+    port: tp.Optional[int] = None,
+    controller: tp.Optional[melee.Controller] = None,
     state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
@@ -491,6 +504,7 @@ def build_agent(
 
   return Agent(
       controller=controller,
+      port=port,
       opponent_port=opponent_port,
       config=state['config'],
       # The rest are passed through to build_delayed_agent
