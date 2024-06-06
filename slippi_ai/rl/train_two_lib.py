@@ -191,6 +191,7 @@ class AgentManager:
     if self.save_path:
       assert save_path == self.save_path
     self.save_path = save_path
+    self.to_save['opponent'] = opp_char
 
   def get_state(self):
     return dict(

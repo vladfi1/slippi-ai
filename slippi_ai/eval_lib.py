@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
@@ -501,6 +502,13 @@ def build_agent(
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
+
+  if 'rl_config' in state:
+    name = state['rl_config']['agent']['name']
+    logging.info('Setting agent name to %s', name)
+  elif 'agent_config' in state:
+    name = state['agent_config']['name']
+    logging.info('Setting agent name to %s', name)
 
   return Agent(
       controller=controller,
