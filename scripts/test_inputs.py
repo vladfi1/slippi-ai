@@ -5,14 +5,22 @@ from absl import flags
 import fancyflags as ff
 import tqdm
 
-from melee.enums import Button
+from melee.enums import Button, Stage
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai import flag_utils
 
-dolphin_flags = dolphin_lib.DOLPHIN_FLAGS.copy()
-del dolphin_flags['infinite_time']
-DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
+dolphin_config = dolphin_lib.DolphinConfig(
+    headless=True,
+    infinite_time=True,
+    stage=Stage.FINAL_DESTINATION,
+)
+
+DOLPHIN = ff.DEFINE_dict(
+    'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
 
 FLAGS = flags.FLAGS
+
+# TODO: use methods from controller_lib
 
 # TODO: test combination of digital and analog presses
 def test_triggers(dolphin: dolphin_lib.Dolphin, port: int):
@@ -103,10 +111,11 @@ def main(_):
     2: dolphin_lib.AI(),
   }
 
+  dolphin_kwargs = dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value)
+
   dolphin = dolphin_lib.Dolphin(
       players=players,
-      infinite_time=True,  # avoid game resets
-      **DOLPHIN.value,
+      **dolphin_kwargs,
   )
 
   controller = dolphin.controllers[PORT]

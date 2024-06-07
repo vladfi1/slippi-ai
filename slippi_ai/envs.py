@@ -31,7 +31,11 @@ class EnvOutput(tp.NamedTuple):
 class Environment:
   """Wraps dolphin to provide an RL interface."""
 
-  def __init__(self, dolphin_kwargs: dict):
+  def __init__(
+      self,
+      dolphin_kwargs: dict,
+      check_controller_outputs: bool = False,
+  ):
     self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
     self.players = self._dolphin._players
 
@@ -186,6 +190,13 @@ class BatchedEnvironment:
   def stop(self):
     for env in self._envs:
       env.stop()
+
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      yield self
+    finally:
+      self.stop()
 
   def current_state(self) -> EnvOutput:
     current_states = [env.current_state() for env in self._envs]
