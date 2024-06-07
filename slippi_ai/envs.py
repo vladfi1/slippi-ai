@@ -31,7 +31,11 @@ class EnvOutput(tp.NamedTuple):
 class Environment:
   """Wraps dolphin to provide an RL interface."""
 
-  def __init__(self, dolphin_kwargs: dict):
+  def __init__(
+      self,
+      dolphin_kwargs: dict,
+      check_controller_outputs: bool = False,
+  ):
     self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
     self.players = self._dolphin._players
 
