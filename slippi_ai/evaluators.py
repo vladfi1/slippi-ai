@@ -60,15 +60,14 @@ class RolloutWorker:
       num_envs: int,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      async_inference: bool = False,
       use_gpu: bool = False,
       damage_ratio: float = 0,  # For rewards.
+      use_fake_envs: bool = False,
   ):
     self._agents = {
         port: eval_lib.build_delayed_agent(
             console_delay=dolphin_kwargs['online_delay'],
             batch_size=num_envs,
-            async_inference=async_inference,
             run_on_cpu=not use_gpu,
             **kwargs,
         )
@@ -80,13 +79,16 @@ class RolloutWorker:
           dolphin_kwargs['players'][port],
           kwargs['state']['config'])
 
-    if not async_envs:
-      env_class = env_lib.BatchedEnvironment
-    else:
-      env_class = env_lib.AsyncBatchedEnvironmentMP
-
-    self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
     self._num_envs = num_envs
+    if use_fake_envs:
+      self._env = env_lib.FakeBatchedEnvironment(
+          num_envs, players=list(agent_kwargs))
+    else:
+      if not async_envs:
+        env_class = env_lib.BatchedEnvironment
+      else:
+        env_class = env_lib.AsyncBatchedEnvironmentMP
+      self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
 
     self._damage_ratio = damage_ratio
 
@@ -117,8 +119,14 @@ class RolloutWorker:
             f'{max_agent_buffer} + {max_env_buffer} > {slack}')
 
     # Get the environment to run ahead as much as possible.
-    self.min_delay = min(agent.delay for agent in self._agents.values())
-    for _ in range(self.min_delay):
+    # Because we push env states to the agents once per main loop iteration,
+    # we need to leave each agent with at least batch_steps - 1 actions in its
+    # buffer. This ensures that the agent will have enough env states pushed to
+    # take a multi_step just as its output queue runs out.
+    self.env_runahead = min(
+        agent.delay - (agent.batch_steps - 1)
+        for agent in self._agents.values())
+    for _ in range(self.env_runahead):
       self._push_actions()
 
   def _push_actions(self):
@@ -137,6 +145,11 @@ class RolloutWorker:
       self._env.push(decoded_actions)
 
   def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+    # This ensures that the agent can process all of the states it will be fed.
+    for agent in self._agents.values():
+      if num_steps % agent.batch_steps != 0:
+        raise ValueError('Agent batch steps must divide rollout length.')
+
     # Buffers for per-frame data.
     gamestates: dict[Port, list[Game]] = {
         port: [] for port in self._agents
@@ -147,7 +160,7 @@ class RolloutWorker:
     is_resetting: list[bool] = []
 
     initial_states = {
-        port: agent._agent.hidden_state
+        port: agent.hidden_state
         for port, agent in self._agents.items()
     }
 
@@ -186,12 +199,12 @@ class RolloutWorker:
     record_state(self._env.peek(), self._prev_agent_outputs[0])
 
     # Record the delayed actions.
-    assert len(self._prev_agent_outputs) == 1 + self.min_delay
+    assert len(self._prev_agent_outputs) == 1 + self.env_runahead
     remaining_actions = list(self._prev_agent_outputs)[1:]
     delayed_actions: dict[Port, list[SampleOutputs]] = {}
     for port, agent in self._agents.items():
       delayed_actions[port] = [actions[port] for actions in remaining_actions]
-      num_left = agent.delay - self.min_delay
+      num_left = agent.delay - self.env_runahead
       delayed_actions[port].extend(agent.peek_n(num_left))
 
       # Note: the above call to peek_n forces the agent to process all
@@ -210,7 +223,7 @@ class RolloutWorker:
           states=embed.default_embed_game.from_state(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
-              agent._agent._name_code,
+              agent.name_code,
               dtype=embed.NAME_DTYPE),
           actions=utils.batch_nest_nt(sample_outputs[port]),
           rewards=reward.compute_rewards(states, self._damage_ratio),
@@ -270,32 +283,7 @@ class RolloutMetrics(tp.NamedTuple):
     return cls(reward=np.sum(trajectory.rewards))
 
 
-class Evaluator:
-
-  def __init__(
-      self,
-      agent_kwargs: tp.Mapping[Port, dict],
-      dolphin_kwargs: dict,
-      num_envs: int,
-      async_envs: bool = False,
-      env_kwargs: dict = {},
-      async_inference: bool = False,
-      use_gpu: bool = False,
-  ):
-    self._rollout_worker = RolloutWorker(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        num_envs=num_envs,
-        async_envs=async_envs,
-        env_kwargs=env_kwargs,
-        async_inference=async_inference,
-        use_gpu=use_gpu,
-    )
-
-  def update_variables(
-      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
-  ):
-    self._rollout_worker.update_variables(updates)
+class Evaluator(RolloutWorker):
 
   def rollout(
       self,
@@ -303,18 +291,13 @@ class Evaluator:
       policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
     if policy_vars is not None:
-      self._rollout_worker.update_variables(policy_vars)
-    trajectories, timings = self._rollout_worker.rollout(num_steps)
+      self.update_variables(policy_vars)
+    trajectories, timings = super().rollout(num_steps)
     metrics = {
         port: RolloutMetrics.from_trajectory(trajectory)
         for port, trajectory in trajectories.items()
     }
     return metrics, timings
-
-  @contextlib.contextmanager
-  def run(self):
-    with self._rollout_worker.run():
-      yield
 
 RayRolloutWorker = ray.remote(RolloutWorker)
 
@@ -327,7 +310,6 @@ class RayEvaluator:
       num_workers: int = 1,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      async_inference: bool = False,
       use_gpu: bool = False,
       resources: tp.Mapping[str, float] = {},
   ):
@@ -345,7 +327,6 @@ class RayEvaluator:
           num_envs=num_envs,
           async_envs=async_envs,
           env_kwargs=env_kwargs,
-          async_inference=async_inference,
           use_gpu=use_gpu,
       ))
 

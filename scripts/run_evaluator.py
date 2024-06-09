@@ -1,8 +1,7 @@
 # Make sure not to import things unless we're the main module.
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
-import slippi_ai.dolphin
-
+import math
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
@@ -11,14 +10,17 @@ if __name__ == '__main__':
   from absl import app, flags
   import fancyflags as ff
 
-  from slippi_ai import eval_lib, dolphin, utils, evaluators
+  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils
 
-  DOLPHIN = ff.DEFINE_dict('dolphin', **slippi_ai.dolphin.DOLPHIN_FLAGS)
+  default_dolphin_config = dolphin.DolphinConfig(infinite_time=False)
+  DOLPHIN = ff.DEFINE_dict(
+      'dolphin', **flag_utils.get_flags_from_default(default_dolphin_config))
 
   ROLLOUT_LENGTH = flags.DEFINE_integer(
       'rollout_length', 60 * 60, 'number of steps per rollout')
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
+  FAKE_ENVS = flags.DEFINE_boolean('fake_envs', False, 'Use fake environments.')
   ASYNC_ENVS = flags.DEFINE_boolean('async_envs', False, 'Use async environments.')
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
@@ -26,7 +28,6 @@ if __name__ == '__main__':
       'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
-  ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', False, 'Use async inference.')
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
@@ -41,10 +42,8 @@ if __name__ == '__main__':
         2: dolphin.AI() if SELF_PLAY.value else dolphin.CPU(),
     }
 
-    dolphin_kwargs = dict(
-        players=players,
-        **DOLPHIN.value,
-    )
+    dolphin_kwargs = dolphin.DolphinConfig.kwargs_from_flags(DOLPHIN.value)
+    dolphin_kwargs.update(players=players)
 
     agent_kwargs: dict = AGENT.value.copy()
     state = eval_lib.load_state(
@@ -70,8 +69,8 @@ if __name__ == '__main__':
         num_envs=NUM_ENVS.value,
         async_envs=ASYNC_ENVS.value,
         env_kwargs=env_kwargs,
-        async_inference=ASYNC_INFERENCE.value,
         use_gpu=USE_GPU.value,
+        use_fake_envs=FAKE_ENVS.value,
     )
 
     if NUM_WORKERS.value == 0:
@@ -82,8 +81,9 @@ if __name__ == '__main__':
 
     with evaluator.run():
       # burnin
-      evaluator.rollout(32)
-      # import time; time.sleep(1000)
+      batch_steps = NUM_AGENT_STEPS.value or 1
+      burnin_steps = math.ceil(32 / batch_steps) * batch_steps
+      evaluator.rollout(burnin_steps)
 
       timer = utils.Profiler(burnin=0)
       with timer:

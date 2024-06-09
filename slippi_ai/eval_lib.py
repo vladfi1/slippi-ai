@@ -34,6 +34,31 @@ def dummy_sample_outputs(
       logits=controller_embedding.dummy_embedding(shape),
   )
 
+class FakeAgent:
+
+  def __init__(
+      self,
+      policy: policies.Policy,
+      batch_size: int,
+  ):
+    self._sample_outputs = dummy_sample_outputs(
+        policy.controller_embedding, [batch_size])
+    self.hidden_state = policy.initial_state(batch_size)
+    self._name_code = embed.NAME_DTYPE(0)
+
+  def step(
+      self,
+      game: embed.Game,
+      needs_reset: np.ndarray
+  ) -> SampleOutputs:
+    del game, needs_reset
+    return self._sample_outputs
+
+  def multi_step(
+      self,
+      states: list[tuple[embed.Game, np.ndarray]],
+  ) -> list[SampleOutputs]:
+    return [self._sample_outputs] * len(states)
 
 class BasicAgent:
   """Wraps a Policy to track hidden state."""
@@ -154,6 +179,16 @@ class BasicAgent:
     batched_action = self.step(batched_game, batched_needs_reset)
     return tf.nest.map_structure(lambda x: x.item(), batched_action)
 
+def build_basic_agent(
+    policy: policies.Policy,
+    batch_size: int,
+    fake: bool = False,
+    **kwargs,
+) -> tp.Union[FakeAgent, BasicAgent]:
+  if fake:
+    return FakeAgent(policy, batch_size)
+  return BasicAgent(policy, batch_size, **kwargs)
+
 class DelayedAgent:
   """Wraps a BasicAgent with delay."""
 
@@ -165,11 +200,10 @@ class DelayedAgent:
       batch_steps: int = 0,
       **agent_kwargs,
   ):
-    if batch_steps != 0:
-      raise NotImplementedError('batch_steps not supported for DelayedAgent.')
-    del batch_steps
+    self._batch_steps = batch_steps
+    self._input_queue = []
 
-    self._agent = BasicAgent(
+    self._agent = build_basic_agent(
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
@@ -194,7 +228,15 @@ class DelayedAgent:
 
   @property
   def batch_steps(self) -> int:
-    return 1
+    return self._batch_steps or 1
+
+  @property
+  def hidden_state(self):
+    return self._agent.hidden_state
+
+  @property
+  def name_code(self):
+    return self._agent._name_code
 
   def step(
       self,
@@ -208,9 +250,19 @@ class DelayedAgent:
 
   # Present the same interface as the async agent.
   def push(self, game: embed.Game, needs_reset: np.ndarray):
-    with self.step_profiler:
-      sampled_controller = self._agent.step(game, needs_reset)
-    self._output_queue.put(sampled_controller)
+    if self._batch_steps == 0:
+      with self.step_profiler:
+        sampled_controller = self._agent.step(game, needs_reset)
+      self._output_queue.put(sampled_controller)
+      return
+
+    self._input_queue.append((game, needs_reset))
+    if len(self._input_queue) == self._batch_steps:
+      with self.step_profiler:
+        sample_outputs = self._agent.multi_step(self._input_queue)
+      for output in sample_outputs:
+        self._output_queue.put(output)
+      self._input_queue = []
 
   @contextlib.contextmanager
   def run(self):
@@ -276,7 +328,7 @@ class AsyncDelayedAgent:
   ):
     self._batch_size = batch_size
     self._batch_steps = batch_steps
-    self._agent = BasicAgent(
+    self._agent = build_basic_agent(
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
@@ -303,6 +355,14 @@ class AsyncDelayedAgent:
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
+
+  @property
+  def hidden_state(self):
+    return self._agent.hidden_state
+
+  @property
+  def name_code(self):
+    return self._agent._name_code
 
   def start(self):
     if self._worker_thread:
@@ -331,14 +391,12 @@ class AsyncDelayedAgent:
       self.start()
       yield self
     finally:
-      print('actor run exit')
       self.stop()
 
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
   def __del__(self):
-    print('actor del')
     self.stop()
 
   def step(
@@ -373,6 +431,7 @@ def build_delayed_agent(
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   policy = saving.load_policy_from_state(state)
+
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
@@ -387,13 +446,20 @@ class Agent:
 
   def __init__(
       self,
-      controller: melee.Controller,
       opponent_port: int,
       config: dict,  # use train.Config instead
+      port: tp.Optional[int] = None,
+      controller: tp.Optional[melee.Controller] = None,
       **agent_kwargs,
   ):
     self._controller = controller
-    self._port = controller.port
+    if controller:
+      self._port = controller.port
+    elif port:
+      self._port = port
+    else:
+      raise ValueError('Must provide either controller or port.')
+
     self.players = (self._port, opponent_port)
     self.config = config
 
@@ -402,6 +468,11 @@ class Agent:
     self.run = self._agent.run
     self.start = self._agent.start
     self.stop = self._agent.stop
+
+  def set_controller(self, controller: melee.Controller):
+    if controller.port != self._port:
+      raise ValueError('Controller has wrong port.')
+    self._controller = controller
 
   def step(self, gamestate: melee.GameState) -> embed.StateAction:
     needs_reset = np.array([gamestate.frame == -123])
@@ -420,9 +491,10 @@ class Agent:
 
 
 def build_agent(
-    controller: melee.Controller,
     opponent_port: int,
-    name: Optional[str] = None,
+    name: str = 'Master Player',
+    port: tp.Optional[int] = None,
+    controller: tp.Optional[melee.Controller] = None,
     state: Optional[dict] = None,
     path: Optional[str] = None,
     tag: Optional[str] = None,
@@ -435,11 +507,13 @@ def build_agent(
   if 'rl_config' in state:
     name = state['rl_config']['agent']['name']
     logging.info(f'Setting agent name to "{name}" from RL.')
-  elif name is None:
-    raise ValueError("Must provide a name for the agent to use.")
+  elif 'agent_config' in state:
+    name = state['agent_config']['name']
+    logging.info('Setting agent name to %s from RL', name)
 
   return Agent(
       controller=controller,
+      port=port,
       opponent_port=opponent_port,
       config=state['config'],
       # The rest are passed through to build_delayed_agent
@@ -456,6 +530,7 @@ AGENT_FLAGS = dict(
     name=ff.String('Master Player', 'Name of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
+    fake=ff.Boolean(False, 'Use fake agents.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
 )

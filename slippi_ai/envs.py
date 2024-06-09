@@ -7,6 +7,7 @@ import traceback
 import typing as tp
 from typing import Mapping, Optional
 
+import numpy as np
 import portpicker
 
 from melee.slippstream import EnetDisconnected
@@ -109,7 +110,7 @@ class SafeEnvironment:
     self._env = utils.retry(
         lambda: Environment(self._dolphin_kwargs),
         on_exception={dolphin.ConnectFailed: self._reset_port},
-        num_retries=self._num_retries)
+        num_retries=2)
 
   def _reset_env(self):
     self._env.stop()  # closes associated dolphin instances, freeing up ports
@@ -124,7 +125,10 @@ class SafeEnvironment:
   def _retry(self, f: tp.Callable[[], T]) -> T:
     return utils.retry(
         f,
-        on_exception={EnetDisconnected: self._reset_env},
+        on_exception={
+            EnetDisconnected: self._reset_env,
+            TimeoutError: self._reset_env,
+        },
         num_retries=self._num_retries)
 
   def current_state(self) -> EnvOutput:
@@ -149,12 +153,6 @@ class SafeEnvironment:
     self._env.stop()
 
 
-def get_free_ports(n: int) -> list[int]:
-  ports = [portpicker.pick_unused_port() for _ in range(n)]
-  if len(set(ports)) < n:
-    raise ValueError('Not enough free ports')
-  return ports
-
 class BatchedEnvironment:
   """A set of synchronous environments with batched input/output."""
 
@@ -163,15 +161,16 @@ class BatchedEnvironment:
       num_envs: int,
       dolphin_kwargs: dict,
       slippi_ports: Optional[list[int]] = None,
+      num_retries: int = 2,
   ):
     self._dolphin_kwargs = dolphin_kwargs
 
-    slippi_ports = slippi_ports or get_free_ports(num_envs)
+    slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
     envs: list[SafeEnvironment] = []
     for slippi_port in slippi_ports:
       kwargs = dolphin_kwargs.copy()
       kwargs.update(slippi_port=slippi_port)
-      env = SafeEnvironment(kwargs)
+      env = SafeEnvironment(kwargs, num_retries=num_retries)
       envs.append(env)
 
     self._envs = envs
@@ -228,16 +227,17 @@ def build_environment(
     num_envs: int,
     dolphin_kwargs: dict,
     slippi_ports: Optional[list[int]] = None,
+    num_retries: int = 2,
 ) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
     if slippi_ports:
       assert len(slippi_ports) == 1
       dolphin_kwargs = dolphin_kwargs.copy()
       dolphin_kwargs['slippi_port'] = slippi_ports[0]
-    return SafeEnvironment(dolphin_kwargs)
+    return SafeEnvironment(dolphin_kwargs, num_retries=num_retries)
 
   # BatchedEnvironment uses SafeEnvironment internally
-  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports)
+  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports, num_retries)
 
 def _run_env(
     build_env_kwargs: dict,
@@ -283,8 +283,9 @@ class AsyncEnvMP:
   def __init__(
       self,
       dolphin_kwargs: dict,
-      num_envs: int = 0,
+      num_envs: int = 0,  # zero means non-batched env
       slippi_ports: Optional[list[int]] = None,
+      num_retries: int = 2,
       batch_time: bool = False,
   ):
     context = mp.get_context('forkserver')
@@ -293,6 +294,7 @@ class AsyncEnvMP:
         num_envs=num_envs,
         dolphin_kwargs=dolphin_kwargs,
         slippi_ports=slippi_ports,
+        num_retries=num_retries,
     )
     self._process = context.Process(
         target=_run_env,
@@ -338,6 +340,7 @@ class AsyncBatchedEnvironmentMP:
       dolphin_kwargs: dict,
       num_steps: int = 0,
       inner_batch_size: int = 1,
+      num_retries: int = 2,
   ):
     if num_envs % inner_batch_size != 0:
       raise ValueError(
@@ -352,13 +355,14 @@ class AsyncBatchedEnvironmentMP:
     self._dolphin_kwargs = dolphin_kwargs
 
     self._envs: list[AsyncEnvMP] = []
-    slippi_ports = get_free_ports(num_envs)
+    slippi_ports = utils.find_open_udp_ports(num_envs)
     for i in range(self._outer_batch_size):
       env = AsyncEnvMP(
           dolphin_kwargs=dolphin_kwargs,
           num_envs=inner_batch_size,
           batch_time=(num_steps > 0),
           slippi_ports=self._slice(i, slippi_ports),
+          num_retries=num_retries,
       )
       self._envs.append(env)
 
@@ -391,7 +395,6 @@ class AsyncBatchedEnvironmentMP:
     try:
       yield self
     finally:
-      print('AsyncBatchedEnvironmentMP.__exit__')
       self.stop()
 
   def _flush(self):
@@ -445,3 +448,41 @@ class AsyncBatchedEnvironmentMP:
     if not self._state_queue:
       self._receive()
     return self._state_queue[-1]
+
+reified_game = utils.reify_tuple_type(Game)
+
+class FakeBatchedEnvironment:
+  def __init__(
+      self,
+      num_envs: int,
+      players: tp.Collection[int],
+  ):
+    game = utils.map_nt(
+        lambda t: np.full([num_envs], 0, dtype=t), reified_game)
+    self._output = EnvOutput(
+        gamestates={p: game for p in players},
+        needs_reset=np.full([num_envs], False),
+    )
+    self.num_steps = 0
+
+  def stop(self):
+    pass
+
+  def pop(self) -> EnvOutput:
+    return self._output
+
+  def push(self, controllers: Controllers):
+    del controllers
+
+  def step(self, controllers: Controllers):
+    del controllers
+    return self._output
+
+  def multi_step(
+    self,
+    controllers: list[Controllers],
+  ) -> list[EnvOutput]:
+    return [self._output] * len(controllers)
+
+  def peek(self) -> EnvOutput:
+    return self._output

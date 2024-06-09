@@ -52,9 +52,7 @@ class ActorConfig:
   async_envs: bool = False
   num_env_steps: int = 0
   inner_batch_size: int = 1
-  async_inference: bool = False
   gpu_inference: bool = False
-  num_agent_steps: int = 0
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -63,6 +61,8 @@ class AgentConfig:
   tag: tp.Optional[str] = None
   compile: bool = True
   name: str = 'Master Player'
+  batch_steps: int = 0
+  async_inference: bool = False
 
   def get_kwargs(self) -> dict:
     state = eval_lib.load_state(path=self.path, tag=self.tag)
@@ -70,6 +70,8 @@ class AgentConfig:
         state=state,
         compile=self.compile,
         name=self.name,
+        batch_steps=self.batch_steps,
+        async_inference=self.async_inference,
     )
 
 class OpponentType(enum.Enum):
@@ -109,6 +111,10 @@ class Config:
   actor: ActorConfig = field(ActorConfig)
   agent: AgentConfig = field(AgentConfig)
   opponent: OpponentConfig = field(OpponentConfig)
+
+  # One of these should be set
+  teacher: tp.Optional[str] = None
+  restore: tp.Optional[str] = None
 
   # Take learner steps without changing the parameters to burn-in the
   # optimizer state for RL.
@@ -280,20 +286,39 @@ def run(config: Config):
     os.makedirs(expt_dir, exist_ok=True)
   logging.info('experiment directory: %s', expt_dir)
 
-  pretraining_state = eval_lib.load_state(
-      tag=config.agent.tag, path=config.agent.path)
+  # Restore from existing save file if it exists.
+  pickle_path = os.path.join(expt_dir, 'latest.pkl')
+  if not config.restore and os.path.exists(pickle_path):
+    logging.info('Setting restore path to %s', pickle_path)
+    config.restore = pickle_path
 
-  saving.upgrade_config(pretraining_state['config'])
-  pretraining_config = flag_utils.dataclass_from_dict(
-      train_lib.Config, pretraining_state['config'])
+  if config.teacher:
+    if config.restore:
+      raise ValueError('Must pass exactly one of "teacher" and "restore".')
+    teacher_state = saving.load_state_from_disk(config.teacher)
+    rl_state = teacher_state
+    rl_state['step'] = 0
+  elif config.restore:
+    rl_state = saving.load_state_from_disk(config.restore)
+
+    previous_config = flag_utils.dataclass_from_dict(
+        Config, rl_state['rl_config'])
+
+    # Older configs used agent.path instead of config.teacher
+    config.teacher = previous_config.teacher or previous_config.agent.path
+    logging.info(f'Using teacher: {config.teacher}')
+    teacher_state = saving.load_state_from_disk(config.teacher)
+  else:
+    raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
   # Make sure we don't train the teacher
   with tf_utils.non_trainable_scope():
-    teacher = saving.load_policy_from_state(pretraining_state)
-  policy = saving.load_policy_from_state(pretraining_state)
+    teacher = saving.load_policy_from_state(teacher_state)
 
-  rl_state = pretraining_state
-  rl_state['step'] = 0
+  policy = saving.load_policy_from_state(rl_state)
+
+  pretraining_config = flag_utils.dataclass_from_dict(
+      train_lib.Config, teacher_state['config'])
 
   # TODO: put this code into saving.py or train_lib.py
   vf_config = pretraining_config.value_function
@@ -324,7 +349,7 @@ def run(config: Config):
 
   # Initialize and restore variables
   learner.initialize(dummy_trajectory(policy, 1, 1))
-  learner.restore_from_imitation(pretraining_state['state'])
+  learner.restore_from_imitation(rl_state['state'])
 
   PORT = 1
   ENEMY_PORT = 2
@@ -336,7 +361,7 @@ def run(config: Config):
               dolphin_lib.CPU() if config.opponent.type is OpponentType.CPU
               else dolphin_lib.AI()),
       },
-      **dataclasses.asdict(config.dolphin),
+      **config.dolphin.to_kwargs(),
   )
 
   if config.runtime.use_fake_data:
@@ -372,7 +397,6 @@ def run(config: Config):
         env_kwargs=env_kwargs,
         num_envs=config.actor.num_envs,
         async_envs=config.actor.async_envs,
-        async_inference=config.actor.async_inference,
         use_gpu=config.actor.gpu_inference,
     )
 
@@ -454,8 +478,6 @@ def run(config: Config):
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
-  pickle_path = os.path.join(expt_dir, 'latest.pkl')
-
   # The OpponentType enum sadly needs to be converted.
   rl_config_jsonnable = dataclasses.asdict(config)
   rl_config_jsonnable = tf.nest.map_structure(
@@ -467,8 +489,8 @@ def run(config: Config):
     # Note: this state is valid as an imitation state.
     combined_state = dict(
         state=learner.get_state(),
-        config=pretraining_state['config'],
-        name_map=pretraining_state['name_map'],
+        config=teacher_state['config'],
+        name_map=teacher_state['name_map'],
         step=step,
         rl_config=rl_config_jsonnable,
     )
@@ -494,16 +516,16 @@ def run(config: Config):
     for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
       learner_manager.step(0, ppo_steps=1)
 
-    step = 0
+    step = rl_state['step']
 
     logging.info('Value function burnin')
 
     learning_rate.assign(config.learner.learning_rate)
-    for _ in range(config.value_burnin_steps // steps_per_epoch):
+    for i in range(config.value_burnin_steps // steps_per_epoch):
       with step_profiler:
         trajectories, metrics = learner_manager.step(step, ppo_steps=0)
 
-      if step > 0:
+      if i > 0:
         logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
 
@@ -514,15 +536,15 @@ def run(config: Config):
 
     logging.info('Main training loop')
 
-    for _ in range(config.runtime.max_step):
+    for i in range(config.runtime.max_step):
       with step_profiler:
-        if step > 0 and reset_interval and step % reset_interval == 0:
+        if i > 0 and reset_interval and i % reset_interval == 0:
           logging.info('Resetting environments')
           learner_manager.reset_actor()
 
         trajectories, metrics = learner_manager.step(step)
 
-      if step > 0:
+      if i > 0:
         logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
 

@@ -1,9 +1,11 @@
 import collections
 import gc
 import logging
+import queue
+import random
+import subprocess
 import time
 import typing as tp
-import queue
 
 import tree
 
@@ -122,6 +124,18 @@ def concat_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
   return map_nt(lambda *xs: np.concatenate(xs, axis), *nests)
 
+def reify_tuple_type(t: type[T]) -> T:
+  """Takes a tuple type and returns a structure with types at the leaves."""
+  # TODO: support typing.Tuple
+
+  if issubclass(t, tuple):  # namedtuple
+    return t(*[
+        reify_tuple_type(t.__annotations__[name])
+        for name in t._fields])
+
+  # A leaf type
+  return t
+
 def peek_deque(d: collections.deque, n: int) -> list:
   """Peek at the last n elements of a deque."""
   assert len(d) >= n
@@ -217,6 +231,30 @@ def check_same_structure(s1, s2) -> list[tuple[list, str]]:
   for path, _ in errors:
     path.reverse()
   return errors
+
+def find_open_udp_ports(num: int):
+  min_port = 10_000
+  max_port = 2 ** 16
+
+  netstat = subprocess.check_output(['netstat', '-a', '--numeric-ports'])
+  lines = netstat.decode().split('\n')
+
+  used_ports = set()
+  for line in lines:
+    words = line.split()
+    if not words or words[0] != 'udp':
+      continue
+
+    address, port = words[3].split(':')
+    if address == 'localhost':
+      used_ports.add(int(port))
+
+  available_ports = set(range(min_port, max_port)) - used_ports
+
+  if len(available_ports) < num:
+    raise RuntimeError('Not enough available ports.')
+
+  return random.sample(available_ports, num)
 
 
 def ref_path_exists(
