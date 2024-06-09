@@ -33,6 +33,8 @@ BOT_SESSION_INTERVAL = flags.DEFINE_float(
 # Bot settings
 _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
+    save_replays=True,
+    replay_dir='Replays/Twitchbot',
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
@@ -40,7 +42,9 @@ DOLPHIN = ff.DEFINE_dict(
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
-AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
+agent_flags = eval_lib.AGENT_FLAGS.copy()
+agent_flags['async_inference'] = ff.Boolean(True)
+AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
 
 class BotSession:
@@ -491,12 +495,15 @@ class Bot(commands.Bot):
     config.render = render
     config.headless = not render
     config.save_replays = False
-    # extra_dolphin_kwargs = {}
-    # if render:
-    #   # TODO: don't hardcode this
-    #   extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
+    extra_dolphin_kwargs = {}
+    if render:
+      # TODO: don't hardcode this
+      extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    return RemoteBotSession.remote(config, self.agent_kwargs)
+    return RemoteBotSession.remote(
+        config, self.agent_kwargs,
+        extra_dolphin_kwargs=extra_dolphin_kwargs,
+    )
 
   async def _maybe_start_bot_session(self) -> bool:
     with self.lock:
