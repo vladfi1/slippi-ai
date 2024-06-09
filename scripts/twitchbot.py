@@ -415,7 +415,7 @@ class Bot(commands.Bot):
           await ctx.send('You must specify a connect code')
           return
       else:
-        connect_code = words[1]
+        connect_code = words[1].upper()
         if '#' not in connect_code:
           await ctx.send(f'{connect_code} is invalid')
           return
