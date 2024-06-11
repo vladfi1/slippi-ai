@@ -1,0 +1,1 @@
+Xvfb :99 -ac -screen 0 584x480x24
