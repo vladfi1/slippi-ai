@@ -29,10 +29,11 @@ from slippi_db.parsing_utils import CompressionType
 def parse_slp(
     file: utils.LocalFile,
     output_dir: str,
+    tmpdir: str,
     compression: CompressionType = CompressionType.NONE,
     compression_level: Optional[int] = None,
 ) -> dict:
-  with file.extract() as path:
+  with file.extract(tmpdir) as path:
     with open(path, 'rb') as f:
       slp_bytes = f.read()
       slp_size = len(slp_bytes)
@@ -82,39 +83,57 @@ def parse_slp(
 def parse_files(
     files: list[utils.LocalFile],
     output_dir: str,
+    tmpdir: str,
     num_threads: int = 1,
     compression_options: dict = {},
 ) -> list[dict]:
+  parse_slp_kwargs = dict(
+      output_dir=output_dir,
+      tmpdir=tmpdir,
+      **compression_options,
+  )
+
   if num_threads == 1:
     return [
-        parse_slp(f, output_dir, **compression_options)
+        parse_slp(f, **parse_slp_kwargs)
         for f in tqdm.tqdm(files, unit='slp')]
 
   with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
-    futures = [
-        pool.submit(parse_slp, f, output_dir, **compression_options)
-        for f in files]
-    as_completed = concurrent.futures.as_completed(futures)
-    results = [
-        f.result() for f in
-        tqdm.tqdm(as_completed, total=len(files), smoothing=1e-2, unit='slp')]
-    return results
+    try:
+      futures = [
+          pool.submit(parse_slp, f, **parse_slp_kwargs)
+          for f in files]
+      as_completed = concurrent.futures.as_completed(futures)
+      results = [
+          f.result() for f in
+          tqdm.tqdm(as_completed, total=len(files), smoothing=0, unit='slp')]
+      return results
+    except KeyboardInterrupt:
+      print('KeyboardInterrupt, shutting down')
+      pool.shutdown()
+      raise
 
 def parse_chunk(
     chunk: list[utils.LocalFile],
     output_dir: str,
+    tmpdir: str,
     compression_options: dict = {},
     pool: Optional[concurrent.futures.ProcessPoolExecutor] = None,
 ) -> list[dict]:
+  parse_slp_kwargs = dict(
+      output_dir=output_dir,
+      tmpdir=tmpdir,
+      **compression_options,
+  )
 
   if pool is None:
     results = []
     for file in chunk:
-      results.append(parse_slp(file, output_dir, **compression_options))
+      results.append(parse_slp(file, **parse_slp_kwargs))
     return results
   else:
     futures = [
-        pool.submit(parse_slp, f, output_dir, **compression_options)
+        pool.submit(parse_slp, f, **parse_slp_kwargs)
         for f in chunk]
     return [f.result() for f in futures]
 
@@ -164,7 +183,10 @@ def parse_7zs(
     with chunk.extract(in_memory) as files:
       try:
         chunk_results = parse_chunk(
-            files, output_dir, compression_options, pool=pool)
+            files, output_dir,
+            tmpdir=utils.get_tmp_dir(in_memory=in_memory),
+            compression_options=compression_options,
+            pool=pool)
       except BaseException as e:
         # print(e)
         if pool is not None:
@@ -192,7 +214,11 @@ def run_parsing(
     chunk_size_gb: float = 0.5,
     in_memory: bool = True,
     wipe: bool = False,
+    dry_run: bool = False,
 ):
+  # Cache tmp dir once
+  tmpdir = utils.get_tmp_dir(in_memory=in_memory)
+
   raw_dir = os.path.join(root, 'Raw')
 
   raw_db_path = os.path.join(root, 'raw.json')
@@ -204,7 +230,7 @@ def run_parsing(
 
   raw_by_name = {row['name']: row for row in raw_db}
 
-  to_process = []
+  to_process: list[str] = []
   for dirpath, _, filenames in os.walk(raw_dir):
     reldirpath = os.path.relpath(dirpath, raw_dir)
     for name in filenames:
@@ -216,6 +242,9 @@ def run_parsing(
 
   print("To process:", to_process)
 
+  if dry_run:
+    return
+
   output_dir = os.path.join(root, 'Parsed')
   os.makedirs(output_dir, exist_ok=True)
 
@@ -226,8 +255,8 @@ def run_parsing(
 
   # Now handle zip files.
   print("Processing zip files.")
-  slp_files = []
-  raw_names = []
+  slp_files: list[utils.LocalFile] = []
+  raw_names: list[str] = []
   for f in to_process:
     raw_path = os.path.join(raw_dir, f)
     if f.endswith('.zip'):
@@ -239,8 +268,10 @@ def run_parsing(
     slp_files.extend(fs)
     raw_names.extend([f] * len(fs))
 
+  # TODO: handle raw .slp and .slp.gz files
+
   zip_results = parse_files(
-      slp_files, output_dir, num_threads, compression_options)
+      slp_files, output_dir, tmpdir, num_threads, compression_options)
   assert len(zip_results) == len(slp_files)
 
   # Point back to raw file
@@ -288,6 +319,7 @@ def main(_):
           compression_level=COMPRESSION_LEVEL.value,
       ),
       wipe=WIPE.value,
+      dry_run=DRY_RUN.value,
   )
 
 if __name__ == '__main__':
@@ -304,5 +336,6 @@ if __name__ == '__main__':
       help='Type of compression to use.')
   COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
   WIPE = flags.DEFINE_bool('wipe', False, 'Wipe existing metadata')
+  DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
 
   app.run(main)
