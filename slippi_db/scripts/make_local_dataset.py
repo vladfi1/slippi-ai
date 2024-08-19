@@ -11,6 +11,8 @@ ROOT = flags.DEFINE_string('root', None, 'root directory', required=True)
 WINNER_ONLY = flags.DEFINE_boolean(
   'winner_only', True, 'only keep games that have a winner')
 
+SKIP_TAR = flags.DEFINE_boolean('skip_tar', False, 'Only create meta.json')
+
 def is_valid_replay(row: dict):
   if not row.get('is_training'):
     return False
@@ -36,22 +38,30 @@ def main(_):
     rows = [row for row in rows if row.get('winner') is not None]
     print(f"Filtered to {len(rows)} games with a winner.")
 
-  tar = tarfile.open(os.path.join(ROOT.value, 'training.tar'), 'w')
+  use_tar = not SKIP_TAR.value
+
+  if use_tar:
+    tar = tarfile.open(os.path.join(ROOT.value, 'training.tar'), 'w')
 
   for row in tqdm.tqdm(rows, smoothing=0, unit='slp'):
     md5 = row['slp_md5']
     parsed_path = os.path.join(ROOT.value, 'Parsed', md5)
     assert os.path.isfile(parsed_path), row
-    tar.add(parsed_path, arcname='games/' + md5)
+
+    if use_tar:
+      tar.add(parsed_path, arcname='games/' + md5)
 
   with tempfile.TemporaryDirectory() as tmpdir:
     # write metadata
     meta_path = os.path.join(tmpdir, 'meta.json')
     with open(meta_path, 'w') as f:
       json.dump(rows, f, indent=2)
-    tar.add(meta_path, arcname='meta.json')
 
-  tar.close()
+    if use_tar:
+      tar.add(meta_path, arcname='meta.json')
+
+  if use_tar:
+    tar.close()
 
 if __name__ == '__main__':
   app.run(main)
