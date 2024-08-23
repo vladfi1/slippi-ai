@@ -1,6 +1,7 @@
 """Test a trained model."""
 
 import logging
+import os
 
 from absl import app
 from absl import flags
@@ -16,6 +17,8 @@ PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **eval_lib.PLAYER_FLAGS) for p in PORTS}
 dolphin_config = dolphin_lib.DolphinConfig(
     headless=False,
     infinite_time=False,
+    path=os.environ.get('DOLPHIN_PATH'),
+    iso=os.environ.get('ISO_PATH'),
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
