@@ -243,6 +243,7 @@ class DolphinConfig:
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+  emulation_speed: float = 1.0  # Set to 0 for unlimited speed. Mainline only.
   infinite_time: bool = True  # Infinite time no stocks.
   log_level: int = 3  # WARN; 0 to disable
   dump: DumpConfig = _field(DumpConfig)  # For framedumping.

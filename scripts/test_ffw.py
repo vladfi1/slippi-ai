@@ -9,6 +9,7 @@ import typing as tp
 from absl import app
 from absl import flags
 import fancyflags as ff
+import tqdm
 
 import melee
 from melee import Controller
@@ -87,20 +88,21 @@ def test(
 
       num_wrong = 0
 
-      for i in range(env_config.rollout_length):
+      for i in tqdm.trange(env_config.rollout_length):
         output = env.pop()
         if i < 123:
           continue
         inputs = controller_inputs[i]
         for port, controller in inputs.items():
           process = lambda c: utils.unbatch_nest(controller_lib.to_raw_controller(c))
-          expected = process(controller)
-          actual = process(output.gamestates[port].p0.controller)
-          if not actual == expected:
-            num_wrong += 1
-            if debug:
-              print(port, i, utils.check_same_structure(expected, actual, equal=True))
-              import ipdb; ipdb.set_trace()
+          unbatched_expected = process(controller)
+          unbatched_actual = process(output.gamestates[port].p0.controller)
+          for expected, actual in zip(unbatched_expected, unbatched_actual):
+            if not actual == expected:
+              num_wrong += 1
+              if debug:
+                print(port, i, utils.check_same_structure(expected, actual, equal=True))
+                import ipdb; ipdb.set_trace()
     except envs.EnvError as e:
       return e
 
@@ -124,8 +126,8 @@ def main(_):
 
   from melee import Stage
   stages_to_test = [
-      Stage.BATTLEFIELD, Stage.DREAMLAND, Stage.FINAL_DESTINATION,
-      Stage.FOUNTAIN_OF_DREAMS, Stage.POKEMON_STADIUM, Stage.YOSHIS_STORY,
+      Stage.YOSHIS_STORY, Stage.BATTLEFIELD, Stage.FINAL_DESTINATION,
+      Stage.DREAMLAND, Stage.FOUNTAIN_OF_DREAMS, Stage.POKEMON_STADIUM,
   ]
 
   results = []
