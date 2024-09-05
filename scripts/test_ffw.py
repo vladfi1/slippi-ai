@@ -63,7 +63,6 @@ def test(
   dolphin_kwargs.update(
       players=players,
       stage=stage,
-      validate_ffw_combination=False,
   )
 
   if env_config.run_async:
