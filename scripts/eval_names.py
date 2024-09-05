@@ -1,18 +1,25 @@
-import slippi_ai.dolphin
-
+"""Evaluate different player names against each other."""
 
 if __name__ == '__main__':
   import itertools
+  import os
+  import time
+  import typing as tp
 
   from absl import app, flags
   import fancyflags as ff
 
   from slippi_ai import eval_lib, dolphin
-  from slippi_ai import evaluators, utils
+  from slippi_ai import evaluators, flag_utils
 
-  DOLPHIN_FLAGS = slippi_ai.dolphin.DOLPHIN_FLAGS.copy()
-  DOLPHIN_FLAGS['headless'].default = True
-  DOLPHIN = ff.DEFINE_dict('dolphin', **DOLPHIN_FLAGS)
+  dolphin_config = dolphin.DolphinConfig(
+      headless=True,
+      infinite_time=True,
+      path=os.environ.get('DOLPHIN_PATH'),
+      iso=os.environ.get('ISO_PATH'),
+  )
+  DOLPHIN = ff.DEFINE_dict(
+      'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
 
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
   ASYNC_ENVS = flags.DEFINE_boolean('async_envs', True, 'Use async environments.')
@@ -24,8 +31,8 @@ if __name__ == '__main__':
   AGENT_FLAGS = eval_lib.AGENT_FLAGS.copy()
   del AGENT_FLAGS['name']
   AGENT_FLAGS['num_names'] = ff.Integer(4, 'Number of names to evaluate.')
+  AGENT_FLAGS['names'] = ff.StringList(None)
 
-  ASYNC_INFERENCE = flags.DEFINE_boolean('async_inference', True, 'Use async inference.')
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
@@ -48,9 +55,15 @@ if __name__ == '__main__':
     )
 
     num_names: int = agent_kwargs.pop('num_names')
+    names: tp.Optional[list[str]] = agent_kwargs.pop('names')
     name_map: dict[str, int] = state['name_map']
-    code_to_name = {v: k for k, v in name_map.items()}
-    names: list[str] = [code_to_name[i] for i in range(num_names)]
+    if names is None:
+      code_to_name = {v: k for k, v in name_map.items()}
+      names = [code_to_name[i] for i in range(num_names)]
+    else:
+      for name in names:
+        if name not in name_map:
+          raise ValueError(f'Invalid name "{name}"')
     print('Evaluating names:', names)
 
     per_name_kwargs: dict[str, dict] = {}
@@ -64,21 +77,21 @@ if __name__ == '__main__':
     }
     env_kwargs = dict(
         players=players,
-        **DOLPHIN.value,
+        **dolphin.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
     )
 
-    matchups = itertools.combinations(names, 2)
+    matchups = list(itertools.combinations(names, 2))
 
     results = []
 
-    for name1, name2 in list(matchups):
-      print(f'Evaluating {name1} vs {name2}')
+    start_time = time.perf_counter()
+    for i, (name1, name2) in enumerate(matchups):
+      print(f'Evaluating "{name1}" vs "{name2}"')
       evaluator = evaluators.Evaluator(
           agent_kwargs={1: per_name_kwargs[name1], 2: per_name_kwargs[name2]},
           dolphin_kwargs=env_kwargs,
           num_envs=NUM_ENVS.value,
           async_envs=ASYNC_ENVS.value,
-          async_inference=ASYNC_INFERENCE.value,
           env_kwargs=dict(
               num_steps=NUM_ENV_STEPS.value,
               inner_batch_size=INNER_BATCH_SIZE.value,
@@ -88,7 +101,8 @@ if __name__ == '__main__':
 
       with evaluator.run():
         metrics, timings = evaluator.rollout(ROLLOUT_LENGTH.value)
-      print(timings)
+      del timings
+      # print(timings)
 
       total_reward = metrics[1].reward
       num_frames = ROLLOUT_LENGTH.value * NUM_ENVS.value
@@ -98,8 +112,14 @@ if __name__ == '__main__':
       print(f'Reward per minute: {reward_per_minute:.2f}')
       results.append((name1, name2, reward_per_minute))
 
+      elapsed_time = time.perf_counter() - start_time
+      n = i + 1
+      time_per_item = elapsed_time / n
+      time_left = time_per_item * (len(matchups) - n)
+      print(f'Estimated time left: {time_left:.0f}')
+
     print('Results:')
     for name1, name2, reward in results:
-      print(f'{name1} vs {name2}: {reward:.2f}')
+      print(f'"{name1}" vs "{name2}": {reward:.2f}')
 
   app.run(main)
