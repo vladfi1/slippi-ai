@@ -133,6 +133,8 @@ def main(_):
   results = []
 
   combinations = list(itertools.product(chars_to_test, chars_to_test, stages_to_test))
+  num_errors = 0
+  total_num_wrong = 0
 
   start_time = time.perf_counter()
   for i, (c1, c2, stage) in enumerate(combinations):
@@ -144,11 +146,22 @@ def main(_):
         dolphin_kwargs=dolphin_kwargs,
         debug=DEBUG.value,
     )
+    error = None
+    num_wrong = None
+
+    if isinstance(outcome, envs.EnvError):
+      error = str(outcome)
+      num_errors += 1
+    elif isinstance(outcome, int):
+      num_wrong = outcome
+      if num_wrong > 0:
+        total_num_wrong += 1
+
     jsonnable_result = dict(
         chars={1: c1.name, 2: c2.name},
         stage=stage.name,
-        error=str(outcome) if isinstance(outcome, envs.EnvError) else None,
-        num_wrong=outcome if isinstance(outcome, int) else None,
+        error=error,
+        num_wrong=num_wrong,
     )
     results.append(jsonnable_result)
     print(outcome)
@@ -158,6 +171,8 @@ def main(_):
     time_per_item = elapsed_time / n
     time_left = time_per_item * (len(combinations) - n)
     print(f'Estimated time left: {time_left:.0f}')
+
+  print(f'num_errors = {num_errors}, num_wrong = {total_num_wrong}')
 
   with open(OUTPUT.value, 'w') as f:
     json.dump(results, f)
