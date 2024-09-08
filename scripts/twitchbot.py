@@ -46,6 +46,7 @@ agent_flags = eval_lib.AGENT_FLAGS.copy()
 agent_flags['async_inference'] = ff.Boolean(True)
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
+BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
 class BotSession:
   """Session between two bots playing locally."""
@@ -53,15 +54,14 @@ class BotSession:
   def __init__(
       self,
       dolphin_config: dolphin_lib.DolphinConfig,
-      agent_kwargs: dict,
+      agent_kwargs: dict[int, dict],
       extra_dolphin_kwargs: dict = {},
   ):
     eval_lib.disable_gpus()
     self.dolphin_config = dolphin_config
-    self.agent_kwargs = agent_kwargs
     self.stop_requested = threading.Event()
 
-    ports = (1, 2)
+    ports = agent_kwargs.keys()
     dolphin_kwargs = dolphin_config.to_kwargs()
     dolphin_kwargs.update(extra_dolphin_kwargs)
 
@@ -77,7 +77,7 @@ class BotSession:
           controller=dolphin.controllers[port],
           opponent_port=opponent_port,
           run_on_cpu=True,
-          **agent_kwargs,
+          **agent_kwargs[port],
       )
 
       eval_lib.update_character(players[port], agents[port].config)
@@ -274,6 +274,7 @@ class Bot(commands.Bot):
       max_sessions: int = 4,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
       bot_session_interval: float = 1, # in minutes
+      bot2: Optional[str] = None,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -283,6 +284,10 @@ class Bot(commands.Bot):
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
     self._bot_session_interval = bot_session_interval
+
+    self._bot_agent_kwargs = {1: agent_kwargs, 2: agent_kwargs.copy()}
+    if bot2:
+      self._bot_agent_kwargs[2]['path'] = bot2
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -501,7 +506,7 @@ class Bot(commands.Bot):
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
     return RemoteBotSession.remote(
-        config, self.agent_kwargs,
+        config, self._bot_agent_kwargs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
     )
 
@@ -648,6 +653,7 @@ def main(_):
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
+      bot2=BOT2.value,
   )
 
   try:
