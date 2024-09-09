@@ -1,6 +1,6 @@
 pandas
 dm-sonnet
-git+https://github.com/vladfi1/libmelee.git@dev
+git+https://github.com/vladfi1/libmelee.git@0.36.0
 gdown
 tensorflow_probability[tf]
 wandb

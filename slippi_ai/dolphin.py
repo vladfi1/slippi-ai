@@ -6,7 +6,7 @@ from typing import Dict, Mapping, Optional, Iterator
 
 import fancyflags as ff
 import melee
-from melee.console import is_mainline_dolphin, DumpConfig
+from melee.console import get_dolphin_version, DumpConfig, DolphinBuild
 
 class Player(abc.ABC):
 
@@ -77,7 +77,7 @@ class Dolphin:
     self._stage = stage
 
     platform = None
-    is_mainline = is_mainline_dolphin(path)
+    version = get_dolphin_version(path)
 
     if render is None:
       render = not headless
@@ -86,14 +86,19 @@ class Dolphin:
       console_kwargs.update(
           disable_audio=True,
       )
-      if is_mainline:
+      if version.mainline:
         platform = 'headless'
         # console_kwargs.update(emulation_speed=0)
-      else:
+
+      if version.build is DolphinBuild.EXI_AI:
         console_kwargs.update(
             use_exi_inputs=True,
             enable_ffw=True,
         )
+      elif not version.mainline:
+        raise ValueError(
+            'Headless requires mainline dolphin or a custom dolphin build. '
+            'See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions')
 
     console = melee.Console(
         path=path,
