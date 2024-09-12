@@ -28,14 +28,9 @@ class PlayerMeta(NamedTuple):
 
   @classmethod
   def from_metadata(cls, player_meta: dict) -> 'PlayerMeta':
-    netplay = player_meta['netplay']
-    if netplay is None:
-      name = player_meta['name_tag']
-    else:
-      name = netplay['name']
     return cls(
         character=player_meta['character'],
-        name=name)
+        name=nametags.name_from_metadata(player_meta))
 
 class ReplayMeta(NamedTuple):
   p0: PlayerMeta

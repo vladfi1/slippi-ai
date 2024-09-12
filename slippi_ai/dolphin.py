@@ -6,8 +6,7 @@ from typing import Dict, Mapping, Optional, Iterator
 
 import fancyflags as ff
 import melee
-from melee.bad_ffw_combinations import check_ffw_combination
-from melee.console import is_mainline_dolphin, DumpConfig
+from melee.console import get_dolphin_version, DumpConfig, DolphinBuild
 
 class Player(abc.ABC):
 
@@ -72,14 +71,13 @@ class Dolphin:
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
       connect_code: Optional[str] = None,
-      validate_ffw_combination: bool = True,
       **console_kwargs,
   ) -> None:
     self._players = players
     self._stage = stage
 
     platform = None
-    is_mainline = is_mainline_dolphin(path)
+    version = get_dolphin_version(path)
 
     if render is None:
       render = not headless
@@ -88,23 +86,19 @@ class Dolphin:
       console_kwargs.update(
           disable_audio=True,
       )
-      if is_mainline:
+      if version.mainline:
         platform = 'headless'
         # console_kwargs.update(emulation_speed=0)
-      else:
+
+      if version.build is DolphinBuild.EXI_AI:
         console_kwargs.update(
             use_exi_inputs=True,
             enable_ffw=True,
         )
-
-    if validate_ffw_combination and console_kwargs.get('enable_ffw'):
-      chars = {}
-      for port, player in players.items():
-        if isinstance(player, AI) or isinstance(player, CPU):
-          chars[port] = player.character
-
-      if set(chars) == {1, 2}:
-        check_ffw_combination(chars[1], chars[2], stage)
+      elif not version.mainline:
+        raise ValueError(
+            'Headless requires mainline dolphin or a custom dolphin build. '
+            'See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions')
 
     console = melee.Console(
         path=path,
@@ -243,6 +237,7 @@ class DolphinConfig:
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
+  emulation_speed: float = 1.0  # Set to 0 for unlimited speed. Mainline only.
   infinite_time: bool = True  # Infinite time no stocks.
   log_level: int = 3  # WARN; 0 to disable
   dump: DumpConfig = _field(DumpConfig)  # For framedumping.

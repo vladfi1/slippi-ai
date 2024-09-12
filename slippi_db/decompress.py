@@ -202,7 +202,7 @@ def process_raw(
   slp_db = upload_lib.get_db(env, 'slp')
   slp_keys = set(doc["key"] for doc in slp_db.find({}, ["key"]))
 
-  tmp_dir = utils.tmp_dir(in_memory)
+  tmp_dir = utils.get_tmp_dir(in_memory)
 
   # download raw file
   raw_file = tempfile.NamedTemporaryFile(dir=tmp_dir, delete=False)

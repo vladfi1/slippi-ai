@@ -1,16 +1,16 @@
 import abc
-import atexit
 import concurrent.futures
 from contextlib import contextmanager
 import functools
+import gzip
 import hashlib
 import numpy as np
 import os
 from typing import Generator
 import py7zr
-import random
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import typing as tp
@@ -77,7 +77,7 @@ _MACOS_SHM_DISK = 'ramdisk'
 _MACOS_SHM_SIZE = 1024 # MB
 
 @functools.cache
-def tmp_dir(in_memory: bool) -> tp.Optional[str]:
+def get_tmp_dir(in_memory: bool) -> tp.Optional[str]:
   if not in_memory:
     return None
 
@@ -127,7 +127,7 @@ class LocalFile(abc.ABC):
     """Read the file bytes."""
 
   @abc.abstractmethod
-  def extract(self) -> tp.Generator[str, None, None]:
+  def extract(self, tmpdir: str) -> tp.Generator[str, None, None]:
     """Extract the file to a temporary directory and return it."""
 
   def md5(self) -> str:
@@ -149,12 +149,42 @@ class SimplePath(LocalFile):
     return self.path
 
   @contextmanager
-  def extract(self) -> Generator[str, None, None]:
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    del tmpdir
     yield os.path.join(self.root, self.path)
 
   def read(self):
     with open(os.path.join(self.root, self.path), 'rb') as f:
       return f.read()
+
+_GZ_SUFFIX = '.gz'
+
+class GZipFile(LocalFile):
+  """A gzipped file."""
+
+  def __init__(self, root: str, path: str):
+    self.root = root
+    self.path = path
+    if not path.endswith(_GZ_SUFFIX):
+      raise ValueError(f'{root}/{path} is not a gz file?')
+
+  @property
+  def name(self) -> str:
+    return self.path.removesuffix(_GZ_SUFFIX)
+
+  def read(self) -> bytes:
+    with gzip.open(os.path.join(self.root, self.path)) as f:
+      return f.read()
+
+  @contextmanager
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    try:
+      path = os.path.join(tmpdir, self.name)
+      with open(path, 'wb') as f:
+        f.write(self.read())
+      yield path
+    finally:
+      os.remove(path)
 
 class SevenZipFile(LocalFile):
   """File inside a 7z archive."""
@@ -174,8 +204,8 @@ class SevenZipFile(LocalFile):
     return result.stdout
 
   @contextmanager
-  def extract(self) -> Generator[str, None, None]:
-    with tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=True)) as tmpdir:
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
       subprocess.check_call(
         ['7z', 'x', '-o' + tmpdir, self.root, self.path],
         stdout=subprocess.DEVNULL)
@@ -189,27 +219,30 @@ class ZipFile(LocalFile):
   def __init__(self, root: str, path: str):
     self.root = root
     self.path = path
+    self.is_gzipped = path.endswith(_GZ_SUFFIX)
 
   @property
   def name(self) -> str:
-    return self.path
+    return self.path.removesuffix(_GZ_SUFFIX)
 
   def read(self) -> bytes:
     result = subprocess.run(
         ['unzip', '-p', self.root, self.path],
         check=True, stdout=subprocess.PIPE)
-    return result.stdout
+    data = result.stdout
+    if self.is_gzipped:
+      data = gzip.decompress(data)
+    return data
 
   @contextmanager
-  def extract(self) -> Generator[str, None, None]:
-    with tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=True)) as tmpdir:
-      subprocess.check_call(
-        ['unzip', self.root, self.path, '-d', tmpdir],
-        stdout=subprocess.DEVNULL)
-      yield os.path.join(tmpdir, self.path)
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
+      path = os.path.join(tmpdir, 'game.slp')
+      with open(path, 'wb') as f:
+        f.write(self.read())
+      yield path
 
-
-def traverse_slp_files(root: str) -> list[SimplePath]:
+def traverse_slp_files(root: str) -> list[LocalFile]:
   files = []
   for abspath, _, filenames in os.walk(root):
     for name in filenames:
@@ -217,6 +250,11 @@ def traverse_slp_files(root: str) -> list[SimplePath]:
         reldir = os.path.relpath(abspath, root)
         relpath = os.path.join(reldir, name)
         files.append(SimplePath(root, relpath))
+      elif name.endswith('.slp.gz'):
+        reldir = os.path.relpath(abspath, root)
+        relpath = os.path.join(reldir, name)
+        files.append(GZipFile(root, relpath))
+
   return files
 
 def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
@@ -234,7 +272,7 @@ class SevenZipChunk:
     self.files = files
 
   def __enter__(self):
-    self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=True))
+    self.tmpdir = tempfile.TemporaryDirectory(dir=get_tmp_dir(in_memory=True))
     self.extract()
     return self
 
@@ -247,7 +285,7 @@ class SevenZipChunk:
   @contextmanager
   def extract(self, in_memory: bool = True) -> Generator[list[LocalFile], None, None]:
     """Extract the chunk to a temporary directory and return the files."""
-    with tempfile.TemporaryDirectory(dir=tmp_dir(in_memory=in_memory)) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=get_tmp_dir(in_memory=in_memory)) as tmpdir:
       py7zr.SevenZipFile(self.path).extract(targets=self.files, path=tmpdir)
       yield [SimplePath(tmpdir, f) for f in self.files]
 
@@ -325,10 +363,13 @@ def traverse_7z_fast(
 
   return [SevenZipChunk(path, chunk) for chunk in chunks]
 
+_SLP_SUFFIX = '.slp'
+VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + _GZ_SUFFIX]
+
 def traverse_slp_files_zip(root: str) -> list[LocalFile]:
   files = []
   relpaths = zipfile.PyZipFile(root).namelist()
   for path in relpaths:
-    if path.endswith('.slp'):
+    if any(path.endswith(s) for s in VALID_SUFFIXES):
       files.append(ZipFile(root, path))
   return files

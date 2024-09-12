@@ -3,6 +3,7 @@ import contextlib
 import logging
 import multiprocessing as mp
 from multiprocessing.connection import Connection
+from multiprocessing.synchronize import Event
 import traceback
 import typing as tp
 from typing import Mapping, Optional
@@ -31,7 +32,11 @@ class EnvOutput(tp.NamedTuple):
 class Environment:
   """Wraps dolphin to provide an RL interface."""
 
-  def __init__(self, dolphin_kwargs: dict):
+  def __init__(
+      self,
+      dolphin_kwargs: dict,
+      check_controller_outputs: bool = False,
+  ):
     self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
     self.players = self._dolphin._players
 
@@ -187,6 +192,13 @@ class BatchedEnvironment:
     for env in self._envs:
       env.stop()
 
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      yield self
+    finally:
+      self.stop()
+
   def current_state(self) -> EnvOutput:
     current_states = [env.current_state() for env in self._envs]
     return utils.batch_nest_nt(current_states)
@@ -242,8 +254,13 @@ def build_environment(
 def _run_env(
     build_env_kwargs: dict,
     conn: Connection,
+    # output_queue: mp.Queue,
+    # stop: Event,
     batch_time: bool = False,
 ):
+  send = conn.send
+  # send = output_queue.put
+
   env = None
   try:
     env = build_environment(**build_env_kwargs)
@@ -252,24 +269,27 @@ def _run_env(
     initial_state = env.current_state()
     if batch_time:
       initial_state = [initial_state]
-    conn.send(initial_state)
+    send(initial_state)
 
     env_step = env.multi_step if batch_time else env.step
 
     while True:
       controllers = conn.recv()
       if controllers is None:
-        break
-      conn.send(env_step(controllers))
+        send(None)  # signal end of outputs
+        return
+      send(env_step(controllers))
 
     # conn.close()
   except KeyboardInterrupt:
     # exit quietly without spamming stderr
     return
+  except BrokenPipeError:
+    # The other end closed the connection.
+    return
   except Exception:
-    conn.send(EnvError(traceback.format_exc()))
-    # conn.send(e)
-    # conn.close()
+    send(EnvError(traceback.format_exc()))
+    send(None)  # signal end of outputs
   finally:
     if env:
       env.stop()
@@ -290,13 +310,17 @@ class AsyncEnvMP:
   ):
     context = mp.get_context('forkserver')
     self._parent_conn, child_conn = context.Pipe()
+    self._recv = self._parent_conn.recv
+
     builder_kwargs = dict(
         num_envs=num_envs,
         dolphin_kwargs=dolphin_kwargs,
         slippi_ports=slippi_ports,
         num_retries=num_retries,
     )
+    # self._stop = mp.Event()
     self._process = context.Process(
+        name=f'_run_env({slippi_ports})',
         target=_run_env,
         args=(builder_kwargs, child_conn),
         kwargs=dict(batch_time=batch_time))
@@ -308,24 +332,42 @@ class AsyncEnvMP:
 
   def begin_stop(self):
     """Non-blocking stop."""
-    if self._process is not None and self._process.is_alive():
-      self._parent_conn.send(None)
+    if self._process is not None:
+      # self._stop.set()
+      try:
+        self._parent_conn.send(None)
+      except BrokenPipeError:
+        pass
 
   def ensure_stopped(self):
-    if self._process is not None:
-      self._process.join()
-      self._process.close()
-      self._process = None
-      # self._parent_conn.close()
+    if self._process is None:
+      return
 
-  def __del__(self):
-    self.stop()
+    # The _run_env process might be blocked on pushing data into the Pipe.
+    # To unblock it, we pull all the pending data from the pipe.
+    while self._process.is_alive():
+      # _run_env pushes None to signal execution has finished.
+      if self._parent_conn.poll(1) and self._parent_conn.recv() is None:
+        break
+
+    # logging.info('Joining process %d', self._process.pid)
+    self._process.join()
+    self._process.close()
+    self._process = None
+
+  # def __del__(self):
+  #   self.stop()
 
   def send(self, controllers: tp.Union[Controllers, list[Controllers]]):
-    self._parent_conn.send(controllers)
+    try:
+      self._parent_conn.send(controllers)
+    except BrokenPipeError:
+      # TODO: attempt to retrieve exception from pipe?
+      raise EnvError("run_env process died")
 
   def recv(self) -> EnvOutput:
-    output = self._parent_conn.recv()
+    # TODO: ensure that enough data has been pushed?
+    output = self._recv()
     if isinstance(output, Exception):
       # Maybe rebuild the environment and start over?
       raise output

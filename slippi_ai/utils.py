@@ -124,6 +124,12 @@ def concat_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
   return map_nt(lambda *xs: np.concatenate(xs, axis), *nests)
 
+def unbatch_nest(nest: T) -> list[T]:
+  return [
+      tree.unflatten_as(nest, flat_slice)
+      for flat_slice in zip(*tree.flatten(nest))
+  ]
+
 def reify_tuple_type(t: type[T]) -> T:
   """Takes a tuple type and returns a structure with types at the leaves."""
   # TODO: support typing.Tuple
@@ -188,15 +194,30 @@ def retry(
   # Let any exception pass through on the last attempt.
   return f()
 
-def _check_same_structure(s1, s2) -> list[tuple[list, str]]:
-  # t1 = type(s1)
-  # t2 = type(s2)
-  # if t1 != t2:
-  #   return [([], f'type mismatch: {t1} != {t2}')]
+def is_structure(obj_or_type) -> bool:
+  check_fn = issubclass if isinstance(obj_or_type, type) else isinstance
+  return check_fn(obj_or_type, (tp.Mapping, tp.Sequence))
+
+def is_namedtuple(t: type) -> bool:
+  return hasattr(t, '_fields')
+
+def _check_same_structure(
+    s1, s2, equal: bool = False) -> list[tuple[list, str]]:
+
+  t1 = type(s1)
+  t2 = type(s2)
+  st1 = is_structure(t1)
+  st2 = is_structure(t2)
+
+  if (st1 != st2) or (st1 and st2 and (t1 != t2)):
+    return [([], f'type mismatch: {t1} and {t2}')]
 
   errors: list[tuple[list, str]] = []
 
-  if isinstance(s1, dict) and isinstance(s2, dict):
+  # TODO: handle arbitrary mappings?
+  if isinstance(s1, dict):
+    assert isinstance(s2, dict)
+
     keys1 = set(s1)
     keys2 = set(s2)
 
@@ -206,28 +227,45 @@ def _check_same_structure(s1, s2) -> list[tuple[list, str]]:
       errors.append(([k2], 'only in second'))
 
     for k in keys1.union(keys2):
-      sub_errors = check_same_structure(s1[k], s2[k])
+      sub_errors = _check_same_structure(s1[k], s2[k], equal)
       for path, _ in sub_errors:
         path.append(k)
       errors.extend(sub_errors)
     return errors
 
-  if isinstance(s1, tp.Sequence) and isinstance(s2, tp.Sequence):
+  if is_namedtuple(t1):
+    assert is_namedtuple(t2)
+
+    for k in t1._fields:
+      sub_errors = _check_same_structure(
+          getattr(s1, k), getattr(s2, k), equal)
+      for path, _ in sub_errors:
+        path.append(k)
+      errors.extend(sub_errors)
+    return errors
+
+  if isinstance(s1, tp.Sequence):
+    assert isinstance(s2, tp.Sequence)
+
     if len(s1) != len(s2):
       errors.append(([], f'different lengths: {len(s1)} != {len(s2)}'))
       return errors
 
     for i, (x1, x2) in enumerate(zip(s1, s2)):
-      sub_errors = _check_same_structure(x1, x2)
+      sub_errors = _check_same_structure(x1, x2, equal)
       for path, _ in sub_errors:
         path.append(i)
       errors.extend(sub_errors)
     return errors
 
+  if equal and (s1 != s2):
+    return [([], f'{s1} != {s2}')]
+
   return []
 
-def check_same_structure(s1, s2) -> list[tuple[list, str]]:
-  errors = _check_same_structure(s1, s2)
+def check_same_structure(
+    s1, s2, equal: bool = False) -> list[tuple[list, str]]:
+  errors = _check_same_structure(s1, s2, equal)
   for path, _ in errors:
     path.reverse()
   return errors
