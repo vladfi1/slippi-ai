@@ -483,6 +483,8 @@ class Bot(commands.Bot):
     config.connect_code = connect_code
     config.render = render
     config.headless = not render
+    config.replay_dir = os.path.join(config.replay_dir, agent)
+    os.makedirs(config.replay_dir, exist_ok=True)
     extra_dolphin_kwargs = {}
     if render:
       # TODO: don't hardcode this
