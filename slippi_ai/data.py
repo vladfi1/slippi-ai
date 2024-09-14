@@ -295,7 +295,7 @@ class DataSource:
 
   def process_game(self, game: Game, name_code: int) -> Frames:
     # These could be deferred to the learner.
-    rewards = reward.compute_rewards(game)
+    rewards = reward.compute_rewards(game, damage_ratio=0)
     controllers = self.embed_controller.from_state(game.p0.controller)
 
     states = self.embed_game.from_state(game)
