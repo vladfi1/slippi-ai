@@ -398,6 +398,7 @@ def run(config: Config):
         num_envs=config.actor.num_envs,
         async_envs=config.actor.async_envs,
         use_gpu=config.actor.gpu_inference,
+        damage_ratio=config.learner.damage_ratio,
     )
 
   learner_manager = LearnerManager(

@@ -35,6 +35,7 @@ class LearnerConfig:
   entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
+  damage_ratio: float = 0
   ppo: PPOConfig = field(PPOConfig)
 
 class LearnerState(tp.NamedTuple):
