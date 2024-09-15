@@ -15,7 +15,7 @@ if __name__ == '__main__':
 
   CONFIG = ff.DEFINE_dict(
       'config',
-      **flag_utils.get_flags_from_dataclass(train_two_lib.Config))
+      **flag_utils.get_flags_from_default(train_two_lib.DEFAULT_CONFIG))
 
   # passed to wandb.init
   WANDB = ff.DEFINE_dict(

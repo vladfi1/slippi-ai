@@ -123,6 +123,9 @@ class Config:
   # Useful if we're training against the level 9 cpu.
   value_burnin_steps: int = 0
 
+DEFAULT_CONFIG = Config()
+DEFAULT_CONFIG.dolphin.console_timeout = 30
+
 
 class LearnerManager:
 

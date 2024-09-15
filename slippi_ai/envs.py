@@ -447,8 +447,8 @@ class AsyncBatchedEnvironmentMP:
     for i, env in enumerate(self._envs):
       env.send(get_action(i))
 
+    self._num_in_transit += len(self._action_queue)
     self._action_queue.clear()
-    self._num_in_transit += self._num_steps
 
   def push(self, controllers: Controllers):
     if self._num_steps == 0:
@@ -474,7 +474,7 @@ class AsyncBatchedEnvironmentMP:
       time_major = zip(*batch_major)
       for batch in time_major:
         self._state_queue.appendleft(utils.concat_nest_nt(batch))
-      self._num_in_transit -= self._num_steps
+        self._num_in_transit -= 1
 
   def pop(self) -> EnvOutput:
     if not self._state_queue:

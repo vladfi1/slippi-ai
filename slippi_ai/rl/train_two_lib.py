@@ -77,6 +77,9 @@ class Config:
   # Useful if we're training against the level 9 cpu.
   value_burnin_steps: int = 0
 
+DEFAULT_CONFIG = Config()
+DEFAULT_CONFIG.dolphin.console_timeout = 30
+
 Logger = run_lib.Logger
 
 def get_pretraining_character(
@@ -127,6 +130,7 @@ class AgentManager:
       agent_config.name = restore_config.name
       agent_config.teacher = restore_config.teacher
 
+    # TODO: check if teacher is itself an RL-trained model
     teacher_state = saving.load_state_from_disk(agent_config.teacher)
     teacher_config = flag_utils.dataclass_from_dict(
         train_lib.Config, teacher_state['config'])
