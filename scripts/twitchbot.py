@@ -49,6 +49,7 @@ agent_flags.update(
 )
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
+BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
 class BotSession:
@@ -277,6 +278,7 @@ class Bot(commands.Bot):
       max_sessions: int = 4,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
       bot_session_interval: float = 1, # in minutes
+      bot: Optional[str] = None,
       bot2: Optional[str] = None,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
@@ -288,9 +290,14 @@ class Bot(commands.Bot):
     self._menu_timeout = menu_timeout
     self._bot_session_interval = bot_session_interval
 
-    self._bot_agent_kwargs = {1: agent_kwargs, 2: agent_kwargs.copy()}
-    if bot2:
-      self._bot_agent_kwargs[2]['path'] = bot2
+    bot1 = bot or agent_kwargs['path']
+    bot2 = bot2 or bot1
+    self._bot_agent_kwargs = {
+        1: dict(agent_kwargs, path=bot1),
+        2: dict(agent_kwargs, path=bot2),
+    }
+    self._bot1 = bot1
+    self._bot2 = bot2
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -555,10 +562,12 @@ class Bot(commands.Bot):
     with self.lock:
 
       agent_name = self._get_opponent(ctx.author.name)
-      await ctx.send(f'Selected bot: {agent_name}')
+      await ctx.send(f'Selected agent: {agent_name}')
 
       if self._bot_session:
-        await ctx.send('Bot vs. bot on stream.')
+        bot1 = os.path.basename(self._bot1)
+        bot2 = os.path.basename(self._bot2)
+        await ctx.send(f'{bot1} vs. {bot2} on stream.')
 
       if not self._sessions:
         await ctx.send('No active sessions.')
@@ -658,6 +667,7 @@ def main(_):
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
+      bot=BOT.value,
       bot2=BOT2.value,
   )
 
