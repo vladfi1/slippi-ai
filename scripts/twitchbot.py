@@ -626,6 +626,25 @@ class Bot(commands.Bot):
     self._stop_bot_session()
     await ctx.send('Stopped bot session.')
 
+  @commands.command()
+  async def kick(self, ctx: commands.Context):
+    if not ctx.author.is_mod:
+      await ctx.send('Only mods can kick players.')
+      return
+
+    words = ctx.message.content.split(' ')[1:]
+    if len(words) != 1:
+      await ctx.send('Must specify a player to kick')
+      return
+
+    name = words[0]
+    if name not in self._sessions:
+      await ctx.send(f'"{name}" isn\'t playing right now')
+      return
+
+    self._stop_sessions([self._sessions[name]])
+    await ctx.send(f'Kicked {name}')
+
   async def _gc_sessions(self) -> list[SessionInfo]:
     """Stop sessions that have been in the menu for too long."""
     with self.lock:
