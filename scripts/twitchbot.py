@@ -389,7 +389,16 @@ class Bot(commands.Bot):
       await ctx.send(f'Available agents: {models_str}')
       return
 
-    self._requested_agents[ctx.author.name] = agent
+    name = ctx.author.name
+    self._requested_agents[name] = agent
+    await ctx.send(f'{name} has selected {agent}')
+
+    # Auto-restart if the person is already playing
+    if name in self._sessions:
+      with self.lock:
+        await ctx.send(f'Restarting session with {name}')
+        self._stop_sessions([self._sessions[name]])
+        await self._play(ctx)
 
   async def event_ready(self):
     # Notify us when everything is ready!
@@ -411,6 +420,8 @@ class Bot(commands.Bot):
   async def _play(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
+      connect_code = self._play_codes[name]
+      assert connect_code
 
       if name in self._sessions:
         await ctx.send(f'{name}, you are already playing')
@@ -421,20 +432,6 @@ class Bot(commands.Bot):
       if len(self._sessions) == self._max_sessions:
         await ctx.send('Sorry, too many sessions already active.')
         return
-
-      words = ctx.message.content.split(' ')
-
-      if len(words) == 1:
-        connect_code = self._play_codes.get(name)
-        if connect_code is None:
-          await ctx.send('You must specify a connect code')
-          return
-      else:
-        connect_code = words[1].upper()
-        if '#' not in connect_code:
-          await ctx.send(f'{connect_code} is invalid')
-          return
-        self._play_codes[name] = connect_code
 
       is_stream = self._streaming_against is None
       if is_stream:
@@ -463,6 +460,21 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def play(self, ctx: commands.Context):
+    name = ctx.author.name
+    words = ctx.message.content.split(' ')
+
+    if len(words) == 1:
+      connect_code = self._play_codes.get(name)
+      if connect_code is None:
+        await ctx.send('You must specify a connect code')
+        return
+    else:
+      connect_code = words[1].upper()
+      if '#' not in connect_code:
+        await ctx.send(f'{connect_code} is not a valid connect code')
+        return
+      self._play_codes[name] = connect_code
+
     await self._play(ctx)
 
   @commands.command()
