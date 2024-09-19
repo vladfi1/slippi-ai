@@ -14,7 +14,7 @@ TYPE_TO_ITEM = {
     int: ff.Integer,
     str: ff.String,
     float: ff.Float,
-    list: ff.Sequence,
+    list[str]: ff.StringList,
 }
 
 def maybe_undo_optional(t: type) -> type:
@@ -27,7 +27,6 @@ def maybe_undo_optional(t: type) -> type:
     return t.__args__[0]
   return t
 
-
 def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
   field_type = maybe_undo_optional(field_type)
   item_constructor = TYPE_TO_ITEM.get(field_type)
@@ -38,6 +37,7 @@ def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
         default=default,
         enum_class=field_type,
     )
+
   # TODO: also log path to unsupported field
   logging.warn(f'Unsupported field of type {field_type}')
   return None

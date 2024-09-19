@@ -3,7 +3,6 @@ import contextlib
 import logging
 import multiprocessing as mp
 from multiprocessing.connection import Connection
-from multiprocessing.synchronize import Event
 import traceback
 import typing as tp
 from typing import Mapping, Optional
@@ -72,13 +71,8 @@ class Environment:
   def step(
     self,
     controllers: Controllers,
-    batch_index: Optional[int] = None,
   ) -> EnvOutput:
     """Send controllers for each AI. Return the next state."""
-
-    if batch_index is not None:
-      controllers = utils.map_single_structure(
-          lambda x: x[batch_index], controllers)
 
     for port, controller in controllers.items():
       send_controller(self._dolphin.controllers[port], controller)

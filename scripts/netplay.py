@@ -1,14 +1,15 @@
 """Test a trained model."""
 
+import collections
 import json
-from typing import Optional
 
 from absl import app
 from absl import flags
 import fancyflags as ff
 
-from slippi_ai import eval_lib
+from slippi_ai import eval_lib, types, utils
 from slippi_ai import dolphin as dolphin_lib
+from slippi_db.parse_libmelee import get_controller
 
 PLAYER = ff.DEFINE_dict('player', **eval_lib.PLAYER_FLAGS)
 
@@ -49,7 +50,6 @@ def main(_):
     agents.append(agent)
 
     eval_lib.update_character(player, agent.config)
-    # character = player.character
 
   total_frames = 60 * FLAGS.runtime
 
@@ -74,14 +74,34 @@ def main(_):
   agent.start()
   try:
     for _ in range(total_frames):
-      # "step" to the next frame
-      gamestate = dolphin.step()
+      if gamestate.frame == -123:
+        action_queue = collections.deque(
+            [None] * (1 + dolphin.console.online_delay))
 
-      # if gamestate.frame == -123: # initial frame
-      #   controller.release_all()
+      # "step" to the next frame
+      prev_frame = gamestate.frame
+      gamestate = dolphin.step()
+      assert gamestate.frame == prev_frame + 1
 
       for agent in agents:
-        agent.step(gamestate)
+        action: types.Controller = agent.step(gamestate).controller_state
+        action = utils.map_nt(lambda x: x[0], action)
+        action_queue.appendleft(action)
+
+        expected: types.Controller = action_queue.pop()
+        if expected is None:
+          continue
+
+        if gamestate.frame < 0:
+          continue
+
+        observed = agent._agent._policy.controller_embedding.from_state(
+            get_controller(gamestate.players[actual_port].controller_state))
+
+        # deadzone can change observed stick values
+        if observed.buttons != expected.buttons:
+          raise ValueError('Wrong controller seen')
+
   finally:
     agent.stop()
     dolphin.stop()

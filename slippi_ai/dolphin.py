@@ -240,6 +240,7 @@ class DolphinConfig:
   emulation_speed: float = 1.0  # Set to 0 for unlimited speed. Mainline only.
   infinite_time: bool = True  # Infinite time no stocks.
   log_level: int = 3  # WARN; 0 to disable
+  log_types: list[str] = dataclasses.field(default_factory=['SLIPPI'].copy)
   dump: DumpConfig = _field(DumpConfig)  # For framedumping.
 
   # For online play
@@ -273,5 +274,8 @@ DOLPHIN_FLAGS = dict(
     replay_dir=ff.String(None, 'Directory to save replays to.'),
     headless=ff.Boolean(
         False, 'Headless configuration: exi + ffw, no graphics or audio.'),
+    emulation_speed=ff.Float(1.0),
     infinite_time=ff.Boolean(False, 'Infinite time no stocks.'),
+    log_level=ff.Integer(3, 'Dolphin log level, defaults to WARN.'),
+    log_types=ff.StringList(['SLIPPI'], 'Enabled logging categories.'),
 )
