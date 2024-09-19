@@ -251,6 +251,7 @@ class DataSource:
       batch_size: int = 64,
       unroll_length: int = 64,
       extra_frames: int = 1,
+      damage_ratio: float = 0.01,
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
@@ -260,6 +261,7 @@ class DataSource:
     self.batch_size = batch_size
     self.unroll_length = unroll_length
     self.chunk_size = unroll_length + extra_frames
+    self.damage_ratio = damage_ratio
     self.compressed = compressed
     self.embed_controller = embed_controller
     self.embed_game = embed_game
@@ -295,7 +297,7 @@ class DataSource:
 
   def process_game(self, game: Game, name_code: int) -> Frames:
     # These could be deferred to the learner.
-    rewards = reward.compute_rewards(game, damage_ratio=0)
+    rewards = reward.compute_rewards(game, damage_ratio=self.damage_ratio)
     controllers = self.embed_controller.from_state(game.p0.controller)
 
     states = self.embed_game.from_state(game)
@@ -353,6 +355,7 @@ class DataSourceMP:
 class DataConfig:
   batch_size: int = 32
   unroll_length: int = 64
+  damage_ratio: float = 0.01
   compressed: bool = True
   in_parallel: bool = True
 
