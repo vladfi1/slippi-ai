@@ -474,7 +474,7 @@ class Agent:
       raise ValueError('Controller has wrong port.')
     self._controller = controller
 
-  def step(self, gamestate: melee.GameState) -> embed.StateAction:
+  def step(self, gamestate: melee.GameState) -> SampleOutputs:
     needs_reset = np.array([gamestate.frame == -123])
     game = get_game(gamestate, ports=self.players)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
