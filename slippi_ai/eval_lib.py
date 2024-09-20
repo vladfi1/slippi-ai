@@ -422,15 +422,32 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
+def get_name_from_rl_state(state: dict) -> Optional[str]:
+  # For RL, we know the name that was used during training.
+  # TODO: unify self-train and train-two
+  if 'rl_config' in state:  # self-train aka rl/run.py
+    return state['rl_config']['agent']['name']
+  elif 'agent_config' in state:  # rl/train_two.py
+    return state['agent_config']['name']
+  return None
+
 def build_delayed_agent(
     state: dict,
-    name: str,
+    name: Optional[str] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
     console_delay: int = 0,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   policy = saving.load_policy_from_state(state)
+
+  rl_name = get_name_from_rl_state(state)
+  if rl_name is not None:
+    name = rl_name
+    logging.info('Setting agent name to "%s" from RL', name)
+
+  if name is None:
+    raise ValueError('Must specify an agent name.')
 
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
@@ -502,14 +519,6 @@ def build_agent(
 ) -> Agent:
   if state is None:
     state = load_state(path, tag)
-
-  # For RL, we know the name that was used during training.
-  if 'rl_config' in state:
-    name = state['rl_config']['agent']['name']
-    logging.info(f'Setting agent name to "{name}" from RL.')
-  elif 'agent_config' in state:
-    name = state['agent_config']['name']
-    logging.info('Setting agent name to %s from RL', name)
 
   return Agent(
       controller=controller,
