@@ -1,6 +1,7 @@
 import collections
 import gc
 import logging
+import platform
 import queue
 import random
 import subprocess
@@ -274,17 +275,31 @@ def find_open_udp_ports(num: int):
   min_port = 10_000
   max_port = 2 ** 16
 
-  netstat = subprocess.check_output(['netstat', '-a', '--numeric-ports'])
-  lines = netstat.decode().split('\n')
+  system = platform.system()
+  if system == 'Linux':
+    netstat_command = ['netstat', '-an', '--udp']
+    port_delimiter = ':'
+  elif system == 'Darwin':
+    netstat_command = ['netstat', '-an', '-p', 'udp']
+    port_delimiter = '.'
+  else:
+    raise NotImplementedError(f'Unsupported system "{system}"')
+
+  netstat = subprocess.check_output(netstat_command)
+  lines = netstat.decode().split('\n')[2:]
 
   used_ports = set()
   for line in lines:
     words = line.split()
-    if not words or words[0] != 'udp':
+    if not words:
       continue
 
-    address, port = words[3].split(':')
-    if address == 'localhost':
+    address, port = words[3].rsplit(port_delimiter, maxsplit=1)
+    if port == '*':
+      # TODO: what does this mean? Seems to only happen on Darwin.
+      continue
+
+    if address in ('::', 'localhost', '0.0.0.0', '*'):
       used_ports.add(int(port))
 
   available_ports = set(range(min_port, max_port)) - used_ports
