@@ -88,6 +88,7 @@ if __name__ == '__main__':
         env_kwargs=env_kwargs,
         use_gpu=USE_GPU.value,
         use_fake_envs=FAKE_ENVS.value,
+        damage_ratio=0,
     )
 
     if NUM_WORKERS.value == 0:
@@ -106,7 +107,10 @@ if __name__ == '__main__':
       with timer:
         stats, timings = evaluator.rollout(ROLLOUT_LENGTH.value)
 
-    print('rewards:', stats)
+    num_frames = NUM_ENVS.value * ROLLOUT_LENGTH.value
+    num_minutes = num_frames / (60 * 60)
+    kdpm = stats[1].reward / num_minutes
+    print('ko diff per minute:', kdpm)
     print('timings:', utils.map_single_structure(lambda f: f'{f:.3f}', timings))
 
     sps = ROLLOUT_LENGTH.value / timer.cumtime
