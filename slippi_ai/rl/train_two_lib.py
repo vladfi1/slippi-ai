@@ -66,6 +66,9 @@ class Config:
   # num_actors: int = 1
   dolphin: dolphin_lib.DolphinConfig = field(dolphin_lib.DolphinConfig)
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
+  learner1: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
+  learner2: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
+
   actor: run_lib.ActorConfig = field(run_lib.ActorConfig)
   p1: AgentConfig = field(AgentConfig)
   p2: AgentConfig = field(AgentConfig)
@@ -173,6 +176,7 @@ class AgentManager:
         learner_config.learning_rate,
         name='learning_rate',
         trainable=False)
+    self.learner_config = learner_config  # save desired learning rate
     learner_config = dataclasses.replace(
         learner_config, learning_rate=self.learning_rate)
 
@@ -327,7 +331,7 @@ def run(config: Config):
         agent_config=getattr(config, f'p{port}'),
         port=port,
         expt_dir=expt_dir,
-        learner_config=config.learner,
+        learner_config=getattr(config, f'learner{port}'),
     )
 
   # Purely for naming the save files.
@@ -470,7 +474,7 @@ def run(config: Config):
     logging.info('Value function burnin')
 
     for agent in agents.values():
-      agent.learning_rate.assign(config.learner.learning_rate)
+      agent.learning_rate.assign(agent.learner_config.learning_rate)
 
     for i in range(config.value_burnin_steps // steps_per_epoch):
       with step_profiler:

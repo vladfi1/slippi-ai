@@ -30,6 +30,11 @@ if __name__ == '__main__':
   )
 
   def main(_):
+    CONFIG.value['learner1'] = flag_utils.override_dict(
+        CONFIG.value['learner'], CONFIG, ['learner1'])
+    CONFIG.value['learner2'] = flag_utils.override_dict(
+        CONFIG.value['learner'], CONFIG, ['learner2'])
+
     config = flag_utils.dataclass_from_dict(train_two_lib.Config, CONFIG.value)
 
     wandb_kwargs = dict(WANDB.value)

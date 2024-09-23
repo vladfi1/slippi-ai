@@ -126,3 +126,21 @@ def dataclass_from_dict(cls: tp.Type[T], nest: dict) -> T:
     recursed[field.name] = value
 
   return cls(**recursed)
+
+def override_dict(
+    base: dict,
+    overrides: flags.FlagHolder,
+    prefix: tp.Sequence[str],
+) -> str:
+  """Override a base config value from another dictionary."""
+
+  def maybe_update(path: tp.Sequence[str], base_value):
+    key = '.'.join([overrides.name, *prefix, *path])
+    flag = overrides._flagvalues[key]
+    if flag.using_default_value:
+      return base_value
+
+    logging.info(f'Overriding from --{key}={flag.value}')
+    return flag.value
+
+  return tree.map_structure_with_path(maybe_update, base)
