@@ -31,7 +31,8 @@ class ValueFunction(snt.Module):
       self,
       frames: data.Frames,
       initial_state: RecurrentState,
-      discount: float = 0.99,
+      discount: float,
+      discount_on_death: tp.Optional[float] = None,
   ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Computes prediction loss on a batch of frames.
 
@@ -40,6 +41,7 @@ class ValueFunction(snt.Module):
         Assumed to have one frame of overlap.
       initial_state: Batch of initial recurrent states.
       discount: Per-frame discount factor for returns.
+      discount_on_death: Discount factor to use when a player dies.
     """
     rewards = frames.reward
 
@@ -54,6 +56,12 @@ class ValueFunction(snt.Module):
     last_output, _ = self.network.step(last_input, final_state)
     last_value = tf.squeeze(self.value_head(last_output), -1)
     discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
+
+    if discount_on_death is not None:
+      death_happened = tf.abs(rewards) > 0.9  # this is a hack
+      discounts = tf.where(
+          death_happened, tf.cast(discount_on_death, tf.float32), discounts)
+
     value_targets = discounted_returns(
         rewards=rewards,
         discounts=discounts,

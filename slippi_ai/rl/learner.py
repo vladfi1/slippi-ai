@@ -35,6 +35,7 @@ class LearnerConfig:
   entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
+  discount_on_death: tp.Optional[float] = None
   damage_ratio: float = 0
   ppo: PPOConfig = field(PPOConfig)
 
@@ -180,6 +181,7 @@ class Learner:
           frames=get_frames(trajectory),
           initial_state=initial_state.value_function,
           discount=self.discount,
+          discount_on_death=self._config.discount_on_death,
       )
       if train_value_function:
         grads = tape.gradient(value_ouputs.loss, self._value_vars)
