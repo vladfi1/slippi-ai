@@ -12,7 +12,7 @@ from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
 from slippi_ai.controller_heads import ControllerType
 from slippi_ai import value_function as vf_lib
-from slippi_ai import tf_utils, utils
+from slippi_ai import tf_utils, utils, reward
 
 field = lambda f: dataclasses.field(default_factory=f)
 
@@ -87,6 +87,10 @@ def combine_grads(x: tp.Optional[tf.Tensor], y: tp.Optional[tf.Tensor]):
   if x is None or y is None:
     return None
   return x + y
+
+def update_rewards(trajectory: Trajectory, damage_ratio: float):
+  return trajectory._replace(
+      rewards=reward.compute_rewards(trajectory.states, damage_ratio))
 
 class Learner:
   """Implements A2C."""
@@ -399,6 +403,10 @@ class Learner:
       num_epochs: int = None,
   ) -> tuple[LearnerState, dict]:
     assert self._use_separate_vf
+
+    trajectories = [
+        update_rewards(t, self._config.damage_ratio)
+        for t in trajectories]
 
     learner_outputs: list[LearnerOutputs] = []
 
