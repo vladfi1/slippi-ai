@@ -14,10 +14,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # See https://github.com/pypa/pip/issues/11281
     - name: Install
       run: |
-        sudo apt install python3-pip
-        pip install tensorflow
+        pip install tensorflow ray
         pip install -r requirements.txt
         pip install .
 
@@ -26,3 +26,12 @@ jobs:
 
     - name: Test Imitation with Restore
       run: ./tests/training_test.sh --config.restore_pickle=data/checkpoints/demo
+
+    - name: Test RL with Fake Data
+      run: ./tests/train_rl.sh
+
+    - name: Test RL with Fake Data + Restore
+      run: ./tests/train_rl.sh --config.teacher="" --config.restore=data/checkpoints/rl_demo
+
+    - name: Test train_two with Fake Data
+      run: ./tests/train_two.sh
