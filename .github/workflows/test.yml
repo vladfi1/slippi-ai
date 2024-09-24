@@ -1,0 +1,28 @@
+name: slippi-ai test cases
+
+on: [push, pull_request]
+
+jobs:
+  test:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10']
+        os: ['ubuntu-latest']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install
+      run: |
+        sudo apt install python3-pip
+        pip install tensorflow
+        pip install -r requirements.txt
+        pip install .
+
+    - name: Test Imitation
+      run: ./tests/training_test.sh
+
+    - name: Test Imitation with Restore
+      run: ./tests/training_test.sh --config.restore_pickle=data/checkpoints/demo
