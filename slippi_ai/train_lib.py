@@ -150,6 +150,31 @@ class Config:
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
 
+def create_name_map(
+    replays: list[data_lib.ReplayInfo],
+    max_names: int,
+) -> dict[str, int]:
+  name_map = {}
+  name_counts = collections.Counter()
+
+  normalized_names = [
+      nametags.normalize_name(replay.main_player.name)
+      for replay in replays]
+  name_counts.update(normalized_names)
+
+  for name, _ in name_counts.most_common(max_names):
+    name_map[name] = len(name_map)
+  missing_name_code = len(name_map)
+
+  # Bake in name groups from nametags.py
+  for first, *rest in nametags.name_groups:
+    if first not in name_map:
+      continue
+    for name in rest:
+      name_map[name] = name_map[first]
+
+  return name_map
+
 def train(config: Config):
   tag = config.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
@@ -215,34 +240,63 @@ def train(config: Config):
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
-  # Set up name mapping.
-  max_names = config.max_names
-  name_map = {}
-  name_counts = collections.Counter()
+  pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
-  normalized_names = [
-      nametags.normalize_name(replay.main_player.name)
-      for replay in train_replays]
-  name_counts.update(normalized_names)
+  save_to_s3 = config.save_to_s3
+  if save_to_s3 or config.restore_tag:
+    if 'S3_CREDS' not in os.environ:
+      raise ValueError('must set the S3_CREDS environment variable')
 
-  for name, _ in name_counts.most_common(max_names):
-    name_map[name] = len(name_map)
-  missing_name_code = len(name_map)
-  num_codes = missing_name_code + 1
+    s3_store = s3_lib.get_store()
+    s3_keys = s3_lib.get_keys(tag)
 
-  # Bake in name groups from nametags.py
-  for first, *rest in nametags.name_groups:
-    if first not in name_map:
-      continue
-    for name in rest:
-      name_map[name] = name_map[first]
+  if config.restore_tag:
+    restore_s3_keys = s3_lib.get_keys(config.restore_tag)
+  elif save_to_s3:
+    restore_s3_keys = s3_keys
+  else:
+    restore_s3_keys = None
 
+  # attempt to restore parameters
+  restored = False
+  if restore_s3_keys is not None:
+    try:
+      restore_key = restore_s3_keys.combined
+      obj = s3_store.get(restore_key)
+      logging.info('restoring from %s', restore_key)
+      combined_state = pickle.loads(obj)
+      restored = True
+      # TODO: do some config compatibility validation
+    except KeyError:
+      # TODO: re-raise if user specified restore_tag
+      logging.info('no params found at %s', restore_key)
+  elif config.restore_pickle:
+    logging.info('restoring from %s', config.restore_pickle)
+    with open(config.restore_pickle, 'rb') as f:
+      combined_state = pickle.load(f)
+    restored = True
+  elif os.path.exists(pickle_path):
+    logging.info('restoring from %s', pickle_path)
+    with open(pickle_path, 'rb') as f:
+      combined_state = pickle.load(f)
+    restored = True
+  else:
+    logging.info('not restoring any params')
+
+  if restored:
+    name_map: dict[str, int] = combined_state['name_map']
+  else:
+    name_map = create_name_map(train_replays, config.max_names)
+
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
   # Record name map
   print(name_map)
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
   wandb.save(name_map_path, policy='now')
+
+  missing_name_code = len(name_map)
+  num_codes = missing_name_code + 1
 
   def encode_name(name: str) -> np.uint8:
     return np.uint8(name_map.get(name, missing_name_code))
@@ -287,16 +341,6 @@ def train(config: Config):
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  pickle_path = os.path.join(expt_dir, 'latest.pkl')
-
-  save_to_s3 = config.save_to_s3
-  if save_to_s3 or config.restore_tag:
-    if 'S3_CREDS' not in os.environ:
-      raise ValueError('must set the S3_CREDS environment variable')
-
-    s3_store = s3_lib.get_store()
-    s3_keys = s3_lib.get_keys(tag)
-
   def save():
     # Local Save
     tf_state = get_tf_state()
@@ -319,43 +363,8 @@ def train(config: Config):
 
   maybe_save = utils.Periodically(save, runtime.save_interval)
 
-  if config.restore_tag:
-    restore_s3_keys = s3_lib.get_keys(config.restore_tag)
-  elif save_to_s3:
-    restore_s3_keys = s3_keys
-  else:
-    restore_s3_keys = None
-
-  # attempt to restore parameters
-  restored = False
-  if restore_s3_keys is not None:
-    try:
-      restore_key = restore_s3_keys.combined
-      obj = s3_store.get(restore_key)
-      logging.info('restoring from %s', restore_key)
-      combined_state = pickle.loads(obj)
-      set_tf_state(combined_state['state'])
-      restored = True
-      # TODO: do some config compatibility validation
-    except KeyError:
-      # TODO: re-raise if user specified restore_tag
-      logging.info('no params found at %s', restore_key)
-  elif config.restore_pickle:
-    logging.info('restoring from %s', config.restore_pickle)
-    with open(config.restore_pickle, 'rb') as f:
-      combined_state = pickle.load(f)
-    set_tf_state(combined_state['state'])
-    restored = True
-  elif os.path.exists(pickle_path):
-    logging.info('restoring from %s', pickle_path)
-    with open(pickle_path, 'rb') as f:
-      combined_state = pickle.load(f)
-    set_tf_state(combined_state['state'])
-    restored = True
-  else:
-    logging.info('not restoring any params')
-
   if restored:
+    set_tf_state(combined_state['state'])
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
