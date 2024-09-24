@@ -35,3 +35,33 @@ jobs:
 
     - name: Test train_two with Fake Data
       run: ./tests/train_two.sh
+
+    - name: Download ExiAI Dolphin
+      # TODO: specify release version in repo?
+      run: |
+        curl -L https://github.com/vladfi1/slippi-Ishiiruka/releases/download/exi-ai-0.1.0/Slippi_Online-x86_64-ExiAI.AppImage -o dolphin
+        chmod +x dolphin
+
+    - name: Install dolphin dependencies
+      run: sudo apt install -y libfuse2 libegl1
+
+    - name: Cache the SSBM iso
+      uses: actions/cache@v4
+      id: cache-iso  # give it a name for checking the cache hit-or-not
+      with:
+        path: SSBM.iso
+        key: ssbm-iso
+
+    - name: Download the SSBM iso
+      if: steps.cache-iso.outputs.cache-hit != 'true'
+      env:
+        SSBM_ISO_DRIVE_ID: ${{ secrets.SSBM_ISO_DRIVE_ID }}
+      run: |
+        pip install gdown
+        gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
+
+    - name: Test RL with Dolphin
+      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso
+
+    - name: Test train_two with Dolphin
+      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso
