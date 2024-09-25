@@ -31,13 +31,13 @@ jobs:
       run: ./tests/training_test.sh
 
     - name: Test Imitation with Restore
-      run: ./tests/training_test.sh --config.restore_pickle=data/checkpoints/demo
+      run: ./tests/training_test.sh --config.restore_pickle=slippi_ai/data/checkpoints/demo
 
     - name: Test RL with Fake Data
       run: ./tests/train_rl.sh
 
     - name: Test RL with Fake Data + Restore
-      run: ./tests/train_rl.sh --config.teacher="" --config.restore=data/checkpoints/rl_demo
+      run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo
 
     - name: Test train_two with Fake Data
       run: ./tests/train_two.sh

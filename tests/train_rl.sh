@@ -3,7 +3,7 @@ python slippi_ai/rl/run.py \
   --config.runtime.log_interval=0 \
   --config.learner.learning_rate=0 \
   --config.runtime.use_fake_data=True \
-  --config.teacher=data/checkpoints/demo \
+  --config.teacher=slippi_ai/data/checkpoints/demo \
   --config.actor.num_envs=1 \
   --config.actor.rollout_length=64 \
   --config.runtime.burnin_steps_after_reset=1 \

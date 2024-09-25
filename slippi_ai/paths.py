@@ -1,8 +1,8 @@
 import pathlib
 
 _FILE_PATH = pathlib.Path(__file__)
-PROJECT_PATH = _FILE_PATH.parent.parent
-DATA_PATH = PROJECT_PATH / 'data'
+PACKAGE_PATH = _FILE_PATH.parent
+DATA_PATH = PACKAGE_PATH / 'data'
 
 # A demo game.
 DEMO_PQ_REPLAY = DATA_PATH / 'pq/demo'

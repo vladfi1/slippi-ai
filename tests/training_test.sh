@@ -1,6 +1,6 @@
 # create a tiny network and run for 10 seconds on demo data
 
-DATASET=data/toy_dataset
+DATASET=slippi_ai/data/toy_dataset
 
 python scripts/train.py \
   --config.dataset.data_dir=$DATASET/games \

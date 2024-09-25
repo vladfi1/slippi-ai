@@ -132,7 +132,7 @@ dmypy.json
 experiments/
 
 # don't track replays
-data/untracked/
+untracked/
 notebooks/data/
 Replays/
 
