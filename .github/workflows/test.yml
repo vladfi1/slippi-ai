@@ -21,6 +21,12 @@ jobs:
         pip install -r requirements.txt
         pip install .
 
+    - name: Run Unit Tests
+      run: |
+        python tests/networks_test.py
+        python tests/rl_lib_test.py
+        python tests/unit_tests.py
+
     - name: Test Imitation
       run: ./tests/training_test.sh
 
