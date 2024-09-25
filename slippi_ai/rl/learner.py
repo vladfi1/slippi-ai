@@ -32,6 +32,7 @@ class LearnerConfig:
   compile: bool = True
   policy_gradient_weight: float = 1
   kl_teacher_weight: float = 1e-1
+  reverse_kl_teacher_weight: float = 0
   entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
@@ -259,6 +260,7 @@ class Learner:
       # the policy to imitate all behaviors of the teacher, including mistakes.
       teacher_kl = self._compute_kl(policy_distribution, teacher_distribution)
       actor_kl = self._compute_kl(actor_distribution, policy_distribution)
+      reverse_teacher_kl = self._compute_kl(teacher_distribution, policy_distribution)
 
       log_rhos = policy_outputs.log_probs - actor_log_probs
       rhos = tf.exp(log_rhos)
@@ -273,6 +275,7 @@ class Learner:
           - self._config.policy_gradient_weight * ppo_objective,
           self._config.ppo.beta * actor_kl,
           self._config.kl_teacher_weight * teacher_kl,
+          self._config.reverse_kl_teacher_weight * reverse_teacher_kl,
           -self._config.entropy_weight * entropy,
       ]
       loss = tf.reduce_mean(tf.add_n(weighted_losses))
@@ -288,6 +291,7 @@ class Learner:
         teacher_kl=teacher_kl,
         entropy=entropy,
         actor_kl=actor_kl,
+        reverse_teacher_kl=reverse_teacher_kl,
     )
 
     return grads, metrics
