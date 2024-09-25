@@ -30,14 +30,21 @@ class Policy(snt.Module):
       self,
       network: networks.Network,
       controller_head: ControllerHead,
-      embed_state_action: embed.StructEmbedding[embed.StateAction],
+      embed_game: embed.StructEmbedding[data.Game],
+      num_names: int,
       train_value_head: bool = True,
       delay: int = 0,
   ):
     super().__init__(name='Policy')
     self.network = network
     self.controller_head = controller_head
-    self.embed_state_action = embed_state_action
+    self.embed_game = embed_game
+    self.embed_state_action = embed.get_state_action_embedding(
+        embed_game=embed_game,
+        embed_action=self.controller_embedding,
+        num_names=num_names,
+    )
+
     self.initial_state = self.network.initial_state
     self.train_value_head = train_value_head
     self.delay = delay

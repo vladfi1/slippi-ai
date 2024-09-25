@@ -14,15 +14,21 @@ def assert_tensors_close(t1, t2):
 def default_network(name):
   return networks.CONSTRUCTORS[name](**networks.DEFAULT_CONFIG[name])
 
-embed_controller = embed.embed_controller_discrete
+embed_game = embed.make_game_embedding()
+embed_controller = embed.get_controller_embedding(axis_spacing=16)
 
 def default_data_source():
+  dataset_config = data.DatasetConfig(
+      data_dir=paths.TOY_DATA_DIR,
+      meta_path=paths.TOY_META_PATH,
+  )
   return data.DataSource(
-      [data.ReplayInfo(paths.DEMO_PQ_REPLAY, False)],
+      replays=data.replays_from_meta(dataset_config),
       batch_size=1,
       unroll_length=8,
+      embed_game=embed_game,
       embed_controller=embed_controller,
-      compressed=False,
+      compressed=True,
   )
 
 def get_inputs(data_source: data.DataSource):
@@ -31,9 +37,9 @@ def get_inputs(data_source: data.DataSource):
   # from Learner
   bm_gamestate = batch.frames
   tm_gamestate: embed.StateAction = tf.nest.map_structure(
-    learner.swap_axes, bm_gamestate)
+    learner.swap_axes, bm_gamestate.state_action)
 
-  return embed.default_embed_game(tm_gamestate.state)
+  return data_source.embed_game(tm_gamestate.state)
 
 class NetworksTest(unittest.TestCase):
 

@@ -3,6 +3,7 @@ Converts SSBM types to Tensorflow types.
 """
 
 import abc
+import dataclasses
 import math
 from typing import (
     Any, Callable, Dict, Generic, Iterator, Mapping, NamedTuple, Optional, Sequence,
@@ -14,6 +15,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
+from slippi_ai import utils
 from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick
 from slippi_ai.controller_lib import LEGAL_BUTTONS
 
@@ -398,6 +400,7 @@ def make_player_embedding(
 
     if with_controller:
       # TODO: make this configurable
+      embed_controller_default = get_controller_embedding()  # continuous sticks
       embedding.append(('controller', embed_controller_default))
 
     if with_speeds:
@@ -411,6 +414,16 @@ def make_player_embedding(
       ])
 
     return ordered_struct_embedding("player", embedding, Player)
+
+@dataclasses.dataclass
+class PlayerConfig:
+  xy_scale: float = 0.05
+  shield_scale: float = 0.01
+  speed_scale: float = 0.5
+  with_speeds: bool = False
+  # don't use opponent's controller
+  # our own will be embedded separately
+  with_controller: bool = False
 
 # future proof in case we want to play on wacky stages
 # embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
@@ -462,19 +475,29 @@ class DiscreteEmbedding(OneHotEmbedding):
     assert a.dtype == self.dtype
     return (a / self.n).astype(np.float32)
 
-embed_shoulder = DiscreteEmbedding(4)
+NATIVE_AXIS_SPACING = 160
+NATIVE_SHOULDER_SPACING = 140
 
 def get_controller_embedding(
-    discrete_axis_spacing: int = 0,
+    axis_spacing: int = 0,
+    shoulder_spacing: int = 4,
 ) -> StructEmbedding[Controller]:
   """Controller embedding. Used for autoregressive sampling, so order matters."""
-  if discrete_axis_spacing:
-    embed_axis = DiscreteEmbedding(discrete_axis_spacing)
+  if axis_spacing:
+    if NATIVE_AXIS_SPACING % axis_spacing != 0:
+      raise ValueError(
+        f'Axis spacing must divide {NATIVE_AXIS_SPACING}, got {axis_spacing}.')
+    embed_axis = DiscreteEmbedding(axis_spacing)
   else:
     embed_axis = embed_float
 
   embed_stick = struct_embedding_from_nt(
       "stick", Stick(x=embed_axis, y=embed_axis))
+
+  if NATIVE_SHOULDER_SPACING % shoulder_spacing != 0:
+    raise ValueError(
+      f'Shoulder spacing must divide {NATIVE_SHOULDER_SPACING}, got {shoulder_spacing}.')
+  embed_shoulder = DiscreteEmbedding(shoulder_spacing)
 
   return ordered_struct_embedding(
       "controller", [
@@ -484,8 +507,15 @@ def get_controller_embedding(
           ("shoulder", embed_shoulder),
       ], Controller)
 
-embed_controller_default = get_controller_embedding()  # continuous sticks
-embed_controller_discrete = get_controller_embedding(16)
+@dataclasses.dataclass
+class ControllerConfig:
+  axis_spacing: int = 16
+  shoulder_spacing: int = 4
+
+@dataclasses.dataclass
+class EmbedConfig:
+  player: PlayerConfig = utils.field(PlayerConfig)
+  controller: ControllerConfig = utils.field(ControllerConfig)
 
 # Action = TypeVar('Action')
 Action = Controller

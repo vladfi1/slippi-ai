@@ -34,6 +34,7 @@ from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai.file_cache import FileCache
 from slippi_ai import value_function as vf_lib
+from slippi_ai import embed as embed_lib
 
 
 def get_experiment_tag():
@@ -60,6 +61,8 @@ class TrainManager:
   def step(self) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
+      # TODO: do from_state here instead of in the DataSource?
+      # self.learner.policy.embed_state_action.from_state(batch.frames.state_action)
       # batch = sanitize_batch(batch)
     with self.step_profiler:
       stats, self.hidden_state = self.learner.compiled_step(
@@ -89,10 +92,7 @@ def log_stats(
     stats = tree.map_structure(mean, stats)
   wandb.log(data=stats, step=step)
 
-T = tp.TypeVar('T')
-
-def _field(default_factory: tp.Callable[[], T]) -> T:
-  return dataclasses.field(default_factory=default_factory)
+_field = utils.field
 
 @dataclasses.dataclass
 class RuntimeConfig:
@@ -130,6 +130,8 @@ class Config:
   network: dict = _field(lambda: networks.DEFAULT_CONFIG)
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
+  embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
+
   policy: policies.PolicyConfig = _field(policies.PolicyConfig)
   value_function: ValueFunctionConfig = _field(ValueFunctionConfig)
 
@@ -164,7 +166,6 @@ def create_name_map(
 
   for name, _ in name_counts.most_common(max_names):
     name_map[name] = len(name_map)
-  missing_name_code = len(name_map)
 
   # Bake in name groups from nametags.py
   for first, *rest in nametags.name_groups:
@@ -188,9 +189,7 @@ def train(config: Config):
 
   runtime = config.runtime
 
-  # TODO: configure controller embedding
   policy = saving.policy_from_config(dataclasses.asdict(config))
-  embed_controller = policy.controller_embedding
 
   value_function = None
   if config.value_function.train_separate_network:
@@ -305,7 +304,9 @@ def train(config: Config):
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
-      embed_controller=embed_controller,
+      # TODO: call from_state in the learner instead
+      embed_game=policy.embed_game,
+      embed_controller=policy.controller_embedding,
       extra_frames=1 + policy.delay,
       name_map=name_map,
       **char_filters,

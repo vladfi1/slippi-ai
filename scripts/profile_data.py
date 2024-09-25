@@ -22,7 +22,7 @@ def main(_):
 
   source = data.DataSource(
       train,
-      embed_controller=embed.embed_controller_discrete,
+      embed_controller=embed.get_controller_embedding(axis_spacing=16),
       **data_config,
   )
 

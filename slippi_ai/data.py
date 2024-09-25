@@ -246,7 +246,7 @@ class DataSource:
       self,
       replays: List[ReplayInfo],
       embed_controller: embed.Embedding[Controller, Any],
-      embed_game: embed.Embedding[Game, Any] = embed.default_embed_game,
+      embed_game: embed.Embedding[Game, Any],
       compressed: bool = True,
       batch_size: int = 64,
       unroll_length: int = 64,

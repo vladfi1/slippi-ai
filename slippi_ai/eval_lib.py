@@ -134,15 +134,10 @@ class BasicAgent:
   ) -> SampleOutputs:
     """Doesn't take into account delay."""
     state_action = embed.StateAction(
-        state=game,
+        state=self._policy.embed_game.from_state(game),
         action=self._prev_controller,
         name=np.full([self._batch_size], self._name_code),
     )
-    # TODO: technically we should be calling `from_state` on the game here.
-    # We don't call `policy.embed_state_action.from_state` on the entire
-    # `state_action` tuple because the action is already encoded. This isn't
-    # an issue for now because the game encoding is a no-op, but this might
-    # not be the case in the future.
 
     # Sample an action.
     sample_outputs: SampleOutputs
@@ -495,8 +490,6 @@ class Agent:
     needs_reset = np.array([gamestate.frame == -123])
     game = get_game(gamestate, ports=self.players)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
-    # TODO: use the policy's game embedding
-    game = embed.default_embed_game.from_state(game)
 
     sample_outputs = self._agent.step(game, needs_reset)
     action = sample_outputs.controller_state

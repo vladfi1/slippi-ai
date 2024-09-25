@@ -1,4 +1,5 @@
 import collections
+import dataclasses
 import gc
 import logging
 import platform
@@ -13,6 +14,9 @@ import tree
 import numpy as np
 
 T = tp.TypeVar('T')
+
+def field(default_factory: tp.Callable[[], T]) -> T:
+  return dataclasses.field(default_factory=default_factory)
 
 def stack(*vals):
   return np.stack(vals)

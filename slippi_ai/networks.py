@@ -10,9 +10,6 @@ from slippi_ai import embed, utils, tf_utils
 RecurrentState = tree.Structure[tf.Tensor]
 Inputs = tf.Tensor
 
-# TODO: make configurable
-INPUT_SIZE = embed.default_embed_game.size
-
 class Network(snt.Module):
 
   def initial_state(self, batch_size: int) -> RecurrentState:
@@ -92,8 +89,9 @@ class FrameStackingMLP(Network):
     self._num_frames = num_frames
 
   def initial_state(self, batch_size):
+    raise NotImplementedError('Needs input size')
     return [
-        tf.zeros([batch_size, INPUT_SIZE])
+        tf.zeros([batch_size, None])
         for _ in range(self._num_frames-1)
     ]
 
@@ -398,7 +396,7 @@ class TransformerLike(Network):
 
 CONSTRUCTORS = dict(
     mlp=MLP,
-    frame_stack_mlp=FrameStackingMLP,
+    # frame_stack_mlp=FrameStackingMLP,
     lstm=LSTM,
     gru=GRU,
     res_lstm=DeepResLSTM,
@@ -408,7 +406,7 @@ CONSTRUCTORS = dict(
 DEFAULT_CONFIG = dict(
     name='mlp',
     mlp=MLP.CONFIG,
-    frame_stack_mlp=FrameStackingMLP.CONFIG,
+    # frame_stack_mlp=FrameStackingMLP.CONFIG,
     lstm=LSTM.CONFIG,
     gru=GRU.CONFIG,
     res_lstm=DeepResLSTM.CONFIG,

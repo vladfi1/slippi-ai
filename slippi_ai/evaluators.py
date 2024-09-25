@@ -187,8 +187,7 @@ class RolloutWorker:
       # Asynchronously push the gamestates to the agents.
       for port, agent in self._agents.items():
         game = output.gamestates[port]
-        # TODO: use the policy's game embedding
-        game = embed.default_embed_game.from_state(game)
+        # The agent is responsible for calling from_state on the game.
         agent.push(game, output.needs_reset)
 
       # Feed the actions from the agents into the environment.
@@ -220,7 +219,8 @@ class RolloutWorker:
     for port, agent in self._agents.items():
       states=utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
-          states=embed.default_embed_game.from_state(states),
+          # TODO: Let the learner call from_state on game
+          states=agent._policy.embed_game.from_state(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
               agent.name_code,
