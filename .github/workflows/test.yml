@@ -67,7 +67,7 @@ jobs:
         gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
 
     - name: Test RL with Dolphin
-      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso
+      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.runtime.use_fake_data=False
 
     - name: Test train_two with Dolphin
-      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso
+      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.runtime.use_fake_data=False
