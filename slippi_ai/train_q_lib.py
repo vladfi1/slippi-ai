@@ -23,7 +23,6 @@ from slippi_ai import (
     controller_heads,
     nametags,
     networks,
-    policies,
     saving,
     s3_lib,
     tf_utils,
@@ -103,13 +102,6 @@ class RuntimeConfig:
   num_eval_steps: int = 10  # number of batches per evaluation
 
 @dataclasses.dataclass
-class FileCacheConfig:
-  use: bool = False
-  path: tp.Optional[str] = None
-  wipe: bool = False
-  version: str = 'test'
-
-@dataclasses.dataclass
 class QFunctionConfig:
   network: dict = _field(lambda: networks.DEFAULT_CONFIG)
 
@@ -122,14 +114,14 @@ class Config:
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
-  # TODO: turn these into dataclasses too
+  # These apply to both sample and q policies.
+  # TODO: can we support distinct configurations here?
   network: dict = _field(lambda: networks.DEFAULT_CONFIG)
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
   embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
 
-  policy: policies.PolicyConfig = _field(policies.PolicyConfig)
-  value_function: QFunctionConfig = _field(QFunctionConfig)
+  q_function: QFunctionConfig = _field(QFunctionConfig)
 
   max_names: int = 16
 
@@ -141,6 +133,7 @@ class Config:
   save_to_s3: bool = False
   restore_tag: tp.Optional[str] = None
   restore_pickle: tp.Optional[str] = None
+  # initialize_sample_policy: tp.Optional[str] = None
 
   is_test: bool = False  # for db management
   version: int = saving.VERSION
@@ -185,12 +178,19 @@ def train(config: Config):
 
   runtime = config.runtime
 
-  policy = saving.policy_from_config(dataclasses.asdict(config))
+  config_dict = dataclasses.asdict(config)
+  config_dict['policy'] = dict(
+      train_value_head=False,
+      delay=0,
+  )
+  # TODO: support initializing from an existing policy?
+  sample_policy = saving.policy_from_config(config_dict)
+  q_policy = saving.policy_from_config(config_dict)
 
   q_function = q_lib.QFunction(
-      network_config=config.value_function.network,
-      embed_state_action=policy.embed_state_action,
-      embed_action=policy.controller_embedding,
+      network_config=config.q_function.network,
+      embed_state_action=q_policy.embed_state_action,
+      embed_action=q_policy.controller_embedding,
   )
 
   learner_kwargs = dataclasses.asdict(config.learner)
@@ -198,8 +198,9 @@ def train(config: Config):
       learner_kwargs['learning_rate'], name='learning_rate', trainable=False)
   learner_kwargs.update(learning_rate=learning_rate)
   learner = learner_lib.Learner(
-      # policy=policy,
       q_function=q_function,
+      sample_policy=sample_policy,
+      q_policy=q_policy,
       **learner_kwargs,
   )
 
@@ -285,9 +286,9 @@ def train(config: Config):
   data_config = dict(
       dataclasses.asdict(config.data),
       # TODO: call from_state in the learner instead
-      embed_game=policy.embed_game,
-      embed_controller=policy.controller_embedding,
-      extra_frames=1 + policy.delay,
+      embed_game=q_policy.embed_game,
+      embed_controller=q_policy.controller_embedding,
+      extra_frames=1 + q_policy.delay,
       name_map=name_map,
       **char_filters,
   )
@@ -304,13 +305,16 @@ def train(config: Config):
   step = tf.Variable(0, trainable=False, name="step")
 
   # saving and restoring
+  # TODO: move this into the Learner?
   tf_state = dict(
       step=step,
-      # policy=policy.variables,
+      sample_policy=sample_policy.variables,
+      policy=q_policy.variables,  # other code expects a "policy" key
       q_function=q_function.variables,
       optimizers=dict(
-          # policy=learner.policy_optimizer.variables,
-          q=learner.q_optimizer.variables,
+          sample_policy=learner.sample_policy_optimizer.variables,
+          q_policy=learner.q_policy_optimizer.variables,
+          q_function=learner.q_function_optimizer.variables,
       ),
   )
 
