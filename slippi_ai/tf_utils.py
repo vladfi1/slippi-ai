@@ -9,6 +9,7 @@ import typing as tp
 
 import numpy as np
 import tensorflow as tf
+import tree
 
 def mean_and_variance(xs: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
   mean = tf.reduce_mean(xs)
@@ -30,7 +31,15 @@ def to_numpy(x) -> np.ndarray:
     return x.numpy()
   return x
 
-def dynamic_rnn(core, inputs, initial_state):
+Inputs = tree.Structure[tf.Tensor]
+Outputs = tree.Structure[tf.Tensor]
+RecurrentState = tree.Structure[tf.Tensor]
+
+def dynamic_rnn(
+    core: tp.Callable[[Inputs, RecurrentState], tp.Tuple[Outputs, RecurrentState]],
+    inputs: Inputs,
+    initial_state: RecurrentState,
+) -> tp.Tuple[Outputs, RecurrentState]:
   """Dynamically unrolls an rnn core.
 
   In the simple case of flat inputs and outputs, executes:
@@ -88,6 +97,25 @@ def dynamic_rnn(core, inputs, initial_state):
 
   outputs = tf.nest.map_structure(lambda ta: ta.stack(), outputs)
   return outputs, state
+
+def scan_rnn(
+    core: tp.Callable[[Inputs, RecurrentState], tp.Tuple[Outputs, RecurrentState]],
+    inputs: Inputs,
+    initial_state: RecurrentState,
+) -> tp.Tuple[Outputs, RecurrentState]:
+  """Like dynamic_rnn, but returns intermediary hidden states."""
+  inputs0 = tree.map_structure(lambda t: t[0], inputs)
+  outputs0 = core(inputs0, initial_state)[0]
+  dummy_outputs = tree.map_structure(tf.zeros_like, outputs0)
+
+  initializer = (dummy_outputs, initial_state)
+
+  def fn(prev_output, input):
+    _, prev_state = prev_output
+    return core(input, prev_state)
+
+  return tf.scan(fn, inputs, initializer)
+
 
 def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   """Broadcasting tf.where, with cond of shape [B]."""

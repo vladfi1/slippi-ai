@@ -44,6 +44,25 @@ class TFUtilsTest(unittest.TestCase):
 
     tf.nest.map_structure(assert_tensors_close, static_outputs, dynamic_outputs)
 
+  def test_scan_rnn(self):
+
+    def core(input_, state):
+      return input_ + state, state + 1
+
+    initial_state = tf.constant(0)
+    inputs = tf.constant([1, 2, 3, 4])
+
+    outputs, hidden_states = tf_utils.scan_rnn(core, inputs, initial_state)
+
+    expected_hidden_states = tf.constant([1, 2, 3, 4])
+    expected_outputs = tf.constant([1, 3, 5, 7])
+
+    tf.nest.map_structure(
+        assert_tensors_close,
+        (outputs, hidden_states),
+        (expected_outputs, expected_hidden_states),
+    )
+
   def test_non_trainable_scope(self):
     with tf_utils.non_trainable_scope():
       assert not tf.Variable(1.0).trainable
