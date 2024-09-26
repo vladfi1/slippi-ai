@@ -82,9 +82,15 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
     return tf.expand_dims(tf.where(t, self.on, self.off), -1)
 
   def distance(self, predicted, target):
+    logits = tf.squeeze(predicted, [-1])
+    labels = tf.cast(target, float_type)
+
+    common_shape = tf.broadcast_static_shape(logits.shape, labels.shape)
+    logits = tf.broadcast_to(logits, common_shape)
+    labels = tf.broadcast_to(labels, common_shape)
+
     return tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=tf.squeeze(predicted, [-1]),
-        labels=tf.cast(target, float_type))
+        logits=logits, labels=labels)
 
   def sample(self, t, temperature=None):
     t = tf.squeeze(t, -1)
