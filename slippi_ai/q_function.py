@@ -11,6 +11,7 @@ class QOutputs(tp.NamedTuple):
   returns: tf.Tensor  # [T, B]
   advantages: tf.Tensor  # [T, B]
   loss: tf.Tensor
+  hidden_states: RecurrentState  # [T, B]
   metrics: dict
 
 
@@ -84,10 +85,8 @@ class QFunction(snt.Module):
     # Compute Q loss
     next_actions = tf.nest.map_structure(
         lambda t: t[1:], frames.state_action.action)
-    action_inputs = self.embed_action(next_actions)
     # Here we are batching over time (and batch)
-    action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
-    q_values = tf.squeeze(self.q_head(action_outputs), -1)
+    q_values = self.q_values_from_hidden_states(hidden_states, next_actions)
 
     q_loss = tf.square(value_targets - q_values)
     quev = q_loss / (value_variance + 1e-8)
@@ -112,11 +111,20 @@ class QFunction(snt.Module):
         returns=value_targets,
         advantages=advantages,
         loss=value_loss + q_loss,
+        hidden_states=hidden_states,
         metrics=metrics,
     )
 
     return outputs, final_state
 
+  def q_values_from_hidden_states(
+      self,
+      hidden_states: RecurrentState,
+      actions: embed.Action,
+  ) -> tf.Tensor:
+    action_inputs = self.embed_action(actions)
+    action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
+    return tf.squeeze(self.q_head(action_outputs), -1)
 
 @snt.allow_empty_variables
 class FakeQFunction(snt.Module):

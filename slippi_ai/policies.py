@@ -14,6 +14,7 @@ from slippi_ai.rl_lib import discounted_returns
 from slippi_ai import data, networks, embed, types, tf_utils
 from slippi_ai.value_function import ValueOutputs
 
+Outputs = tf_utils.Outputs
 RecurrentState = networks.RecurrentState
 
 class UnrollOutputs(tp.NamedTuple):
@@ -23,6 +24,12 @@ class UnrollOutputs(tp.NamedTuple):
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
+class UnrollWithOutputs(tp.NamedTuple):
+  imitation_loss: tf.Tensor  # [T, B]
+  distances: DistanceOutputs  # Struct of [T, B]
+  outputs: tf.Tensor  # [T, B]
+  final_state: RecurrentState  # [B]
+  metrics: dict  # mixed
 
 class Policy(snt.Module):
 
@@ -66,6 +73,36 @@ class Policy(snt.Module):
     # imitation_loss also initializes value function
     self.imitation_loss(dummy_frames, initial_state)
 
+  def _value_outputs(self, outputs, last_input, final_state, rewards, discount):
+    values = tf.squeeze(self.value_head(outputs), -1)
+    last_output, _ = self.network.step(last_input, final_state)
+    last_value = tf.squeeze(self.value_head(last_output), -1)
+    discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
+    value_targets = discounted_returns(
+        rewards=rewards,
+        discounts=discounts,
+        bootstrap=last_value)
+    value_targets = tf.stop_gradient(value_targets)
+    advantages = value_targets - values
+    value_loss = tf.square(advantages)
+
+    _, value_variance = tf_utils.mean_and_variance(value_targets)
+    uev = value_loss / (value_variance + 1e-8)
+
+    metrics = {
+        'reward': tf_utils.get_stats(rewards),
+        'loss': value_loss,
+        'return': value_targets,
+        'uev': uev,  # unexplained variance
+    }
+
+    return ValueOutputs(
+        returns=value_targets,
+        advantages=advantages,
+        loss=value_loss,
+        metrics=metrics,
+    )
+
   def unroll(
       self,
       frames: data.Frames,
@@ -105,36 +142,9 @@ class Policy(snt.Module):
         )
     )
 
-    rewards = frames.reward
-
-    values = tf.squeeze(self.value_head(outputs), -1)
-    last_output, _ = self.network.step(last_input, final_state)
-    last_value = tf.squeeze(self.value_head(last_output), -1)
-    discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
-    value_targets = discounted_returns(
-        rewards=rewards,
-        discounts=discounts,
-        bootstrap=last_value)
-    value_targets = tf.stop_gradient(value_targets)
-    advantages = value_targets - values
-    value_loss = tf.square(advantages)
-
-    _, value_variance = tf_utils.mean_and_variance(value_targets)
-    uev = value_loss / (value_variance + 1e-8)
-
-    metrics['value'] = {
-        'reward': tf_utils.get_stats(rewards),
-        'loss': value_loss,
-        'return': value_targets,
-        'uev': uev,  # unexplained variance
-    }
-
-    value_outputs = ValueOutputs(
-        returns=value_targets,
-        advantages=advantages,
-        loss=value_loss,
-        metrics=metrics['value'],
-    )
+    value_outputs = self._value_outputs(
+        outputs, last_input, final_state, frames.reward, discount)
+    metrics['value'] = value_outputs.metrics
 
     return UnrollOutputs(
         log_probs=log_probs,
@@ -191,6 +201,46 @@ class Policy(snt.Module):
     )
 
     return total_loss, unroll_outputs.final_state, metrics
+
+  def unroll_with_outputs(
+      self,
+      frames: data.Frames,
+      initial_state: RecurrentState,
+      discount: float = 0.99,
+  ):
+    all_inputs = self.embed_state_action(frames.state_action)
+    inputs, last_input = all_inputs[:-1], all_inputs[-1]
+    outputs, final_state = self.network.unroll(inputs, initial_state)
+
+    # Predict next action.
+    action = frames.state_action.action
+    prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
+    next_action = tf.nest.map_structure(lambda t: t[1:], action)
+
+    distance_outputs = self.controller_head.distance(
+        outputs, prev_action, next_action)
+    distances = distance_outputs.distance
+    policy_loss = tf.add_n(tf.nest.flatten(distances))
+
+    metrics = dict(
+        loss=policy_loss,
+        controller=dict(
+            types.nt_to_nest(distances),
+        )
+    )
+
+    # We're only really doing this to initialize the value_head...
+    value_outputs = self._value_outputs(
+        outputs, last_input, final_state, frames.reward, discount)
+    metrics['value'] = value_outputs.metrics
+
+    return UnrollWithOutputs(
+        imitation_loss=policy_loss,
+        distances=distances,
+        outputs=outputs,
+        final_state=final_state,
+        metrics=metrics,
+    )
 
   def sample(
       self,
