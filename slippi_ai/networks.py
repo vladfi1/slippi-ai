@@ -5,7 +5,7 @@ import sonnet as snt
 import tensorflow as tf
 from tensorflow import Tensor
 
-from slippi_ai import embed, utils, tf_utils
+from slippi_ai import tf_utils
 
 RecurrentState = tree.Structure[tf.Tensor]
 Inputs = tf.Tensor
@@ -46,6 +46,24 @@ class Network(snt.Module):
       final_state: (batch, state_dim)
     '''
     return tf_utils.dynamic_rnn(self.step, inputs, initial_state)
+
+  def scan(
+      self,
+      inputs: Inputs,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    '''Like unroll but also returns intermediate hidden states.
+
+    Arguments:
+      inputs: (time, batch, x_dim)
+      initial_state: (batch, state_dim)
+
+    Returns a tuple (outputs, hidden_states)
+      outputs: (time, batch, out_dim)
+      hidden_states: (time, batch, state_dim)
+    '''
+    return tf_utils.scan_rnn(self.step, inputs, initial_state)
+
 
 class MLP(Network):
   CONFIG = dict(
@@ -276,17 +294,18 @@ class RecurrentWrapper(Network):
   def step(self, inputs, prev_state):
     return self._core(inputs, prev_state)
 
-  def unroll(self, inputs, prev_state):
-    return tf_utils.dynamic_rnn(self._core, inputs, prev_state)
-
 class FFWWrapper(Network):
-  """Wraps an MLP as a Network."""
+  """Wraps an MLP as a Network.
+
+  Assumes that the MLP can handle multiple batch dimensions.
+  """
 
   def __init__(self, mlp: snt.Module, name='FFWWrapper'):
     super().__init__(name=name)
     self._mlp = mlp
 
   def initial_state(self, batch_size):
+    del batch_size
     return ()
 
   def step(self, inputs, prev_state):
@@ -320,6 +339,13 @@ class Sequential(Network):
       final_states.append(final_state)
     return inputs, final_states
 
+  def scan(self, inputs, prev_state):
+    hidden_states = []
+    for layer, state in zip(self._layers, prev_state):
+      inputs, hidden_state = layer.scan(inputs, state)
+      hidden_states.append(hidden_state)
+    return inputs, hidden_states
+
 class ResidualWrapper(Network):
 
   def __init__(self, net: Network):
@@ -336,6 +362,10 @@ class ResidualWrapper(Network):
   def unroll(self, inputs, prev_state):
     outputs, final_state = self._net.unroll(inputs, prev_state)
     return inputs + outputs, final_state
+
+  def scan(self, inputs, prev_state):
+    outputs, hidden_state = self._net.scan(inputs, prev_state)
+    return inputs + outputs, hidden_state
 
 class TransformerLike(Network):
   """Alternates recurrent and FFW layers."""
@@ -393,6 +423,9 @@ class TransformerLike(Network):
 
   def unroll(self, inputs: Inputs, initial_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
     return self._net.unroll(inputs, initial_state)
+
+  def scan(self, inputs, initial_state):
+    return self._net.scan(inputs, initial_state)
 
 CONSTRUCTORS = dict(
     mlp=MLP,
