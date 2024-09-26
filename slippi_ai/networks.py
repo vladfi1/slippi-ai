@@ -72,8 +72,8 @@ class MLP(Network):
       dropout_rate=0.0,
   )
 
-  def __init__(self, depth, width, dropout_rate):
-    super().__init__(name='MLP')
+  def __init__(self, depth, width, dropout_rate, name='MLP'):
+    super().__init__(name=name)
     self._mlp = snt.nets.MLP(
         [width] * depth,
         activate_final=True,
@@ -202,8 +202,8 @@ class LSTM(Network):
       num_res_blocks=0,
   )
 
-  def __init__(self, hidden_size, num_res_blocks):
-    super().__init__(name='LSTM')
+  def __init__(self, hidden_size, num_res_blocks, name='LSTM'):
+    super().__init__(name=name)
     self._hidden_size = hidden_size
     self._lstm = snt.LSTM(hidden_size)
 
@@ -247,8 +247,8 @@ class DeepResLSTM(Network):
       num_layers=1,
   )
 
-  def __init__(self, hidden_size, num_layers):
-    super().__init__(name='DeepResLSTM')
+  def __init__(self, hidden_size, num_layers, name='DeepResLSTM'):
+    super().__init__(name=name)
     self.encoder = snt.Linear(hidden_size)
     self.deep_rnn = snt.DeepRNN(
         [ResLSTMBlock(hidden_size) for _ in range(num_layers)])
@@ -267,8 +267,8 @@ class DeepResLSTM(Network):
 class GRU(Network):
   CONFIG=dict(hidden_size=128)
 
-  def __init__(self, hidden_size):
-    super().__init__(name='GRU')
+  def __init__(self, hidden_size, name='GRU'):
+    super().__init__(name=name)
     self._hidden_size = hidden_size
     self._gru = snt.GRU(hidden_size)
 
@@ -385,8 +385,9 @@ class TransformerLike(Network):
       ffw_multiplier: int,
       recurrent_layer: str,
       activation: str,
+      name='TransformerLike',
   ):
-    super().__init__(name=f'TransformerLike')
+    super().__init__(name=name)
     self._hidden_size = hidden_size
     self._num_layers = num_layers
     self._ffw_multiplier = ffw_multiplier
@@ -448,3 +449,7 @@ DEFAULT_CONFIG = dict(
 
 def construct_network(name, **config):
   return CONSTRUCTORS[name](**config[name])
+
+def construct_network2(network_config: dict, module_name: str):
+  name = network_config['name']
+  return CONSTRUCTORS[name](name=module_name, **network_config[name])
