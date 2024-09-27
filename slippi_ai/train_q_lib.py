@@ -15,7 +15,6 @@ from absl import logging
 
 import numpy as np
 import tensorflow as tf
-import tree
 
 import wandb
 
@@ -35,60 +34,12 @@ from slippi_ai import q_function as q_lib
 from slippi_ai import embed as embed_lib
 
 
-def get_experiment_tag():
-  today = datetime.date.today()
-  return f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
-
-
-class TrainManager:
-
-  def __init__(
-      self,
-      learner: learner_lib.Learner,
-      data_source: data_lib.DataSource,
-      step_kwargs={},
-  ):
-    self.learner = learner
-    self.data_source = data_source
-    self.hidden_state = learner.initial_state(data_source.batch_size)
-    self.step_kwargs = step_kwargs
-    self.total_frames = 0
-    self.data_profiler = utils.Profiler()
-    self.step_profiler = utils.Profiler()
-
-  def step(self) -> tuple[dict, data_lib.Batch]:
-    with self.data_profiler:
-      batch, epoch = next(self.data_source)
-      # TODO: do from_state here instead of in the DataSource?
-      # self.learner.policy.embed_state_action.from_state(batch.frames.state_action)
-      # batch = sanitize_batch(batch)
-    with self.step_profiler:
-      stats, self.hidden_state = self.learner.compiled_step(
-          batch, self.hidden_state, **self.step_kwargs)
-    num_frames = batch.frames.state_action.state.stage.size
-    self.total_frames += num_frames
-    stats.update(
-        epoch=epoch,
-        num_frames=num_frames,
-        total_frames=self.total_frames,
-    )
-    return stats, batch
-
 def mean(value):
   if isinstance(value, tf.Tensor):
     value = value.numpy()
   if isinstance(value, np.ndarray):
     value = value.mean().item()
   return value
-
-def log_stats(
-    stats: tree.Structure,
-    step: tp.Optional[int] = None,
-    take_mean: bool = True,
-):
-  if take_mean:
-    stats = tree.map_structure(mean, stats)
-  wandb.log(data=stats, step=step)
 
 _field = utils.field
 
@@ -166,6 +117,8 @@ def create_name_map(
   return name_map
 
 def train(config: Config):
+  tf.debugging.enable_check_numerics()
+
   tag = config.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
   # to be set properly even when we try to override it.
@@ -423,7 +376,7 @@ def train(config: Config):
 
     # Stats have shape [num_eval_steps, unroll_length, batch_size]
     time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['q_function']['q']['loss'])
+    loss = time_mean(eval_stats['q_function']['v']['loss'])
     assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
 
     # Metadata only has a batch dimension.

@@ -312,8 +312,12 @@ class FFWWrapper(Network):
     del prev_state
     return self._mlp(inputs), ()
 
-  def unroll(self, inputs, prev_state):
-    del prev_state
+  def unroll(self, inputs, initial_state):
+    del initial_state
+    return self._mlp(inputs), ()
+
+  def scan(self, inputs: Tensor, initial_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
+    del initial_state
     return self._mlp(inputs), ()
 
 class Sequential(Network):
@@ -364,8 +368,8 @@ class ResidualWrapper(Network):
     return inputs + outputs, final_state
 
   def scan(self, inputs, prev_state):
-    outputs, hidden_state = self._net.scan(inputs, prev_state)
-    return inputs + outputs, hidden_state
+    outputs, hidden_states = self._net.scan(inputs, prev_state)
+    return inputs + outputs, hidden_states
 
 class TransformerLike(Network):
   """Alternates recurrent and FFW layers."""

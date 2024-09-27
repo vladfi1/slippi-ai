@@ -54,8 +54,17 @@ class QFunction(snt.Module):
 
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
-    outputs, hidden_states = self.core_net.scan(inputs, initial_state)
-    final_state = tf.nest.map_structure(lambda t: t[-1], hidden_states)
+
+    # outputs, hidden_states = self.core_net.scan(inputs, initial_state)
+    # final_state = tf.nest.map_structure(lambda t: t[-1], hidden_states)
+    # del outputs, hidden_states, final_state
+
+    unroll_length = inputs.shape[0]
+    hidden_states = tf.nest.map_structure(
+        lambda t: tf.stack([tf.zeros_like(t)] * unroll_length),
+        initial_state,
+    )
+    outputs, final_state = self.core_net.unroll(inputs, initial_state)
 
     # Includes "overlap" frame.
     # unroll_length = state_action.state.stage.shape[0] - delay
@@ -83,14 +92,16 @@ class QFunction(snt.Module):
     uev = value_loss / (value_variance + 1e-8)
 
     # Compute Q loss
-    next_actions = tf.nest.map_structure(
-        lambda t: t[1:], frames.state_action.action)
-    # Here we are batching over time (and batch)
-    q_values = self.q_values_from_hidden_states(hidden_states, next_actions)
+    # next_actions = tf.nest.map_structure(
+    #     lambda t: t[1:], frames.state_action.action)
+    # # Here we are batching over time (and batch)
+    # q_values = snt.BatchApply(self.q_values_from_hidden_states)(
+    #     hidden_states, next_actions)
+    # # q_values = self.q_values_from_hidden_states(hidden_states, next_actions)
 
-    q_loss = tf.square(value_targets - q_values)
-    quev = q_loss / (value_variance + 1e-8)
-    uev_delta = uev - quev
+    # q_loss = tf.square(value_targets - q_values)
+    # quev = q_loss / (value_variance + 1e-8)
+    # uev_delta = uev - quev
 
     metrics = {
         'reward': tf_utils.get_stats(rewards),
@@ -99,18 +110,18 @@ class QFunction(snt.Module):
             'loss': value_loss,
             'uev': uev,
         },
-        'q': {
-            'loss': q_loss,
-            'uev': quev,
-            'uev_delta': uev_delta,
-            'rel_v_loss': q_loss / (value_loss + 1e-8),
-        },
+        # 'q': {
+        #     'loss': q_loss,
+        #     'uev': quev,
+        #     'uev_delta': uev_delta,
+        #     'rel_v_loss': q_loss / (value_loss + 1e-8),
+        # },
     }
 
     outputs = QOutputs(
         returns=value_targets,
         advantages=advantages,
-        loss=value_loss + q_loss,
+        loss=value_loss,
         hidden_states=hidden_states,
         metrics=metrics,
     )
@@ -123,6 +134,11 @@ class QFunction(snt.Module):
       actions: embed.Action,
   ) -> tf.Tensor:
     action_inputs = self.embed_action(actions)
+    q_values = tf.zeros_like(action_inputs)[..., 0]
+    # q_values = tf.reduce_sum(action_inputs, -1)
+    # q_values = action_inputs[..., 0]
+    # import ipdb; ipdb.set_trace()
+    return q_values
     action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
     return tf.squeeze(self.q_head(action_outputs), -1)
 
