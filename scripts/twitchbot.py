@@ -35,6 +35,7 @@ _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
     save_replays=True,
     replay_dir='Replays/Twitchbot',
+    console_timeout=10,
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
@@ -237,11 +238,9 @@ class Session:
 RemoteSession = ray.remote(Session)
 
 HELP_MESSAGE = """
-!help: Display this message.
-!status: Displays current status.
+!status: Displays selected agent and current sessions.
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
-!reset: Have the bot stop and reconnect with you. Useful after choosing an agent.
 !agents: List available agents to play against.
 !agent <name>: Select an agent to play against.
 !about: Some info about the this AI.
@@ -371,8 +370,24 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
-    models_str = ", ".join(self._models)
-    await ctx.send(f'Available agents: {models_str}')
+    max_chars = 500
+    chunks = [[]]
+    chunk_size = 0
+    for model in sorted(self._models):
+      chunk = chunks[-1]
+      new_chunk_size = chunk_size + len(model) + 1
+      if new_chunk_size > max_chars:
+        chunk = []
+        chunks.append(chunk)
+        chunk_size = len(model)
+      else:
+        chunk_size = new_chunk_size
+      chunk.append(model)
+
+    for chunk in chunks:
+      message = " ".join(chunk)
+      assert len(message) <= max_chars
+      await ctx.send(message)
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
