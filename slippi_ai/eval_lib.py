@@ -153,6 +153,11 @@ class BasicAgent:
       self,
       states: list[tuple[embed.Game, np.ndarray]],
   ) -> list[SampleOutputs]:
+    states = [
+        (self._policy.embed_game.from_state(game), needs_reset)
+        for game, needs_reset in states
+    ]
+
     sample_outputs: list[SampleOutputs]
     sample_outputs, self.hidden_state = self._multi_sample(
         states, self._prev_controller, self.hidden_state)
