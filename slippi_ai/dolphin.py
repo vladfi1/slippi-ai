@@ -278,4 +278,5 @@ DOLPHIN_FLAGS = dict(
     infinite_time=ff.Boolean(False, 'Infinite time no stocks.'),
     log_level=ff.Integer(3, 'Dolphin log level, defaults to WARN.'),
     log_types=ff.StringList(['SLIPPI'], 'Enabled logging categories.'),
+    disable_audio=ff.Boolean(False, 'Disable dolphin audio.'),
 )
