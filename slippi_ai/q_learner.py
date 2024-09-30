@@ -126,10 +126,11 @@ class Learner:
         replicate(num_samples), nest)
 
     # At this point tensorflow should be able to GC the large
-    # sample_policy_outputs.outputs tensor.
+    # sample_policy_outputs.outputs tensor. We enforce a control dependency
+    # to help tensorflow figure out that it can do this.
 
     # Train q function with regression
-    with tf.GradientTape() as tape:
+    with tf.control_dependencies([policy_samples]), tf.GradientTape() as tape:
       # TODO: take into account delay
       q_outputs, q_final_states = self.q_function.loss(
           tm_frames, initial_states['q_function'], self.discount)
@@ -153,6 +154,8 @@ class Learner:
             hidden_states=replicated_hidden_states,
             actions=policy_samples,
         )
+
+    # At this point q_outputs.hidden_states can be GCed.
 
     # Train the q_policy by argmaxing the q_function over the sample_policy
     with tf.control_dependencies([sample_q_values]), tf.GradientTape() as tape:
