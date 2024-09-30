@@ -115,16 +115,13 @@ class Learner:
           tm_frames, initial_states['q_policy'])
 
       # TODO: use tf.tile instead?
-      replicate_n = lambda t: tf.stack([t] * self.num_samples)
-
-      # Rely on broadcasting in some places instead of full replication.
-      replicate_1 = lambda s: tf.nest.map_structure(
-          lambda t: tf.expand_dims(t, 0), s)
+      replicate = lambda n: lambda t: tf.stack([t] * n)
+      replicate_samples = replicate(self.num_samples)
 
       # Because the action space is too large, we compute a finite subsample
       # using the sample_policy.
-      replicated_sample_policy_outputs = replicate_n(sample_policy_outputs.outputs)
-      replicated_prev_action = tf.nest.map_structure(replicate_n, prev_action)
+      replicated_sample_policy_outputs = replicate_samples(sample_policy_outputs.outputs)
+      replicated_prev_action = tf.nest.map_structure(replicate_samples, prev_action)
       policy_samples = self.sample_policy.controller_head.sample(
           replicated_sample_policy_outputs, replicated_prev_action)
 
@@ -134,19 +131,24 @@ class Learner:
           policy_samples.controller_state, next_action,
       )
 
+      num_samples = self.num_samples + 1
+      replicate_samples = lambda nest: tf.nest.map_structure(
+          replicate(num_samples), nest)
+
       # Compute the q-values of the sampled actions
-      replicated_hidden_states = replicate_1(q_outputs.hidden_states)
-      sample_q_values = self.q_function.q_values_from_hidden_states(
-          hidden_states=replicated_hidden_states,
-          actions=policy_samples,
-      )
+      replicated_hidden_states = replicate_samples(q_outputs.hidden_states)
+      sample_q_values = snt.BatchApply(
+          self.q_function.q_values_from_hidden_states, num_dims=3)(
+              hidden_states=replicated_hidden_states,
+              actions=policy_samples,
+          )
 
       # Construct a target distribution over the subsample and regress the
       # q_policy to this target.
-      replicated_q_policy_outputs = replicate_1(q_policy_outputs.outputs)
+      replicated_q_policy_outputs = replicate_samples(q_policy_outputs.outputs)
       q_policy_distances = self.q_policy.controller_head.distance(
           inputs=replicated_q_policy_outputs,
-          prev_controller_state=replicate_1(prev_action),
+          prev_controller_state=replicate_samples(prev_action),
           target_controller_state=policy_samples,
       )
       q_policy_log_probs = -tf.add_n(list(
