@@ -86,7 +86,8 @@ class QFunction(snt.Module):
     next_actions = tf.nest.map_structure(
         lambda t: t[1:], frames.state_action.action)
     # Here we are batching over time (and batch)
-    q_values = self.q_values_from_hidden_states(hidden_states, next_actions)
+    q_values = snt.BatchApply(self.q_values_from_hidden_states)(
+        hidden_states, next_actions)
 
     q_loss = tf.square(value_targets - q_values)
     quev = q_loss / (value_variance + 1e-8)
