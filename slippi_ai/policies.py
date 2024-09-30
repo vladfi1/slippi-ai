@@ -57,6 +57,15 @@ class Policy(snt.Module):
   def controller_embedding(self) -> embed.Embedding[embed.Controller, embed.Action]:
     return self.controller_head.controller_embedding()
 
+  def initialize_variables(self):
+    dummy_state_action = self.embed_state_action.dummy([2 + self.delay, 1])
+    dummy_reward = tf.zeros([1 + self.delay, 1], tf.float32)
+    dummy_frames = data.Frames(dummy_state_action, dummy_reward)
+    initial_state = self.initial_state(1)
+
+    # imitation_loss also initializes value function
+    self.imitation_loss(dummy_frames, initial_state)
+
   def unroll(
       self,
       frames: data.Frames,
