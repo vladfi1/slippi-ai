@@ -58,15 +58,17 @@ class TrainManager:
     self.data_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
 
-  def step(self) -> tuple[dict, data_lib.Batch]:
+  def step(self, compiled: bool = True) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
+      tf_batch = batch._replace(meta=())  # tf-gpu doesn't want strings
       # TODO: do from_state here instead of in the DataSource?
       # self.learner.policy.embed_state_action.from_state(batch.frames.state_action)
       # batch = sanitize_batch(batch)
     with self.step_profiler:
-      stats, self.hidden_state = self.learner.compiled_step(
-          batch, self.hidden_state, **self.step_kwargs)
+      step = self.learner.compiled_step if compiled else self.learner.step
+      stats, self.hidden_state = step(
+          tf_batch, self.hidden_state, **self.step_kwargs)
     num_frames = batch.frames.state_action.state.stage.size
     self.total_frames += num_frames
     stats.update(

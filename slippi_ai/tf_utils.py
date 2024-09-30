@@ -78,7 +78,9 @@ def dynamic_rnn(core, inputs, initial_state):
   loop_vars = (1, outputs, state)
 
   _, outputs, state = tf.while_loop(
-      cond, body, loop_vars, parallel_iterations=1)
+      cond, body, loop_vars,
+      parallel_iterations=1,
+      maximum_iterations=unroll_length - 1)
 
   # for i in tf.range(1, unroll_length):
   #   output, state = core(get_input(i), state)
