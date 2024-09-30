@@ -298,9 +298,10 @@ def train(config: Config):
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
-  # initialize variables
-  train_stats, _ = train_manager.step()
-  logging.info('loss initial: %f', _get_loss(train_stats))
+  # Initialize variables without calling tf.gradient to avoid strange tf bug.
+  # See https://github.com/vladfi1/slippi-ai/blob/q-learning-dbg/tests/bug.py
+  stats, _ = test_manager.step()
+  logging.info('loss initial: %f', _get_loss(stats))
 
   step = tf.Variable(0, trainable=False, name="step")
 
@@ -356,7 +357,7 @@ def train(config: Config):
   FRAMES_PER_MINUTE = 60 * 60
 
   step_tracker = utils.Tracker(step.numpy())
-  epoch_tracker = utils.Tracker(train_stats['epoch'])
+  epoch_tracker = utils.Tracker(0)
   log_tracker = utils.Tracker(time.time())
 
   @utils.periodically(runtime.log_interval)
@@ -452,6 +453,8 @@ def train(config: Config):
     train_lib.log_stats(to_log, total_steps, take_mean=False)
 
   start_time = time.time()
+
+  train_manager.step()  # For burnin.
 
   while time.time() - start_time < runtime.max_runtime:
     train_stats, _ = train_manager.step()
