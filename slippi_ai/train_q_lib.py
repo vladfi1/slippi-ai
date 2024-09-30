@@ -17,7 +17,9 @@ import wandb
 
 from slippi_ai import (
     controller_heads,
+    flag_utils,
     networks,
+    policies,
     saving,
     s3_lib,
     tf_utils,
@@ -55,6 +57,8 @@ class Config:
 
   # These apply to both sample and q policies.
   # TODO: can we support distinct configurations here?
+  policy: policies.PolicyConfig = _field(
+      lambda: policies.PolicyConfig(train_value_head=False))
   network: dict = _field(lambda: networks.DEFAULT_CONFIG)
   controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
 
@@ -72,7 +76,7 @@ class Config:
   save_to_s3: bool = False
   restore_tag: tp.Optional[str] = None
   restore_pickle: tp.Optional[str] = None
-  # initialize_sample_policy: tp.Optional[str] = None
+  initialize_policies_from: tp.Optional[str] = None
 
   is_test: bool = False  # for db management
   version: int = saving.VERSION
@@ -93,14 +97,22 @@ def train(config: Config):
 
   runtime = config.runtime
 
-  config_dict = dataclasses.asdict(config)
-  config_dict['policy'] = dict(
-      train_value_head=False,
-      delay=0,
-  )
-  # TODO: support initializing from an existing policy?
-  sample_policy = saving.policy_from_config(config_dict)
-  q_policy = saving.policy_from_config(config_dict)
+  if config.initialize_policies_from:
+    logging.info(f'Initializing policies from {config.initialize_policies_from}')
+    state = saving.load_state_from_disk(config.initialize_policies_from)
+    sample_policy = saving.load_policy_from_state(state)
+    q_policy = saving.load_policy_from_state(state)
+
+    # Overwrite policy config
+    imitation_config = state['config']
+    config.policy = flag_utils.dataclass_from_dict(
+        policies.PolicyConfig, imitation_config['policy'])
+    config.network = imitation_config['network']
+    config.controller_head = imitation_config['controller_head']
+  else:
+    config_dict = dataclasses.asdict(config)
+    sample_policy = saving.policy_from_config(config_dict)
+    q_policy = saving.policy_from_config(config_dict)
 
   q_function = q_lib.QFunction(
       network_config=config.q_function.network,
