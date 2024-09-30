@@ -1,13 +1,10 @@
 
 """Train (and test) a network via imitation learning."""
 
-import collections
 import dataclasses
-import datetime
 import json
 import os
 import pickle
-import secrets
 import time
 import typing as tp
 
@@ -15,13 +12,11 @@ from absl import logging
 
 import numpy as np
 import tensorflow as tf
-import tree
 
 import wandb
 
 from slippi_ai import (
     controller_heads,
-    nametags,
     networks,
     saving,
     s3_lib,
@@ -33,62 +28,6 @@ from slippi_ai import q_learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai import q_function as q_lib
 from slippi_ai import embed as embed_lib
-
-
-def get_experiment_tag():
-  today = datetime.date.today()
-  return f'{today.year}-{today.month}-{today.day}_{secrets.token_hex(8)}'
-
-
-class TrainManager:
-
-  def __init__(
-      self,
-      learner: learner_lib.Learner,
-      data_source: data_lib.DataSource,
-      step_kwargs={},
-  ):
-    self.learner = learner
-    self.data_source = data_source
-    self.hidden_state = learner.initial_state(data_source.batch_size)
-    self.step_kwargs = step_kwargs
-    self.total_frames = 0
-    self.data_profiler = utils.Profiler()
-    self.step_profiler = utils.Profiler()
-
-  def step(self) -> tuple[dict, data_lib.Batch]:
-    with self.data_profiler:
-      batch, epoch = next(self.data_source)
-      # TODO: do from_state here instead of in the DataSource?
-      # self.learner.policy.embed_state_action.from_state(batch.frames.state_action)
-      # batch = sanitize_batch(batch)
-    with self.step_profiler:
-      stats, self.hidden_state = self.learner.compiled_step(
-          batch, self.hidden_state, **self.step_kwargs)
-    num_frames = batch.frames.state_action.state.stage.size
-    self.total_frames += num_frames
-    stats.update(
-        epoch=epoch,
-        num_frames=num_frames,
-        total_frames=self.total_frames,
-    )
-    return stats, batch
-
-def mean(value):
-  if isinstance(value, tf.Tensor):
-    value = value.numpy()
-  if isinstance(value, np.ndarray):
-    value = value.mean().item()
-  return value
-
-def log_stats(
-    stats: tree.Structure,
-    step: tp.Optional[int] = None,
-    take_mean: bool = True,
-):
-  if take_mean:
-    stats = tree.map_structure(mean, stats)
-  wandb.log(data=stats, step=step)
 
 _field = utils.field
 
@@ -140,30 +79,6 @@ class Config:
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()
-
-def create_name_map(
-    replays: list[data_lib.ReplayInfo],
-    max_names: int,
-) -> dict[str, int]:
-  name_map = {}
-  name_counts = collections.Counter()
-
-  normalized_names = [
-      nametags.normalize_name(replay.main_player.name)
-      for replay in replays]
-  name_counts.update(normalized_names)
-
-  for name, _ in name_counts.most_common(max_names):
-    name_map[name] = len(name_map)
-
-  # Bake in name groups from nametags.py
-  for first, *rest in nametags.name_groups:
-    if first not in name_map:
-      continue
-    for name in rest:
-      name_map[name] = name_map[first]
-
-  return name_map
 
 def train(config: Config):
   tag = config.tag or train_lib.get_experiment_tag()
@@ -266,7 +181,7 @@ def train(config: Config):
   if restored:
     name_map: dict[str, int] = combined_state['name_map']
   else:
-    name_map = create_name_map(train_replays, config.max_names)
+    name_map = train_lib.create_name_map(train_replays, config.max_names)
 
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   # Record name map
