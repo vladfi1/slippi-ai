@@ -84,18 +84,49 @@ class Learner:
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
+    to_train: list[tuple[list[tf.Tensor], list[tf.Variable], snt.Optimizer]] = []
+
     # Train sample policy with imitation
     with tf.GradientTape() as tape:
       sample_policy_outputs = self.sample_policy.unroll_with_outputs(
           tm_frames, initial_states['sample_policy'])
       sample_policy_loss = sample_policy_outputs.imitation_loss
 
+      sample_policy_vars = self.sample_policy.trainable_variables
+      tf_utils.assert_same_variables(tape.watched_variables(), sample_policy_vars)
+      self.sample_policy_optimizer._initialize(sample_policy_vars)
+
       if train:
-        params = self.sample_policy.trainable_variables
-        tf_utils.assert_same_variables(tape.watched_variables(), params)
-        policy_grads = tape.gradient(sample_policy_loss, params)
-        self.sample_policy_optimizer.apply(policy_grads, params)
-        del params
+        sample_policy_grads = tape.gradient(sample_policy_loss, sample_policy_vars)
+        to_train.append((
+            sample_policy_grads,
+            sample_policy_vars,
+            self.sample_policy_optimizer,
+        ))
+
+    # TODO: use tf.tile instead?
+    replicate = lambda n: lambda t: tf.stack([t] * n)
+    replicate_samples = replicate(self.num_samples)
+
+    # Because the action space is too large, we compute a finite subsample
+    # using the sample_policy.
+    replicated_sample_policy_outputs = replicate_samples(sample_policy_outputs.outputs)
+    replicated_prev_action = tf.nest.map_structure(replicate_samples, prev_action)
+    policy_samples = self.sample_policy.controller_head.sample(
+        replicated_sample_policy_outputs, replicated_prev_action)
+
+    # Include the actual action taken among the samples.
+    policy_samples = tf.nest.map_structure(
+        lambda samples, na: tf.concat([samples, tf.expand_dims(na, 0)], 0),
+        policy_samples.controller_state, next_action,
+    )
+
+    num_samples = self.num_samples + 1
+    replicate_samples = lambda nest: tf.nest.map_structure(
+        replicate(num_samples), nest)
+
+    # At this point tensorflow should be able to GC the large
+    # sample_policy_outputs.outputs tensor.
 
     # Train q function with regression
     with tf.GradientTape() as tape:
@@ -103,45 +134,30 @@ class Learner:
       q_outputs, q_final_states = self.q_function.loss(
           tm_frames, initial_states['q_function'], self.discount)
 
+      q_function_vars = self.q_function.trainable_variables
+      tf_utils.assert_same_variables(tape.watched_variables(), q_function_vars)
+      self.q_function_optimizer._initialize(q_function_vars)
+
       if train:
-        q_params = self.q_function.trainable_variables
-        tf_utils.assert_same_variables(tape.watched_variables(), q_params)
-        q_grads = tape.gradient(q_outputs.loss, q_params)
-        self.q_function_optimizer.apply(q_grads, q_params)
+        q_function_grads = tape.gradient(q_outputs.loss, q_function_vars)
+        to_train.append((
+            q_function_grads,
+            q_function_vars,
+            self.q_function_optimizer,
+        ))
+
+    # Compute the q-values of the sampled actions
+    replicated_hidden_states = replicate_samples(q_outputs.hidden_states)
+    sample_q_values = snt.BatchApply(
+        self.q_function.q_values_from_hidden_states, num_dims=3)(
+            hidden_states=replicated_hidden_states,
+            actions=policy_samples,
+        )
 
     # Train the q_policy by argmaxing the q_function over the sample_policy
-    with tf.GradientTape() as tape:
+    with tf.control_dependencies([sample_q_values]), tf.GradientTape() as tape:
       q_policy_outputs = self.q_policy.unroll_with_outputs(
           tm_frames, initial_states['q_policy'])
-
-      # TODO: use tf.tile instead?
-      replicate = lambda n: lambda t: tf.stack([t] * n)
-      replicate_samples = replicate(self.num_samples)
-
-      # Because the action space is too large, we compute a finite subsample
-      # using the sample_policy.
-      replicated_sample_policy_outputs = replicate_samples(sample_policy_outputs.outputs)
-      replicated_prev_action = tf.nest.map_structure(replicate_samples, prev_action)
-      policy_samples = self.sample_policy.controller_head.sample(
-          replicated_sample_policy_outputs, replicated_prev_action)
-
-      # Include the actual action taken among the samples.
-      policy_samples = tf.nest.map_structure(
-          lambda samples, na: tf.concat([samples, tf.expand_dims(na, 0)], 0),
-          policy_samples.controller_state, next_action,
-      )
-
-      num_samples = self.num_samples + 1
-      replicate_samples = lambda nest: tf.nest.map_structure(
-          replicate(num_samples), nest)
-
-      # Compute the q-values of the sampled actions
-      replicated_hidden_states = replicate_samples(q_outputs.hidden_states)
-      sample_q_values = snt.BatchApply(
-          self.q_function.q_values_from_hidden_states, num_dims=3)(
-              hidden_states=replicated_hidden_states,
-              actions=policy_samples,
-          )
 
       # Construct a target distribution over the subsample and regress the
       # q_policy to this target.
@@ -160,7 +176,6 @@ class Learner:
       q_policy_log_probs -= tf.math.reduce_logsumexp(
           q_policy_log_probs, axis=0, keepdims=True)
 
-      num_samples = self.num_samples + 1
       target_distribution = tf.one_hot(
           tf.argmax(sample_q_values, axis=0), num_samples, axis=0)
       q_policy_q_loss = -tf.reduce_sum(
@@ -174,10 +189,19 @@ class Learner:
           imitation_loss=q_policy_imitation_loss,
       )
 
+      q_policy_vars = self.q_policy.trainable_variables
+      q_policy_grads = tape.gradient(q_policy_total_loss, q_policy_vars)
+      self.q_policy_optimizer._initialize(q_policy_vars)
+
       if train:
-        q_policy_params = self.q_policy.trainable_variables
-        policy_grads = tape.gradient(q_policy_total_loss, q_policy_params)
-        self.q_policy_optimizer.apply(policy_grads, q_policy_params)
+        to_train.append((
+            q_policy_grads,
+            q_policy_vars,
+            self.q_policy_optimizer,
+        ))
+
+    for grads, vars, optimizer in to_train:
+      optimizer.apply(grads, vars)
 
     final_states = dict(
         q_function=q_final_states,

@@ -13,6 +13,8 @@ python scripts/train_q.py \
   --config.runtime.max_runtime=10 \
   --config.runtime.eval_every_n=2 \
   --config.runtime.num_eval_steps=1 \
+  --config.network.name=gru \
+  --config.network.gru.hidden_size=3 \
   --config.q_function.network.name=gru \
   --config.q_function.network.gru.hidden_size=3 \
   "$@"
