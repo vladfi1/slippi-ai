@@ -34,6 +34,14 @@ class QFunction(snt.Module):
   def initial_state(self, batch_size: int) -> networks.RecurrentState:
     return self.core_net.initial_state(batch_size)
 
+  def initialize_variables(self):
+    dummy_state_action = tf.nest.map_structure(
+        tf.convert_to_tensor, self.embed_state_action.dummy([2, 1]))
+    dummy_reward = tf.zeros([1, 1], tf.float32)
+    dummy_frames = data.Frames(dummy_state_action, dummy_reward)
+    initial_state = self.initial_state(1)
+    self.loss(dummy_frames, initial_state, discount=0)
+
   def loss(
       self,
       frames: data.Frames,
