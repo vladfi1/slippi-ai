@@ -130,6 +130,9 @@ def train(config: Config):
       q_policy=q_policy,
       **learner_kwargs,
   )
+  # Initialize variables without calling tf.gradient to avoid strange tf bug.
+  # See https://github.com/vladfi1/slippi-ai/blob/q-learning-dbg/tests/bug.py
+  learner.initialize_variables()
 
   logging.info("Network configuration")
   for comp in ['network', 'controller_head']:
@@ -225,10 +228,9 @@ def train(config: Config):
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
-  # Initialize variables without calling tf.gradient to avoid strange tf bug.
-  # See https://github.com/vladfi1/slippi-ai/blob/q-learning-dbg/tests/bug.py
-  stats, _ = test_manager.step()
-  logging.info('loss initial: %f', _get_loss(stats))
+  test_stats, _ = test_manager.step()
+  logging.info('loss initial: %f', _get_loss(test_stats))
+  del test_stats
 
   step = tf.Variable(0, trainable=False, name="step")
 
@@ -278,8 +280,7 @@ def train(config: Config):
 
   if restored:
     set_tf_state(combined_state['state'])
-    train_loss = _get_loss(train_manager.step()[0])
-    logging.info('loss post-restore: %f', train_loss)
+    logging.info('loss post-restore: %f', _get_loss(test_manager.step()[0]))
 
   FRAMES_PER_MINUTE = 60 * 60
 

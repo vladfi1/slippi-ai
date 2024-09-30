@@ -1,4 +1,5 @@
 import dataclasses
+from typing import Optional
 
 import sonnet as snt
 import tensorflow as tf
@@ -18,6 +19,7 @@ def swap_axes(t, axis1=0, axis2=1):
 class LearnerConfig:
   learning_rate: float = 1e-4
   compile: bool = True
+  jit_compile: bool = True
   reward_halflife: float = 8
 
   num_samples: int = 1
@@ -35,6 +37,7 @@ class Learner:
       q_policy: Policy,
       num_samples: int,
       q_policy_imitation_weight: float = 0,
+      jit_compile: Optional[bool] = None,
   ):
     self.q_function = q_function
     self.sample_policy = sample_policy
@@ -43,7 +46,12 @@ class Learner:
     self.sample_policy_optimizer = snt.optimizers.Adam(learning_rate)
     self.q_policy_optimizer = snt.optimizers.Adam(learning_rate)
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
-    self.compiled_step = tf.function(self.step) if compile else self.step
+
+    if compile:
+      self.compiled_step = tf.function(self.step, jit_compile=jit_compile)
+    else:
+      self.compiled_step = self.step
+
     self.num_samples = num_samples
     self.q_policy_imitation_weight = q_policy_imitation_weight
 
@@ -56,6 +64,16 @@ class Learner:
         q_policy=self.q_policy.initial_state(batch_size),
         sample_policy=self.sample_policy.initial_state(batch_size),
     )
+
+  def initialize_variables(self):
+    self.sample_policy.initialize_variables()
+    self.sample_policy_optimizer._initialize(self.sample_policy.trainable_variables)
+
+    self.q_policy.initialize_variables()
+    self.q_policy_optimizer._initialize(self.q_policy.trainable_variables)
+
+    self.q_function.initialize_variables()
+    self.q_function_optimizer._initialize(self.q_function.trainable_variables)
 
   def step(
       self,
@@ -94,7 +112,7 @@ class Learner:
 
       sample_policy_vars = self.sample_policy.trainable_variables
       tf_utils.assert_same_variables(tape.watched_variables(), sample_policy_vars)
-      self.sample_policy_optimizer._initialize(sample_policy_vars)
+      # self.sample_policy_optimizer._initialize(sample_policy_vars)
 
       if train:
         sample_policy_grads = tape.gradient(sample_policy_loss, sample_policy_vars)
@@ -137,7 +155,7 @@ class Learner:
 
       q_function_vars = self.q_function.trainable_variables
       tf_utils.assert_same_variables(tape.watched_variables(), q_function_vars)
-      self.q_function_optimizer._initialize(q_function_vars)
+      # self.q_function_optimizer._initialize(q_function_vars)
 
       if train:
         q_function_grads = tape.gradient(q_outputs.loss, q_function_vars)
@@ -194,7 +212,7 @@ class Learner:
 
       q_policy_vars = self.q_policy.trainable_variables
       q_policy_grads = tape.gradient(q_policy_total_loss, q_policy_vars)
-      self.q_policy_optimizer._initialize(q_policy_vars)
+      # self.q_policy_optimizer._initialize(q_policy_vars)
 
       if train:
         to_train.append((
