@@ -228,9 +228,9 @@ def train(config: Config):
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
-  test_stats, _ = test_manager.step()
-  logging.info('loss initial: %f', _get_loss(test_stats))
-  del test_stats
+  stats, _ = train_manager.step()
+  logging.info('loss initial: %f', _get_loss(stats))
+  del stats
 
   step = tf.Variable(0, trainable=False, name="step")
 

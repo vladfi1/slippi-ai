@@ -10,6 +10,7 @@ from slippi_ai.networks import RecurrentState
 class QOutputs(tp.NamedTuple):
   returns: tf.Tensor  # [T, B]
   advantages: tf.Tensor  # [T, B]
+  q_values: tf.Tensor
   loss: tf.Tensor
   hidden_states: RecurrentState  # [T, B]
   metrics: dict
@@ -119,6 +120,7 @@ class QFunction(snt.Module):
     outputs = QOutputs(
         returns=value_targets,
         advantages=advantages,
+        q_values=q_values,
         loss=value_loss + q_loss,
         hidden_states=hidden_states,
         metrics=metrics,
