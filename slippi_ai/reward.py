@@ -3,6 +3,7 @@
 import dataclasses
 
 import numpy as np
+import tree
 
 import melee
 from slippi_ai.types import Game, Player
@@ -11,7 +12,8 @@ def is_dying(player_action: np.ndarray) -> np.ndarray:
   # See https://docs.google.com/spreadsheets/d/1JX2w-r2fuvWuNgGb6D3Cs4wHQKLFegZe2jhbBuIhCG8/edit#gid=13
   return player_action <= 0xA
 
-def process_deaths(deaths: np.ndarray) -> np.ndarray:
+def process_deaths(player_action: np.ndarray) -> np.ndarray:
+  deaths = is_dying(player_action)
   # Players are in a dead action-state for many consecutive frames.
   # Prune all but the first frame of death
   return np.logical_and(np.logical_not(deaths[:-1]), deaths[1:])
@@ -43,8 +45,7 @@ def compute_rewards(
   '''
 
   def player_reward(player: Player):
-    dying = is_dying(player.action)
-    deaths = process_deaths(dying).astype(np.float32)
+    deaths = process_deaths(player.action).astype(np.float32)
     damages = damage_ratio * process_damages(player.percent)
 
     ledge_grabs = grabbed_ledge(player.action).astype(np.float32)
@@ -61,6 +62,15 @@ def compute_rewards(
   assert rewards.dtype == np.float32
 
   return rewards
+
+def player_stats(player: Player) -> dict:
+  FPM = 60 * 60
+  stats = dict(
+      deaths=process_deaths(player.action),
+      damages=process_damages(player.percent),
+      ledge_grabs=grabbed_ledge(player.action),
+  )
+  return tree.map_structure(lambda x: np.mean(x) * FPM, stats)
 
 # TODO: test that the two ways of getting reward yield the same results
 def get_reward(

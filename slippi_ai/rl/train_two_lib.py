@@ -13,6 +13,7 @@ import tensorflow as tf
 from slippi_ai import (
     data,
     dolphin as dolphin_lib,
+    embed,
     evaluators,
     flag_utils,
     reward,
@@ -378,11 +379,11 @@ def run(config: Config):
   step_profiler = utils.Profiler()
 
   def get_log_data(
-      trajectories: dict[int, list[evaluators.Trajectory]],
+      all_trajectories: dict[int, list[evaluators.Trajectory]],
       metrics: dict,
   ) -> dict:
     main_port = PORTS[0]
-    trajectories = trajectories[main_port]
+    trajectories = all_trajectories[main_port]
     timings = {}
 
     # TODO: we shouldn't take the mean over these timings
@@ -408,14 +409,18 @@ def run(config: Config):
     learner_metrics = metrics['learner'][main_port]
 
     # concatenate along the batch dimension
-    states = tf.nest.map_structure(
+    states: embed.Game = tf.nest.map_structure(
         lambda *xs: np.concatenate(xs, axis=1),
         *[t.states for t in trajectories])
-    kos = reward.compute_rewards(states, damage_ratio=0)
-    kos_per_minute = kos.mean() * (60 * 60)
+
+    p0_stats = reward.player_stats(states.p0)
+    p1_stats = reward.player_stats(states.p1)
+    ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
     return dict(
-        ko_diff=kos_per_minute,
+        p0=p0_stats,
+        p1=p1_stats,
+        ko_diff=ko_diff,
         timings=timings,
         learner=learner_metrics,
     )
