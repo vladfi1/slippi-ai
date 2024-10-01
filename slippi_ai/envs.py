@@ -11,7 +11,7 @@ import numpy as np
 import portpicker
 
 from melee.slippstream import EnetDisconnected
-from melee import GameState
+from melee import GameState, Stage
 
 from slippi_ai import dolphin, utils
 from slippi_ai.controller_lib import send_controller
@@ -495,6 +495,7 @@ class FakeBatchedEnvironment:
   ):
     game = utils.map_nt(
         lambda t: np.full([num_envs], 0, dtype=t), reified_game)
+    game.stage[:] = Stage.FINAL_DESTINATION.value  # make the stage valid
     self._output = EnvOutput(
         gamestates={p: game for p in players},
         needs_reset=np.full([num_envs], False),

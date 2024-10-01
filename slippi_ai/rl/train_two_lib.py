@@ -413,8 +413,8 @@ def run(config: Config):
         lambda *xs: np.concatenate(xs, axis=1),
         *[t.states for t in trajectories])
 
-    p0_stats = reward.player_stats(states.p0, states.p1)
-    p1_stats = reward.player_stats(states.p1, states.p0)
+    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
+    p1_stats = reward.player_stats(states.p1, states.p0, states.stage)
     ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
     return dict(
