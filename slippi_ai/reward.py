@@ -26,15 +26,40 @@ def grabbed_ledge(player_action: np.ndarray) -> np.ndarray:
   is_ledge_grab = player_action == 0xFC  # "CliffCatch"
   return np.logical_and(np.logical_not(is_ledge_grab[:-1]), is_ledge_grab[1:])
 
+def normalize(xys, epsilon=1e-6):
+  r = np.sqrt(np.sum(np.square(xys), axis=-1, keepdims=True))
+  return xys / (r + epsilon)
+
+def compute_approaching_factor(
+    player: Player, opponent: Player) -> np.ndarray:
+  """Measures how much we are approaching the opponent on each frame."""
+  xy = np.stack([player.x, player.y], axis=-1)
+  v = xy[1:] - xy[:-1]
+
+
+  opp_xy = np.stack([opponent.x, opponent.y], axis=-1)
+  dxy = normalize(opp_xy - xy)
+
+  approach_factor = np.sum(v * dxy[:-1], axis=-1)
+
+  # Player teleports when respawning.
+  dying = is_dying(player.action)
+  respawning = np.logical_and(dying[:-1], np.logical_not(dying[1:]))
+  approach_factor = np.where(respawning, 0, approach_factor)
+
+  return approach_factor
+
 @dataclasses.dataclass
 class RewardConfig:
   damage_ratio: float = 0.01
   ledge_grab_penalty: float = 0
+  approaching_factor: float = 0
 
 def compute_rewards(
     game: Game,
     damage_ratio: float = 0.01,
     ledge_grab_penalty: float = 0,
+    approaching_factor: float = 0,
 ) -> np.ndarray:
   '''
     Args:
@@ -56,6 +81,10 @@ def compute_rewards(
   # Zero-sum rewards ensure there can be no collusion.
   rewards = player_reward(game.p0) - player_reward(game.p1)
 
+  af0 = compute_approaching_factor(game.p0, game.p1)
+  af1 = compute_approaching_factor(game.p1, game.p0)
+  rewards += approaching_factor * (af0 - af1)
+
   # sanity checks
   assert np.all(rewards > -2)
   assert np.all(rewards < 2)
@@ -63,12 +92,13 @@ def compute_rewards(
 
   return rewards
 
-def player_stats(player: Player) -> dict:
+def player_stats(player: Player, opponent: Player) -> dict:
   FPM = 60 * 60
   stats = dict(
       deaths=process_deaths(player.action),
       damages=process_damages(player.percent),
       ledge_grabs=grabbed_ledge(player.action),
+      approaching_factor=compute_approaching_factor(player, opponent),
   )
   return tree.map_structure(lambda x: np.mean(x) * FPM, stats)
 
