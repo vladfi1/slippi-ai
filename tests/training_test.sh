@@ -11,7 +11,7 @@ python scripts/train.py \
   --config.runtime.max_runtime=10 \
   --config.runtime.eval_every_n=2 \
   --config.runtime.num_eval_steps=1 \
-  --config.network.mlp.depth=1 \
-  --config.network.mlp.width=1 \
+  --config.network.name=gru \
+  --config.network.gru.hidden_size=1 \
   --config.value_function.separate_network_config=False \
   "$@"
