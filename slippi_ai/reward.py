@@ -3,7 +3,6 @@
 import dataclasses
 
 import numpy as np
-import tree
 
 import melee
 from slippi_ai.types import Game, Player
@@ -127,14 +126,13 @@ def compute_rewards(
 
 def player_stats(player: Player, opponent: Player, stage: np.ndarray) -> dict:
   FPM = 60 * 60
-  stats = dict(
-      deaths=process_deaths(player.action),
-      damages=process_damages(player.percent),
-      ledge_grabs=grabbed_ledge(player.action),
-      approaching_factor=compute_approaching_factor(player, opponent),
-      stalling=is_stalling_offstage(player, stage),
+  return dict(
+      deaths=process_deaths(player.action).mean() * FPM,
+      damages=process_damages(player.percent).mean() * FPM,
+      ledge_grabs=grabbed_ledge(player.action).mean() * FPM,
+      approaching_factor=compute_approaching_factor(player, opponent).mean(),
+      stalling=is_stalling_offstage(player, stage).mean(),
   )
-  return tree.map_structure(lambda x: np.mean(x) * FPM, stats)
 
 # TODO: test that the two ways of getting reward yield the same results
 def get_reward(
