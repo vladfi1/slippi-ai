@@ -113,7 +113,8 @@ class QFunction(snt.Module):
             'loss': q_loss,
             'uev': quev,
             'uev_delta': uev_delta,
-            'rel_v_loss': q_loss / (value_loss + 1e-8),
+            # Take log to result in a geometric mean.
+            'rel_v_loss': tf.math.log((value_loss + 1e-8) / (q_loss + 1e-8)),
         },
     }
 
