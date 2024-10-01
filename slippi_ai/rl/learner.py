@@ -30,6 +30,7 @@ class LearnerConfig:
   # TODO: unify this with the imitation config?
   learning_rate: float = 1e-4
   compile: bool = True
+  jit_compile: bool = True
   policy_gradient_weight: float = 1
   kl_teacher_weight: float = 1e-1
   reverse_kl_teacher_weight: float = 0
@@ -115,7 +116,11 @@ class Learner:
 
     self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
 
-    maybe_compile = tf.function if config.compile else lambda f: f
+    if config.compile:
+      maybe_compile = tf.function(
+          jit_compile=config.jit_compile, autograph=False)
+    else:
+      maybe_compile = lambda f: f
 
     self.compiled_unroll = maybe_compile(self.unroll)
     self.compiled_ppo_grads = maybe_compile(self.ppo_grads)

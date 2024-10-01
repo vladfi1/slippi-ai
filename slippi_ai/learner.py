@@ -19,6 +19,7 @@ def swap_axes(t, axis1=0, axis2=1):
 class LearnerConfig:
   learning_rate: float = 1e-4
   compile: bool = True
+  jit_compile: bool = True
   decay_rate: float = 0.
   value_cost: float = 0.5
   reward_halflife: float = 2
@@ -35,6 +36,7 @@ class Learner:
       reward_halflife: float,
       value_function: Optional[vf_lib.ValueFunction] = None,
       decay_rate: Optional[float] = None,
+      jit_compile: bool = True,
   ):
     self.policy = policy
     self.value_function = value_function or vf_lib.FakeValueFunction()
@@ -43,7 +45,12 @@ class Learner:
     self.decay_rate = decay_rate
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
-    self.compiled_step = tf.function(self.step) if compile else self.step
+
+    if compile:
+      self.compiled_step = tf.function(
+          self.step, jit_compile=jit_compile, autograph=False)
+    else:
+      self.compiled_step = self.step
 
   def initial_state(self, batch_size: int) -> RecurrentState:
     return (
