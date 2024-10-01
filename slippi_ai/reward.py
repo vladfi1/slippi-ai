@@ -1,5 +1,7 @@
 """Calculate rewards."""
 
+import dataclasses
+
 import numpy as np
 
 import melee
@@ -18,7 +20,20 @@ def process_damages(damages: np.ndarray) -> np.ndarray:
   damages = damages.astype(np.float32)
   return np.maximum(damages[1:] - damages[:-1], 0)
 
-def compute_rewards(game: Game, damage_ratio=0.01):
+def grabbed_ledge(player_action: np.ndarray) -> np.ndarray:
+  is_ledge_grab = player_action == 0xFC  # "CliffCatch"
+  return np.logical_and(np.logical_not(is_ledge_grab[:-1]), is_ledge_grab[1:])
+
+@dataclasses.dataclass
+class RewardConfig:
+  damage_ratio: float = 0.01
+  ledge_grab_penalty: float = 0
+
+def compute_rewards(
+    game: Game,
+    damage_ratio: float = 0.01,
+    ledge_grab_penalty: float = 0,
+) -> np.ndarray:
   '''
     Args:
       game: nest of np.arrays of length T, from make_dataset.py
@@ -30,14 +45,20 @@ def compute_rewards(game: Game, damage_ratio=0.01):
   def player_reward(player: Player):
     dying = is_dying(player.action)
     deaths = process_deaths(dying).astype(np.float32)
-    damage = damage_ratio * process_damages(player.percent)
-    return - (deaths + damage)
+    damages = damage_ratio * process_damages(player.percent)
 
+    ledge_grabs = grabbed_ledge(player.action).astype(np.float32)
+    ledge_grab_penalties = ledge_grab_penalty * ledge_grabs
+
+    return - (deaths + damages + ledge_grab_penalties)
+
+  # Zero-sum rewards ensure there can be no collusion.
   rewards = player_reward(game.p0) - player_reward(game.p1)
 
   # sanity checks
   assert np.all(rewards > -2)
   assert np.all(rewards < 2)
+  assert rewards.dtype == np.float32
 
   return rewards
 

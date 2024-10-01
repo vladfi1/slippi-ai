@@ -12,7 +12,7 @@ from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
 from slippi_ai.controller_heads import ControllerType
 from slippi_ai import value_function as vf_lib
-from slippi_ai import tf_utils, utils, reward
+from slippi_ai import tf_utils, utils, reward as reward_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
 
@@ -38,7 +38,7 @@ class LearnerConfig:
   value_cost: float = 0.5
   reward_halflife: float = 2  # measured in seconds
   discount_on_death: tp.Optional[float] = None
-  damage_ratio: float = 0
+  reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
   ppo: PPOConfig = field(PPOConfig)
 
 class LearnerState(tp.NamedTuple):
@@ -91,9 +91,13 @@ def combine_grads(x: tp.Optional[tf.Tensor], y: tp.Optional[tf.Tensor]):
     return None
   return x + y
 
-def update_rewards(trajectory: Trajectory, damage_ratio: float):
-  return trajectory._replace(
-      rewards=reward.compute_rewards(trajectory.states, damage_ratio))
+def update_rewards(
+    trajectory: Trajectory,
+    reward_config: reward_lib.RewardConfig,
+) -> Trajectory:
+  rewards = reward_lib.compute_rewards(
+      trajectory.states, **dataclasses.asdict(reward_config))
+  return trajectory._replace(rewards=rewards)
 
 class Learner:
   """Implements A2C."""
@@ -416,7 +420,7 @@ class Learner:
     assert self._use_separate_vf
 
     trajectories = [
-        update_rewards(t, self._config.damage_ratio)
+        update_rewards(t, self._config.reward)
         for t in trajectories]
 
     learner_outputs: list[LearnerOutputs] = []

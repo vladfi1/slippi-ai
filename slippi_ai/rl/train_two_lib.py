@@ -366,7 +366,7 @@ def run(config: Config):
       async_envs=config.actor.async_envs,
       use_gpu=config.actor.gpu_inference,
       use_fake_envs=config.runtime.use_fake_data,
-      damage_ratio=config.learner.damage_ratio,
+      # Rewards are overridden in the learner.
   )
 
   experiment_manager = ExperimentManager(
