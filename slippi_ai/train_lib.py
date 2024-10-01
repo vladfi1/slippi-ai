@@ -32,7 +32,6 @@ from slippi_ai import (
 )
 from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
-from slippi_ai.file_cache import FileCache
 from slippi_ai import value_function as vf_lib
 from slippi_ai import embed as embed_lib
 
@@ -106,13 +105,6 @@ class RuntimeConfig:
   num_eval_steps: int = 10  # number of batches per evaluation
 
 @dataclasses.dataclass
-class FileCacheConfig:
-  use: bool = False
-  path: tp.Optional[str] = None
-  wipe: bool = False
-  version: str = 'test'
-
-@dataclasses.dataclass
 class ValueFunctionConfig:
   train_separate_network: bool = True
   separate_network_config: bool = True
@@ -122,7 +114,6 @@ class ValueFunctionConfig:
 class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
 
-  file_cache: FileCacheConfig = _field(FileCacheConfig)
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
 
@@ -191,56 +182,6 @@ def train(config: Config):
 
   runtime = config.runtime
 
-  policy = saving.policy_from_config(dataclasses.asdict(config))
-
-  value_function = None
-  if config.value_function.train_separate_network:
-    value_net_config = config.network
-    if config.value_function.separate_network_config:
-      value_net_config = config.value_function.network
-    value_function = vf_lib.ValueFunction(
-        network_config=value_net_config,
-        embed_state_action=policy.embed_state_action,
-    )
-
-  learner_kwargs = dataclasses.asdict(config.learner)
-  learning_rate = tf.Variable(
-      learner_kwargs['learning_rate'], name='learning_rate', trainable=False)
-  learner_kwargs.update(learning_rate=learning_rate)
-  learner = learner_lib.Learner(
-      policy=policy,
-      value_function=value_function,
-      **learner_kwargs,
-  )
-
-  logging.info("Network configuration")
-  for comp in ['network', 'controller_head']:
-    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
-
-  ### Dataset Creation ###
-  dataset_config = config.dataset
-
-  file_cache_config = config.file_cache
-  if file_cache_config.use:
-    file_cache = FileCache(
-        root=file_cache_config.path,
-        wipe=file_cache_config.wipe,
-    )
-
-    file_cache.pull_dataset(file_cache_config.version)
-
-    dataset_config.data_dir = file_cache.games_dir
-    dataset_config.meta_path = file_cache.meta_path
-
-  # Parse csv chars into list of enum values.
-  char_filters = {}
-  for key in ['allowed_characters', 'allowed_opponents']:
-    chars_string = getattr(dataset_config, key)
-    char_filters[key] = data_lib.chars_from_string(chars_string)
-
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
   save_to_s3 = config.save_to_s3
@@ -283,6 +224,55 @@ def train(config: Config):
     restored = True
   else:
     logging.info('not restoring any params')
+
+  if restored:
+    restore_config = combined_state['config']
+
+    # We can update the delay as it doesn't affect the network architecture.
+    restore_delay = restore_config['policy']['delay']
+    if restore_delay != config.policy.delay:
+      logging.warning(f'WARNING: Changing delay from {restore_delay} to {config.policy.delay}.')
+
+    for key in ['network', 'controller_head']:
+      setattr(config, key, restore_config[key])
+
+  policy = saving.policy_from_config(dataclasses.asdict(config))
+
+  value_function = None
+  if config.value_function.train_separate_network:
+    value_net_config = config.network
+    if config.value_function.separate_network_config:
+      value_net_config = config.value_function.network
+    value_function = vf_lib.ValueFunction(
+        network_config=value_net_config,
+        embed_state_action=policy.embed_state_action,
+    )
+
+  learner_kwargs = dataclasses.asdict(config.learner)
+  learning_rate = tf.Variable(
+      learner_kwargs['learning_rate'], name='learning_rate', trainable=False)
+  learner_kwargs.update(learning_rate=learning_rate)
+  learner = learner_lib.Learner(
+      policy=policy,
+      value_function=value_function,
+      **learner_kwargs,
+  )
+
+  logging.info("Network configuration")
+  for comp in ['network', 'controller_head']:
+    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+
+  ### Dataset Creation ###
+  dataset_config = config.dataset
+
+  # Parse csv chars into list of enum values.
+  char_filters = {}
+  for key in ['allowed_characters', 'allowed_opponents']:
+    chars_string = getattr(dataset_config, key)
+    char_filters[key] = data_lib.chars_from_string(chars_string)
+
+  train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
   if restored:
     name_map: dict[str, int] = combined_state['name_map']
