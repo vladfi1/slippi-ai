@@ -60,22 +60,29 @@ def dynamic_rnn(
   """
   unroll_length = tf.shape(tf.nest.flatten(inputs)[0])[0]
 
-  def get_input(index):
-    return tf.nest.map_structure(lambda t: t[index], inputs)
-
-  output_0, state = core(get_input(0), initial_state)
+  input_0 = tf.nest.map_structure(lambda t: t[0], inputs)
+  output_0, _ = core(input_0, initial_state)
 
   outputs = tf.nest.map_structure(
       lambda t: tf.TensorArray(
           dtype=t.dtype, size=unroll_length, element_shape=t.shape),
       output_0)
+  del input_0, output_0
 
   def write_output(index, output, buffers):
     return tf.nest.map_structure(
         lambda ta, t: ta.write(index, t),
         buffers, output)
 
-  outputs = write_output(0, output_0, outputs)
+  # tf.scan also converts inputs to TensorArrays; let's copy them
+  inputs = tf.nest.map_structure(
+      lambda t: tf.TensorArray(
+          dtype=t.dtype, size=t.shape[0],
+          element_shape=t.shape[1:]).unstack(t),
+      inputs)
+
+  def get_input(index):
+    return tf.nest.map_structure(lambda t: t.read(index), inputs)
 
   cond = lambda i, *_: i < unroll_length
 
@@ -84,12 +91,12 @@ def dynamic_rnn(
     buffers = write_output(index, output, buffers)
     return index + 1, buffers, state
 
-  loop_vars = (1, outputs, state)
+  loop_vars = (0, outputs, initial_state)
 
   _, outputs, state = tf.while_loop(
       cond, body, loop_vars,
       parallel_iterations=1,
-      maximum_iterations=unroll_length - 1)
+      maximum_iterations=unroll_length)
 
   # for i in tf.range(1, unroll_length):
   #   output, state = core(get_input(i), state)
