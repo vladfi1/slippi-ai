@@ -280,7 +280,9 @@ class Learner:
       # We could also use the returns (value_targets) from the q_function, but
       # it's a bit weird because they are correlated with the action taken.
       q_policy_advantages = q_policy_expected_return - q_function_outputs.values
-      optimal_advantages = tf.reduce_max(sample_q_values, axis=0) - q_function_outputs.values
+      optimal_expected_return = tf.reduce_max(sample_q_values, axis=0)
+      optimal_advantages = optimal_expected_return - q_function_outputs.values
+      regret = q_policy_expected_return - optimal_expected_return
 
       losses = [
           q_policy_q_loss,
@@ -295,6 +297,7 @@ class Learner:
         expected_return=q_policy_expected_return,
         advantages=q_policy_advantages,
         optimal_advantages=optimal_advantages,
+        regret=regret,
     )
 
     if train:
