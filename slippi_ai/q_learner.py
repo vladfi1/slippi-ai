@@ -287,7 +287,7 @@ class Learner:
       losses = [
           q_policy_q_loss,
           self.q_policy_imitation_weight * q_policy_imitation_loss,
-          self.q_policy_expected_return_weight * q_policy_expected_return,
+          -self.q_policy_expected_return_weight * q_policy_expected_return,
       ]
       q_policy_total_loss = tf.add_n(losses)
 
