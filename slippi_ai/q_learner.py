@@ -26,6 +26,7 @@ class LearnerConfig:
 
   num_samples: int = 1
   q_policy_imitation_weight: float = 0
+  q_policy_expected_return_weight: float = 0
 
 # TODO: use tf.tile instead?
 replicate = lambda n: lambda t: tf.stack([t] * n)
@@ -34,6 +35,10 @@ T = tp.TypeVar('T')
 
 def identity(x: T) -> T:
   return x
+
+class QFunctionOutputs(tp.NamedTuple):
+  values: tf.Tensor  # [T, B]
+  sample_q_values: tf.Tensor  # [num_samples, T, B]
 
 # TODO: should this be a snt.Module?
 class Learner:
@@ -47,6 +52,7 @@ class Learner:
       q_policy: Policy,
       num_samples: int,
       q_policy_imitation_weight: float = 0,
+      q_policy_expected_return_weight: float = 0,
       jit_compile: Optional[bool] = None,
   ):
     self.q_function = q_function
@@ -69,6 +75,7 @@ class Learner:
 
     self.num_samples = num_samples
     self.q_policy_imitation_weight = q_policy_imitation_weight
+    self.q_policy_expected_return_weight = q_policy_expected_return_weight
 
     assert q_policy.delay == 0
     assert sample_policy.delay == 0
@@ -153,7 +160,7 @@ class Learner:
       initial_states: RecurrentState,
       policy_samples: embed.Action,
       train: bool = True,
-  ) -> tuple[tf.Tensor, RecurrentState, dict]:
+  ) -> tuple[QFunctionOutputs, RecurrentState, dict]:
     # frames = batch.frames
     # restarting = batch.needs_reset
     # batch_size = restarting.shape[0]
@@ -203,7 +210,12 @@ class Learner:
       q_function_grads = tape.gradient(q_outputs.loss, q_function_vars)
       self.q_function_optimizer.apply(q_function_grads, q_function_vars)
 
-    return sample_q_values, q_final_states, q_outputs.metrics
+    outputs = QFunctionOutputs(
+        values=q_outputs.values,
+        sample_q_values=sample_q_values,
+    )
+
+    return outputs, q_final_states, q_outputs.metrics
 
   def _train_q_policy(
       self,
@@ -211,7 +223,7 @@ class Learner:
       # batch: Batch,
       initial_states: RecurrentState,
       policy_samples: embed.Action,
-      sample_q_values: tf.Tensor,
+      q_function_outputs: QFunctionOutputs,
       train: bool = True,
   ) -> tuple[RecurrentState, dict]:
     # frames = batch.frames
@@ -225,6 +237,7 @@ class Learner:
     #     self.q_policy.initial_state(batch_size),
     #     initial_states)
 
+    sample_q_values = q_function_outputs.sample_q_values
     action = frames.state_action.action
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
 
@@ -260,12 +273,28 @@ class Learner:
       q_policy_q_loss = -tf.reduce_sum(
           target_distribution * q_policy_log_probs, axis=0)
 
-      q_policy_total_loss = q_policy_q_loss
-      q_policy_total_loss += self.q_policy_imitation_weight * q_policy_imitation_loss
+      q_policy_probs = tf.exp(q_policy_log_probs)
+      q_policy_expected_return = tf.reduce_sum(
+          q_policy_probs * sample_q_values, axis=0)
+
+      # We could also use the returns (value_targets) from the q_function, but
+      # it's a bit weird because they are correlated with the action taken.
+      q_policy_advantages = q_policy_expected_return - q_function_outputs.values
+      optimal_advantages = tf.reduce_max(sample_q_values, axis=0) - q_function_outputs.values
+
+      losses = [
+          q_policy_q_loss,
+          self.q_policy_imitation_weight * q_policy_imitation_loss,
+          self.q_policy_expected_return_weight * q_policy_expected_return,
+      ]
+      q_policy_total_loss = tf.add_n(losses)
 
     q_policy_metrics = dict(
         q_loss=q_policy_q_loss,
         imitation_loss=q_policy_imitation_loss,
+        expected_return=q_policy_expected_return,
+        advantages=q_policy_advantages,
+        optimal_advantages=optimal_advantages,
     )
 
     if train:
