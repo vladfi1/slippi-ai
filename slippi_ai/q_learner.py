@@ -268,8 +268,8 @@ class Learner:
       q_policy_log_probs -= tf.math.reduce_logsumexp(
           q_policy_log_probs, axis=0, keepdims=True)
 
-      target_distribution = tf.one_hot(
-          tf.argmax(sample_q_values, axis=0), num_samples, axis=0)
+      best_action = tf.argmax(sample_q_values, axis=0)
+      target_distribution = tf.one_hot(best_action, num_samples, axis=0)
       q_policy_q_loss = -tf.reduce_sum(
           target_distribution * q_policy_log_probs, axis=0)
 
@@ -291,6 +291,8 @@ class Learner:
       ]
       q_policy_total_loss = tf.add_n(losses)
 
+    action_taken_is_optimal = tf.equal(best_action, num_samples - 1)
+
     q_policy_metrics = dict(
         q_loss=q_policy_q_loss,
         imitation_loss=q_policy_imitation_loss,
@@ -298,6 +300,7 @@ class Learner:
         advantages=q_policy_advantages,
         optimal_advantages=optimal_advantages,
         regret=regret,
+        action_taken_is_optimal=action_taken_is_optimal,
     )
 
     if train:
