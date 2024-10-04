@@ -68,7 +68,7 @@ class Config:
 
   max_names: int = 16
 
-  expt_root: str = 'experiments'
+  expt_root: str = 'experiments/q_learning'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
