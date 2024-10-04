@@ -130,6 +130,12 @@ class BasicAgent:
 
     self.hidden_state = self._policy.initial_state(batch_size)
 
+  def warmup(self):
+    """Warm up the agent by running a dummy step."""
+    game = self._policy.embed_game.dummy([self._batch_size])
+    needs_reset = np.full([self._batch_size], False)
+    self.step(game, needs_reset)
+
   def step(
       self,
       game: embed.Game,
@@ -210,6 +216,7 @@ class DelayedAgent:
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
+    self.warmup = self._agent.warmup
     self._policy = policy
     self.embed_controller = policy.controller_embedding
 
@@ -335,6 +342,7 @@ class AsyncDelayedAgent:
         policy=policy,
         batch_size=batch_size,
         **agent_kwargs)
+    self.warmup = self._agent.warmup
     self._policy = policy
     self.embed_controller = policy.controller_embedding
 
@@ -484,6 +492,7 @@ class Agent:
     self.config = config
 
     self._agent = build_delayed_agent(batch_size=1, **agent_kwargs)
+    self._agent.warmup()
     # Forward async interface
     self.run = self._agent.run
     self.start = self._agent.start

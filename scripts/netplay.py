@@ -40,6 +40,7 @@ def main(_):
 
   agents: list[eval_lib.Agent] = []
 
+  # Warm up agent before starting game to prevent initial hiccup.
   if isinstance(player, dolphin_lib.AI):
     agent = eval_lib.build_agent(
         controller=dolphin.controllers[port],
