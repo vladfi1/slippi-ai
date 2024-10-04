@@ -15,13 +15,14 @@ PLAYER = ff.DEFINE_dict('player', **eval_lib.PLAYER_FLAGS)
 
 dolphin_flags = dolphin_lib.DOLPHIN_FLAGS.copy()
 dolphin_flags.update(
-    online_delay=ff.Integer(2),
+    online_delay=ff.Integer(15),
     connect_code=ff.String(None, required=True),
     user_json_path=ff.String(None, required=True),
+    # blocking_input=ff.Boolean(False),
 )
 DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
 
-flags.DEFINE_integer('runtime', 300, 'Running time, in seconds.')
+CHECK_INPUTS = flags.DEFINE_boolean('check_inputs', False, 'Check inputs.')
 
 FLAGS = flags.FLAGS
 
@@ -51,8 +52,6 @@ def main(_):
 
     eval_lib.update_character(player, agent.config)
 
-  total_frames = 60 * FLAGS.runtime
-
   # Start game
   gamestate = dolphin.step()
 
@@ -73,7 +72,7 @@ def main(_):
   # Main loop
   agent.start()
   try:
-    for _ in range(total_frames):
+    while True:
       if gamestate.frame == -123:
         action_queue = collections.deque(
             [None] * (1 + dolphin.console.online_delay))
@@ -81,7 +80,8 @@ def main(_):
       # "step" to the next frame
       prev_frame = gamestate.frame
       gamestate = dolphin.step()
-      assert gamestate.frame == prev_frame + 1
+      if CHECK_INPUTS.value:
+        assert gamestate.frame == prev_frame + 1
 
       for agent in agents:
         action: types.Controller = agent.step(gamestate).controller_state
@@ -99,7 +99,7 @@ def main(_):
             get_controller(gamestate.players[actual_port].controller_state))
 
         # deadzone can change observed stick values
-        if observed.buttons != expected.buttons:
+        if CHECK_INPUTS.value and observed.buttons != expected.buttons:
           raise ValueError('Wrong controller seen')
 
   finally:
