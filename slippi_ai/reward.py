@@ -25,6 +25,21 @@ def grabbed_ledge(player_action: np.ndarray) -> np.ndarray:
   is_ledge_grab = player_action == 0xFC  # "CliffCatch"
   return np.logical_and(np.logical_not(is_ledge_grab[:-1]), is_ledge_grab[1:])
 
+def get_bad_ledge_grabs(player: Player, opponent: Player) -> np.ndarray:
+  ledge_grabs = grabbed_ledge(player.action)
+
+  # Don't penalize if opponent is offstage
+  opponent_direction = player.x < opponent.x  # True if opponent is right
+  center_direction = player.x < 0  # True if center is right
+  opponent_towards_center = opponent_direction == center_direction
+  bad_ledge_grabs = np.logical_and(ledge_grabs, opponent_towards_center[:-1])
+
+  # Also ok if opponent is invincible (like after respawn)
+  bad_ledge_grabs = np.logical_and(
+      bad_ledge_grabs, np.logical_not(opponent.invulnerable[:-1]))
+
+  return bad_ledge_grabs
+
 def normalize(xys, epsilon=1e-6):
   r = np.sqrt(np.sum(np.square(xys), axis=-1, keepdims=True))
   return xys / (r + epsilon)
@@ -98,24 +113,23 @@ def compute_rewards(
       A length (T-1) np.array of rewards
   '''
 
-  def player_reward(player: Player):
+  def player_reward(player: Player, opponent: Player):
     deaths = process_deaths(player.action).astype(np.float32)
     damages = damage_ratio * process_damages(player.percent)
 
-    ledge_grabs = grabbed_ledge(player.action).astype(np.float32)
-    ledge_grab_penalties = ledge_grab_penalty * ledge_grabs
+    bad_ledge_grabs = get_bad_ledge_grabs(player, opponent).astype(np.float32)
+    ledge_grab_penalties = ledge_grab_penalty * bad_ledge_grabs
 
     stalling = is_stalling_offstage(player, game.stage)[1:]
     stalling_penalties = (stalling_penalty / 60) * stalling.astype(np.float32)
 
-    return - (deaths + damages + ledge_grab_penalties + stalling_penalties)
+    reward = approaching_factor * compute_approaching_factor(player, opponent)
+    reward -= (deaths + damages + ledge_grab_penalties + stalling_penalties)
+
+    return reward
 
   # Zero-sum rewards ensure there can be no collusion.
-  rewards = player_reward(game.p0) - player_reward(game.p1)
-
-  af0 = compute_approaching_factor(game.p0, game.p1)
-  af1 = compute_approaching_factor(game.p1, game.p0)
-  rewards += approaching_factor * (af0 - af1)
+  rewards = player_reward(game.p0, game.p1) - player_reward(game.p1, game.p0)
 
   # sanity checks
   assert np.all(rewards > -2)
@@ -129,7 +143,7 @@ def player_stats(player: Player, opponent: Player, stage: np.ndarray) -> dict:
   return dict(
       deaths=process_deaths(player.action).mean() * FPM,
       damages=process_damages(player.percent).mean() * FPM,
-      ledge_grabs=grabbed_ledge(player.action).mean() * FPM,
+      ledge_grabs=get_bad_ledge_grabs(player, opponent).mean() * FPM,
       approaching_factor=compute_approaching_factor(player, opponent).mean(),
       stalling=is_stalling_offstage(player, stage).mean(),
   )
