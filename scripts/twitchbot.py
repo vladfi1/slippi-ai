@@ -243,6 +243,7 @@ HELP_MESSAGE = """
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !agents: List available agents to play against.
 !agent <name>: Select an agent to play against.
+!bots <agent1> [<agent2>]: Set one or two bot agents.
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
@@ -568,9 +569,11 @@ class Bot(commands.Bot):
       self._bot_session = self._start_bot_session()
       logging.info('Started bot session.')
       chan = self.get_channel(self.owner)
+      # Might be None if we haven't logged in yet
       if chan:
-        # Might be None if we haven't logged in yet
-        await chan.send('Started bot session on stream.')
+        bot1 = os.path.basename(self._bot1)
+        bot2 = os.path.basename(self._bot2)
+        await chan.send(f'Started {bot1} vs. {bot2} on stream.')
       return True
 
   @commands.command()
@@ -580,6 +583,32 @@ class Bot(commands.Bot):
       await ctx.send('Started bot session on stream.')
     else:
       await ctx.send('Did not start bot session on stream.')
+
+  @commands.command()
+  async def bots(self, ctx: commands.Context):
+    words = ctx.message.content.split(' ')[1:]
+
+    if len(words) == 1:
+      bot1 = bot2 = words[0]
+    elif len(words) == 2:
+      bot1, bot2 = words
+    else:
+      await ctx.send('Must specify one or two agent names')
+      return
+
+    for agent in (bot1, bot2):
+      if agent not in self._models:
+        await ctx.send(f'{agent} is not a valid agent')
+        return
+
+    with self.lock:
+      self._bot1 = os.path.join(self._models_path, bot1)
+      self._bot2 = os.path.join(self._models_path, bot2)
+      self._bot_agent_kwargs[1]['path'] = self._bot1
+      self._bot_agent_kwargs[2]['path'] = self._bot2
+
+      self._stop_bot_session()
+      await self._maybe_start_bot_session()
 
   def _get_opponent(self, name: str) -> str:
     return self._requested_agents.get(name, self._default_agent_name)
