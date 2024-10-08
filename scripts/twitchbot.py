@@ -15,6 +15,8 @@ from twitchio.ext import commands, routines
 import portpicker
 import ray
 
+import melee
+
 from slippi_ai import train_lib
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib
@@ -53,6 +55,7 @@ AGENT = ff.DEFINE_dict('agent', **agent_flags)
 BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
+
 class BotSession:
   """Session between two bots playing locally."""
 
@@ -63,6 +66,7 @@ class BotSession:
       extra_dolphin_kwargs: dict = {},
   ):
     eval_lib.disable_gpus()
+    logging.basicConfig(level=logging.INFO)
     self.dolphin_config = dolphin_config
     self.stop_requested = threading.Event()
 
@@ -126,6 +130,8 @@ class Session:
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       extra_dolphin_kwargs: dict = {},
+      auto_character: Optional[melee.Character] = None,
+      models_path: Optional[str] = None,
   ):
     eval_lib.disable_gpus()
     self.dolphin_config = dolphin_config
@@ -159,16 +165,18 @@ class Session:
         **dolphin_kwargs,
     )
 
-    agent = eval_lib.build_agent(
-        controller=dolphin.controllers[port],
-        opponent_port=None,  # will be set later
-        console_delay=console_delay,
-        run_on_cpu=True,
-        state=agent_state,
-        **agent_kwargs,
-    )
-
-    eval_lib.update_character(player, agent.config)
+    if auto_character:
+      player.character = auto_character
+    else:
+      agent = eval_lib.build_agent(
+          controller=dolphin.controllers[port],
+          opponent_port=None,  # will be set later
+          console_delay=console_delay,
+          run_on_cpu=True,
+          state=agent_state,
+          **agent_kwargs,
+      )
+      eval_lib.update_character(player, agent.config)
 
     # In netplay the ports are going to be randomized. We use the displayName
     # to figure out which port we actually are. The connect code would be better
@@ -180,6 +188,8 @@ class Session:
     self._num_menu_frames = 0
 
     def run():
+      nonlocal agent
+
       # Don't block in the menu so that we can stop if asked to.
       gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
 
@@ -203,11 +213,26 @@ class Session:
       ports = list(gamestate.players)
       ports.remove(actual_port)
       opponent_port = ports[0]
-      agent.players = (actual_port, opponent_port)
+
+      if auto_character:
+        agent = eval_lib.EnsembleAgent(
+            character=auto_character,
+            models_path=models_path,
+            port=actual_port,
+            opponent_port=opponent_port,
+            controller=dolphin.controllers[port],
+            console_delay=console_delay,
+            run_on_cpu=True,
+            **agent_kwargs,
+        )
+      else:
+        agent.players = (actual_port, opponent_port)
 
       # Main loop
       agent.start()
       try:
+        agent.step(gamestate)
+
         while not self.stop_requested.is_set():
           gamestate = next(gamestates)
           if not dolphin_lib.is_menu_state(gamestate):
@@ -226,6 +251,7 @@ class Session:
     return self._num_menu_frames
 
   def status(self) -> SessionStatus:
+    # Return current_model from EnsembleAgent
     return SessionStatus(
         num_menu_frames=self._num_menu_frames,
         is_alive=self._thread.is_alive(),
@@ -267,6 +293,16 @@ class SessionInfo:
 def format_td(td: datetime.timedelta) -> str:
   """Chop off microseconds."""
   return str(td).split('.')[0]
+
+
+auto_prefix = 'auto-'
+
+def parse_auto_char(agent: str) -> Optional[melee.Character]:
+  if not agent.startswith(auto_prefix):
+    return None
+
+  char_str = agent.removeprefix(auto_prefix)
+  return eval_lib.data.name_to_character.get(char_str)
 
 class Bot(commands.Bot):
 
@@ -317,7 +353,7 @@ class Bot(commands.Bot):
     self._models_path = models_path
     self._reload_models()
 
-    self._default_agent_name = os.path.basename(agent_kwargs['path'])
+    self._default_agent_name = 'auto-fox'
     self._requested_agents = {}
     self._play_codes = {}
 
@@ -336,11 +372,15 @@ class Bot(commands.Bot):
     self._models: dict[str, dict] = {}
     agents = os.listdir(self._models_path)
 
+    keys = ['step', 'config', 'rl_config', 'agent_config']
+
     for agent in agents:
       path = os.path.join(self._models_path, agent)
       state = eval_lib.load_state(path=path)
-      state = {k: state[k] for k in ['step', 'config', 'rl_config'] if k in state}
+      state = {k: state[k] for k in keys if k in state}
       self._models[agent] = state
+
+    self._matchup_table = eval_lib.build_matchup_table(self._models_path)
 
   @commands.command()
   async def reload(self, ctx: commands.Context):
@@ -371,10 +411,13 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
+    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    agents.extend(self._models)
+
     max_chars = 500
     chunks = [[]]
     chunk_size = 0
-    for model in sorted(self._models):
+    for model in sorted(agents):
       chunk = chunks[-1]
       new_chunk_size = chunk_size + len(model) + 1
       if new_chunk_size > max_chars:
@@ -398,11 +441,21 @@ class Bot(commands.Bot):
       await ctx.send('You must specify a single agent.')
       return
 
-    agent = words[1]
-    if agent not in self._models:
+    agent: str = words[1]
+
+    auto_char = parse_auto_char(agent)
+    if auto_char:
+      if auto_char not in self._matchup_table:
+        valid_chars = ', '.join(c.name.lower() for c in self._matchup_table)
+        await ctx.send(
+            f'No agents trained to play as {auto_char.name.lower()}.'
+            f' Available characters are {valid_chars}.')
+        return
+
+    elif agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
-      models_str = ", ".join(self._models)
-      await ctx.send(f'Available agents: {models_str}')
+      # models_str = ", ".join(self._models)
+      # await ctx.send(f'Available agents: {models_str}')
       return
 
     name = ctx.author.name
@@ -511,6 +564,7 @@ class Bot(commands.Bot):
       self,
       connect_code: str,
       agent: str,
+      auto_character: Optional[melee.Character] = None,
       render: bool = False,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
@@ -525,12 +579,17 @@ class Bot(commands.Bot):
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
+    auto_character = parse_auto_char(agent)
+
     agent_kwargs = self.agent_kwargs.copy()
-    agent_kwargs['path'] = os.path.join(self._models_path, agent)
+    if auto_character is None:
+      agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
     return RemoteSession.remote(
         config, agent_kwargs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
+        auto_character=auto_character,
+        models_path=self._models_path,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
