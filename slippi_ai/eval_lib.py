@@ -1,6 +1,10 @@
 import contextlib
 import enum
+import dataclasses
+import enum
+import functools
 import logging
+import os
 import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
@@ -521,10 +525,10 @@ class Agent:
       **agent_kwargs,
   ):
     self._controller = controller
-    if controller:
-      self._port = controller.port
-    elif port:
+    if port:
       self._port = port
+    elif controller:
+      self._port = controller.port
     else:
       raise ValueError('Must provide either controller or port.')
 
@@ -651,6 +655,141 @@ def get_player(
   elif type == 'cpu':
     return dolphin.CPU(character, level)
 
+
+def get_single_character(config: dict) -> tp.Optional[melee.Character]:
+  allowed_characters = config['dataset']['allowed_characters']
+  character_list = data.chars_from_string(allowed_characters)
+  if character_list is None or len(character_list) != 1:
+    return
+  return character_list[0]
+
+
+class AgentType(enum.Enum):
+  IMITATION = enum.auto()
+  RL = enum.auto()
+
+@dataclasses.dataclass
+class AgentSummary:
+  type: AgentType
+  delay: int
+  character: melee.Character
+  opponent: Optional[melee.Character]
+
+  @classmethod
+  def from_checkpoint(cls, path: str) -> 'AgentSummary':
+    combined_state = load_state(path)
+    config = combined_state['config']
+    character = get_single_character(config)
+
+    if 'rl_config' in combined_state:
+      agent_type = AgentType.RL
+      opponent = character
+    elif 'agent_config' in combined_state:
+      agent_type = AgentType.RL
+      opponent = data.name_to_character[combined_state['opponent']]
+    else:
+      agent_type = AgentType.IMITATION
+      opponent = None
+
+    return cls(
+        type=agent_type,
+        delay=config['policy']['delay'],
+        character=character,
+        opponent=opponent,
+    )
+
+# TODO: filter by delay
+def build_matchup_table(
+      models_path: str,
+) -> dict[melee.Character, dict[melee.Character, str]]:
+  models = os.listdir(models_path)
+
+  agent_summaries = {
+      model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
+      for model in models
+  }
+
+  table: dict[melee.Character, dict[melee.Character, str]] = {}
+  imitation_agents: dict[melee.Character, str] = {}
+
+  for model, summary in agent_summaries.items():
+    if summary.type is AgentType.IMITATION:
+      imitation_agents[summary.character] = model
+    else:
+      opponent_table = table.setdefault(summary.character, {})
+
+      opponents: list[melee.Character] = [summary.opponent]
+      if summary.opponent is melee.Character.SHEIK:
+        opponents.append(melee.Character.ZELDA)
+
+      for opponent in opponents:
+        if opponent in opponent_table:
+          logging.warning(f'Got multiple agents for {summary.character} vs {opponent}')
+        opponent_table[opponent] = model
+
+  # Default to RL, then imitation.
+  default_agents = imitation_agents.copy()
+  for character, opponent_table in table.items():
+    # First try ditto agent, otherwise any RL agent.
+    if character in opponent_table:
+      default_agents[character] = opponent_table[character]
+    else:
+      default_agents[character] = next(iter(opponent_table.values()))
+
+  for character, model in default_agents.items():
+    opponent_table = table.setdefault(character, {})
+    for opponent in melee.Character:
+      opponent_table.setdefault(opponent, model)
+
+  return table
+
+class EnsembleAgent:
+
+  def __init__(
+      self,
+      character: melee.Character,
+      models_path: str,
+      opponent_port: int,
+      **agent_kwargs,
+  ):
+    self._models_path = models_path
+    self.opponent_table = build_matchup_table(models_path)[character]
+
+    self.opponent_port = opponent_port
+    self._agent_kwargs = agent_kwargs.copy()
+    self._agent_kwargs['opponent_port'] = opponent_port
+
+    self.current_model: Optional[str] = None
+    self._agent: Optional[Agent] = None
+
+  def _get_agent(self, model: str) -> Agent:
+    if model == self.current_model:
+      return self._agent
+
+    if self._agent:
+      self._agent.stop()
+
+    logging.info(f'Setting auto-model to {model}')
+
+    path = os.path.join(self._models_path, model)
+    agent_kwargs = dict(self._agent_kwargs, path=path)
+    self._agent = build_agent(**agent_kwargs)
+    self._agent.start()
+    self.current_model = model
+    return self._agent
+
+  def step(self, gamestate: melee.GameState) -> SampleOutputs:
+    opponent = gamestate.players[self.opponent_port].character
+    model = self.opponent_table[opponent]
+    agent = self._get_agent(model)
+    return agent.step(gamestate)
+
+  def start(self):
+    pass
+
+  def stop(self):
+    if self._agent:
+      self._agent.stop()
 
 def update_character(player: dolphin.AI, config: dict):
   allowed_characters = config['dataset']['allowed_characters']
