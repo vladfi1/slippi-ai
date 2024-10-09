@@ -496,30 +496,34 @@ class FakeBatchedEnvironment:
     game = utils.map_nt(
         lambda t: np.full([num_envs], 0, dtype=t), reified_game)
     game.stage[:] = Stage.FINAL_DESTINATION.value  # make the stage valid
-    self._output = EnvOutput(
+    self._dummy_output = EnvOutput(
         gamestates={p: game for p in players},
         needs_reset=np.full([num_envs], False),
     )
-    self.num_steps = 0
+    self.num_steps = 1
+    self._output_queue = collections.deque()
+    self._output_queue.append(self._dummy_output)
 
   def stop(self):
     pass
 
   def pop(self) -> EnvOutput:
-    return self._output
+    return self._output_queue.popleft()
 
   def push(self, controllers: Controllers):
+    # TODO: increment frame counter in the gamestates
     del controllers
+    self._output_queue.append(self._dummy_output)
 
   def step(self, controllers: Controllers):
-    del controllers
-    return self._output
+    self.push(controllers)
+    return self.pop()
 
   def multi_step(
     self,
     controllers: list[Controllers],
   ) -> list[EnvOutput]:
-    return [self._output] * len(controllers)
+    return [self.step(c) for c in controllers]
 
   def peek(self) -> EnvOutput:
-    return self._output
+    return self._output_queue[0]
