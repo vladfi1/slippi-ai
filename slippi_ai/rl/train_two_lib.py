@@ -118,13 +118,13 @@ class AgentManager:
     self.expt_dir = expt_dir
 
     suffix = f'-{port}.pkl'
-    found = False
+    self.found = False
     for name in os.listdir(expt_dir):
       if name.endswith(suffix):
-        found = True
+        self.found = True
         break
 
-    if found:
+    if self.found:
       self.save_name = name
       self.save_path = os.path.join(expt_dir, name)
       logging.info(f'Restoring from {self.save_path}')
@@ -144,7 +144,7 @@ class AgentManager:
     if self.character is None:
       raise ValueError('Must be pretrained on single character')
 
-    if not found:
+    if not self.found:
       rl_state = teacher_state
       self.save_path = None
       self.step = 0
@@ -467,39 +467,45 @@ def run(config: Config):
   try:
     steps_per_epoch = config.learner.ppo.num_batches
 
-    # Optimizer burnin
-    for agent in agents.values():
-      agent.learning_rate.assign(0)
-    for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
-      experiment_manager.step(ppo_steps=1)
+    agent0 = agents[PORTS[0]]
+    step = agent0.step  # Will be the same for both agents
 
-    step = agents[1].step
+    # We only save after burnin, so if the save file exists that means
+    # we've already done burning in and don't need to do it again.
+    if not agent0.found:
+      logging.info('Optimizer burnin')
 
-    logging.info('Value function burnin')
+      for agent in agents.values():
+        agent.learning_rate.assign(0)
+      for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
+        with step_profiler:
+          experiment_manager.step(ppo_steps=1)
 
-    for agent in agents.values():
-      agent.learning_rate.assign(agent.learner_config.learning_rate)
+      logging.info('Value function burnin')
 
-    for i in range(config.value_burnin_steps // steps_per_epoch):
-      with step_profiler:
-        trajectories, metrics = experiment_manager.step(ppo_steps=0)
+      for agent in agents.values():
+        agent.learning_rate.assign(agent.learner_config.learning_rate)
 
-      if i > 0:
-        logger.record(get_log_data(trajectories, metrics))
-        maybe_flush(step)
+      for _ in range(config.value_burnin_steps // steps_per_epoch):
+        with step_profiler:
+          trajectories, metrics = experiment_manager.step(ppo_steps=0)
 
-      step += 1
+        if experiment_manager.learner_profiler.num_calls > 0:
+          logger.record(get_log_data(trajectories, metrics))
+          maybe_flush(step)
 
-    # Need flush here because logging structure changes based on ppo_steps.
-    flush(step)
+        step += 1
+
+      # Need flush here because logging structure changes based on ppo_steps.
+      flush(step)
 
     logging.info('Main training loop')
 
-    for i in range(config.runtime.max_step):
+    while step < config.runtime.max_step:
       with step_profiler:
         trajectories, metrics = experiment_manager.step()
 
-      if i > 0:
+      if experiment_manager.learner_profiler.num_calls > 0:
         logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
 
