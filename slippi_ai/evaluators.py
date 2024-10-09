@@ -73,22 +73,23 @@ class RolloutWorker:
         )
         for port, kwargs in agent_kwargs.items()
     }
-    dolphin_kwargs = dolphin_kwargs.copy()
+    self._dolphin_kwargs = dolphin_kwargs.copy()
     for port, kwargs in agent_kwargs.items():
       eval_lib.update_character(
-          dolphin_kwargs['players'][port],
+          self._dolphin_kwargs['players'][port],
           kwargs['state']['config'])
 
+    self._prev_agent_outputs = collections.deque()
+    self._prev_agent_outputs.append({
+        port: agent.dummy_sample_outputs
+        for port, agent in self._agents.items()
+    })
+
     self._num_envs = num_envs
-    if use_fake_envs:
-      self._env = env_lib.FakeBatchedEnvironment(
-          num_envs, players=list(agent_kwargs))
-    else:
-      if not async_envs:
-        env_class = env_lib.BatchedEnvironment
-      else:
-        env_class = env_lib.AsyncBatchedEnvironmentMP
-      self._env = env_class(num_envs, dolphin_kwargs, **env_kwargs)
+    self._use_fake_envs = use_fake_envs
+    self._env_kwargs = env_kwargs
+    self._async_envs = async_envs
+    self._build_env()
 
     self._damage_ratio = damage_ratio
 
@@ -96,12 +97,6 @@ class RolloutWorker:
         port: utils.Profiler() for port in self._agents}
     # self._env_push_profiler = cProfile.Profile()
     self._env_push_profiler = utils.Profiler()
-
-    self._prev_agent_outputs = collections.deque()
-    self._prev_agent_outputs.append({
-        port: agent.dummy_sample_outputs
-        for port, agent in self._agents.items()
-    })
 
     # Make sure that the buffer sizes aren't too big.
     # TODO: do this check before env/agent creation
@@ -113,10 +108,10 @@ class RolloutWorker:
       max_agent_buffer = agent.batch_steps - 1
       max_env_buffer = self._env.num_steps - 1
 
-      if max_agent_buffer + max_env_buffer > slack:
+      if max_agent_buffer + max_env_buffer >= slack:
         raise ValueError(
             f'Agent and environment step buffer sizes are too large: '
-            f'{max_agent_buffer} + {max_env_buffer} > {slack}')
+            f'{max_agent_buffer} + {max_env_buffer} >= {slack}')
 
     # Get the environment to run ahead as much as possible.
     # Because we push env states to the agents once per main loop iteration,
@@ -128,6 +123,35 @@ class RolloutWorker:
         for agent in self._agents.values())
     for _ in range(self.env_runahead):
       self._push_actions()
+
+  def _build_env(self):
+    if self._use_fake_envs:
+      self._env = env_lib.FakeBatchedEnvironment(
+          self._num_envs, players=list(self._agents))
+    else:
+      if not self._async_envs:
+        env_class = env_lib.BatchedEnvironment
+      else:
+        env_class = env_lib.AsyncBatchedEnvironmentMP
+      self._env = env_class(
+          self._num_envs, self._dolphin_kwargs, **self._env_kwargs)
+
+  def reset_env(self):
+    self._env.stop()
+    self._build_env()
+
+    # Start env runahead
+    # TODO: properly reset the agents with dummy actions instead of reusing
+    # delayed actions from the previous rollout.
+    assert len(self._prev_agent_outputs) == 1 + self.env_runahead
+    for agent_outputs in list(self._prev_agent_outputs)[1:]:
+      decoded_actions = {
+          port: self._agents[port].embed_controller.decode(output.controller_state)
+          for port, output in agent_outputs.items()
+      }
+      with self._env_push_profiler:
+        self._env.push(decoded_actions)
+
 
   def _push_actions(self):
     """Pop actions from the agents and push them to the environment."""
@@ -159,6 +183,7 @@ class RolloutWorker:
     }
     is_resetting: list[bool] = []
 
+    # Record each agent's initial state at the beginning of the rollout.
     initial_states = {
         port: agent.hidden_state
         for port, agent in self._agents.items()
@@ -194,7 +219,7 @@ class RolloutWorker:
       self._push_actions()
 
     # Record the last gamestate and action, but don't pop them as we will
-    # also use them to begin next rollout.
+    # also use them to begin the next rollout.
     record_state(self._env.peek(), self._prev_agent_outputs[0])
 
     # Record the delayed actions.
@@ -231,7 +256,8 @@ class RolloutWorker:
           initial_state=initial_states[port],
           # Note that delayed actions aren't time-concatenated, mainly to
           # simplify the case where the delay is 0.
-          delayed_actions=delayed_actions[port])
+          delayed_actions=delayed_actions[port],
+      )
 
     timings = {
         'env_pop': step_profiler.mean_time(),

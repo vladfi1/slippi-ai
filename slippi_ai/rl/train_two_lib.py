@@ -257,23 +257,14 @@ class ExperimentManager:
     self.reset_profiler = utils.Profiler(burnin=0)
 
     with self.reset_profiler:
-      self.initialize_actor()
+      self.actor = self._build_actor()
+      self.actor.start()
+      self.num_rollouts = 0
+      self._burnin_after_reset()
 
   def _rollout(self) -> tuple[dict[int, evaluators.Trajectory], dict]:
     self.num_rollouts += 1
     return self.actor.rollout(self._unroll_length)
-
-  def initialize_actor(self):
-    self.actor = self._build_actor()
-    self.actor.start()
-    self.num_rollouts = 0
-    for _ in range(self._burnin_steps_after_reset):
-      self.unroll()
-
-  def reset_actor(self):
-    with self.reset_profiler:
-      self.actor.stop()
-      self.initialize_actor()
 
   def unroll(self):
     trajectory, _ = self._rollout()
@@ -281,11 +272,18 @@ class ExperimentManager:
       _, self._hidden_states[port] = learner.compiled_unroll(
           trajectory[port], self._hidden_states[port])
 
+  def _burnin_after_reset(self):
+    for _ in range(self._burnin_steps_after_reset):
+      self.unroll()
+
   def step(self, ppo_steps: int = None) -> tuple[list[evaluators.Trajectory], dict]:
     reset_interval = self._config.runtime.reset_every_n_steps
     if reset_interval and self.num_rollouts >= reset_interval:
       logging.info("Resetting environments")
-      self.reset_actor()
+      with self.reset_profiler:
+        self.actor.reset_env()
+        self.num_rollouts = 0
+        self._burnin_after_reset()
 
     with self.update_profiler:
       variables = {

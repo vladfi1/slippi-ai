@@ -157,18 +157,18 @@ class LearnerManager:
     self.reset_profiler = utils.Profiler(burnin=0)
 
     with self.reset_profiler:
-      self.initialize_actor()
+      self.actor = self._build_actor()
+      self.actor.start()
 
-  def initialize_actor(self):
-    self.actor = self._build_actor()
-    self.actor.start()
-    for _ in range(self._burnin_steps_after_reset):
-      self.unroll()
+      for _ in range(self._burnin_steps_after_reset):
+        self.unroll()
 
-  def reset_actor(self):
+  def reset_env(self):
     with self.reset_profiler:
-      self.actor.stop()
-      self.initialize_actor()
+      self.actor.reset_env()
+
+      for _ in range(self._burnin_steps_after_reset):
+        self.unroll()
 
   def _rollout(self) -> tuple[evaluators.Trajectory, dict]:
     trajectories, timings = self.actor.rollout(self._unroll_length)
@@ -544,7 +544,7 @@ def run(config: Config):
       with step_profiler:
         if i > 0 and reset_interval and i % reset_interval == 0:
           logging.info('Resetting environments')
-          learner_manager.reset_actor()
+          learner_manager.reset_env()
 
         trajectories, metrics = learner_manager.step(step)
 
