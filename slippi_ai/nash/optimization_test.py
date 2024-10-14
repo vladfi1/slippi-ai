@@ -1,68 +1,80 @@
+import time
+
 import numpy as np
 import tensorflow as tf
+import tqdm
 
 from slippi_ai.nash import optimization, nash
 
 
 class QuadraticOptimizationProblem(optimization.ConstrainedOptimizationProblem[tf.Tensor]):
 
-  def __init__(self, num_dims: int, initial_x: float):
+  def __init__(self, num_dims: int, initial_x: np.ndarray):
     self.num_dims = num_dims
     self.initial_x = initial_x
+    assert len(initial_x.shape) == 1
 
   def initial_variables(self) -> tf.Tensor:
-    x = tf.constant(self.initial_x, dtype=tf.float32)
-    return tf.fill([self.num_dims], x)
+    return tf.stack([self.initial_x] * self.num_dims, axis=-1)
+
+  def batch_size(self) -> int:
+    return self.initial_x.shape[0]
 
   def objective(self, variables: tf.Tensor) -> tf.Tensor:
-    return tf.reduce_sum(tf.square(variables))
+    return tf.reduce_sum(tf.square(variables), axis=-1)
 
   def constraint_violations(self, variables: tf.Tensor) -> tf.Tensor:
-    del variables
-    return tf.constant([], dtype=tf.float32)
+    zero = tf.constant(0, dtype=variables.dtype)
+    return tf.fill([self.batch_size(), 0], zero)
 
   def equality_violations(self, variables: tf.Tensor) -> tf.Tensor:
-    del variables
-    return tf.constant([], dtype=tf.float32)
+    zero = tf.constant(0, dtype=variables.dtype)
+    return tf.fill([self.batch_size(), 0], zero)
+
+def test_solve_quadratic_optimization(num_dims=3, batch_size=1):
+  xs = np.arange(batch_size, dtype=np.float32)
+  problem = QuadraticOptimizationProblem(num_dims, xs)
+  variables = optimization.solve_optimization_interior_point_barrier(
+      problem, error=1e-3)
+  assert tf.reduce_all(tf.abs(variables) < 1e-3).numpy()
 
 CornerVariables = tf.Tensor
 
 class CornerOptimizationProblem(optimization.ConstrainedOptimizationProblem[CornerVariables]):
 
-  def __init__(self, num_dims: int, size: float, dtype=tf.float32):
+  def __init__(self, num_dims: int, sizes: np.ndarray, dtype=tf.float32):
     self.num_dims = num_dims
-    self.size = size
+    self.sizes = tf.convert_to_tensor(sizes, dtype=dtype)
     self.dtype = dtype
 
+  def batch_size(self) -> int:
+    return self.sizes.shape[0]
+
   def initial_variables(self) -> CornerVariables:
-    return tf.zeros([self.num_dims], dtype=self.dtype)
+    return tf.zeros([self.batch_size(), self.num_dims], dtype=self.dtype)
 
   def objective(self, variables: CornerVariables) -> tf.Tensor:
-    return -tf.reduce_sum(variables)
+    return -tf.reduce_sum(variables, axis=-1)
 
   def constraint_violations(self, variables: CornerVariables) -> tf.Tensor:
-    return variables - self.size
+    return variables - tf.expand_dims(self.sizes, -1)
 
   def equality_violations(self, variables: CornerVariables) -> tf.Tensor:
-    return tf.constant([], dtype=self.dtype)
-
-def test_solve_quadratic_optimization(num_dims=3):
-  problem = QuadraticOptimizationProblem(num_dims, 1.0)
-  variables = optimization.solve_optimization_interior_point_barrier(
-      problem, error=1e-3)
-  assert tf.reduce_all(tf.abs(variables) < 1e-3).numpy()
+    zero = tf.constant(0, dtype=variables.dtype)
+    return tf.fill([self.batch_size(), 0], zero)
 
 def test_solve_corner_optimization(
-    n: int = 1,
-    size: float = 1,
+    num_dims: int = 1,
+    max_size: int = 1,
     solver: optimization.Solver[CornerVariables] = optimization.solve_optimization_interior_point_barrier,
     **kwargs,
 ):
-  problem = CornerOptimizationProblem(n, size=size)
+  sizes = 1 + np.arange(max_size)
+  problem = CornerOptimizationProblem(num_dims, sizes=sizes)
   variables = solver(problem, **kwargs)
 
   actual = variables.numpy()
-  expected = np.ones([n]) * problem.size
+  expected = np.stack([sizes] * num_dims, axis=-1)
 
   np.testing.assert_allclose(actual, expected, atol=1e-3)
 
@@ -74,14 +86,17 @@ def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
   return np.sum(p * log_ratio, axis=-1)
 
 @tf.function
-def solve_nash(payoff_matrix: np.ndarray, **kwargs) -> nash.NashVariables:
-  problem = nash.ZeroSumNashProblem(payoff_matrix)
+def solve_nash(payoff_matrices: np.ndarray, **kwargs) -> nash.NashVariables:
+  print('retracing with shape', payoff_matrices.shape)
+  problem = nash.ZeroSumNashProblem(payoff_matrices)
   variables = optimization.solve_feasibility(problem, **kwargs)
   return variables.normalize()
 
-def test_nash(payoff_matrix: np.ndarray, atol=1e-1, **kwargs):
+def test_nash(payoff_matrices: np.ndarray, atol=1e-1, **kwargs) -> float:
   # problem = nash.ZeroSumNashProblemWithLogits(payoff_matrix)
-  variables = solve_nash(payoff_matrix, **kwargs)
+  start_time = time.perf_counter()
+  variables = solve_nash(payoff_matrices, **kwargs)
+  solve_time = time.perf_counter() - start_time
   # problem = nash.ZeroSumNashProblem(payoff_matrix)
   # variables = optimization.solve_feasibility(problem, **kwargs)
   # variables = variables.normalize()
@@ -92,69 +107,91 @@ def test_nash(payoff_matrix: np.ndarray, atol=1e-1, **kwargs):
   tf_p2 = variables.p2.numpy()
   tf_nash_value = variables.p1_nash_value.numpy()
 
-  p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
-  np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
+  for i, payoff_matrix in enumerate(payoff_matrices):
+    p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
+    np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
 
-  kl1 = kl_divergence(p1, tf_p1)
-  assert kl1 < atol, kl1
+    kl1 = kl_divergence(p1, tf_p1[i])
+    assert kl1 < atol, kl1
 
-  kl2 = kl_divergence(p2, tf_p2)
-  assert kl2 < atol, kl2
+    kl2 = kl_divergence(p2, tf_p2[i])
+    assert kl2 < atol, kl2
 
-  np.testing.assert_allclose(tf_nash_value, nash_value, atol=atol)
+    np.testing.assert_allclose(tf_nash_value[i], nash_value, atol=atol)
 
-  return p1, p2, nash_value
+  return solve_time
 
 def test_rps(**kwargs):
-  payoff_matrix = np.array([
+  payoff_matrix = np.array([[
     [0, -1, 1],
     [1, 0, -1],
     [-1, 1, 0],
-  ], dtype=np.float32)
-  p1, p2, nash_value = test_nash(payoff_matrix, **kwargs)
+  ]], dtype=np.float32)
+  test_nash(payoff_matrix, **kwargs)
 
-  atol = 1e-4
-  np.testing.assert_allclose(p1, np.ones([3]) / 3, atol=atol)
-  np.testing.assert_allclose(p2, np.ones([3]) / 3, atol=atol)
-  np.testing.assert_allclose(nash_value, 0, atol=atol)
 
 def test_random_nash(
     solver=optimization.solve_optimization_interior_point_barrier,
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float32,
-    n: int = 10,
+    batch_size: int = 1,
     **kwargs,
 ):
-  for _ in range(n):
-    payoff_matrix = np.random.randn(*size).astype(dtype)
-    # test_nash(
-    #     payoff_matrix,
-    #     num_iterations=200,
-    #     initial_constraint_weight=1e-1,
-    #     constraint_weight_decay=0.95,
-    #     damping=2,
-    # )
-    test_nash(
-        payoff_matrix,
-        optimization_solver=solver,
-        **kwargs,
+  payoff_matrix = np.random.randn(batch_size, *size).astype(dtype)
+  # test_nash(
+  #     payoff_matrix,
+  #     num_iterations=200,
+  #     initial_constraint_weight=1e-1,
+  #     constraint_weight_decay=0.95,
+  #     damping=2,
+  # )
+  return test_nash(
+      payoff_matrix,
+      optimization_solver=solver,
+      **kwargs,
+  )
+
+def random_nash_tests(
+    num_tests: int = 10,
+    batch_size: int = 10,
+    size=(10, 11),
+    dtype=np.float64,
+    error=1e-4,
+    atol=1e-1,
+):
+  solve_times = []
+  for i in tqdm.trange(num_tests):
+    solve_time = test_random_nash(
+        solver=optimization.solve_optimization_interior_point_barrier,
+        batch_size=batch_size,
+        size=size,
+        dtype=dtype,
+        error=error,
+        atol=atol,
     )
+    if i > 0:  # first iteration is warmup
+      solve_times.append(solve_time)
+
+  if solve_times:
+    total_solved = batch_size * (num_tests - 1)
+    total_time = sum(solve_times)
+    mean_time = total_time / total_solved
+    print(f'Mean solve time: {mean_time} s')
 
 if __name__ == '__main__':
-  # test_solve_quadratic_optimization()
-  # test_solve_corner_optimization(
-  #     solver=optimization.solve_optimization_interior_point_barrier,
-  #     error=1e-3,
-  # )
-  # test_rps(
-  #     optimization_solver=optimization.solve_optimization_interior_point_barrier,
-  #     error=1e-3,
-  # )
-
-  test_random_nash(
+  test_solve_quadratic_optimization(batch_size=3)
+  test_solve_corner_optimization(
       solver=optimization.solve_optimization_interior_point_barrier,
-      size=(100, 100),
-      dtype=np.float64,
-      error=1e-5,
-      atol=1e-2,
+      error=1e-3,
+      max_size=3,
+      num_dims=2,
+  )
+  test_rps(
+      optimization_solver=optimization.solve_optimization_interior_point_barrier,
+      error=1e-3,
+  )
+
+  random_nash_tests(
+      num_tests=10,
+      batch_size=10,
   )
