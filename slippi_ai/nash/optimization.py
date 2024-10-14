@@ -160,6 +160,7 @@ def solve_optimization_interior_point_barrier(
     error: float = 1e-2,
     initial_constraint_weight: float = 1.0,
     constraint_weight_decay: float = 0.9,
+    optimum: tp.Optional[float] = None,
 ) -> Variables:
   batch_size = problem.batch_size()
   variables = problem.initial_variables()
@@ -267,25 +268,31 @@ def solve_optimization_interior_point_barrier(
       combined: tf.Tensor,
       mu: tf.Tensor,
       tolerance: tf.Tensor,
+      optimum: tp.Optional[tf.Tensor] = None,
   ) -> tuple[tf.Tensor, tf.Tensor]:
     assert combined.shape[0] == batch_size
     assert mu.shape[0] == batch_size
     # assert tolerance.shape[0] == batch_size
 
-    def is_done(residual_value) -> bool:
+    def is_done_residual(residual_value) -> bool:
       residual_magnitude = tf.sqrt(tf.reduce_sum(tf.square(residual_value), axis=-1))
       return residual_magnitude < tolerance
 
-    num_steps = tf.fill([batch_size], 0)
+    # TODO: check done-ness before starting the loop?
+    num_steps = tf.fill([batch_size], 1)
 
-    any_not_done = tf.convert_to_tensor(True)
+    any_not_done = tf.constant(True)
 
     while any_not_done:
       combined, residual_value = newton_step(combined, mu)
 
-      # assert tf.reduce_all(is_valid(combined))
+      if optimum is not None:
+        objective_value = problem.objective(uncombine(combined)[0])
+        done = objective_value < optimum + tolerance
+      else:
+        done = is_done_residual(residual_value)
 
-      not_done = tf.logical_not(is_done(residual_value))
+      not_done = tf.logical_not(done)
       assert not_done.shape == [batch_size]
       num_steps += tf.cast(not_done, num_steps.dtype)
       any_not_done = tf.reduce_any(not_done)
@@ -303,56 +310,70 @@ def solve_optimization_interior_point_barrier(
   one = tf.constant(1, dtype=flat_var.dtype)
 
   def outer_step(combined: tf.Tensor, mu: tf.Tensor):
-    combined, num_steps = centering_step(combined, mu, error / 2)
-
     duality_gap = num_constraints * mu
-    done = duality_gap < error / 2
+    if optimum is not None:
+      perturbed_optimum = optimum + duality_gap
+    else:
+      perturbed_optimum = None
+
+    combined, num_steps = centering_step(
+        combined, mu, tolerance=error / 2, optimum=perturbed_optimum)
+
+    if optimum is not None:
+      # Check if we are close to the optimum.
+      variables, _ = uncombine(combined)
+      objective_value = problem.objective(variables)
+      done = objective_value < optimum + error
+    else:
+      done = duality_gap < error / 2
 
     return combined, num_steps, done
 
   all_done = tf.convert_to_tensor(False)
 
-  num_steps = tf.fill([batch_size], 0)
+  num_steps = tf.fill([batch_size], 1)
   centering_steps = tf.fill([batch_size], 0)
 
-  def body(combined, mu, _):
-    combined, num_centering_steps, done = outer_step(combined, mu)
-    # num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
-    mu *= tf.where(done, one, constraint_weight_decay)
-    # centering_steps += num_centering_steps
-    all_done = tf.reduce_all(done)
-    return combined, mu, all_done
-
-  cond = lambda combined, mu, all_done: tf.logical_not(all_done)
-
-  combined, mu, all_done = tf.while_loop(
-      cond=cond, body=body, loop_vars=[combined, mu, all_done])
-
-  # while tf.logical_not(all_done):
+  # def body(combined, mu, _):
   #   combined, num_centering_steps, done = outer_step(combined, mu)
-  #   num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
+  #   # num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
   #   mu *= tf.where(done, one, constraint_weight_decay)
-  #   # centering_steps.append(num_centering_steps)
-  #   # centering_steps.append(num_centering_steps.numpy())
-  #   centering_steps += num_centering_steps
+  #   # centering_steps += num_centering_steps
   #   all_done = tf.reduce_all(done)
+  #   return combined, mu, all_done
 
-  # stats = dict(
-  #     num_steps=num_steps,
-  #     centering_steps=centering_steps,
-  # )
+  # cond = lambda combined, mu, all_done: tf.logical_not(all_done)
 
-  return uncombine(combined)[0]
+  # combined, mu, all_done = tf.while_loop(
+  #     cond=cond, body=body, loop_vars=[combined, mu, all_done])
+
+  while tf.logical_not(all_done):
+    combined, num_centering_steps, done = outer_step(combined, mu)
+    num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
+    mu *= tf.where(done, one, constraint_weight_decay)
+    # centering_steps.append(num_centering_steps)
+    # centering_steps.append(num_centering_steps.numpy())
+    centering_steps += num_centering_steps
+    all_done = tf.reduce_all(done)
+
+  stats = dict(
+      num_steps=num_steps,
+      centering_steps=centering_steps,
+  )
+
+  return uncombine(combined)[0], stats
 
 # This should actually be a "forall" type but I don't think python has those.
 V = tp.TypeVar('V')
-Solver = tp.Callable[[ConstrainedOptimizationProblem[V]], V]
+Stats = dict
+Solver = tp.Callable[[ConstrainedOptimizationProblem[V]], tuple[V, Stats]]
 
 def solve_feasibility(
     problem: FeasibilityProblem[Variables],
     optimization_solver: Solver[SlackVariables[Variables]] = solve_optimization_interior_point_barrier,
     **solver_kwargs,
-) -> Variables:
+) -> tuple[Variables, Stats]:
   slack_problem = SlackFeasibilityProblem(problem)
-  slack_variables = optimization_solver(slack_problem, **solver_kwargs)
-  return slack_variables.variables
+  variables, stats = optimization_solver(slack_problem, **solver_kwargs)
+  stats['slack'] = variables.slack
+  return variables.variables, stats
