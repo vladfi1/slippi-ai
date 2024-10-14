@@ -422,6 +422,7 @@ def run(config: Config):
         ko_diff=ko_diff,
         timings=timings,
         learner=learner_metrics,
+        learner2=metrics['learner'][PORTS[1]],
     )
 
   logger = Logger()
