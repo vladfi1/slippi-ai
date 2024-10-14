@@ -14,6 +14,10 @@ class FeasibilityProblem(abc.ABC, tp.Generic[Variables]):
     """Returns initial variables for the feasibility problem."""
 
   @abc.abstractmethod
+  def batch_size(self) -> int:
+    """Returns the batch size of the problem."""
+
+  @abc.abstractmethod
   def constraint_violations(self, variables: Variables) -> tf.Tensor:
     """Returns a tensor of violations of the constraints.
 
@@ -66,6 +70,9 @@ class SlackFeasibilityProblem(ConstrainedOptimizationProblem[SlackVariables[Vari
     self.problem = problem
     self.initial_slack = initial_slack
 
+  def batch_size(self) -> int:
+    return self.problem.batch_size()
+
   def initial_variables(self) -> SlackVariables[Variables]:
     variables = self.problem.initial_variables()
     violations = self.problem.constraint_violations(variables)
@@ -94,6 +101,10 @@ def line_search(
     beta: float = 0.5,  # How much to decrease step size by.
 ) -> tf.Tensor:
 
+  alpha = tf.convert_to_tensor(alpha, dtype=variables.dtype)
+  beta = tf.convert_to_tensor(beta, dtype=variables.dtype)
+  one = tf.constant(1, dtype=variables.dtype)
+
   if directional_derivative is None:
     with tf.autodiff.ForwardAccumulator(variables, direction) as acc:
       objective_value = objective(variables)
@@ -102,34 +113,46 @@ def line_search(
     objective_value = objective(variables)
 
   # TODO: assert that directional_derivative is negative
+  batch_size = variables.shape[0]
+  assert direction.shape[0] == batch_size
 
   step_size = tf.convert_to_tensor(initial_step_size, dtype=variables.dtype)
-  # print('Initial step size', step_size)
+  step_size = tf.fill([batch_size], step_size)
 
-  def not_valid(step_size):
-    return tf.logical_not(condition(variables + step_size * direction))
+  def take_step(step_size):
+    return variables + tf.expand_dims(step_size, -1) * direction
 
-  decrease_step_size = lambda x: x * beta
+  def update_valid(step_size):
+    valid = condition(take_step(step_size))
+    step_size *= tf.where(valid, one, beta)
+    return step_size, tf.reduce_all(valid)
 
-  # while not_valid(step_size):
-  #   step_size = decrease_step_size(step_size)
+  valid = tf.convert_to_tensor(False)
+  while tf.logical_not(valid):
+    step_size, valid = update_valid(step_size)
 
-  [step_size] = tf.while_loop(
-      cond=not_valid, body=decrease_step_size, loop_vars=[step_size])
+  # [step_size] = tf.while_loop(
+  #     cond=not_valid, body=decrease_step_size, loop_vars=[step_size])
 
-  def not_good_enough(step_size):
-    new_objective = objective(variables + step_size * direction)
+  def update_good_enough(step_size):
+    new_objective = objective(take_step(step_size))
     decrease = new_objective - objective_value
     expected_decrease = step_size * directional_derivative
-    return decrease > alpha * expected_decrease
+    good_enough = decrease <= alpha * expected_decrease
+    step_size *= tf.where(good_enough, one, beta)
+    return step_size, tf.reduce_all(good_enough)
+
+  good_enough = tf.convert_to_tensor(False)
+  while tf.logical_not(good_enough):
+    step_size, good_enough = update_good_enough(step_size)
 
   # while not_valid(step_size):
   #   step_size = decrease_step_size(step_size)
 
-  [step_size] = tf.while_loop(
-      cond=not_good_enough, body=decrease_step_size, loop_vars=[step_size])
+  # [step_size] = tf.while_loop(
+  #     cond=not_good_enough, body=decrease_step_size, loop_vars=[step_size])
 
-  return variables + step_size * direction
+  return take_step(step_size)
 
 # https://www.cs.cmu.edu/~pradeepr/convexopt/Lecture_Slides/primal-dual.pdf
 def solve_optimization_interior_point_barrier(
@@ -138,18 +161,23 @@ def solve_optimization_interior_point_barrier(
     initial_constraint_weight: float = 1.0,
     constraint_weight_decay: float = 0.9,
 ) -> Variables:
+  batch_size = problem.batch_size()
   variables = problem.initial_variables()
   flat_vars: list[tf.Tensor] = tf.nest.flatten(variables)
-  flat_shapes = [t.shape for t in flat_vars]
+  flat_shapes = [t.shape[1:] for t in flat_vars]
   flat_sizes = [s.num_elements() for s in flat_shapes]
   flat_size = sum(flat_sizes)
 
   def flatten(variables: Variables) -> tf.Tensor:
-    return tf.concat([tf.reshape(v, [-1]) for v in tf.nest.flatten(variables)], axis=-1)
+    return tf.concat([
+        tf.reshape(v, [batch_size, -1])
+        for v in tf.nest.flatten(variables)], axis=-1)
 
   def unflatten(flat_var: tf.Tensor) -> Variables:
     split = tf.split(flat_var, flat_sizes, axis=-1)
-    reshaped = [tf.reshape(v, s) for v, s in zip(split, flat_shapes)]
+    reshaped = [
+        tf.reshape(flat, v.shape)
+        for flat, v in zip(split, flat_vars)]
     return tf.nest.pack_sequence_as(variables, reshaped)
 
   num_constraints = problem.constraint_violations(variables).shape[-1]
@@ -179,10 +207,7 @@ def solve_optimization_interior_point_barrier(
     )
 
   def lagrangian_combined(combined: tf.Tensor, mu: tf.Tensor) -> tf.Tensor:
-    # variables = unflatten(combined[:flat_size])
-    # equality_vars = combined[flat_size:]
-    flat_vars, equality_vars = tf.split(combined, [flat_size, num_equalities], axis=-1)
-    variables = unflatten(flat_vars)
+    variables, equality_vars = uncombine(combined)
     return lagrangian(variables, equality_vars, mu)
 
   def residual(combined: tf.Tensor, mu: tf.Tensor) -> tf.Tensor:
@@ -193,9 +218,15 @@ def solve_optimization_interior_point_barrier(
     grads = tape.gradient(L, (variables, equality_vars))
     return combine(*grads)
 
+  def residual_combined(combined: tf.Tensor, mu: tf.Tensor) -> tf.Tensor:
+    with tf.GradientTape() as tape:
+      tape.watch(combined)
+      L = lagrangian_combined(combined, mu)
+    return tape.gradient(L, combined)
+
   def is_valid(combined: tf.Tensor):
     # variables = unflatten(combined[:flat_size])
-    variables, equality_vars = uncombine(combined)
+    variables, _ = uncombine(combined)
     return tf.reduce_all(problem.constraint_violations(variables) < 0, axis=-1)
 
   @tf.function(jit_compile=False)
@@ -203,7 +234,7 @@ def solve_optimization_interior_point_barrier(
     with tf.GradientTape() as tape:
       tape.watch(combined)
       residual_value = residual(combined, mu)
-    hessian = tape.jacobian(residual_value, combined)
+    hessian = tape.batch_jacobian(residual_value, combined)
 
     target = -tf.expand_dims(residual_value, axis=-1)
     delta = tf.linalg.solve(hessian, target)
@@ -224,7 +255,7 @@ def solve_optimization_interior_point_barrier(
         # directional_derivative=tf.reduce_sum(tf.square(residual_value), axis=-1),
     )
 
-    tf.Assert(is_valid(new_combined), [new_combined])
+    # tf.Assert(is_valid(new_combined), [new_combined])
 
     # Expected improvement in the Lagrangian
     # expected_improvement = 0.5 * tf.reduce_sum(residual_value * delta, axis=-1)
@@ -236,59 +267,82 @@ def solve_optimization_interior_point_barrier(
       combined: tf.Tensor,
       mu: tf.Tensor,
       tolerance: tf.Tensor,
-  ) -> tf.Tensor:
-    combined, residual_value = newton_step(combined, mu)
+  ) -> tuple[tf.Tensor, tf.Tensor]:
+    assert combined.shape[0] == batch_size
+    assert mu.shape[0] == batch_size
+    # assert tolerance.shape[0] == batch_size
 
     def is_done(residual_value) -> bool:
       residual_magnitude = tf.sqrt(tf.reduce_sum(tf.square(residual_value), axis=-1))
       return residual_magnitude < tolerance
 
-    num_steps = 1
-    while not is_done(residual_value):
+    num_steps = tf.fill([batch_size], 0)
+
+    any_not_done = tf.convert_to_tensor(True)
+
+    while any_not_done:
       combined, residual_value = newton_step(combined, mu)
-      num_steps += 1
+
+      # assert tf.reduce_all(is_valid(combined))
+
+      not_done = tf.logical_not(is_done(residual_value))
+      assert not_done.shape == [batch_size]
+      num_steps += tf.cast(not_done, num_steps.dtype)
+      any_not_done = tf.reduce_any(not_done)
 
     return combined, num_steps
 
-  flat_var = tf.concat([tf.reshape(v, [-1]) for v in flat_vars], axis=-1)
-  equality_vars = tf.zeros([num_equalities], dtype=flat_var.dtype)
+  flat_var = flatten(variables)
+  equality_vars = tf.zeros([batch_size, num_equalities], dtype=flat_var.dtype)
   combined = tf.concat([flat_var, equality_vars], axis=-1)
 
   mu = tf.convert_to_tensor(initial_constraint_weight, dtype=flat_var.dtype)
+  mu = tf.fill([batch_size], mu)
+  constraint_weight_decay = tf.convert_to_tensor(
+      constraint_weight_decay, dtype=flat_var.dtype)
+  one = tf.constant(1, dtype=flat_var.dtype)
 
-  def step(combined: tf.Tensor, mu: tf.Tensor):
+  def outer_step(combined: tf.Tensor, mu: tf.Tensor):
     combined, num_steps = centering_step(combined, mu, error / 2)
-
-    # assert is_valid(combined)
-    # residual_value = residual(combined, mu)
-    # residual_magnitude = tf.sqrt(tf.reduce_sum(tf.square(residual_value), axis=-1))
 
     duality_gap = num_constraints * mu
     done = duality_gap < error / 2
 
     return combined, num_steps, done
 
-  done = tf.convert_to_tensor(False)
+  all_done = tf.convert_to_tensor(False)
 
-  num_steps = 0
-  centering_steps = 0
-  while not done:
-    combined, num_centering_steps, done = step(combined, mu)
-    mu *= constraint_weight_decay
-    num_steps += 1
-    # centering_steps.append(num_centering_steps)
-    # centering_steps.append(num_centering_steps.numpy())
-    centering_steps += num_centering_steps
+  num_steps = tf.fill([batch_size], 0)
+  centering_steps = tf.fill([batch_size], 0)
 
-  # print('Number of steps:', num_steps)
-  # print('Centering steps:', centering_steps)
+  def body(combined, mu, _):
+    combined, num_centering_steps, done = outer_step(combined, mu)
+    # num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
+    mu *= tf.where(done, one, constraint_weight_decay)
+    # centering_steps += num_centering_steps
+    all_done = tf.reduce_all(done)
+    return combined, mu, all_done
 
-  stats = dict(
-      num_steps=num_steps,
-      centering_steps=centering_steps,
-  )
+  cond = lambda combined, mu, all_done: tf.logical_not(all_done)
 
-  return unflatten(combined[:flat_size])
+  combined, mu, all_done = tf.while_loop(
+      cond=cond, body=body, loop_vars=[combined, mu, all_done])
+
+  # while tf.logical_not(all_done):
+  #   combined, num_centering_steps, done = outer_step(combined, mu)
+  #   num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
+  #   mu *= tf.where(done, one, constraint_weight_decay)
+  #   # centering_steps.append(num_centering_steps)
+  #   # centering_steps.append(num_centering_steps.numpy())
+  #   centering_steps += num_centering_steps
+  #   all_done = tf.reduce_all(done)
+
+  # stats = dict(
+  #     num_steps=num_steps,
+  #     centering_steps=centering_steps,
+  # )
+
+  return uncombine(combined)[0]
 
 # This should actually be a "forall" type but I don't think python has those.
 V = tp.TypeVar('V')
