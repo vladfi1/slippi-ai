@@ -64,17 +64,20 @@ class NashVariables(tp.NamedTuple):
 
 class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
 
-  def __init__(self, payoff_matrix: tf.Tensor):
-    self.payoff_matrix = tf.convert_to_tensor(payoff_matrix)
+  def __init__(self, payoff_matrices: tf.Tensor):
+    self.payoff_matrices = tf.convert_to_tensor(payoff_matrices)
+
+  def batch_size(self) -> int:
+    return self.payoff_matrices.shape[0]
 
   def initial_variables(self) -> NashLogits:
-    d1, d2 = self.payoff_matrix.shape.as_list()
-    dtype = self.payoff_matrix.dtype
+    b, d1, d2 = self.payoff_matrices.shape.as_list()
+    dtype = self.payoff_matrices.dtype
 
     return NashVariables(
-        p1=tf.ones([d1], dtype=dtype) / d1,
-        p2=tf.ones([d2], dtype=dtype) / d2,
-        p1_nash_value=tf.constant(0.0, dtype=dtype),
+        p1=tf.ones([b, d1], dtype=dtype) / d1,
+        p2=tf.ones([b, d2], dtype=dtype) / d2,
+        p1_nash_value=tf.zeros([b], dtype=dtype),
     )
 
   def constraint_violations(self, variables: NashVariables) -> tf.Tensor:
@@ -83,17 +86,17 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
         -variables.p2,  # p2 >= 0
     ]
 
-    p1 = tf.expand_dims(variables.p1, -2)
-    # p2 = tf.expand_dims(variables.p2, -1)
-
     # No strategy for p1 does better than the nash value
-    p1_payoffs = tf.linalg.matvec(self.payoff_matrix, variables.p2)
+    p1_payoffs = tf.linalg.matvec(self.payoff_matrices, variables.p2)
     # p1_payoffs = tf.squeeze(tf.matmul(self.payoff_matrix, p2), 1)
-    p1_optimality = p1_payoffs - variables.p1_nash_value  # <= 0
+    p1_nash_value = tf.expand_dims(variables.p1_nash_value, -1)
+    p1_optimality = p1_payoffs - p1_nash_value  # <= 0
 
     # No strategy for p2 does better than the nash value
-    p2_payoffs = -tf.squeeze(tf.matmul(p1, self.payoff_matrix), 0)
-    p2_optimality = p2_payoffs + variables.p1_nash_value  # <= 0
+    p2_payoffs = -tf.linalg.matvec(
+        self.payoff_matrices, variables.p1, transpose_a=True)
+    p2_nash_value = -tf.expand_dims(variables.p1_nash_value, -1)
+    p2_optimality = p2_payoffs - p2_nash_value  # <= 0
 
     constraints.extend([p1_optimality, p2_optimality])
 
@@ -101,8 +104,8 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
 
   def equality_violations(self, variables: NashVariables) -> tf.Tensor:
     return tf.stack([
-        tf.reduce_sum(variables.p1) - 1.0,
-        tf.reduce_sum(variables.p2) - 1.0,
+        tf.reduce_sum(variables.p1, axis=-1) - 1.0,
+        tf.reduce_sum(variables.p2, axis=-1) - 1.0,
     ], axis=-1)
 
 def solve_zero_sum_nash_pulp(
