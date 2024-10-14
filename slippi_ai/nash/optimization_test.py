@@ -4,6 +4,7 @@ import numpy as np
 import tensorflow as tf
 import tqdm
 
+from slippi_ai import utils
 from slippi_ai.nash import optimization, nash
 
 
@@ -86,40 +87,42 @@ def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
   return np.sum(p * log_ratio, axis=-1)
 
 @tf.function
-def solve_nash(payoff_matrices: np.ndarray, **kwargs) -> nash.NashVariables:
+def solve_nash(payoff_matrices: np.ndarray, **kwargs):
   print('retracing with shape', payoff_matrices.shape)
   problem = nash.ZeroSumNashProblem(payoff_matrices)
-  variables = optimization.solve_feasibility(problem, **kwargs)
-  return variables.normalize()
+  variables, stats = optimization.solve_feasibility(problem, optimum=0, **kwargs)
+  return variables.normalize(), stats
 
-def test_nash(payoff_matrices: np.ndarray, atol=1e-1, **kwargs) -> float:
-  # problem = nash.ZeroSumNashProblemWithLogits(payoff_matrix)
+def test_nash(
+    payoff_matrices: np.ndarray,
+    atol=1e-1,
+    verify=True,
+    **kwargs,
+) -> dict:
   start_time = time.perf_counter()
-  variables = solve_nash(payoff_matrices, **kwargs)
+  variables, stats = solve_nash(payoff_matrices, **kwargs)
   solve_time = time.perf_counter() - start_time
-  # problem = nash.ZeroSumNashProblem(payoff_matrix)
-  # variables = optimization.solve_feasibility(problem, **kwargs)
-  # variables = variables.normalize()
 
-  # tf_p1 = tf.nn.softmax(variables.p1_logits).numpy()
-  # tf_p2 = tf.nn.softmax(variables.p2_logits).numpy()
-  tf_p1 = variables.p1.numpy()
-  tf_p2 = variables.p2.numpy()
-  tf_nash_value = variables.p1_nash_value.numpy()
+  if verify:
+    tf_p1 = variables.p1.numpy()
+    tf_p2 = variables.p2.numpy()
+    tf_nash_value = variables.p1_nash_value.numpy()
 
-  for i, payoff_matrix in enumerate(payoff_matrices):
-    p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
-    np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
+    for i, payoff_matrix in enumerate(payoff_matrices):
+      p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
+      np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
 
-    kl1 = kl_divergence(p1, tf_p1[i])
-    assert kl1 < atol, kl1
+      kl1 = kl_divergence(p1, tf_p1[i])
+      assert kl1 < atol, kl1
 
-    kl2 = kl_divergence(p2, tf_p2[i])
-    assert kl2 < atol, kl2
+      kl2 = kl_divergence(p2, tf_p2[i])
+      assert kl2 < atol, kl2
 
-    np.testing.assert_allclose(tf_nash_value[i], nash_value, atol=atol)
+      np.testing.assert_allclose(tf_nash_value[i], nash_value, atol=atol)
 
-  return solve_time
+  stats = {k: v.numpy() for k, v in stats.items()}
+  stats['time'] = solve_time
+  return stats
 
 def test_rps(**kwargs):
   payoff_matrix = np.array([[
@@ -154,29 +157,34 @@ def test_random_nash(
 def random_nash_tests(
     num_tests: int = 10,
     batch_size: int = 10,
-    size=(10, 11),
-    dtype=np.float64,
-    error=1e-4,
-    atol=1e-1,
+    **kwargs,
 ):
+  all_stats = []
   solve_times = []
   for i in tqdm.trange(num_tests):
-    solve_time = test_random_nash(
+    stats = test_random_nash(
         solver=optimization.solve_optimization_interior_point_barrier,
         batch_size=batch_size,
-        size=size,
-        dtype=dtype,
-        error=error,
-        atol=atol,
+        **kwargs,
     )
+    all_stats.append(stats)
     if i > 0:  # first iteration is warmup
-      solve_times.append(solve_time)
+      solve_times.append(stats['time'])
 
   if solve_times:
-    total_solved = batch_size * (num_tests - 1)
+    total_solved = batch_size * len(solve_times)
     total_time = sum(solve_times)
     mean_time = total_time / total_solved
     print(f'Mean solve time: {mean_time} s')
+
+  stats = utils.batch_nest(all_stats)
+
+  for key in ['num_steps', 'centering_steps', 'slack']:
+    values = stats[key]
+    mean, std = np.mean(values), np.std(values)
+    min_value = np.min(values)
+    max_value = np.max(values)
+    print(f'{key}: {mean:.1e} ± {std:.1e}, [{min_value:.1e}, {max_value:.1e}]')
 
 if __name__ == '__main__':
   test_solve_quadratic_optimization(batch_size=3)
@@ -194,4 +202,8 @@ if __name__ == '__main__':
   random_nash_tests(
       num_tests=10,
       batch_size=10,
+      size=(10, 11),
+      dtype=np.float64,
+      error=1e-4,
+      atol=1e-1,
   )
