@@ -142,7 +142,7 @@ def line_search(
   assert direction.shape[0] == batch_size
 
   step_size = tf.convert_to_tensor(initial_step_size, dtype=variables.dtype)
-  step_size = tf.fill([batch_size], step_size)
+  step_size = tf.broadcast_to(step_size, [batch_size])
 
   def take_step(step_size):
     return variables + tf.expand_dims(step_size, -1) * direction
@@ -186,7 +186,7 @@ def solve_optimization_interior_point_barrier(
     initial_constraint_weight: float = 1.0,
     constraint_weight_decay: float = 0.9,
     optimum: tp.Optional[float] = None,
-    jit_compile: bool = True,
+    jit_compile: bool = False,
 ) -> Variables:
   batch_size = problem.batch_size()
   variables = problem.initial_variables()
@@ -390,6 +390,168 @@ def solve_optimization_interior_point_barrier(
   )
 
   return uncombine(combined)[0], stats
+
+
+def dot(x: tf.Tensor, y: tf.Tensor, axis=-1) -> tf.Tensor:
+  return tf.reduce_sum(x * y, axis=axis)
+
+# https://www.cs.cmu.edu/~pradeepr/convexopt/Lecture_Slides/primal-dual.pdf
+def solve_optimization_interior_point_primal_dual(
+    problem: ConstrainedOptimizationProblem[Variables],
+    error: float = 1e-2,
+    initial_constraint_weight: float = 1.0,
+    constraint_weight_decay: float = 0.9,
+    optimum: tp.Optional[float] = None,
+    jit_compile: bool = False,
+) -> tuple[Variables, dict]:
+  batch_size = problem.batch_size()
+  variables = problem.initial_variables()
+  flat_vars: list[tf.Tensor] = tf.nest.flatten(variables)
+  flat_shapes = [t.shape[1:] for t in flat_vars]
+  flat_sizes = [s.num_elements() for s in flat_shapes]
+  flat_size = sum(flat_sizes)
+
+  def flatten(variables: Variables) -> tf.Tensor:
+    return tf.concat([
+        tf.reshape(v, [batch_size, -1])
+        for v in tf.nest.flatten(variables)], axis=-1)
+
+  def unflatten(flat_var: tf.Tensor) -> Variables:
+    split = tf.split(flat_var, flat_sizes, axis=-1)
+    reshaped = [
+        tf.reshape(flat, v.shape)
+        for flat, v in zip(split, flat_vars)]
+    return tf.nest.pack_sequence_as(variables, reshaped)
+
+  initial_constraints = problem.constraint_violations(variables)
+  num_constraints = initial_constraints.shape[-1]
+  num_equalities = problem.equality_violations(variables).shape[-1]
+
+  def split(combined: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    return tf.split(combined, [flat_size, num_constraints, num_equalities], axis=-1)
+
+  def combine(variables: Variables, constraint_vars: tf.Tensor, equality_vars: tf.Tensor) -> tf.Tensor:
+    flat_vars = flatten(variables)
+    return tf.concat([flat_vars, constraint_vars, equality_vars], axis=-1)
+
+  def uncombine(combined: tf.Tensor) -> tp.Tuple[Variables, tf.Tensor, tf.Tensor]:
+    flat_vars, constraint_vars, equality_vars = split(combined)
+    return unflatten(flat_vars), constraint_vars, equality_vars
+
+  def residuals(combined: tf.Tensor, epsilon: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    flat_vars, constraint_variables, equality_variables = split(combined)
+    with tf.GradientTape() as tape:
+      tape.watch(flat_vars)
+      variables = unflatten(flat_vars)
+      objective = problem.objective(variables)
+      constraints = problem.constraint_violations(variables)
+      equalities = problem.equality_violations(variables)
+
+      L = (
+          objective
+          + dot(constraint_variables, constraints)
+          + dot(equality_variables, equalities)
+      )
+
+    r_dual = tape.gradient(L, flat_vars)
+    r_cent = constraints * constraint_variables + tf.expand_dims(epsilon, -1)
+    r_prim = equalities
+
+    return r_dual, r_cent, r_prim
+
+  def residual(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
+    return tf.concat(residuals(combined, epsilon), axis=-1)
+
+  def is_valid(combined: tf.Tensor):
+    # variables = unflatten(combined[:flat_size])
+    variables = uncombine(combined)[0]
+    return tf.reduce_all(problem.constraint_violations(variables) < 0, axis=-1)
+
+  @tf.function(jit_compile=jit_compile)
+  def newton_step(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
+    with tf.GradientTape() as tape:
+      tape.watch(combined)
+      residual_value = residual(combined, epsilon)
+    jacobian = tape.batch_jacobian(residual_value, combined)
+
+    target = -tf.expand_dims(residual_value, axis=-1)
+    delta = tf.linalg.solve(jacobian, target)
+    delta = tf.squeeze(delta, axis=-1)
+
+    # Make sure constraint vars remain positive.
+    delta_constraints = split(delta)[1]
+    constraint_vars = split(combined)[1]
+    max_step_sizes = tf.where(delta_constraints < 0, -constraint_vars / delta_constraints, 1.0)
+    max_step_size = tf.reduce_min(max_step_sizes, axis=-1)
+    max_step_size = tf.minimum(max_step_size, 1.0) * 0.99
+    assert max_step_size.shape == [batch_size]
+
+    def residual_objective(combined: tf.Tensor):
+      residual_value = residual(combined, epsilon)
+      return 0.5 * tf.reduce_sum(tf.square(residual_value), axis=-1)
+
+    # grad(residual_objective) = residual * grad(residual)
+    # => grad(residual_objective) * delta
+    # = residual * grad(residual) * delta
+    # = residual * -residual = - |residual|^2
+
+    new_combined = line_search(
+        objective=residual_objective,
+        condition=is_valid,
+        variables=combined,
+        direction=delta,
+        directional_derivative=-tf.reduce_sum(tf.square(residual_value), axis=-1),
+        initial_step_size=max_step_size,
+    )
+
+    return new_combined, residual_value
+
+  flat_var = flatten(variables)
+  constraint_weight_decay = tf.convert_to_tensor(
+      constraint_weight_decay, dtype=flat_var.dtype)
+  u = tf.convert_to_tensor(initial_constraint_weight, dtype=flat_var.dtype)
+  constraint_vars = tf.fill([batch_size, num_constraints], u)
+  equality_vars = tf.zeros([batch_size, num_equalities], dtype=flat_var.dtype)
+  combined = tf.concat([flat_var, constraint_vars, equality_vars], axis=-1)
+
+  eta = - dot(constraint_vars, initial_constraints)
+
+  num_steps = tf.fill([batch_size], 1)
+  done = tf.fill([batch_size], False)
+
+  while tf.logical_not(tf.reduce_all(done)):
+    # print('eta', eta.numpy())
+    # TODO: don't take steps for done ones
+    epsilon = constraint_weight_decay * eta / num_constraints
+    combined, residual_value = newton_step(combined, epsilon)
+
+    variables, constraint_vars, equality_vars = uncombine(combined)
+    constraints = problem.constraint_violations(variables)
+    eta = - dot(constraints, constraint_vars)
+
+    # print(tf.nest.map_structure(lambda x: x.numpy(), variables))
+    # print(combined.numpy())
+
+    if optimum is not None:
+      objective_value = problem.objective(variables)
+      done = objective_value <= optimum + error
+    else:
+      r_dual, _, r_prim = split(residual_value)
+
+      feasible = tf.sqrt(
+          tf.reduce_sum(tf.square(r_dual), axis=-1)
+          + tf.reduce_sum(tf.square(r_prim), axis=-1)) <= error
+
+      done = tf.logical_and(eta <= error, feasible)
+
+    num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
+
+  stats = dict(
+      num_steps=num_steps,
+  )
+
+  return variables, stats
+
 
 # This should actually be a "forall" type but I don't think python has those.
 V = tp.TypeVar('V')
