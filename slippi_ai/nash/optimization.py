@@ -89,7 +89,31 @@ class SlackFeasibilityProblem(ConstrainedOptimizationProblem[SlackVariables[Vari
   def objective(self, variables: SlackVariables[Variables]) -> tf.Tensor:
     return variables.slack
 
-# @tf.function()
+def jvp_bwd(
+    f: tp.Callable[[tf.Tensor], tf.Tensor],
+    x: tf.Tensor,
+    dx: tf.Tensor,
+) -> tf.Tensor:
+  with tf.GradientTape(persistent=True) as tape:
+    tape.watch(x)
+    y = f(x)
+    z = tf.zeros_like(y)
+    tape.watch(z)
+    w = tf.reduce_sum(y * z)
+
+    dw_dx = tape.gradient(w, x)
+    dd = tape.gradient(dw_dx, z, output_gradients=dx)
+    return y, dd
+
+def jvp_fwd(
+    f: tp.Callable[[tf.Tensor], tf.Tensor],
+    x: tf.Tensor,
+    dx: tf.Tensor,
+) -> tf.Tensor:
+  with tf.autodiff.ForwardAccumulator(x, dx) as acc:
+    y = f(x)
+  return y, acc.jvp(y)
+
 def line_search(
     objective: tp.Callable[[tf.Tensor], tf.Tensor],
     condition: tp.Callable[[tf.Tensor], tf.Tensor],
@@ -105,10 +129,11 @@ def line_search(
   beta = tf.convert_to_tensor(beta, dtype=variables.dtype)
   one = tf.constant(1, dtype=variables.dtype)
 
+  # Sadly both jvp_fwd and jvp_bwd don't work with jit_compile=True.
+  # A workaround is to pass the directional_derivative if it is known.
   if directional_derivative is None:
-    with tf.autodiff.ForwardAccumulator(variables, direction) as acc:
-      objective_value = objective(variables)
-    directional_derivative = acc.jvp(objective_value)
+    objective_value, directional_derivative = jvp_fwd(
+        objective, variables, direction)
   else:
     objective_value = objective(variables)
 
@@ -161,6 +186,7 @@ def solve_optimization_interior_point_barrier(
     initial_constraint_weight: float = 1.0,
     constraint_weight_decay: float = 0.9,
     optimum: tp.Optional[float] = None,
+    jit_compile: bool = True,
 ) -> Variables:
   batch_size = problem.batch_size()
   variables = problem.initial_variables()
@@ -230,7 +256,7 @@ def solve_optimization_interior_point_barrier(
     variables, _ = uncombine(combined)
     return tf.reduce_all(problem.constraint_violations(variables) < 0, axis=-1)
 
-  @tf.function(jit_compile=False)
+  @tf.function(jit_compile=jit_compile)
   def newton_step(combined: tf.Tensor, mu: tf.Tensor) -> tf.Tensor:
     with tf.GradientTape() as tape:
       tape.watch(combined)
@@ -246,14 +272,16 @@ def solve_optimization_interior_point_barrier(
       return 0.5 * tf.reduce_sum(tf.square(residual_value), axis=-1)
 
     # grad(residual_objective) = residual * grad(residual)
-    # => grad(residual_objective) * delta = |residual|^2
+    # => grad(residual_objective) * delta
+    # = residual * grad(residual) * delta
+    # = residual * -residual = - |residual|^2
 
     new_combined = line_search(
         objective=residual_objective,
         condition=is_valid,
         variables=combined,
         direction=delta,
-        # directional_derivative=tf.reduce_sum(tf.square(residual_value), axis=-1),
+        directional_derivative=-tf.reduce_sum(tf.square(residual_value), axis=-1),
     )
 
     # tf.Assert(is_valid(new_combined), [new_combined])
@@ -263,7 +291,7 @@ def solve_optimization_interior_point_barrier(
 
     return new_combined, residual_value
 
-  @tf.function(jit_compile=False)
+  @tf.function(jit_compile=jit_compile)
   def centering_step(
       combined: tf.Tensor,
       mu: tf.Tensor,
