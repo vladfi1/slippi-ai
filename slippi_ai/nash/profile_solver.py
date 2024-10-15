@@ -20,8 +20,15 @@ dtypes = {
 }
 DTYPE = flags.DEFINE_enum('dtype', 'f64', dtypes.keys(), 'float type')
 
+solvers = {
+    'barrier': optimization.solve_optimization_interior_point_barrier,
+    'primal_dual': optimization.solve_optimization_interior_point_primal_dual,
+}
+SOLVER = flags.DEFINE_enum('solver', 'primal_dual', solvers.keys(), 'Optimization solver')
+
 def main(_):
   optimization_test.random_nash_tests(
+      optimization_solver=solvers[SOLVER.value],
       num_tests=ITERS.value,
       batch_size=BATCH_SIZE.value,
       size=(SIZE.value, SIZE.value),
