@@ -12,16 +12,24 @@ BATCH_SIZE = flags.DEFINE_integer('batch_size', 10, 'Batch size')
 ERROR = flags.DEFINE_float('error', 1e-4, 'Algorithm error tolerance')
 ATOL = flags.DEFINE_float('atol', 1e-1, 'Nash KL divergence tolerance')
 VERIFY = flags.DEFINE_boolean('verify', False, 'Verify the solution')
+JIT = flags.DEFINE_boolean('jit', False, 'Enable JIT compilation')
+
+dtypes = {
+    'f32': np.float32,
+    'f64': np.float64,
+}
+DTYPE = flags.DEFINE_enum('dtype', 'f64', dtypes.keys(), 'float type')
 
 def main(_):
   optimization_test.random_nash_tests(
       num_tests=ITERS.value,
       batch_size=BATCH_SIZE.value,
       size=(SIZE.value, SIZE.value),
-      dtype=np.float64,
+      dtype=dtypes[DTYPE.value],
       error=ERROR.value,
       atol=ATOL.value,
       verify=VERIFY.value,
+      jit_compile=JIT.value,
   )
 
 if __name__ == '__main__':
