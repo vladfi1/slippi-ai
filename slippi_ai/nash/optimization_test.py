@@ -35,7 +35,7 @@ class QuadraticOptimizationProblem(optimization.ConstrainedOptimizationProblem[t
 def test_solve_quadratic_optimization(num_dims=3, batch_size=1):
   xs = np.arange(batch_size, dtype=np.float32)
   problem = QuadraticOptimizationProblem(num_dims, xs)
-  variables = optimization.solve_optimization_interior_point_barrier(
+  variables, _ = optimization.solve_optimization_interior_point_primal_dual(
       problem, error=1e-3)
   assert tf.reduce_all(tf.abs(variables) < 1e-3).numpy()
 
@@ -72,7 +72,7 @@ def test_solve_corner_optimization(
 ):
   sizes = 1 + np.arange(max_size)
   problem = CornerOptimizationProblem(num_dims, sizes=sizes)
-  variables = solver(problem, **kwargs)
+  variables, _ = solver(problem, **kwargs)
 
   actual = variables.numpy()
   expected = np.stack([sizes] * num_dims, axis=-1)
@@ -130,27 +130,18 @@ def test_rps(**kwargs):
     [1, 0, -1],
     [-1, 1, 0],
   ]], dtype=np.float32)
-  test_nash(payoff_matrix, **kwargs)
+  return test_nash(payoff_matrix, **kwargs)
 
 
 def test_random_nash(
-    solver=optimization.solve_optimization_interior_point_barrier,
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float32,
     batch_size: int = 1,
     **kwargs,
 ):
   payoff_matrix = np.random.randn(batch_size, *size).astype(dtype)
-  # test_nash(
-  #     payoff_matrix,
-  #     num_iterations=200,
-  #     initial_constraint_weight=1e-1,
-  #     constraint_weight_decay=0.95,
-  #     damping=2,
-  # )
   return test_nash(
       payoff_matrix,
-      optimization_solver=solver,
       **kwargs,
   )
 
@@ -163,7 +154,6 @@ def random_nash_tests(
   solve_times = []
   for i in tqdm.trange(num_tests):
     stats = test_random_nash(
-        solver=optimization.solve_optimization_interior_point_barrier,
         batch_size=batch_size,
         **kwargs,
     )
@@ -181,6 +171,8 @@ def random_nash_tests(
   stats = utils.batch_nest(all_stats)
 
   for key in ['num_steps', 'centering_steps', 'slack']:
+    if key not in stats:
+      continue
     values = stats[key]
     mean, std = np.mean(values), np.std(values)
     min_value = np.min(values)
@@ -190,17 +182,18 @@ def random_nash_tests(
 if __name__ == '__main__':
   test_solve_quadratic_optimization(batch_size=3)
   test_solve_corner_optimization(
-      solver=optimization.solve_optimization_interior_point_barrier,
+      solver=optimization.solve_optimization_interior_point_primal_dual,
       error=1e-3,
       max_size=3,
       num_dims=2,
   )
   test_rps(
-      optimization_solver=optimization.solve_optimization_interior_point_barrier,
+      optimization_solver=optimization.solve_optimization_interior_point_primal_dual,
       error=1e-3,
   )
 
   random_nash_tests(
+      optimization_solver=optimization.solve_optimization_interior_point_primal_dual,
       num_tests=10,
       batch_size=10,
       size=(10, 11),
