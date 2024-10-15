@@ -175,7 +175,8 @@ def random_nash_tests(
     total_solved = batch_size * len(solve_times)
     total_time = sum(solve_times)
     mean_time = total_time / total_solved
-    print(f'Mean solve time: {mean_time} s')
+    problems_per_second = total_solved / total_time
+    print(f'Mean solve time: {mean_time} s, {problems_per_second} problems/s')
 
   stats = utils.batch_nest(all_stats)
 
