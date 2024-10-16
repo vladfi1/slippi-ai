@@ -403,6 +403,7 @@ def solve_optimization_interior_point_primal_dual(
     constraint_weight_decay: float = 0.9,
     optimum: tp.Optional[float] = None,
     jit_compile: bool = False,
+    is_linear: bool = False,
 ) -> tuple[Variables, dict]:
   batch_size = problem.batch_size()
   variables = problem.initial_variables()
@@ -441,34 +442,66 @@ def solve_optimization_interior_point_primal_dual(
     flat_vars, constraint_vars, equality_vars = split(combined)
     return unflatten(flat_vars), constraint_vars, equality_vars
 
-  def residuals(combined: tf.Tensor, epsilon: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    flat_vars, constraint_variables, equality_variables = split(combined)
-    with tf.GradientTape() as tape:
-      tape.watch(flat_vars)
-      variables = unflatten(flat_vars)
-      objective = problem.objective(variables)
-      constraints = problem.constraint_violations(variables)
-      equalities = problem.equality_violations(variables)
-
-      L = (
-          objective
-          + dot(constraint_variables, constraints)
-          + dot(equality_variables, equalities)
-      )
-
-    r_dual = tape.gradient(L, flat_vars)
-    r_cent = constraints * constraint_variables + tf.expand_dims(epsilon, -1)
-    r_prim = equalities
-
-    return r_dual, r_cent, r_prim
-
-  def residual(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
-    return tf.concat(residuals(combined, epsilon), axis=-1)
-
   def is_valid(combined: tf.Tensor):
     # variables = unflatten(combined[:flat_size])
     variables = uncombine(combined)[0]
     return tf.reduce_all(problem.constraint_violations(variables) < 0, axis=-1)
+
+  # Equality constraints are linear and so can be precomputed
+  x = flat_var
+  with tf.GradientTape() as tape:
+    tape.watch(x)
+    x_struct = unflatten(x)
+    eq = problem.equality_violations(x_struct)
+  A = tape.batch_jacobian(eq, x)  # [B, K, N]
+  A_t = tf.transpose(A, perm=[0, 2, 1])  # [B, N, K]
+
+  # If the constraints and objective are linear, we can precompute the gradients.
+  if is_linear:
+    with tf.GradientTape(persistent=True) as tape:
+      tape.watch(x)
+      x_struct = unflatten(x)
+      f = problem.objective(x_struct)
+      f = tf.expand_dims(f, -1)  # [B, 1]
+      g = problem.constraint_violations(x_struct)
+
+    grad_f_linear = tf.squeeze(tape.batch_jacobian(f, x), -2)  # [B, N]
+    grad_g_linear = tape.batch_jacobian(g, x)  # [B, M, N]
+    grad_g_t_linear = tf.transpose(grad_g_linear, perm=[0, 2, 1])  # [B, N, M]
+
+    def residuals(combined: tf.Tensor, epsilon: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+      x, u, v = split(combined)
+      x_struct = unflatten(x)
+      g = problem.constraint_violations(x_struct)
+      r_dual = grad_f_linear + tf.linalg.matvec(grad_g_t_linear, u) + tf.linalg.matvec(A_t, v)
+      r_cent = u * g + tf.expand_dims(epsilon, -1)
+      r_prim = problem.equality_violations(x_struct)
+      return r_dual, r_cent, r_prim
+
+  else:
+    def residuals(combined: tf.Tensor, epsilon: tf.Tensor) -> tp.Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+      flat_vars, constraint_variables, equality_variables = split(combined)
+      with tf.GradientTape() as tape:
+        tape.watch(flat_vars)
+        variables = unflatten(flat_vars)
+        objective = problem.objective(variables)
+        constraints = problem.constraint_violations(variables)
+        equalities = problem.equality_violations(variables)
+
+        L = (
+            objective
+            + dot(constraint_variables, constraints)
+            + dot(equality_variables, equalities)
+        )
+
+      r_dual = tape.gradient(L, flat_vars)
+      r_cent = constraints * constraint_variables + tf.expand_dims(epsilon, -1)
+      r_prim = equalities
+
+      return r_dual, r_cent, r_prim
+
+  def residual(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
+    return tf.concat(residuals(combined, epsilon), axis=-1)
 
   @tf.function(jit_compile=jit_compile)
   def newton_step(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
@@ -476,34 +509,38 @@ def solve_optimization_interior_point_primal_dual(
     N = flat_size
     M = num_constraints
     K = num_equalities
+
     with tf.GradientTape(persistent=True) as tape:
       tape.watch(x)
-      variables = unflatten(x)
-      f = problem.objective(variables)
-      g = problem.constraint_violations(variables)
-      eq = problem.equality_violations(variables)
+      x_struct = unflatten(x)
+      f = problem.objective(x_struct)
+      g = problem.constraint_violations(x_struct)
+      eq = problem.equality_violations(x_struct)
 
-      L = f + dot(u, g) + dot(v, eq)
+      if not is_linear:
+        L = f + dot(u, g) + dot(v, eq)
+        r_dual = tape.gradient(L, x)
 
-      r_dual = tape.gradient(L, x)
-      r_cent = u * g + tf.expand_dims(epsilon, -1)
-      r_prim = eq
-      residual_value = tf.concat([r_dual, r_cent, r_prim], axis=-1)
-
-      # This goal of this Newton step is to set residual_value to zero.
-      # We could just solve for this directly, but it is more efficient to
-      # first elimate delta_u as it makes the linear system smaller.
-      # TODO: show the math. See linked slides, pages 9-10 for details.
-
+    if is_linear:
+      grad_g = grad_g_linear
+      grad_g_t = grad_g_t_linear
+      r_dual = grad_f_linear + tf.linalg.matvec(grad_g_t, u) + tf.linalg.matvec(A_t, v)
+      H = tf.zeros([batch_size, N, N], dtype)
+    else:
       # The eq term vanishes as it should be linear.
       H = tape.batch_jacobian(r_dual, x)  # [B, N, N]
-      # H = tf.zeros([batch_size, N, N], dtype)
 
       grad_g = tape.batch_jacobian(g, x)  # [B, M, N]
       grad_g_t = tf.transpose(grad_g, perm=[0, 2, 1])  # [B, N, M]
 
-      A = tape.batch_jacobian(eq, x)  # [B, K, N]
-      A_t = tf.transpose(A, perm=[0, 2, 1])  # [B, N, K]
+    r_cent = u * g + tf.expand_dims(epsilon, -1)
+    r_prim = eq
+    residual_value = tf.concat([r_dual, r_cent, r_prim], axis=-1)
+
+    # The goal of this Newton step is to set residual_value to zero.
+    # We could just solve for this directly, but it is more efficient to
+    # first elimate delta_u as it makes the linear system smaller.
+    # TODO: show the math. See linked slides, pages 9-10 for details.
 
     diag_u = tf.expand_dims(u, -1)  # [B, M, 1]
     diag_g = tf.expand_dims(g, -1)  # [B, M, 1]
@@ -529,6 +566,8 @@ def solve_optimization_interior_point_primal_dual(
     delta_x, delta_v = tf.split(delta_xv, [N, K], axis=-1)
     delta_u = (-r_cent - u * tf.linalg.matvec(grad_g, delta_x)) / g
     delta = tf.concat([delta_x, delta_u, delta_v], axis=-1)
+
+    # grad(residual) * delta = -residual
 
     # Make sure constraint vars remain positive.
     max_step_sizes = tf.where(delta_u < 0, -u / delta_u, 1.0)

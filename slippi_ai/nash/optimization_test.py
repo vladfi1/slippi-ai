@@ -192,12 +192,14 @@ if __name__ == '__main__':
       error=1e-3,
   )
 
-  random_nash_tests(
-      optimization_solver=optimization.solve_optimization_interior_point_primal_dual,
-      num_tests=10,
-      batch_size=10,
-      size=(10, 11),
-      dtype=np.float64,
-      error=1e-5,
-      atol=1e-1,
-  )
+  for is_linear in [True, False]:
+    random_nash_tests(
+        optimization_solver=optimization.solve_optimization_interior_point_primal_dual,
+        num_tests=10,
+        batch_size=10,
+        size=(10, 11),
+        dtype=np.float64,
+        error=1e-5,
+        atol=1e-1,
+        is_linear=is_linear,
+    )
