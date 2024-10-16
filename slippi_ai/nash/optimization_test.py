@@ -198,6 +198,6 @@ if __name__ == '__main__':
       batch_size=10,
       size=(10, 11),
       dtype=np.float64,
-      error=1e-4,
+      error=1e-5,
       atol=1e-1,
   )
