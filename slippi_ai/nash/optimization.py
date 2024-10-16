@@ -423,6 +423,9 @@ def solve_optimization_interior_point_primal_dual(
         for flat, v in zip(split, flat_vars)]
     return tf.nest.pack_sequence_as(variables, reshaped)
 
+  flat_var = flatten(variables)
+  dtype = flat_var.dtype
+
   initial_constraints = problem.constraint_violations(variables)
   num_constraints = initial_constraints.shape[-1]
   num_equalities = problem.equality_violations(variables).shape[-1]
@@ -469,19 +472,66 @@ def solve_optimization_interior_point_primal_dual(
 
   @tf.function(jit_compile=jit_compile)
   def newton_step(combined: tf.Tensor, epsilon: tf.Tensor) -> tf.Tensor:
-    with tf.GradientTape() as tape:
-      tape.watch(combined)
-      residual_value = residual(combined, epsilon)
-    jacobian = tape.batch_jacobian(residual_value, combined)
+    x, u, v = split(combined)
+    N = flat_size
+    M = num_constraints
+    K = num_equalities
+    with tf.GradientTape(persistent=True) as tape:
+      tape.watch(x)
+      variables = unflatten(x)
+      f = problem.objective(variables)
+      g = problem.constraint_violations(variables)
+      eq = problem.equality_violations(variables)
 
-    target = -tf.expand_dims(residual_value, axis=-1)
-    delta = tf.linalg.solve(jacobian, target)
-    delta = tf.squeeze(delta, axis=-1)
+      L = f + dot(u, g) + dot(v, eq)
+
+      r_dual = tape.gradient(L, x)
+      r_cent = u * g + tf.expand_dims(epsilon, -1)
+      r_prim = eq
+      residual_value = tf.concat([r_dual, r_cent, r_prim], axis=-1)
+
+      # This goal of this Newton step is to set residual_value to zero.
+      # We could just solve for this directly, but it is more efficient to
+      # first elimate delta_u as it makes the linear system smaller.
+      # TODO: show the math. See linked slides, pages 9-10 for details.
+
+      # The eq term vanishes as it should be linear.
+      H = tape.batch_jacobian(r_dual, x)  # [B, N, N]
+      # H = tf.zeros([batch_size, N, N], dtype)
+
+      grad_g = tape.batch_jacobian(g, x)  # [B, M, N]
+      grad_g_t = tf.transpose(grad_g, perm=[0, 2, 1])  # [B, N, M]
+
+      A = tape.batch_jacobian(eq, x)  # [B, K, N]
+      A_t = tf.transpose(A, perm=[0, 2, 1])  # [B, N, K]
+
+    diag_u = tf.expand_dims(u, -1)  # [B, M, 1]
+    diag_g = tf.expand_dims(g, -1)  # [B, M, 1]
+
+    J_xx = H - tf.matmul(grad_g_t, (diag_u / diag_g) * grad_g)  # [B, N, N]
+    J_xv = A_t  # [B, N, K]
+    J_x = tf.concat([J_xx, J_xv], axis=-1)  # [B, N, N + K]
+
+    target_x = -r_dual + tf.linalg.matvec(grad_g_t, r_cent / g)
+
+    J_vx = A  # [B, K, N]
+    J_vv = tf.zeros([batch_size, K, K], dtype)
+    J_v = tf.concat([J_vx, J_vv], axis=-1)  # [B, K, N + K]
+    target_v = -r_prim
+
+    J = tf.concat([J_x, J_v], axis=-2)
+    target = tf.concat([target_x, target_v], axis=-1)
+
+    target = tf.expand_dims(target, axis=-1)
+    delta_xv = tf.linalg.solve(J, target)
+    delta_xv = tf.squeeze(delta_xv, axis=-1)
+
+    delta_x, delta_v = tf.split(delta_xv, [N, K], axis=-1)
+    delta_u = (-r_cent - u * tf.linalg.matvec(grad_g, delta_x)) / g
+    delta = tf.concat([delta_x, delta_u, delta_v], axis=-1)
 
     # Make sure constraint vars remain positive.
-    delta_constraints = split(delta)[1]
-    constraint_vars = split(combined)[1]
-    max_step_sizes = tf.where(delta_constraints < 0, -constraint_vars / delta_constraints, 1.0)
+    max_step_sizes = tf.where(delta_u < 0, -u / delta_u, 1.0)
     max_step_size = tf.reduce_min(max_step_sizes, axis=-1)
     max_step_size = tf.minimum(max_step_size, 1.0) * 0.99
     assert max_step_size.shape == [batch_size]
@@ -506,12 +556,11 @@ def solve_optimization_interior_point_primal_dual(
 
     return new_combined, residual_value
 
-  flat_var = flatten(variables)
   constraint_weight_decay = tf.convert_to_tensor(
-      constraint_weight_decay, dtype=flat_var.dtype)
-  u = tf.convert_to_tensor(initial_constraint_weight, dtype=flat_var.dtype)
+      constraint_weight_decay, dtype=dtype)
+  u = tf.convert_to_tensor(initial_constraint_weight, dtype=dtype)
   constraint_vars = tf.fill([batch_size, num_constraints], u)
-  equality_vars = tf.zeros([batch_size, num_equalities], dtype=flat_var.dtype)
+  equality_vars = tf.zeros([batch_size, num_equalities], dtype=dtype)
   combined = tf.concat([flat_var, constraint_vars, equality_vars], axis=-1)
 
   eta = - dot(constraint_vars, initial_constraints)
