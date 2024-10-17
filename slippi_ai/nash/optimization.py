@@ -114,6 +114,9 @@ def jvp_fwd(
     y = f(x)
   return y, acc.jvp(y)
 
+def mat_inv(A: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
+  return tf.squeeze(tf.linalg.solve(A, tf.expand_dims(b, -1)), -1)
+
 def line_search(
     objective: tp.Callable[[tf.Tensor], tf.Tensor],
     condition: tp.Callable[[tf.Tensor], tf.Tensor],
@@ -263,9 +266,7 @@ def solve_optimization_interior_point_barrier(
       residual_value = residual(combined, mu)
     hessian = tape.batch_jacobian(residual_value, combined)
 
-    target = -tf.expand_dims(residual_value, axis=-1)
-    delta = tf.linalg.solve(hessian, target)
-    delta = tf.squeeze(delta, axis=-1)
+    delta = mat_inv(hessian, -residual_value)
 
     def residual_objective(combined: tf.Tensor):
       residual_value = residual(combined, mu)
@@ -404,6 +405,7 @@ def solve_optimization_interior_point_primal_dual(
     optimum: tp.Optional[float] = None,
     jit_compile: bool = False,
     is_linear: bool = False,
+    cholesky: bool = False,
 ) -> tuple[Variables, dict]:
   batch_size = problem.batch_size()
   variables = problem.initial_variables()
@@ -556,14 +558,27 @@ def solve_optimization_interior_point_primal_dual(
     J_v = tf.concat([J_vx, J_vv], axis=-1)  # [B, K, N + K]
     target_v = -r_prim
 
-    J = tf.concat([J_x, J_v], axis=-2)
-    target = tf.concat([target_x, target_v], axis=-1)
+    if cholesky:
+      # TODO: this is actually slightly slower than the non-cholesky version.
+      chol_b = tf.linalg.cholesky(J_xx)
+      b_inv_a = tf.linalg.cholesky_solve(chol_b, A_t)  # [B, N, K]
+      a_b_inv_a = tf.linalg.matmul(A, b_inv_a)  # [B, K, K]
+      chol_a_b_inv_a = tf.linalg.cholesky(a_b_inv_a)
 
-    target = tf.expand_dims(target, axis=-1)
-    delta_xv = tf.linalg.solve(J, target)
-    delta_xv = tf.squeeze(delta_xv, axis=-1)
+      chol_inv = lambda M, z: tf.squeeze(
+          tf.linalg.cholesky_solve(M, tf.expand_dims(z, -1)), -1)
+      b_inv_target_x = chol_inv(chol_b, target_x)
 
-    delta_x, delta_v = tf.split(delta_xv, [N, K], axis=-1)
+      new_target_v = tf.linalg.matvec(A, b_inv_target_x) - target_v
+      delta_v = chol_inv(chol_a_b_inv_a, new_target_v)
+      # delta_v = mat_inv(a_b_inv_a, new_target_v)
+      delta_x = b_inv_target_x - tf.linalg.matvec(b_inv_a, delta_v)
+    else:
+      J = tf.concat([J_x, J_v], axis=-2)
+      target = tf.concat([target_x, target_v], axis=-1)
+      delta_xv = mat_inv(J, target)
+      delta_x, delta_v = tf.split(delta_xv, [N, K], axis=-1)
+
     delta_u = (-r_cent - u * tf.linalg.matvec(grad_g, delta_x)) / g
     delta = tf.concat([delta_x, delta_u, delta_v], axis=-1)
 
