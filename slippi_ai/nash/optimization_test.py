@@ -186,10 +186,12 @@ if __name__ == '__main__':
       error=1e-3,
       max_size=3,
       num_dims=2,
+      is_linear=True,
   )
   test_rps(
       optimization_solver=optimization.solve_optimization_interior_point_primal_dual,
       error=1e-3,
+      is_linear=True,
   )
 
   for is_linear in [True, False]:

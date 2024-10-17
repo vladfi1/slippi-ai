@@ -26,6 +26,7 @@ solvers = {
 }
 SOLVER = flags.DEFINE_enum('solver', 'primal_dual', solvers.keys(), 'Optimization solver')
 LINEAR = flags.DEFINE_boolean('linear', False, 'Linearity optimization')
+CHOLESKY = flags.DEFINE_boolean('cholesky', False, 'Cholesky optimization')
 
 def main(_):
   optimization_test.random_nash_tests(
@@ -39,6 +40,7 @@ def main(_):
       verify=VERIFY.value,
       jit_compile=JIT.value,
       is_linear=LINEAR.value,
+      cholesky=CHOLESKY.value,
   )
 
 if __name__ == '__main__':
