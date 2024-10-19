@@ -22,7 +22,9 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   compile: bool = True
   jit_compile: bool = True
-  reward_halflife: float = 8
+  reward_halflife: float = 4
+
+  train_sample_policy: bool = True
 
   num_samples: int = 1
   q_policy_imitation_weight: float = 0
@@ -51,6 +53,7 @@ class Learner:
       sample_policy: Policy,  # trained via imitation
       q_policy: Policy,
       num_samples: int,
+      train_sample_policy: bool = True,
       q_policy_imitation_weight: float = 0,
       q_policy_expected_return_weight: float = 0,
       jit_compile: Optional[bool] = None,
@@ -68,6 +71,7 @@ class Learner:
     else:
       maybe_compile = identity
 
+    self.should_train_sample_policy = train_sample_policy
     self.train_sample_policy = maybe_compile(self._train_sample_policy)
     self.train_q_function = maybe_compile(self._train_q_function)
     self.train_q_policy = maybe_compile(self._train_q_policy)
@@ -354,7 +358,8 @@ class Learner:
       final_states['sample_policy'],
       metrics['sample_policy'],
     ) = self.train_sample_policy(
-        tm_frames, initial_states['sample_policy'], train)
+        tm_frames, initial_states['sample_policy'],
+        train=train and self.should_train_sample_policy)
 
     (
       sample_q_values,
