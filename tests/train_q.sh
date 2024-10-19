@@ -17,4 +17,10 @@ python scripts/train_q.py \
   --config.network.gru.hidden_size=3 \
   --config.q_function.network.name=gru \
   --config.q_function.network.gru.hidden_size=3 \
+  --config.rl_evaluator.use=True \
+  --config.rl_evaluator.interval_seconds=4 \
+  --config.rl_evaluator.runtime_seconds=0.5 \
+  --config.rl_evaluator.use_fake_envs=True \
+  --config.rl_evaluator.rollout_length=30 \
+  --config.rl_evaluator.opponent=slippi_ai/data/checkpoints/demo \
   "$@"

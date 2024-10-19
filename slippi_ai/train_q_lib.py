@@ -17,7 +17,9 @@ import wandb
 
 from slippi_ai import (
     controller_heads,
+    evaluators,
     flag_utils,
+    nametags,
     networks,
     policies,
     saving,
@@ -30,6 +32,7 @@ from slippi_ai import q_learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai import q_function as q_lib
 from slippi_ai import embed as embed_lib
+from slippi_ai import dolphin as dolphin_lib
 
 _field = utils.field
 
@@ -43,15 +46,49 @@ class RuntimeConfig:
   num_eval_steps: int = 10  # number of batches per evaluation
 
 @dataclasses.dataclass
+class AgentConfig:
+  batch_steps: int = 0
+  compile: bool = True
+  name: str = nametags.DEFAULT_NAME
+  async_inference: bool = False
+
+@dataclasses.dataclass
+class RLEvaluatorConfig:
+  use: bool = False
+  # Seconds between evaluations. Note that the evaluator runs at around
+  # half real-time, so this should be ~20x the rollout length if you want
+  # to spend 10% of the time evaluating.
+  # TODO: try running in parallel with training (so evaluator must be on CPU)
+  interval_seconds: float = 15 * 60
+  runtime_seconds: float = 60
+
+  dolphin: dolphin_lib.DolphinConfig = _field(dolphin_lib.DolphinConfig)
+
+  # env
+  rollout_length: int = 600  # rollout chunk size
+  num_envs: int = 1
+  async_envs: bool = True
+  num_env_steps: int = 0
+  inner_batch_size: int = 1
+  use_fake_envs: bool = False
+
+  agent: AgentConfig = _field(AgentConfig)
+  opponent: tp.Optional[str] = None
+  opponent_name: str = nametags.DEFAULT_NAME
+  gpu_inference: bool = True
+
+@dataclasses.dataclass
 class QFunctionConfig:
   network: dict = _field(lambda: networks.DEFAULT_CONFIG)
 
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
+  rl_evaluator: RLEvaluatorConfig = _field(RLEvaluatorConfig)
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  max_names: int = 16
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
@@ -65,8 +102,6 @@ class Config:
   embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
 
   q_function: QFunctionConfig = _field(QFunctionConfig)
-
-  max_names: int = 16
 
   expt_root: str = 'experiments/q_learning'
   expt_dir: tp.Optional[str] = None
@@ -334,9 +369,9 @@ def train(config: Config):
           f' step={step_time:.3f}')
     print()
 
-  def maybe_eval():
+  def maybe_eval(force: bool = False):
     total_steps = step.numpy()
-    if total_steps % runtime.eval_every_n != 0:
+    if (not force) and total_steps % runtime.eval_every_n != 0:
       return
 
     eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
@@ -380,14 +415,134 @@ def train(config: Config):
     to_log = dict(eval_names=to_log)
     train_lib.log_stats(to_log, total_steps, take_mean=False)
 
-  start_time = time.time()
+  if config.rl_evaluator.use:
+    if config.rl_evaluator.opponent:
+      opponent_state = saving.load_state_from_disk(
+          path=config.rl_evaluator.opponent)
+    else:
+      # TODO: default to sample policy?
+      raise NotImplementedError('opponent not specified')
 
-  train_manager.step()  # For burnin.
+    AGENT_PORT = 1
+    OPPONENT_PORT = 2
 
-  while time.time() - start_time < runtime.max_runtime:
-    train_stats, _ = train_manager.step()
+    dolphin_kwargs = config.rl_evaluator.dolphin.to_kwargs()
+    # Characters are set in the evaluator from the data config.
+    players = {
+        AGENT_PORT: dolphin_lib.AI(),
+        # TODO: allow playing against the in-game CPU like run_evaluator.py
+        OPPONENT_PORT: dolphin_lib.AI(),
+    }
+    dolphin_kwargs.update(players=players)
+
+    common_agent_kwargs = dataclasses.asdict(config.rl_evaluator.agent)
+
+    agent_kwargs: dict[int, dict] = {}
+    agent_state = dict(
+        state=get_tf_state(),  # could drop everything but 'policy' key
+        config=dataclasses.asdict(config),
+        name_map=name_map,
+    )
+    agent_kwargs[AGENT_PORT] = dict(
+        state=agent_state,
+        **common_agent_kwargs,
+    )
+    agent_kwargs[OPPONENT_PORT] = dict(
+        state=opponent_state,
+        **common_agent_kwargs,
+    )
+    agent_kwargs[OPPONENT_PORT].update(
+        name=config.rl_evaluator.opponent_name,
+    )
+
+    env_kwargs = {}
+    if config.rl_evaluator.async_envs:
+      env_kwargs.update(
+          num_steps=config.rl_evaluator.num_env_steps,
+          inner_batch_size=config.rl_evaluator.inner_batch_size,
+      )
+
+    rl_evaluator = evaluators.Evaluator(
+        agent_kwargs=agent_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
+        num_envs=config.rl_evaluator.num_envs,
+        async_envs=config.rl_evaluator.async_envs,
+        env_kwargs=dict(
+            num_steps=config.rl_evaluator.num_env_steps,
+            inner_batch_size=config.rl_evaluator.inner_batch_size,
+        ),
+        use_gpu=config.rl_evaluator.gpu_inference,
+        use_fake_envs=config.rl_evaluator.use_fake_envs,
+    )
+
+    rl_evaluator.start()
+
+    def rl_evaluate():
+      total_steps = step.numpy()
+
+      # TODO: might want to reset the environment here?
+      rl_evaluator.update_variables({AGENT_PORT: q_policy.variables})
+      start_time = time.perf_counter()
+      run_time = 0
+      rewards = []
+      while run_time < config.rl_evaluator.runtime_seconds:
+        metrics, timings = rl_evaluator.rollout(
+            num_steps=config.rl_evaluator.rollout_length)
+        rewards.append(metrics[AGENT_PORT].reward)
+
+        run_time = time.perf_counter() - start_time
+
+      total_reward = sum(rewards)
+      num_frames = (
+          config.rl_evaluator.num_envs
+          * config.rl_evaluator.rollout_length
+          * len(rewards))
+      num_minutes = num_frames / (60 * 60)
+      kdpm = total_reward / num_minutes
+      fps = num_frames / run_time
+
+      to_log = dict(
+          ko_diff=kdpm,
+          num_rollouts=len(rewards),
+          num_minutes=num_minutes,
+          fps=fps,
+          timings=timings,
+      )
+
+      print(f'EVAL: kdpm={kdpm}, minutes={num_minutes:.2f}, fps={fps:.1f}\n')
+      to_log['time'] = run_time
+
+      train_lib.log_stats(to_log, total_steps)
+
+    stop_rl_evaluator = rl_evaluator.stop
+  else:
+    rl_evaluate = lambda: None
+    stop_rl_evaluator = lambda: None
+
+  maybe_rl_eval = utils.Periodically(rl_evaluate, config.rl_evaluator.interval_seconds)
+
+  try:
+
+    # For burnin.
+    maybe_eval(force=True)
+    maybe_rl_eval()  # guaranteed to run the first time
+    train_manager.step()
     step.assign_add(1)
-    maybe_log(train_stats)
-    maybe_eval()
 
-    maybe_save()
+    start_time = time.time()
+
+    while time.time() - start_time < runtime.max_runtime:
+      train_stats, _ = train_manager.step()
+      step.assign_add(1)
+      maybe_log(train_stats)
+      maybe_eval()
+      maybe_rl_eval()
+
+      maybe_save()
+
+    maybe_eval(force=True)
+    rl_evaluate()
+    save()
+
+  finally:
+    stop_rl_evaluator()
