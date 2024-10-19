@@ -263,7 +263,7 @@ class Learner:
       entropy = self._compute_entropy(policy_distribution)
 
       # We take the "forward" KL to the teacher, which a) is more correct as the
-      # trajectory and autoregressive actions are samples according to the
+      # trajectory and autoregressive actions are sampled according to the
       # learned policy and b) incentivizes the agent to refine what humans do as
       # opposed to the usual "reverse" KL from supervised learning which forces
       # the policy to imitate all behaviors of the teacher, including mistakes.
