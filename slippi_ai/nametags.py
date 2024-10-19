@@ -34,8 +34,12 @@ for first, *rest in name_groups:
 def normalize_name(name):
   return name_map.get(name, name)
 
+def max_name_code(name_map: dict[str, int]) -> int:
+  return (max(name_map.values()) + 1) if name_map else 0
+
 def name_encoder(name_map: dict[str, int]):
-  missing_name_code = (max(name_map.values()) + 1) if name_map else 0
+  missing_name_code = max_name_code(name_map)
   def encode_name(name: str) -> int:
+    # Do we want to normalize here?
     return name_map.get(normalize_name(name), missing_name_code)
   return encode_name

@@ -157,8 +157,8 @@ def create_name_map(
       for replay in replays]
   name_counts.update(normalized_names)
 
-  for name, _ in name_counts.most_common(max_names):
-    name_map[name] = len(name_map)
+  for i, (name, _) in enumerate(name_counts.most_common(max_names)):
+    name_map[name] = i
 
   # Bake in name groups from nametags.py
   for first, *rest in nametags.name_groups:
@@ -279,19 +279,17 @@ def train(config: Config):
   else:
     name_map = create_name_map(train_replays, config.max_names)
 
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
   # Record name map
   print(name_map)
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
   wandb.save(name_map_path, policy='now')
 
-  missing_name_code = len(name_map)
-  num_codes = missing_name_code + 1
-
-  def encode_name(name: str) -> np.uint8:
-    return np.uint8(name_map.get(name, missing_name_code))
-  batch_encode_name = np.vectorize(encode_name)
+  num_codes = nametags.max_name_code(name_map) + 1
+  encode_name = nametags.name_encoder(name_map)
+  encode_name_uint8 = lambda name: np.uint8(encode_name(name))
+  batch_encode_name = np.vectorize(encode_name_uint8)
 
   # Create data sources for train and test.
   data_config = dict(
