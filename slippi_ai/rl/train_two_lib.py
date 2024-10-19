@@ -16,6 +16,7 @@ from slippi_ai import (
     embed,
     evaluators,
     flag_utils,
+    nametags,
     reward,
     saving,
     tf_utils,
@@ -53,7 +54,7 @@ class RuntimeConfig:
 @dataclasses.dataclass
 class AgentConfig:
   teacher: tp.Optional[str] = None
-  name: str = 'Master Player'
+  name: str = nametags.DEFAULT_NAME
 
   compile: bool = True
   batch_steps: int = 0

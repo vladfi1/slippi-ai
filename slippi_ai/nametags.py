@@ -1,5 +1,6 @@
 """Track known player nametags and connect codes."""
 
+DEFAULT_NAME = 'Master Player'
 
 def name_from_metadata(player_meta: dict) -> str:
   netplay = player_meta['netplay']

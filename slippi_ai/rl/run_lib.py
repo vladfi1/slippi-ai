@@ -13,6 +13,7 @@ from slippi_ai import (
     eval_lib,
     evaluators,
     flag_utils,
+    nametags,
     policies,
     reward,
     saving,
@@ -52,7 +53,7 @@ class ActorConfig:
   async_envs: bool = False
   num_env_steps: int = 0
   inner_batch_size: int = 1
-  gpu_inference: bool = False
+  gpu_inference: bool = True
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -60,7 +61,7 @@ class AgentConfig:
   path: tp.Optional[str] = None
   tag: tp.Optional[str] = None
   compile: bool = True
-  name: str = 'Master Player'
+  name: str = nametags.DEFAULT_NAME
   batch_steps: int = 0
   async_inference: bool = False
 

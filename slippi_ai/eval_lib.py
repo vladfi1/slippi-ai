@@ -11,7 +11,7 @@ import tensorflow as tf
 import melee
 
 from slippi_ai import (
-  embed, policies, dolphin, saving, data, utils, tf_utils
+  embed, policies, dolphin, saving, data, utils, tf_utils, nametags
 )
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
@@ -444,10 +444,10 @@ def get_name_from_rl_state(state: dict) -> Optional[str]:
 
 def build_delayed_agent(
     state: dict,
+    console_delay: int,
     name: Optional[str] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
-    console_delay: int = 0,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   policy = saving.load_policy_from_state(state)
@@ -519,7 +519,7 @@ class Agent:
 
 def build_agent(
     opponent_port: int,
-    name: str = 'Master Player',
+    name: str = nametags.DEFAULT_NAME,
     port: tp.Optional[int] = None,
     controller: tp.Optional[melee.Controller] = None,
     state: Optional[dict] = None,
@@ -547,7 +547,7 @@ AGENT_FLAGS = dict(
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     jit_compile=ff.Boolean(True, 'Jit-compile the sample function.'),
-    name=ff.String('Master Player', 'Name of the agent.'),
+    name=ff.String(nametags.DEFAULT_NAME, 'Name of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
     fake=ff.Boolean(False, 'Use fake agents.'),
