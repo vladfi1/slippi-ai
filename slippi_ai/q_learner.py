@@ -81,8 +81,8 @@ class Learner:
     self.q_policy_imitation_weight = q_policy_imitation_weight
     self.q_policy_expected_return_weight = q_policy_expected_return_weight
 
-    assert q_policy.delay == 0
-    assert sample_policy.delay == 0
+    self.delay = q_policy.delay
+    assert sample_policy.delay == self.delay
 
   def initial_state(self, batch_size: int) -> RecurrentState:
     return dict(
@@ -101,6 +101,23 @@ class Learner:
     self.q_function.initialize_variables()
     self.q_function_optimizer._initialize(self.q_function.trainable_variables)
 
+  def _get_delayed_frames(self, frames: Frames) -> Frames:
+    state_action = frames.state_action
+    # Includes "overlap" frame.
+    unroll_length = state_action.state.stage.shape[0] - self.delay
+
+    return Frames(
+        state_action=embed.StateAction(
+            state=tf.nest.map_structure(
+                lambda t: t[:unroll_length], state_action.state),
+            action=tf.nest.map_structure(
+                lambda t: t[self.delay:], state_action.action),
+            name=state_action.name[:unroll_length],
+        ),
+        # Only use rewards that follow actions.
+        reward=frames.reward[self.delay:],
+    )
+
   def _train_sample_policy(
       self,
       frames: Frames,
@@ -118,6 +135,8 @@ class Learner:
     #     lambda x, y: tf.where(restarting, x, y),
     #     self.sample_policy.initial_state(batch_size),
     #     initial_states)
+
+    frames = self._get_delayed_frames(frames)
 
     action = frames.state_action.action
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
@@ -175,6 +194,8 @@ class Learner:
     #     lambda x, y: tf.where(restarting, x, y),
     #     self.q_function.initial_state(batch_size),
     #     initial_states)
+
+    frames = self._get_delayed_frames(frames)
 
     # Train q function with regression
     with tf.GradientTape() as tape:
@@ -240,6 +261,8 @@ class Learner:
     #     lambda x, y: tf.where(restarting, x, y),
     #     self.q_policy.initial_state(batch_size),
     #     initial_states)
+
+    frames = self._get_delayed_frames(frames)
 
     sample_q_values = q_function_outputs.sample_q_values
     action = frames.state_action.action
