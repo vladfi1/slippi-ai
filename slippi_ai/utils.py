@@ -33,27 +33,38 @@ class Profiler:
     self.cumtime = 0
     self.num_calls = 0
     self.burnin = burnin
+    self.needs_reset = False
 
   def __enter__(self):
+    if self.needs_reset:
+      self.cumtime = 0
+      self.num_calls = 0
+      self.needs_reset = False
+
     self._enter_time = time.perf_counter()
 
   def __exit__(self, type, value, traceback):
-    if self.burnin > 0:
-      self.burnin -= 1
-      return
     self.num_calls += 1
     self.cumtime += time.perf_counter() - self._enter_time
+
+    if self.burnin > 0:
+      self.burnin -= 1
+
+      if self.burnin == 0:
+        self.needs_reset = True
 
   def mean_time(self):
     return self.cumtime / self.num_calls
 
+T = tp.TypeVar('T')
+
 class Periodically:
-  def __init__(self, f, interval):
+  def __init__(self, f: tp.Callable[..., T], interval: float):
     self.f = f
     self.interval = interval
     self.last_call = None
 
-  def __call__(self, *args, **kwargs):
+  def __call__(self, *args, **kwargs) -> tp.Optional[T]:
     now = time.time()
     if self.last_call is None or now - self.last_call > self.interval:
       self.last_call = now
@@ -64,8 +75,6 @@ def periodically(interval: int):
   def wrap(f):
     return Periodically(f, interval)
   return wrap
-
-T = tp.TypeVar('T')
 
 class Tracker(tp.Generic[T]):
 
