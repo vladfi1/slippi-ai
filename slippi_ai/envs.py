@@ -340,8 +340,11 @@ class AsyncEnvMP:
     # The _run_env process might be blocked on pushing data into the Pipe.
     # To unblock it, we pull all the pending data from the pipe.
     while self._process.is_alive():
-      # _run_env pushes None to signal execution has finished.
-      if self._parent_conn.poll(1) and self._parent_conn.recv() is None:
+      try:
+        # _run_env pushes None to signal execution has finished.
+        if self._parent_conn.poll(1) and self._parent_conn.recv() is None:
+          break
+      except EOFError:
         break
 
     # logging.info('Joining process %d', self._process.pid)
