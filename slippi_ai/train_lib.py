@@ -19,6 +19,8 @@ import tree
 
 import wandb
 
+import melee
+
 from slippi_ai import (
     controller_heads,
     nametags,
@@ -413,6 +415,11 @@ def train(config: Config):
           f' step={step_time:.3f}')
     print()
 
+  allowed_characters = data_lib.chars_from_string(
+      config.dataset.allowed_characters)
+  if allowed_characters is None:
+    allowed_characters = list(melee.Character)
+
   def maybe_eval():
     total_steps = step.numpy()
     if total_steps % runtime.eval_every_n != 0:
@@ -424,14 +431,15 @@ def train(config: Config):
     eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
-    to_log = dict(eval=eval_stats)
+    to_log = dict(eval=eval_stats, epoch=epoch_tracker.last)
     train_lib.log_stats(to_log, total_steps)
 
-    # Log losses aggregated by name.
+    # Log losses aggregated by player name.
+    to_log = dict(epoch=epoch_tracker.last)
 
     # Stats have shape [num_eval_steps, unroll_length, batch_size]
     time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['policy']['loss'])
+    loss: np.ndarray = time_mean(eval_stats['policy']['loss'])
     assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
 
     # Metadata only has a batch dimension.
@@ -439,9 +447,8 @@ def train(config: Config):
     meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
 
     # Name of the player we're imitating.
-    name = np.where(
-        meta.info.swap, meta.info.meta.p1.name, meta.info.meta.p0.name)
-    encoded_name = batch_encode_name(name)
+    name = meta.info.main_player.name
+    encoded_name: np.ndarray = batch_encode_name(name)
     assert encoded_name.dtype == np.uint8
     assert encoded_name.shape == loss.shape
 
@@ -451,13 +458,29 @@ def train(config: Config):
       loss_sums_and_counts.append((np.sum(loss * mask), np.sum(mask)))
 
     losses, counts = zip(*loss_sums_and_counts)
-    to_log = dict(
+    to_log['eval_names'] = dict(
         losses=np.array(losses, dtype=np.float32),
         counts=np.array(counts, dtype=np.uint32),
     )
 
-    to_log = dict(eval_names=to_log)
-    train_lib.log_stats(to_log, total_steps, take_mean=False)
+    # Log losses aggregated by character
+    if len(allowed_characters) > 1:
+      characters = meta.info.main_player.character
+      per_character_loss_sums = {}
+      per_character_loss_counts = {}
+      for character in allowed_characters:
+        mask = character.value == characters
+        name = character.name.lower()
+        per_character_loss_sums[name] = np.sum(loss * mask)
+        per_character_loss_counts[name] = np.sum(mask)
+
+      losses, counts = zip(*loss_sums_and_counts)
+      to_log['eval_characters'] = dict(
+          losses=per_character_loss_sums,
+          counts=per_character_loss_counts,
+      )
+
+      train_lib.log_stats(to_log, total_steps, take_mean=False)
 
   start_time = time.time()
 

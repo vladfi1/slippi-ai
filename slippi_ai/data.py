@@ -54,6 +54,10 @@ class ReplayInfo(NamedTuple):
 
   @property
   def main_player(self) -> PlayerMeta:
+    if isinstance(self.swap, np.ndarray):
+      return utils.map_nt(
+          lambda p0, p1: np.where(self.swap, p1, p0),
+          self.meta.p0, self.meta.p1)
     return self.meta.p1 if self.swap else self.meta.p0
 
 class ChunkMeta(NamedTuple):
