@@ -71,6 +71,7 @@ class RLEvaluatorConfig:
   num_env_steps: int = 0
   inner_batch_size: int = 1
   use_fake_envs: bool = False
+  reset_every_n_evals: int = 1
 
   agent: AgentConfig = _field(AgentConfig)
   opponent: tp.Optional[str] = None
@@ -144,6 +145,9 @@ def train(config: Config):
         policies.PolicyConfig, imitation_config['policy'])
     config.network = imitation_config['network']
     config.controller_head = imitation_config['controller_head']
+
+    if config.learner.train_sample_policy:
+      logging.warning('Continuing to train sample policy')
   else:
     config_dict = dataclasses.asdict(config)
     sample_policy = saving.policy_from_config(config_dict)
@@ -475,10 +479,16 @@ def train(config: Config):
 
     rl_evaluator.start()
 
-    def rl_evaluate():
-      total_steps = step.numpy()
+    num_rl_evals = 0
 
-      # TODO: might want to reset the environment here?
+    def rl_evaluate():
+      nonlocal num_rl_evals
+      num_rl_evals += 1  # increment here to skip first reset
+
+      if num_rl_evals % config.rl_evaluator.reset_every_n_evals == 0:
+        logging.info('Resetting Environment')
+        rl_evaluator.reset_env()
+
       rl_evaluator.update_variables({AGENT_PORT: q_policy.variables})
       start_time = time.perf_counter()
       run_time = 0
@@ -510,6 +520,7 @@ def train(config: Config):
       print(f'EVAL: kdpm={kdpm}, minutes={num_minutes:.2f}, fps={fps:.1f}\n')
       to_log['time'] = run_time
 
+      total_steps = step.numpy()
       train_lib.log_stats(to_log, total_steps)
 
     stop_rl_evaluator = rl_evaluator.stop
