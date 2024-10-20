@@ -521,7 +521,7 @@ def train(config: Config):
       to_log['time'] = run_time
 
       total_steps = step.numpy()
-      train_lib.log_stats(to_log, total_steps)
+      train_lib.log_stats(dict(rl_eval=to_log), total_steps)
 
     stop_rl_evaluator = rl_evaluator.stop
   else:
