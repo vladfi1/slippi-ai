@@ -49,6 +49,7 @@ class RuntimeConfig:
 class AgentConfig:
   batch_steps: int = 0
   compile: bool = True
+  jit_compile: bool = True
   name: str = nametags.DEFAULT_NAME
   async_inference: bool = False
 

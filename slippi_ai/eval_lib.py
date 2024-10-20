@@ -117,6 +117,8 @@ class BasicAgent:
       return actions, hidden_state
 
     if run_on_cpu:
+      if jit_compile:
+        raise UserWarning("jit compilation may ignore run_on_cpu")
       sample = tf_utils.run_on_cpu(sample)
       multi_sample = tf_utils.run_on_cpu(multi_sample)
 
