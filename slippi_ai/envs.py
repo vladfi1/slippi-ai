@@ -344,7 +344,7 @@ class AsyncEnvMP:
         # _run_env pushes None to signal execution has finished.
         if self._parent_conn.poll(1) and self._parent_conn.recv() is None:
           break
-      except EOFError:
+      except (ConnectionResetError, EOFError):
         break
 
     # logging.info('Joining process %d', self._process.pid)

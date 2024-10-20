@@ -25,6 +25,8 @@ name_groups = [
   ('Cody', 'iBDW', 'cody', 'IBDW#0', 'IBDW#734', 'JBDW#120'),
   ('S2J', 'Mr Plow', 'John Redcorn', 'SSJ#998'),
   ('Amsa', 'AMSA#0'),
+  ('Phillip AI', 'PHAI#591'),
+  # TODO: Aklo and Hax codes
 ]
 
 name_map = {}
@@ -44,3 +46,14 @@ def name_encoder(name_map: dict[str, int]):
     # Do we want to normalize here?
     return name_map.get(normalize_name(name), missing_name_code)
   return encode_name
+
+
+BANNED_NAMES = {
+    'Mang0',  # Has asked not to be included in AI training
+    'Phillip AI',  # This is us!
+}
+for name in BANNED_NAMES:
+  assert name in name_map.values(), name
+
+def is_banned_name(name: str) -> bool:
+  return normalize_name(name) in BANNED_NAMES
