@@ -46,11 +46,9 @@ class Learner:
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
 
-    if compile:
-      self.compiled_step = tf.function(
-          self.step, jit_compile=jit_compile, autograph=False)
-    else:
-      self.compiled_step = self.step
+    self.compile = compile
+    self._compiled_step = tf.function(
+        self._step, jit_compile=jit_compile, autograph=False)
 
   def initial_state(self, batch_size: int) -> RecurrentState:
     return (
@@ -58,14 +56,14 @@ class Learner:
         self.value_function.initial_state(batch_size),
     )
 
-  def step(
+  def _step(
       self,
-      batch: Batch,
+      bm_frames: Frames,
+      restarting: tf.Tensor,
+      # batch: Batch,
       initial_states: RecurrentState,
       train: bool = True,
   ):
-    bm_frames = batch.frames
-    restarting = batch.needs_reset
     batch_size = restarting.shape[0]
 
     # reset initial_states where necessary
@@ -123,3 +121,17 @@ class Learner:
     #   metrics)
 
     return metrics, final_states
+
+  def step(
+      self,
+      batch: Batch,
+      initial_states: RecurrentState,
+      train: bool = True,
+      compile: Optional[bool] = None,
+  ):
+    compile = compile if compile is not None else self.compile
+    step = self._compiled_step if compile else self._step
+    frames = batch.frames._replace(
+        state_action=self.policy.embed_state_action.from_state(
+            batch.frames.state_action))
+    return step(frames, batch.needs_reset, initial_states, train=train)

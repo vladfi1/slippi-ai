@@ -75,7 +75,6 @@ class Learner:
     self.train_sample_policy = maybe_compile(self._train_sample_policy)
     self.train_q_function = maybe_compile(self._train_q_function)
     self.train_q_policy = maybe_compile(self._train_q_policy)
-    self.compiled_step = self.step  # This isn't entirely accurate.
 
     self.num_samples = num_samples
     self.q_policy_imitation_weight = q_policy_imitation_weight
@@ -355,10 +354,19 @@ class Learner:
       batch: Batch,
       initial_states: RecurrentState,
       train: bool = True,
+      compile: bool = True,
   ) -> tuple[dict, RecurrentState]:
+    del compile  # TODO: use this
+
+    # Here we assume that the sample policy, q function, and q policy all have
+    # the same state and action embeddings.
+    frames = batch.frames._replace(
+        state_action=self.sample_policy.embed_state_action.from_state(
+            batch.frames.state_action))
+
     # switch axes to time-major
     tm_frames: Frames = tf.nest.map_structure(
-        lambda a: np.swapaxes(a, 0, 1), batch.frames)
+        lambda a: np.swapaxes(a, 0, 1), frames)
     # Put on device memory once.
     tm_frames: Frames = tf.nest.map_structure(tf.convert_to_tensor, tm_frames)
 

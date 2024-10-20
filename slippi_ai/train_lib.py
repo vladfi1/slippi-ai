@@ -60,14 +60,9 @@ class TrainManager:
   def step(self, compiled: bool = True) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
-      tf_batch = batch._replace(meta=())  # tf-gpu doesn't want strings
-      # TODO: do from_state here instead of in the DataSource?
-      # self.learner.policy.embed_state_action.from_state(batch.frames.state_action)
-      # batch = sanitize_batch(batch)
     with self.step_profiler:
-      step = self.learner.compiled_step if compiled else self.learner.step
-      stats, self.hidden_state = step(
-          tf_batch, self.hidden_state, **self.step_kwargs)
+      stats, self.hidden_state = self.learner.step(
+          batch, self.hidden_state, compile=compiled, **self.step_kwargs)
     num_frames = batch.frames.state_action.state.stage.size
     self.total_frames += num_frames
     stats.update(
@@ -294,9 +289,6 @@ def train(config: Config):
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
-      # TODO: call from_state in the learner instead
-      embed_game=policy.embed_game,
-      embed_controller=policy.controller_embedding,
       extra_frames=1 + policy.delay,
       name_map=name_map,
       **char_filters,

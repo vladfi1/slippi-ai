@@ -253,9 +253,6 @@ def train(config: Config):
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
-      # TODO: call from_state in the learner instead
-      embed_game=q_policy.embed_game,
-      embed_controller=q_policy.controller_embedding,
       extra_frames=1 + q_policy.delay,
       name_map=name_map,
       **char_filters,

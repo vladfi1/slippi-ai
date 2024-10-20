@@ -17,8 +17,8 @@ import pyarrow.parquet as pq
 
 import melee
 
-from slippi_ai import embed, reward, utils, nametags
-from slippi_ai.types import Controller, Game, game_array_to_nt
+from slippi_ai import reward, utils, nametags
+from slippi_ai.types import Game, game_array_to_nt
 
 from slippi_ai.embed import StateAction
 
@@ -245,8 +245,6 @@ class DataSource:
   def __init__(
       self,
       replays: List[ReplayInfo],
-      embed_controller: embed.Embedding[Controller, Any],
-      embed_game: embed.Embedding[Game, Any],
       compressed: bool = True,
       batch_size: int = 64,
       unroll_length: int = 64,
@@ -263,8 +261,6 @@ class DataSource:
     self.chunk_size = unroll_length + extra_frames
     self.damage_ratio = damage_ratio
     self.compressed = compressed
-    self.embed_controller = embed_controller
-    self.embed_game = embed_game
     self.batch_counter = 0
 
     self.replay_counter = 0
@@ -298,12 +294,8 @@ class DataSource:
   def process_game(self, game: Game, name_code: int) -> Frames:
     # These could be deferred to the learner.
     rewards = reward.compute_rewards(game, damage_ratio=self.damage_ratio)
-    controllers = self.embed_controller.from_state(game.p0.controller)
-
-    states = self.embed_game.from_state(game)
-
     name_codes = np.full([game_len(game)], name_code, np.int32)
-    state_action = StateAction(states, controllers, name_codes)
+    state_action = StateAction(game, game.p0.controller, name_codes)
     return Frames(state_action=state_action, reward=rewards)
 
   def process_batch(self, chunks: list[Chunk]) -> Batch:
