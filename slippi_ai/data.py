@@ -1,4 +1,5 @@
 import atexit
+import collections
 import dataclasses
 import itertools
 import json
@@ -102,18 +103,29 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
   allowed_characters = _charset(chars_from_string(config.allowed_characters))
   allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
 
+  banned_counts = collections.Counter()
+
   for row in meta_rows:
     replay_meta = ReplayMeta.from_metadata(row)
-
-    c0 = replay_meta.p0.character
-    c1 = replay_meta.p1.character
     replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
 
-    if c0 in allowed_characters and c1 in allowed_opponents:
-      replays.append(ReplayInfo(replay_path, False, replay_meta))
+    for swap in [False, True]:
+      players = [replay_meta.p0, replay_meta.p1]
+      if swap:
+        players = reversed(players)
+      p0, p1 = players
 
-    if c0 in allowed_opponents and c1 in allowed_characters:
-      replays.append(ReplayInfo(replay_path, True, replay_meta))
+      if (p0.character not in allowed_characters
+          or p1.character not in allowed_opponents):
+        continue
+
+      if nametags.is_banned_name(p0.name):
+        banned_counts[p0.name] += 1
+        continue
+
+      replays.append(ReplayInfo(replay_path, swap, replay_meta))
+
+  print('Banned names:', banned_counts)
 
   return replays
 
