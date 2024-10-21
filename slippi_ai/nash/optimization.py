@@ -76,11 +76,13 @@ class SlackFeasibilityProblem(ConstrainedOptimizationProblem[SlackVariables[Vari
   def initial_variables(self) -> SlackVariables[Variables]:
     variables = self.problem.initial_variables()
     violations = self.problem.constraint_violations(variables)
+    self.violated = violations >= 0  # [B, M]
     slack = tf.reduce_max(violations, axis=-1) + self.initial_slack
     return SlackVariables(variables=variables, slack=slack)
 
   def constraint_violations(self, variables: SlackVariables[Variables]) -> tf.Tensor:
     slack = tf.expand_dims(variables.slack, axis=-1)
+    slack = tf.where(self.violated, slack, 0)
     return self.problem.constraint_violations(variables.variables) - slack
 
   def equality_violations(self, variables: SlackVariables[Variables]) -> tf.Tensor:

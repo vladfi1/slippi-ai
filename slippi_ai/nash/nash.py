@@ -55,12 +55,6 @@ class NashVariables(tp.NamedTuple):
   p2: tf.Tensor
   p1_nash_value: tf.Tensor
 
-  def normalize(self) -> 'NashVariables':
-    return NashVariables(
-        p1=normalize_probs(self.p1),
-        p2=normalize_probs(self.p2),
-        p1_nash_value=self.p1_nash_value,
-    )
 
 class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
 
