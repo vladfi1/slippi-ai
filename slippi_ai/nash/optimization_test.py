@@ -90,8 +90,7 @@ def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
 def solve_nash(payoff_matrices: np.ndarray, **kwargs):
   print('retracing with shape', payoff_matrices.shape)
   problem = nash.ZeroSumNashProblem(payoff_matrices)
-  variables, stats = optimization.solve_feasibility(problem, optimum=0, **kwargs)
-  return variables.normalize(), stats
+  return optimization.solve_feasibility(problem, optimum=0, **kwargs)
 
 def test_nash(
     payoff_matrices: np.ndarray,
