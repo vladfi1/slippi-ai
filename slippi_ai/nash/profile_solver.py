@@ -25,7 +25,7 @@ solvers = {
     'primal_dual': optimization.solve_optimization_interior_point_primal_dual,
 }
 SOLVER = flags.DEFINE_enum('solver', 'primal_dual', solvers.keys(), 'Optimization solver')
-LINEAR = flags.DEFINE_boolean('linear', False, 'Linearity optimization')
+LINEAR = flags.DEFINE_boolean('linear', True, 'Linearity optimization')
 CHOLESKY = flags.DEFINE_boolean('cholesky', False, 'Cholesky optimization')
 
 def main(_):
