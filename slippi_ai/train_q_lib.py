@@ -318,6 +318,7 @@ def train(config: Config):
     logging.info('loss post-restore: %f', _get_loss(test_manager.step()[0]))
 
   FRAMES_PER_MINUTE = 60 * 60
+  FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step.numpy())
   epoch_tracker = utils.Tracker(0)
@@ -331,8 +332,7 @@ def train(config: Config):
     elapsed_time = log_tracker.update(time.time())
     total_steps = step.numpy()
     steps = step_tracker.update(total_steps)
-    # assume num_frames is constant per step
-    num_frames = steps * train_stats['num_frames']
+    num_frames = steps * FRAMES_PER_STEP
 
     epoch = train_stats['epoch']
     delta_epoch = epoch_tracker.update(epoch)
