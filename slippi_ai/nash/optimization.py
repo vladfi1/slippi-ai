@@ -612,6 +612,10 @@ def solve_optimization_interior_point_primal_dual(
 
     return new_combined, residual_value
 
+  error = tf.convert_to_tensor(error, dtype=dtype)
+  if optimum is not None:
+    optimum = tf.convert_to_tensor(optimum, dtype=dtype)
+
   constraint_weight_decay = tf.convert_to_tensor(
       constraint_weight_decay, dtype=dtype)
   u = tf.convert_to_tensor(initial_constraint_weight, dtype=dtype)
@@ -634,19 +638,16 @@ def solve_optimization_interior_point_primal_dual(
     constraints = problem.constraint_violations(variables)
     eta = - dot(constraints, constraint_vars)
 
-    # print(tf.nest.map_structure(lambda x: x.numpy(), variables))
-    # print(combined.numpy())
+    r_dual, _, r_prim = split(residual_value)
+    r_dual_norm2 = tf.reduce_sum(tf.square(r_dual), axis=-1)
+    r_prim_norm2 = tf.reduce_sum(tf.square(r_prim), axis=-1)
 
     if optimum is not None:
-      objective_value = problem.objective(variables)
-      done = objective_value <= optimum + error
+      done = tf.logical_and(
+          problem.objective(variables) <= optimum + error,
+          r_prim_norm2 <= tf.square(error))
     else:
-      r_dual, _, r_prim = split(residual_value)
-
-      feasible = tf.sqrt(
-          tf.reduce_sum(tf.square(r_dual), axis=-1)
-          + tf.reduce_sum(tf.square(r_prim), axis=-1)) <= error
-
+      feasible = r_dual_norm2 + r_prim_norm2 <= tf.square(error)
       done = tf.logical_and(eta <= error, feasible)
 
     num_steps += tf.cast(tf.logical_not(done), num_steps.dtype)
