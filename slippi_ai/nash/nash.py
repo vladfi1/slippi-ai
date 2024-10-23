@@ -102,6 +102,11 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
         tf.reduce_sum(variables.p2, axis=-1) - 1.0,
     ], axis=-1)
 
+def solve_zero_sum_nash_tf(payoff_matrices: np.ndarray, **kwargs):
+  print('retracing with shape', payoff_matrices.shape)
+  problem = ZeroSumNashProblem(payoff_matrices)
+  return optimization.solve_feasibility(problem, optimum=0, **kwargs)
+
 def solve_zero_sum_nash_pulp(
     payoff_matrix: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, float]:

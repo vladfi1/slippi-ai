@@ -86,11 +86,7 @@ def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
   log_ratio = np.log(safe_p / safe_q)
   return np.sum(p * log_ratio, axis=-1)
 
-@tf.function
-def solve_nash(payoff_matrices: np.ndarray, **kwargs):
-  print('retracing with shape', payoff_matrices.shape)
-  problem = nash.ZeroSumNashProblem(payoff_matrices)
-  return optimization.solve_feasibility(problem, optimum=0, **kwargs)
+solve_nash = tf.function(nash.solve_zero_sum_nash_tf)
 
 def test_nash(
     payoff_matrices: np.ndarray,
