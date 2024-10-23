@@ -15,7 +15,6 @@ def default_network(name):
   return networks.CONSTRUCTORS[name](**networks.DEFAULT_CONFIG[name])
 
 embed_game = embed.make_game_embedding()
-embed_controller = embed.get_controller_embedding(axis_spacing=16)
 
 def default_data_source():
   dataset_config = data.DatasetConfig(
@@ -26,20 +25,14 @@ def default_data_source():
       replays=data.replays_from_meta(dataset_config),
       batch_size=1,
       unroll_length=8,
-      embed_game=embed_game,
-      embed_controller=embed_controller,
       compressed=True,
   )
 
 def get_inputs(data_source: data.DataSource):
   batch = next(data_source)[0]
-
-  # from Learner
-  bm_gamestate = batch.frames
-  tm_gamestate: embed.StateAction = tf.nest.map_structure(
-    learner.swap_axes, bm_gamestate.state_action)
-
-  return data_source.embed_game(tm_gamestate.state)
+  bm_state = embed_game.from_state(batch.frames.state_action.state)
+  tm_state = tf.nest.map_structure(learner.swap_axes, bm_state)
+  return embed_game(tm_state)
 
 class NetworksTest(unittest.TestCase):
 
