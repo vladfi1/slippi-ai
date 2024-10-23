@@ -91,6 +91,7 @@ class DatasetConfig:
   # comma-separated lists of characters, or "all"
   allowed_characters: str = 'all'
   allowed_opponents: str = 'all'
+  swap: bool = True  # yield swapped versions of each replay
   seed: int = 0
 
 
@@ -108,6 +109,24 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
   for row in meta_rows:
     replay_meta = ReplayMeta.from_metadata(row)
     replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
+
+    if not config.swap:
+      is_banned = False
+      for name in [replay_meta.p0.name, replay_meta.p1.name]:
+        if nametags.is_banned_name(name):
+          banned_counts[name] += 1
+          is_banned = True
+
+      if is_banned:
+        continue
+
+      if (replay_meta.p0.character not in allowed_characters
+          or replay_meta.p1.character not in allowed_opponents):
+        continue
+
+      replays.append(ReplayInfo(replay_path, False, replay_meta))
+
+      continue
 
     for swap in [False, True]:
       players = [replay_meta.p0, replay_meta.p1]
@@ -155,7 +174,7 @@ def train_test_split(
       replays.append(ReplayInfo(replay_path, False))
       replays.append(ReplayInfo(replay_path, True))
 
-  # reproducible train/test split
+  # TODO: stable partition
   rng = random.Random(config.seed)
   rng.shuffle(replays)
   num_test = int(config.test_ratio * len(replays))
