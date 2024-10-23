@@ -359,7 +359,18 @@ class AsyncEnvMP:
     try:
       self._parent_conn.send(controllers)
     except BrokenPipeError:
-      # TODO: attempt to retrieve exception from pipe?
+      # Attempt to retrieve exception from pipe.
+      while True:
+        if not self._parent_conn.poll(1):
+          break
+
+        output = self._parent_conn.recv()
+        if isinstance(output, Exception):
+          raise output
+        elif output is None:
+          break
+
+      # Fall back to raising a generic error message.
       raise EnvError("run_env process died")
 
   def recv(self) -> EnvOutput:
