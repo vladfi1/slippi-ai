@@ -24,6 +24,7 @@ class PPOConfig:
   beta: float = 0
   minibatched: bool = False
   # target_kl: float = 1e-3
+  max_mean_actor_kl: float = 1e-4
 
 @dataclasses.dataclass
 class LearnerConfig:
@@ -446,16 +447,26 @@ class Learner:
     else:
       ppo_epoch = self.ppo_epoch_full
 
+    checkpoint_vars = tf.nest.map_structure(tf.identity, self.get_vars())
+
     per_epoch_metrics = []
     for _ in range(num_epochs):
       per_epoch_metrics.append(ppo_epoch(learner_outputs, trajectories, train=True))
-    # Just for logging.
     per_epoch_metrics.append(ppo_epoch(learner_outputs, trajectories, train=False))
+
+    # If the step was too big, revert to the previous parameters.
+    # TODO: if this happens frequently, reduce the learning rate.
+    reverted = False
+    if per_epoch_metrics[-1]['actor_kl']['mean'] > self._config.ppo.max_mean_actor_kl:
+      tf.nest.map_structure(
+          lambda v, c: v.assign(c), self.get_vars(), checkpoint_vars)
+      reverted = True
 
     metrics = dict(
         ppo_step={str(i): d for i, d in enumerate(per_epoch_metrics)},
         post_update=per_epoch_metrics[-1],
         value=value_metrics,
+        reverted=reverted,
     )
 
     return hidden_state, metrics
