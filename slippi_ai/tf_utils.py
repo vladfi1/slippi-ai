@@ -163,3 +163,17 @@ def assert_same_variables(
 
   for x, y in zip(xs, ys):
     assert x is y
+
+def tile(x: tf.Tensor, axis: int, multiple: int) -> tf.Tensor:
+  multiples = [1] * len(x.shape)
+  multiples[axis] = multiple
+  return tf.tile(x, multiples)
+
+def expand_tile(x: tf.Tensor, axis: int, multiple: int) -> tf.Tensor:
+  return tile(tf.expand_dims(x, axis), axis, multiple)
+
+def move_axis(x: tf.Tensor, src: int, dst: int) -> tf.Tensor:
+  perm = list(range(len(x.shape)))
+  perm.pop(src)
+  perm.insert(dst, src)
+  return tf.transpose(x, perm)

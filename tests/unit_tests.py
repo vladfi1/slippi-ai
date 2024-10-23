@@ -67,6 +67,11 @@ class TFUtilsTest(unittest.TestCase):
     with tf_utils.non_trainable_scope():
       assert not tf.Variable(1.0).trainable
 
+  def test_move_axis(self):
+    x = tf.random.uniform([4, 5, 6, 7])
+    y = tf_utils.move_axis(x, 1, 3)
+    self.assertEqual(y.shape, [4, 6, 7, 5])
+
 class UtilsTest(unittest.TestCase):
 
   def test_peekable_queue(self):
