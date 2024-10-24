@@ -36,6 +36,9 @@ jobs:
     - name: Test RL with Fake Data
       run: ./tests/train_rl.sh
 
+    - name: Test RL with Fake Data + Delay
+      run: ./tests/train_rl.sh --config.override_delay=3
+
     - name: Test RL with Fake Data + Restore
       run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo
 
@@ -67,7 +70,7 @@ jobs:
         gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
 
     - name: Test RL with Dolphin
-      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.runtime.use_fake_data=False
+      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False
 
     - name: Test train_two with Dolphin
       run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.runtime.use_fake_data=False
