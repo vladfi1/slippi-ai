@@ -55,6 +55,9 @@ class ExperimentManager:
       build_actor: tp.Callable[[], evaluators.RolloutWorker],
       exploiter_port: int,
       mixture_port: int,
+      step: int,
+      pickle_path: str,
+      teacher_state: dict,
   ):
     self._config = config
     self._learner = learner
@@ -63,6 +66,14 @@ class ExperimentManager:
     self._exploiter_port = exploiter_port
     self._mixture_port = mixture_port
     self._num_ppo_batches = config.learner.ppo.num_batches
+    self._step = step
+    self._pickle_path = pickle_path
+    self._teacher_state = teacher_state
+
+    self._maybe_save = utils.Periodically(self.save, config.runtime.save_interval)
+
+    self._logger = run_lib.Logger()
+    self._maybe_flush = utils.Periodically(self.flush, config.runtime.log_interval)
 
     if 2 * config.runtime.burnin_steps_after_reset > config.runtime.reset_every_n_steps:
       raise UserWarning('Spending more than half of the time in env burnin.')
@@ -70,6 +81,7 @@ class ExperimentManager:
     batch_size = config.actor.num_envs
     self._hidden_state = learner.initial_state(batch_size)
 
+    self.step_profiler = utils.Profiler()
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
@@ -78,10 +90,101 @@ class ExperimentManager:
     with self.reset_profiler:
       self.actor = self._build_actor()
       self.actor.start()
-      self.num_steps_since_reset = 0
-      self._burnin()
+      self.num_steps_since_env_reset = 0
+      self._env_burnin()
 
-  def _burnin(self):
+  def save(self):
+    tf_state = tf.nest.map_structure(lambda t: t.numpy(), self._learner.get_vars())
+
+    # Note: this state is valid as an imitation state.
+    combined_state = dict(
+        state=tf_state,
+        config=self._teacher_state['config'],
+        name_map=self._teacher_state['name_map'],
+        step=self._step,
+        # Use the same key as run_lib for compatibility with eval_lib.
+        rl_config=dataclasses.asdict(self._config),
+    )
+    pickled_state = pickle.dumps(combined_state)
+
+    logging.info('saving state to %s', self._pickle_path)
+    with open(self._pickle_path, 'wb') as f:
+      f.write(pickled_state)
+
+  def flush(self):
+    num_frames = (
+        self._config.actor.num_envs * self._config.actor.rollout_length
+        * self._num_ppo_batches * self._step
+    )
+    metrics = self._logger.flush(
+        step=self._step * self._num_ppo_batches,
+        extras=dict(num_frames=num_frames),
+    )
+
+    if metrics is None:
+      return
+
+    print('\nStep:', self._step)
+
+    timings: dict = metrics['timings']
+    timing_str = ', '.join(
+        ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
+    print(timing_str)
+
+    ko_diff = metrics['ko_diff']
+    print(f'KO_diff_per_minute: {ko_diff:.3f}')
+
+    learner_metrics = metrics['learner']
+    pre_update = learner_metrics['rl']['ppo_step']['0']
+    actor_kl = pre_update['actor_kl']['mean']
+    print(f'actor_kl: {actor_kl:.3g}')
+    teacher_kl = pre_update['teacher_kl']
+    print(f'teacher_kl: {teacher_kl:.3g}')
+    print(f'uev: {learner_metrics["rl"]["value"]["uev"]:.3f}')
+
+  def get_log_data(
+      self,
+      trajectories: list[evaluators.Trajectory],
+      metrics: dict,
+  ):
+    timings = {}
+
+    # TODO: we shouldn't take the mean over these timings
+    step_time = self.step_profiler.mean_time()
+    steps_per_rollout = self._config.actor.num_envs * self._config.actor.rollout_length
+    fps = len(trajectories) * steps_per_rollout / step_time
+    mps = fps / (60 * 60)  # in-game minutes per second
+
+    timings.update(
+        rollout=self.rollout_profiler.mean_time(),
+        learner=self.learner_profiler.mean_time(),
+        reset=self.reset_profiler.mean_time(),
+        total=step_time,
+        fps=fps,
+        mps=mps,
+    )
+    actor_timing = metrics['actor_timing']
+    for key in ['env_pop', 'env_push']:
+      timings[key] = actor_timing[key]
+    for key in ['agent_pop', 'agent_step']:
+      timings[key] = actor_timing[key][self._exploiter_port]
+
+    learner_metrics = metrics['learner']
+
+    # concatenate along the batch dimension
+    states = tf.nest.map_structure(
+        lambda *xs: np.concatenate(xs, axis=1),
+        *[t.states for t in trajectories])
+    kos = reward.compute_rewards(states, damage_ratio=0)
+    kos_per_minute = kos.mean() * (60 * 60)
+
+    return dict(
+        ko_diff=kos_per_minute,
+        timings=timings,
+        learner=learner_metrics,
+    )
+
+  def _env_burnin(self):
     for _ in range(self._config.runtime.burnin_steps_after_reset):
       self.unroll()
 
@@ -89,11 +192,11 @@ class ExperimentManager:
     with self.reset_profiler:
       logging.info('Resetting environments')
       self.actor.reset_env()
-      self.num_steps_since_reset = 0
-      self._burnin()
+      self.num_steps_since_env_reset = 0
+      self._env_burnin()
 
   def _rollout(self):
-    self.num_steps_since_reset += 1
+    self.num_steps_since_env_reset += 1
     return self.actor.rollout(self._unroll_length)
 
   def unroll(self):
@@ -104,29 +207,34 @@ class ExperimentManager:
         initial_state=self._hidden_state,
     )
 
-  def should_reset(self):
+  def should_reset_env(self):
     reset_interval = self._config.runtime.reset_every_n_steps
     if reset_interval is None:
       return False
-    return self.num_steps_since_reset >= reset_interval
+    return self.num_steps_since_env_reset >= reset_interval
+
+  def update_variables(self):
+    variables = {self._exploiter_port: self._learner.exploiter_variables()}
+
+    new_training_phase = self._step % self._config.exploiter_train_steps == 0
+    if new_training_phase:
+      logging.info('Starting new exploiter training phase')
+      variables[self._mixture_port] = self._learner.mixture_variables()
+      if self._config.reset_exploiter:
+        self._learner.reset_exploiter_policy()
+
+    self.actor.update_variables(variables)
+
+    if new_training_phase:
+      self.value_function_burnin()
 
   def step(
       self,
-      step: int,
-      ppo_steps: int = None,
+      ppo_steps: int = None,  # Set to 0 to train only the value function.
+      train_mixture_policy: bool = True,
   ) -> tuple[list[evaluators.Trajectory], dict]:
-    with self.update_profiler:
-      variables = {self._exploiter_port: self._learner.exploiter_variables()}
-      if step % self._config.exploiter_train_steps == 0:
-        logging.info('Starting new exploiter training phase')
-        # TODO: might be good to do value function burnin again, particularly
-        # if we are resetting the exploiter policy.
-        variables[self._mixture_port] = self._learner.mixture_variables()
-        if self._config.reset_exploiter:
-          self._learner.reset_exploiter_policy()
-      self.actor.update_variables(variables)
 
-    if self.should_reset():
+    if self.should_reset_env():
       self.reset_env()
 
     with self.rollout_profiler:
@@ -144,11 +252,56 @@ class ExperimentManager:
 
     with self.learner_profiler:
       self._hidden_state, metrics = self._learner.step(
-          exploiter_trajectories, mixture_trajectories,
-          self._hidden_state, num_ppo_epochs=ppo_steps)
+          exploiter_trajectories, mixture_trajectories, self._hidden_state,
+          num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy)
 
-    return exploiter_trajectories, dict(learner=metrics, actor_timing=actor_timings)
+    stats = dict(learner=metrics, actor_timing=actor_timings)
 
+    return exploiter_trajectories, stats
+
+  def step_and_log(self, **kwargs):
+    with self.step_profiler:
+      trajectories, stats = self.step(**kwargs)
+
+    log_data = self.get_log_data(trajectories, stats)
+    self._logger.record(log_data)
+    self._maybe_flush()
+
+  def optimizer_burnin(self):
+    logging.info('Optimizer burnin')
+    learning_rate = self._learner._config.learning_rate  # TODO: hacky
+    assert isinstance(learning_rate, tf.Variable)
+    learning_rate.assign(0)
+    for _ in range(self._config.optimizer_burnin_steps // self._num_ppo_batches):
+      self.step()  # don't log this data
+    learning_rate.assign(self._config.learner.learning_rate)
+
+  def value_function_burnin(self):
+    logging.info('Value function burnin')
+    # Flush logger before and after because log structure changes.
+    self.flush()
+    for _ in range(self._config.value_burnin_steps // self._num_ppo_batches):
+      self.step_and_log(ppo_steps=0, train_mixture_policy=False)
+      self._step += 1
+    self.flush()
+
+  def run(self):
+    try:
+      if self._step == 0:
+        self.optimizer_burnin()
+
+      logging.info('Main training loop')
+
+      for _ in range(self._config.runtime.max_step):
+        self.update_variables()  # Will do value function burnin on step 0.
+        self.step_and_log()
+
+        self._step += 1
+        self._maybe_save()
+
+      self.save()
+    finally:
+      self.actor.stop()
 
 def run(config: Config):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
@@ -266,30 +419,6 @@ def run(config: Config):
   else:
     learner.restore_from_imitation(teacher_state['state'])
 
-  rl_config_dict = dataclasses.asdict(config)
-
-  def save(step: int):
-    tf_state = tf.nest.map_structure(lambda t: t.numpy(), learner.get_vars())
-
-    # Note: this state is valid as an imitation state.
-    combined_state = dict(
-        state=tf_state,
-        config=teacher_state['config'],
-        name_map=teacher_state['name_map'],
-        step=step,
-        # Use the same key as run_lib for compatibility with eval_lib.
-        rl_config=rl_config_dict,
-    )
-    pickled_state = pickle.dumps(combined_state)
-
-    logging.info('saving state to %s', pickle_path)
-    with open(pickle_path, 'wb') as f:
-      f.write(pickled_state)
-
-    # TODO: save to s3?
-
-  maybe_save = utils.Periodically(save, config.runtime.save_interval)
-
   EXPLOITER_PORT = 1
   MIXTURE_PORT = 2
 
@@ -328,122 +457,15 @@ def run(config: Config):
       # Rewards are overridden in the learner.
   )
 
-  learner_manager = ExperimentManager(
+  experiment_manager = ExperimentManager(
       config=config,
       learner=learner,
       exploiter_port=EXPLOITER_PORT,
       mixture_port=MIXTURE_PORT,
       build_actor=build_actor,
+      step=step,
+      pickle_path=pickle_path,
+      teacher_state=teacher_state,
   )
 
-  step_profiler = utils.Profiler()
-
-  def get_log_data(
-      trajectories: list[evaluators.Trajectory],
-      metrics: dict,
-  ):
-    timings = {}
-
-    # TODO: we shouldn't take the mean over these timings
-    step_time = step_profiler.mean_time()
-    steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-    fps = len(trajectories) * steps_per_rollout / step_time
-    mps = fps / (60 * 60)  # in-game minutes per second
-
-    timings.update(
-        rollout=learner_manager.rollout_profiler.mean_time(),
-        learner=learner_manager.learner_profiler.mean_time(),
-        reset=learner_manager.reset_profiler.mean_time(),
-        total=step_time,
-        fps=fps,
-        mps=mps,
-    )
-    actor_timing = metrics['actor_timing']
-    for key in ['env_pop', 'env_push']:
-      timings[key] = actor_timing[key]
-    for key in ['agent_pop', 'agent_step']:
-      timings[key] = actor_timing[key][EXPLOITER_PORT]
-
-    learner_metrics = metrics['learner']
-
-    # concatenate along the batch dimension
-    states = tf.nest.map_structure(
-        lambda *xs: np.concatenate(xs, axis=1),
-        *[t.states for t in trajectories])
-    kos = reward.compute_rewards(states, damage_ratio=0)
-    kos_per_minute = kos.mean() * (60 * 60)
-
-    return dict(
-        ko_diff=kos_per_minute,
-        timings=timings,
-        learner=learner_metrics,
-    )
-
-  logger = run_lib.Logger()
-
-  def flush(step: int):
-    metrics = logger.flush(step * steps_per_epoch)
-    if metrics is None:
-      return
-
-    print('\nStep:', step)
-
-    timings: dict = metrics['timings']
-    timing_str = ', '.join(
-        ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
-    print(timing_str)
-
-    ko_diff = metrics['ko_diff']
-    print(f'KO_diff_per_minute: {ko_diff:.3f}')
-
-    learner_metrics = metrics['learner']
-    pre_update = learner_metrics['rl']['ppo_step']['0']
-    actor_kl = pre_update['actor_kl']['mean']
-    print(f'actor_kl: {actor_kl:.3g}')
-    teacher_kl = pre_update['teacher_kl']
-    print(f'teacher_kl: {teacher_kl:.3g}')
-    print(f'uev: {learner_metrics["rl"]["value"]["uev"]:.3f}')
-
-  maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
-
-  try:
-    steps_per_epoch = config.learner.ppo.num_batches
-
-    # Optimizer burnin
-    learning_rate.assign(0)
-    for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
-      learner_manager.step(0, ppo_steps=1)
-
-    logging.info('Value function burnin')
-
-    learning_rate.assign(config.learner.learning_rate)
-    for i in range(config.value_burnin_steps // steps_per_epoch):
-      with step_profiler:
-        trajectories, metrics = learner_manager.step(step, ppo_steps=0)
-
-      if i > 0:
-        logger.record(get_log_data(trajectories, metrics))
-        maybe_flush(step)
-
-      step += 1
-
-    # Need flush here because logging structure changes based on ppo_steps.
-    flush(step)
-
-    logging.info('Main training loop')
-
-    for i in range(config.runtime.max_step):
-      with step_profiler:
-        trajectories, metrics = learner_manager.step(step)
-
-      if i > 0:
-        logger.record(get_log_data(trajectories, metrics))
-        maybe_flush(step)
-
-      step += 1
-      maybe_save(step)
-
-    save(step)
-
-  finally:
-    learner_manager.actor.stop()
+  experiment_manager.run()

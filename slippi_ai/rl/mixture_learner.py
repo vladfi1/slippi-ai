@@ -204,6 +204,7 @@ class Learner:
       initial_state: LearnerState,
       num_ppo_epochs: int = None,
       exploiter_weight: tp.Optional[float] = None,
+      train_mixture_policy: bool = True,
   ) -> tp.Tuple[LearnerState, dict]:
     mixture_stats = []
     mixture_hidden_state = initial_state.mixture
@@ -213,7 +214,7 @@ class Learner:
           exploiter_trajectory=exploiter_trajectory,
           mixture_trajectory=mixture_trajectory,
           initial_state=mixture_hidden_state,
-          train_mixture_policy=True,
+          train_mixture_policy=train_mixture_policy,
           exploiter_weight=exploiter_weight,
       )
       mixture_stats.append(stats)
