@@ -37,7 +37,6 @@ class RuntimeConfig:
   max_runtime: tp.Optional[int] = None  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
-  use_fake_data: bool = False
 
   # Periodically reset the environments to deal with memory leaks in dolphin.
   reset_every_n_steps: tp.Optional[int] = None
@@ -54,6 +53,7 @@ class ActorConfig:
   num_env_steps: int = 0
   inner_batch_size: int = 1
   gpu_inference: bool = True
+  use_fake_envs: bool = False
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -116,6 +116,8 @@ class Config:
   # One of these should be set
   teacher: tp.Optional[str] = None
   restore: tp.Optional[str] = None
+
+  override_delay: tp.Optional[int] = None  # for testing
 
   # Take learner steps without changing the parameters to burn-in the
   # optimizer state for RL.
@@ -250,35 +252,6 @@ def dummy_trajectory(
       ] * policy.delay,
   )
 
-class DummyActor:
-
-  def __init__(self, policies: dict[int, policies.Policy], batch_size: int):
-    self.policies = policies
-    self.batch_size = batch_size
-
-  def rollout(self, unroll_length: int) -> tuple[evaluators.Trajectory, dict]:
-    # TODO: actually run the policies just with fake data. This will allow
-    # test scripts to check for things like actor_kl == 0.
-    trajectories = {
-        port: dummy_trajectory(policy, unroll_length, self.batch_size)
-        for port, policy in self.policies.items()
-    }
-    timings = {
-        'env_pop': 0,
-        'env_push': 0,
-        'agent_pop': {port: 0 for port in self.policies},
-        'agent_step': {port: 0 for port in self.policies},
-    }
-    return trajectories, timings
-
-  def update_variables(self, variables):
-    del variables
-
-  def start(self):
-    pass
-
-  def stop(self):
-    pass
 
 def run(config: Config):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
@@ -314,6 +287,9 @@ def run(config: Config):
     teacher_state = saving.load_state_from_disk(config.teacher)
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
+
+  if config.override_delay is not None:
+    teacher_state['config']['policy']['delay'] = config.override_delay
 
   # Make sure we don't train the teacher
   with tf_utils.non_trainable_scope():
@@ -368,42 +344,35 @@ def run(config: Config):
       **config.dolphin.to_kwargs(),
   )
 
-  if config.runtime.use_fake_data:
-    policies = {PORT: policy}
-    if config.opponent.type is OpponentType.SELF:
-      policies[ENEMY_PORT] = policy
+  main_agent_kwargs = dict(
+      state=rl_state,
+      compile=config.agent.compile,
+      name=config.agent.name,
+  )
+  agent_kwargs = {PORT: main_agent_kwargs}
 
-    build_actor = lambda: DummyActor(
-        policies, batch_size=config.actor.num_envs)
-  else:
-    main_agent_kwargs = dict(
-        state=rl_state,
-        compile=config.agent.compile,
-        name=config.agent.name,
+  if config.opponent.type is OpponentType.SELF:
+    agent_kwargs[ENEMY_PORT] = main_agent_kwargs
+  elif config.opponent.type is OpponentType.OTHER:
+    agent_kwargs[ENEMY_PORT] = config.opponent.other.get_kwargs()
+
+  env_kwargs = {}
+  if config.actor.async_envs:
+    env_kwargs.update(
+        num_steps=config.actor.num_env_steps,
+        inner_batch_size=config.actor.inner_batch_size,
     )
-    agent_kwargs = {PORT: main_agent_kwargs}
 
-    if config.opponent.type is OpponentType.SELF:
-      agent_kwargs[ENEMY_PORT] = main_agent_kwargs
-    elif config.opponent.type is OpponentType.OTHER:
-      agent_kwargs[ENEMY_PORT] = config.opponent.other.get_kwargs()
-
-    env_kwargs = {}
-    if config.actor.async_envs:
-      env_kwargs.update(
-          num_steps=config.actor.num_env_steps,
-          inner_batch_size=config.actor.inner_batch_size,
-      )
-
-    build_actor = lambda: evaluators.RolloutWorker(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        env_kwargs=env_kwargs,
-        num_envs=config.actor.num_envs,
-        async_envs=config.actor.async_envs,
-        use_gpu=config.actor.gpu_inference,
-        # Rewards are overridden in the learner.
-    )
+  build_actor = lambda: evaluators.RolloutWorker(
+      agent_kwargs=agent_kwargs,
+      dolphin_kwargs=dolphin_kwargs,
+      env_kwargs=env_kwargs,
+      num_envs=config.actor.num_envs,
+      async_envs=config.actor.async_envs,
+      use_gpu=config.actor.gpu_inference,
+      use_fake_envs=config.actor.use_fake_envs,
+      # Rewards are overridden in the learner.
+  )
 
   learner_manager = LearnerManager(
       config=config,
