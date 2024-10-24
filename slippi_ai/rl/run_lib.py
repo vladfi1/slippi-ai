@@ -228,11 +228,12 @@ class Logger:
     to_log = utils.map_single_structure(train_lib.mean, to_log)
     self.buffer.append(to_log)
 
-  def flush(self, step: int) -> tp.Optional[dict]:
+  def flush(self, step: int, extras: dict = {}) -> tp.Optional[dict]:
     if not self.buffer:
       return None
 
     to_log = tf.nest.map_structure(lambda *xs: np.mean(xs), *self.buffer)
+    to_log.update(extras)
     train_lib.log_stats(to_log, step, take_mean=False)
     self.buffer = []
     return to_log
