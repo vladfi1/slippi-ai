@@ -50,6 +50,12 @@ jobs:
     - name: Test train_two with Fake Data
       run: ./tests/train_two.sh
 
+    - name: Test mixture with Fake Data
+      run: ./tests/train_mixture.sh
+
+    - name: Test mixture with Fake Data + Delay
+      run: ./tests/train_mixture.sh --config.override_delay=3
+
     - name: Download ExiAI Dolphin
       # TODO: specify release version in repo?
       run: |

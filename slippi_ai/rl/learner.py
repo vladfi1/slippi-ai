@@ -11,7 +11,7 @@ from slippi_ai.embed import StateAction
 from slippi_ai.policies import Policy, UnrollOutputs, SampleOutputs
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
-from slippi_ai.controller_heads import ControllerType
+from slippi_ai.controller_heads import ControllerType, SampleOutputs
 from slippi_ai import value_function as vf_lib
 from slippi_ai import tf_utils, utils, reward as reward_lib
 
@@ -52,7 +52,7 @@ class LearnerOutputs(tp.NamedTuple):
   value: vf_lib.ValueOutputs
 
 def get_frames(trajectory: Trajectory) -> Frames:
-  """Gives frames with actions taken."""
+  """Gives frames with actions taken, for value function unroll."""
   state_action = StateAction(
       state=trajectory.states,
       action=trajectory.actions.controller_state,
@@ -60,29 +60,28 @@ def get_frames(trajectory: Trajectory) -> Frames:
   )
   return Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
-def get_delayed_frames(trajectory: Trajectory) -> Frames:
-  """Gives frames with delayed actions, for policy unroll."""
+def get_delayed_sample_outputs(trajectory: Trajectory) -> SampleOutputs:
   delay = len(trajectory.delayed_actions)
 
-  delayed_actions = [
-      sample_output.controller_state
-      for sample_output in trajectory.delayed_actions
-  ]
   # Add time dimension
-  delayed_actions = tf.nest.map_structure(
-      lambda t: tf.expand_dims(t, 0), delayed_actions)
+  delayed_sample_outputs = tf.nest.map_structure(
+      lambda t: tf.expand_dims(t, 0), trajectory.delayed_actions)
 
   # Concatenate everything together.
-  actions = tf.nest.map_structure(
+  sample_outputs = tf.nest.map_structure(
       lambda *ts: tf.concat(ts, 0),
-      trajectory.actions.controller_state, *delayed_actions)
+      trajectory.actions, *delayed_sample_outputs)
   # Chop off the beginning _after_ concatenation to handle the case where
   # trajectory length < delay, which happens during initialization.
-  actions = tf.nest.map_structure(lambda t: t[delay:], actions)
+  sample_outputs = tf.nest.map_structure(lambda t: t[delay:], sample_outputs)
 
+  return sample_outputs
+
+def get_delayed_frames(trajectory: Trajectory) -> Frames:
+  """Gives frames with delayed actions, for policy unroll."""
   state_action = StateAction(
       state=trajectory.states,
-      action=actions,
+      action=get_delayed_sample_outputs(trajectory).controller_state,
       name=trajectory.name,
   )
 
@@ -216,7 +215,7 @@ class Learner:
     remove_first = lambda t: t[delay:]
     remove_last = lambda t: t[:t.shape[0] - delay]
 
-    advantages = outputs.value.advantages[delay:]  # [0, U] -> [D, U]
+    advantages = remove_first(outputs.value.advantages)  # [0, U] -> [D, U]
 
     # Teacher logits are between [D, U+D]; truncate to [D, U]
     # Note: no stop_gradient needed as the teacher's variables aren't trainable.
@@ -469,11 +468,6 @@ class Learner:
     )
 
     return hidden_state, metrics
-
-  @property
-  def trainable_variables(self) -> tp.Sequence[tf.Variable]:
-    return (self._policy.trainable_variables +
-            self._value_function.trainable_variables)
 
   def initialize(self, trajectory: Trajectory):
     """Initialize model and optimizer variables."""

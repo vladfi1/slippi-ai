@@ -86,7 +86,7 @@ class ValueFunction(snt.Module):
     outputs = ValueOutputs(
         returns=value_targets,
         advantages=advantages,
-        loss=value_loss,
+        loss=value_loss,  # TODO: reduce_mean
         metrics=metrics,
     )
 
