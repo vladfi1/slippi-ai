@@ -42,7 +42,6 @@ class RuntimeConfig:
   max_runtime: tp.Optional[int] = None  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
-  use_fake_data: bool = False
 
   # Periodically reset the environments to deal with memory leaks in dolphin.
   reset_every_n_steps: tp.Optional[int] = None
@@ -57,6 +56,7 @@ class AgentConfig:
   name: str = nametags.DEFAULT_NAME
 
   compile: bool = True
+  jit_compile: bool = True
   batch_steps: int = 0
   async_inference: bool = False
 
@@ -225,6 +225,7 @@ class AgentManager:
         state=self.get_state(),
         name=self.agent_config.name,
         compile=self.agent_config.compile,
+        jit_compile=self.agent_config.jit_compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
     )
@@ -365,7 +366,7 @@ def run(config: Config):
       num_envs=config.actor.num_envs,
       async_envs=config.actor.async_envs,
       use_gpu=config.actor.gpu_inference,
-      use_fake_envs=config.runtime.use_fake_data,
+      use_fake_envs=config.actor.use_fake_envs,
       # Rewards are overridden in the learner.
   )
 
