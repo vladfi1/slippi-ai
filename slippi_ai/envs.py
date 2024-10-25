@@ -375,7 +375,11 @@ class AsyncEnvMP:
 
   def recv(self) -> EnvOutput:
     # TODO: ensure that enough data has been pushed?
-    output = self._recv()
+    try:
+      output = self._recv()
+    except ConnectionResetError as e:
+      self.ensure_stopped()
+      raise EnvError("run_env process died")
     if isinstance(output, Exception):
       # Maybe rebuild the environment and start over?
       raise output
