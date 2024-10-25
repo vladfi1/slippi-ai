@@ -41,6 +41,12 @@ class Config(run_lib.Config):
   # exploiter policy as it is likely still good against the new mixture policy.
   reset_exploiter: bool = True
 
+  # Set the exploiter mixture weight to 1 / (num_phases + 1); in principle this
+  # mixes uniformly across all previous exploiter training phases. The
+  # alternative is to use a fixed exploiter weight which is results in an
+  # exponential moving average over the exploiter policies.
+  scale_exploiter_weight: bool = False
+
 DEFAULT_CONFIG = Config()
 DEFAULT_CONFIG.dolphin.console_timeout = 30
 DEFAULT_CONFIG.runtime.expt_root = 'experiments/mixture'
@@ -251,9 +257,16 @@ class ExperimentManager:
           lambda *xs: np.mean(xs), *actor_timings)
 
     with self.learner_profiler:
+      if self._config.scale_exploiter_weight:
+        num_phases = 1 + self._step // self._config.exploiter_train_steps
+        exploiter_weight = 1 / (num_phases + 1)
+      else:
+        exploiter_weight = self._config.learner.exploiter_weight
+
       self._hidden_state, metrics = self._learner.step(
           exploiter_trajectories, mixture_trajectories, self._hidden_state,
-          num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy)
+          num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy,
+          exploiter_weight=exploiter_weight)
 
     stats = dict(learner=metrics, actor_timing=actor_timings)
 
