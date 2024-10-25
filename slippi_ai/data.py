@@ -18,10 +18,8 @@ import pyarrow.parquet as pq
 
 import melee
 
-from slippi_ai import reward, utils, nametags
-from slippi_ai.types import Game, game_array_to_nt
-
-from slippi_ai.embed import StateAction
+from slippi_ai import reward, utils, nametags, paths
+from slippi_ai.types import Game, game_array_to_nt, Controller
 
 class PlayerMeta(NamedTuple):
   character: int
@@ -65,6 +63,21 @@ class ChunkMeta(NamedTuple):
 class Chunk(NamedTuple):
   states: Game
   meta: ChunkMeta
+
+# Action = TypeVar('Action')
+Action = Controller
+
+class StateAction(NamedTuple):
+  state: Game
+  # The action could actually be an "encoded" action type,
+  # which might discretize certain components of the controller
+  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
+  # generic. We could use a dataclass instead, but TF can't trace them.
+  # Note that this is the action taken on the _previous_ frame.
+  action: Action
+
+  # Encoded name
+  name: int
 
 class Frames(NamedTuple):
   state_action: StateAction
@@ -387,3 +400,14 @@ def make_source(
     **kwargs):
   constructor = DataSourceMP if in_parallel else DataSource
   return constructor(**kwargs)
+
+def toy_data_source(**kwargs) -> DataSource:
+  dataset_config = DatasetConfig(
+      data_dir=paths.TOY_DATA_DIR,
+      meta_path=paths.TOY_META_PATH,
+  )
+  return DataSource(
+      replays=replays_from_meta(dataset_config),
+      compressed=True,
+      **kwargs,
+  )

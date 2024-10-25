@@ -17,16 +17,7 @@ def default_network(name):
 embed_game = embed.make_game_embedding()
 
 def default_data_source():
-  dataset_config = data.DatasetConfig(
-      data_dir=paths.TOY_DATA_DIR,
-      meta_path=paths.TOY_META_PATH,
-  )
-  return data.DataSource(
-      replays=data.replays_from_meta(dataset_config),
-      batch_size=1,
-      unroll_length=8,
-      compressed=True,
-  )
+  return data.toy_data_source(batch_size=1, unroll_length=8)
 
 def get_inputs(data_source: data.DataSource):
   batch = next(data_source)[0]

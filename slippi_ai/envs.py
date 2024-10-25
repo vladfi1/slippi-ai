@@ -16,6 +16,7 @@ from melee import GameState, Stage
 from slippi_ai import dolphin, utils
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
+from slippi_ai import data
 from slippi_db.parse_libmelee import get_game
 
 Port = int
@@ -503,6 +504,7 @@ class AsyncBatchedEnvironmentMP:
       self._receive()
     return self._state_queue[-1]
 
+
 reified_game = utils.reify_tuple_type(Game)
 
 class FakeBatchedEnvironment:
@@ -532,6 +534,63 @@ class FakeBatchedEnvironment:
     # TODO: increment frame counter in the gamestates
     del controllers
     self._output_queue.append(self._dummy_output)
+
+  def step(self, controllers: Controllers):
+    self.push(controllers)
+    return self.pop()
+
+  def multi_step(
+    self,
+    controllers: list[Controllers],
+  ) -> list[EnvOutput]:
+    return [self.step(c) for c in controllers]
+
+  def peek(self) -> EnvOutput:
+    return self._output_queue[0]
+
+class ReplayBatchedEnvironment:
+  def __init__(
+      self,
+      num_envs: int,
+      players: tp.Collection[int],
+  ):
+    self.batch_size = num_envs
+    self.data_source = data.toy_data_source(
+        batch_size=1, unroll_length=1, extra_frames=0)
+    self.players = players
+    self.num_steps = 1
+    self._output_queue = collections.deque()
+    self._push_output()
+
+  def _push_output(self):
+    batch, _ = next(self.data_source)
+
+    gamestates = {}
+    for i, p in enumerate(self.players):
+      game = batch.frames.state_action.state
+      swap = i % 2 == 1
+      if swap:
+        game = data.swap_players(game)
+      gamestates[p] = game
+
+    output = EnvOutput(
+        gamestates=gamestates,  # [B=1, T=1]
+        needs_reset=batch.needs_reset,  # [B=1]
+    )
+    output = utils.map_nt(np.squeeze, output)  # []
+    output = utils.map_nt(lambda x: np.tile(x, [self.batch_size]), output)
+
+    self._output_queue.append(output)
+
+  def stop(self):
+    pass
+
+  def pop(self) -> EnvOutput:
+    return self._output_queue.popleft()
+
+  def push(self, controllers: Controllers):
+    del controllers
+    self._push_output()
 
   def step(self, controllers: Controllers):
     self.push(controllers)

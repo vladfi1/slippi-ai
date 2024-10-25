@@ -18,6 +18,7 @@ import tensorflow_probability as tfp
 from slippi_ai import utils
 from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick
 from slippi_ai.controller_lib import LEGAL_BUTTONS
+from slippi_ai.data import Action, StateAction
 
 float_type = tf.float32
 In = TypeVar('In')
@@ -522,22 +523,6 @@ class ControllerConfig:
 class EmbedConfig:
   player: PlayerConfig = utils.field(PlayerConfig)
   controller: ControllerConfig = utils.field(ControllerConfig)
-
-# Action = TypeVar('Action')
-Action = Controller
-
-# @dataclass
-class StateAction(NamedTuple):
-  state: Game
-  # The action could actually be an "encoded" action type,
-  # which might discretize certain components of the controller
-  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
-  # generic. We could use a dataclass instead, but TF can't trace them.
-  # Note that this is the action taken on the _previous_ frame.
-  action: Action
-
-  # Encoded name
-  name: int
 
 NAME_DTYPE = np.int32
 

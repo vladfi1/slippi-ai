@@ -126,7 +126,7 @@ class RolloutWorker:
 
   def _build_env(self):
     if self._use_fake_envs:
-      self._env = env_lib.FakeBatchedEnvironment(
+      self._env = env_lib.ReplayBatchedEnvironment(
           self._num_envs, players=list(self._agents))
     else:
       if not self._async_envs:
