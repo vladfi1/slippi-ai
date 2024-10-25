@@ -295,15 +295,15 @@ class ExperimentManager:
 
     with self.rollout_profiler:
       trajectories = {port: [] for port in PORTS}
-      actor_timings = []
+      actor_metrics = []
       for _ in range(self._num_ppo_batches):
         trajectory, timings = self._rollout()
         for port in PORTS:
           trajectories[port].append(trajectory[port])
-        actor_timings.append(timings)
+        actor_metrics.append(timings)
 
-      actor_timings = tf.nest.map_structure(
-          lambda *xs: np.mean(xs), *actor_timings)
+      actor_metrics = tf.nest.map_structure(
+          lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
       metrics = {}
@@ -312,7 +312,7 @@ class ExperimentManager:
         self._hidden_states[port], metrics[port] = learner.ppo(
             trajectories[port], self._hidden_states[port], num_epochs=ppo_steps)
 
-    return trajectories, dict(learner=metrics, actor_timing=actor_timings)
+    return trajectories, dict(learner=metrics, actor=actor_metrics)
 
 def run(config: Config):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
@@ -399,7 +399,7 @@ def run(config: Config):
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor_timing']
+    actor_timing = metrics['actor']['timing']
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:

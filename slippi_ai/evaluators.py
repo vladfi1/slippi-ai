@@ -271,9 +271,14 @@ class RolloutWorker:
         },
     }
 
+    metrics = dict(
+        timing=timings,
+        unexpected_reset=is_resetting[1:],
+    )
+
     # self._env_push_profiler.dump_stats('env_push.prof')
 
-    return trajectories, timings
+    return trajectories, metrics
 
   def update_variables(
       self, updates: tp.Mapping[Port, Params],

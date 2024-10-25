@@ -202,20 +202,20 @@ class LearnerManager:
 
     with self.rollout_profiler:
       trajectories = []
-      actor_timings = []
+      actor_metrics = []
       for _ in range(self._num_ppo_batches):
         trajectory, timings = self._rollout()
         trajectories.append(trajectory)
-        actor_timings.append(timings)
+        actor_metrics.append(timings)
 
-      actor_timings = tf.nest.map_structure(
-          lambda *xs: np.mean(xs), *actor_timings)
+      actor_metrics = tf.nest.map_structure(
+          lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
       self._hidden_state, metrics = self._learner.ppo(
           trajectories, self._hidden_state, num_epochs=ppo_steps)
 
-    return trajectories, dict(learner=metrics, actor_timing=actor_timings)
+    return trajectories, dict(learner=metrics, actor=actor_metrics)
 
 class Logger:
 
@@ -404,7 +404,7 @@ def run(config: Config):
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor_timing']
+    actor_timing = metrics['actor']['timing']
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
