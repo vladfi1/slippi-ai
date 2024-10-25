@@ -1,6 +1,7 @@
 import dataclasses
 from typing import List, Optional
 
+import numpy as np
 import sonnet as snt
 import tensorflow as tf
 
@@ -59,19 +60,10 @@ class Learner:
   def _step(
       self,
       bm_frames: Frames,
-      restarting: tf.Tensor,
       # batch: Batch,
       initial_states: RecurrentState,
       train: bool = True,
   ):
-    batch_size = restarting.shape[0]
-
-    # reset initial_states where necessary
-    restarting = tf.expand_dims(restarting, -1)
-    initial_states = tf.nest.map_structure(
-        lambda x, y: tf.where(restarting, x, y),
-        self.initial_state(batch_size),
-        initial_states)
     policy_initial_states, value_initial_states = initial_states
     del initial_states
 
@@ -131,7 +123,12 @@ class Learner:
   ):
     compile = compile if compile is not None else self.compile
     step = self._compiled_step if compile else self._step
+
     frames = batch.frames._replace(
         state_action=self.policy.embed_state_action.from_state(
             batch.frames.state_action))
-    return step(frames, batch.needs_reset, initial_states, train=train)
+
+    if np.any(frames.is_resetting[:, 1:]):
+      raise ValueError("Unexpected mid-episode reset.")
+
+    return step(frames, initial_states, train=train)

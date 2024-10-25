@@ -378,7 +378,7 @@ class Learner:
     # train_q_function. Hopefully we don't take much of a performance hit
     # from this? (Compiling this also results in the same OOM.)
     initial_states = self.reset_initial_states(
-        initial_states, batch.needs_reset)
+        initial_states, batch.is_resetting)
 
     # TODO: take into account delay
     final_states = initial_states  # GC initial states as they are replaced

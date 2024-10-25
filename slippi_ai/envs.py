@@ -575,7 +575,7 @@ class ReplayBatchedEnvironment:
 
     output = EnvOutput(
         gamestates=gamestates,  # [B=1, T=1]
-        needs_reset=batch.needs_reset,  # [B=1]
+        needs_reset=batch.frames.is_resetting,  # [B=1, T=1]
     )
     output = utils.map_nt(np.squeeze, output)  # []
     output = utils.map_nt(lambda x: np.tile(x, [self.batch_size]), output)

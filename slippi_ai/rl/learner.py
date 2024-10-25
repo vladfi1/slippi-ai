@@ -51,15 +51,16 @@ class LearnerOutputs(tp.NamedTuple):
   value: vf_lib.ValueOutputs
 
 def get_frames(trajectory: Trajectory) -> Frames:
+  """Gives frames with actions taken."""
   state_action = StateAction(
       state=trajectory.states,
       action=trajectory.actions.controller_state,
       name=trajectory.name,
   )
-  return Frames(state_action, trajectory.rewards)
+  return Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
 def get_delayed_frames(trajectory: Trajectory) -> Frames:
-  """Delay frames to prepare trajectory for policy unroll."""
+  """Gives frames with delayed actions, for policy unroll."""
   delay = len(trajectory.delayed_actions)
 
   delayed_actions = [
@@ -83,9 +84,10 @@ def get_delayed_frames(trajectory: Trajectory) -> Frames:
       action=actions,
       name=trajectory.name,
   )
+
   # Trajectory.rewards is technically wrong, but it's fine because
   # we don't use the policy's builtin value function anyways.
-  return Frames(state_action, trajectory.rewards)
+  return Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
 def combine_grads(x: tp.Optional[tf.Tensor], y: tp.Optional[tf.Tensor]):
   if x is None or y is None:
@@ -172,14 +174,6 @@ class Learner:
   ) -> tp.Tuple[LearnerOutputs, LearnerState]:
     assert len(trajectory.delayed_actions) == self._policy.delay
 
-    # Currently, resetting states can only occur on the first frame, which
-    # conveniently means we don't have to deal with resets inside `unroll`.
-    is_resetting = trajectory.is_resetting[0]  # [B]
-    batch_size = is_resetting.shape[0]
-    initial_state = tf.nest.map_structure(
-        lambda x, y: tf_utils.where(is_resetting, x, y),
-        self.initial_state(batch_size), initial_state)
-
     teacher_outputs = self._teacher.unroll(
         # TODO: use the teacher's name instead?
         frames=get_delayed_frames(trajectory),
@@ -243,6 +237,7 @@ class Learner:
                 remove_first, trajectory.actions.controller_state),
             name=remove_last(trajectory.name),
         ),
+        is_resetting=remove_last(trajectory.is_resetting),
         reward=remove_first(trajectory.rewards),
     )
 

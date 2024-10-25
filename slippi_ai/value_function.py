@@ -47,13 +47,15 @@ class ValueFunction(snt.Module):
 
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
-    outputs, final_state = self.network.unroll(inputs, initial_state)
+    outputs, final_state = self.network.unroll(
+        inputs, frames.is_resetting[:-1], initial_state)
 
     # Includes "overlap" frame.
     # unroll_length = state_action.state.stage.shape[0] - delay
 
     values = tf.squeeze(self.value_head(outputs), -1)
-    last_output, _ = self.network.step(last_input, final_state)
+    last_output, _ = self.network.step_with_reset(
+        last_input, frames.is_resetting[-1], final_state)
     last_value = tf.squeeze(self.value_head(last_output), -1)
     discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
 

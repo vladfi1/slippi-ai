@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 
 from slippi_ai import (
-    learner, networks, paths, data, tf_utils, embed
+    learner, networks, data, tf_utils, embed
 )
 
 def assert_tensors_close(t1, t2):
@@ -22,8 +22,8 @@ def default_data_source():
 def get_inputs(data_source: data.DataSource):
   batch = next(data_source)[0]
   bm_state = embed_game.from_state(batch.frames.state_action.state)
-  tm_state = tf.nest.map_structure(learner.swap_axes, bm_state)
-  return embed_game(tm_state)
+  inputs = embed_game(bm_state), batch.frames.is_resetting
+  return tf.nest.map_structure(learner.swap_axes, inputs)
 
 class NetworksTest(unittest.TestCase):
 
@@ -34,10 +34,12 @@ class NetworksTest(unittest.TestCase):
     data_source = default_data_source()
 
     for _ in range(5):
-      inputs = get_inputs(data_source)
+      inputs, reset = get_inputs(data_source)
 
-      unroll_outputs, unroll_final_state = network.unroll(inputs, initial_state)
-      step_outputs, step_final_state = tf_utils.dynamic_rnn(network.step, inputs, initial_state)
+      unroll_outputs, unroll_final_state = network.unroll(
+          inputs, reset, initial_state)
+      step_outputs, step_final_state = tf_utils.dynamic_rnn(
+          network._step_with_reset, (inputs, reset), initial_state)
 
       assert_tensors_close(unroll_outputs, step_outputs)
       tf.nest.map_structure(assert_tensors_close, unroll_final_state, step_final_state)

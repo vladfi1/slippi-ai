@@ -65,17 +65,22 @@ class Policy(snt.Module):
     return self.controller_head.controller_embedding()
 
   def initialize_variables(self):
-    dummy_state_action = self.embed_state_action.dummy([2 + self.delay, 1])
-    dummy_reward = tf.zeros([1 + self.delay, 1], tf.float32)
-    dummy_frames = data.Frames(dummy_state_action, dummy_reward)
-    initial_state = self.initial_state(1)
+    T = 2 + self.delay
+    B = 1
+    dummy_state_action = self.embed_state_action.dummy([T, B])
+    dummy_reward = tf.zeros([T-1, B], tf.float32)
+    is_resetting = tf.fill([T, B], False)
+    dummy_frames = data.Frames(dummy_state_action, is_resetting, dummy_reward)
+    initial_state = self.initial_state(B)
 
     # imitation_loss also initializes value function
     self.imitation_loss(dummy_frames, initial_state)
 
-  def _value_outputs(self, outputs, last_input, final_state, rewards, discount):
+  def _value_outputs(
+      self, outputs, last_input, is_resetting, final_state, rewards, discount):
     values = tf.squeeze(self.value_head(outputs), -1)
-    last_output, _ = self.network.step(last_input, final_state)
+    last_output, _ = self.network.step_with_reset(
+        last_input, is_resetting, final_state)
     last_value = tf.squeeze(self.value_head(last_output), -1)
     discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
     value_targets = discounted_returns(
@@ -122,7 +127,8 @@ class Policy(snt.Module):
     """
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
-    outputs, final_state = self.network.unroll(inputs, initial_state)
+    outputs, final_state = self.network.unroll(
+        inputs, frames.is_resetting[:-1], initial_state)
 
     # Predict next action.
     action = frames.state_action.action
@@ -143,7 +149,8 @@ class Policy(snt.Module):
     )
 
     value_outputs = self._value_outputs(
-        outputs, last_input, final_state, frames.reward, discount)
+        outputs, last_input, frames.is_resetting[-1], final_state,
+        frames.reward, discount)
     metrics['value'] = value_outputs.metrics
 
     return UnrollOutputs(
@@ -180,6 +187,7 @@ class Policy(snt.Module):
                 lambda t: t[self.delay:], state_action.action),
             name=state_action.name[self.delay:],
         ),
+        is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.
         reward=frames.reward[self.delay:],
     )
@@ -210,7 +218,8 @@ class Policy(snt.Module):
   ):
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
-    outputs, final_state = self.network.unroll(inputs, initial_state)
+    outputs, final_state = self.network.unroll(
+        inputs, frames.is_resetting[:-1], initial_state)
 
     # Predict next action.
     action = frames.state_action.action
@@ -231,7 +240,8 @@ class Policy(snt.Module):
 
     # We're only really doing this to initialize the value_head...
     value_outputs = self._value_outputs(
-        outputs, last_input, final_state, frames.reward, discount)
+        outputs, last_input, frames.is_resetting[-1], final_state,
+        frames.reward, discount)
     metrics['value'] = value_outputs.metrics
 
     return UnrollWithOutputs(
@@ -246,9 +256,17 @@ class Policy(snt.Module):
       self,
       state_action: embed.StateAction,
       initial_state: RecurrentState,
+      is_resetting: tp.Optional[tf.Tensor] = None,
       **kwargs,
   ) -> tp.Tuple[SampleOutputs, RecurrentState]:
     input = self.embed_state_action(state_action)
+
+    if is_resetting is None:
+      batch_size = input.shape[0]
+      is_resetting = tf.fill([batch_size], False)
+    else:
+      raise NotImplementedError('is_resetting not yet supported')
+
     output, final_state = self.network.step(input, initial_state)
 
     prev_action = state_action.action

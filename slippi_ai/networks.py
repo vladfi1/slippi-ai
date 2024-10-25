@@ -1,3 +1,4 @@
+import abc
 from typing import Any, Optional, Tuple
 
 import tree
@@ -10,10 +11,11 @@ from slippi_ai import tf_utils
 RecurrentState = tree.Structure[tf.Tensor]
 Inputs = tf.Tensor
 
-class Network(snt.Module):
+class Network(snt.Module, abc.ABC):
 
+  @abc.abstractmethod
   def initial_state(self, batch_size: int) -> RecurrentState:
-    raise NotImplementedError()
+    '''Returns the initial state for a batch of size batch_size.'''
 
   def step(
       self,
@@ -31,38 +33,65 @@ class Network(snt.Module):
     '''
     raise NotImplementedError()
 
+  def step_with_reset(
+      self,
+      inputs: Inputs,
+      reset: tf.Tensor,
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    batch_size = reset.shape[0]
+    initial_state = tf.nest.map_structure(
+        lambda x, y: tf_utils.where(reset, x, y),
+        self.initial_state(batch_size), prev_state)
+    return self.step(inputs, initial_state)
+
+  def _step_with_reset(
+      self,
+      inputs: tuple[Inputs, tf.Tensor],
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    """Used for unroll/scan."""
+    inputs, reset = inputs
+    return self.step_with_reset(inputs, reset, prev_state)
+
   def unroll(
       self,
       inputs: Inputs,
+      reset: tf.Tensor,
       initial_state: RecurrentState,
   ) -> Tuple[tf.Tensor, RecurrentState]:
     '''
     Arguments:
       inputs: (time, batch, x_dim)
+      reset: (time, batch)
       initial_state: (batch, state_dim)
 
     Returns a tuple (outputs, final_state)
       outputs: (time, batch, out_dim)
       final_state: (batch, state_dim)
     '''
-    return tf_utils.dynamic_rnn(self.step, inputs, initial_state)
+    return tf_utils.dynamic_rnn(
+        self._step_with_reset, (inputs, reset), initial_state)
 
   def scan(
       self,
       inputs: Inputs,
+      reset: tf.Tensor,
       initial_state: RecurrentState,
   ) -> Tuple[tf.Tensor, RecurrentState]:
     '''Like unroll but also returns intermediate hidden states.
 
     Arguments:
       inputs: (time, batch, x_dim)
+      reset: (time, batch)
       initial_state: (batch, state_dim)
 
     Returns a tuple (outputs, hidden_states)
       outputs: (time, batch, out_dim)
       hidden_states: (time, batch, state_dim)
     '''
-    return tf_utils.scan_rnn(self.step, inputs, initial_state)
+    return tf_utils.scan_rnn(
+        self._step_with_reset, (inputs, reset), initial_state)
 
 
 class MLP(Network):
@@ -86,8 +115,8 @@ class MLP(Network):
     del prev_state
     return self._mlp(inputs), ()
 
-  def unroll(self, inputs, initial_state):
-    del initial_state
+  def unroll(self, inputs, reset, initial_state):
+    del reset, initial_state
     return self._mlp(inputs), ()
 
 class FrameStackingMLP(Network):
@@ -196,91 +225,6 @@ def resnet(num_blocks, residual_size, hidden_size=None, with_encoder=True):
     layers.append(ResBlock(residual_size, hidden_size))
   return snt.Sequential(layers)
 
-class LSTM(Network):
-  CONFIG=dict(
-      hidden_size=128,
-      num_res_blocks=0,
-  )
-
-  def __init__(self, hidden_size, num_res_blocks, name='LSTM'):
-    super().__init__(name=name)
-    self._hidden_size = hidden_size
-    self._lstm = snt.LSTM(hidden_size)
-
-    # use a resnet before the LSTM
-    self._resnet = resnet(num_res_blocks, hidden_size)
-
-  def initial_state(self, batch_size):
-    return self._lstm.initial_state(batch_size)
-
-  def step(self, inputs, prev_state):
-    inputs = self._resnet(inputs)
-    return self._lstm(inputs, prev_state)
-
-  def unroll(self, inputs, prev_state):
-    inputs = self._resnet(inputs)
-    return tf_utils.dynamic_rnn(self._lstm, inputs, prev_state)
-
-
-class ResLSTMBlock(snt.RNNCore):
-
-  def __init__(self, residual_size, hidden_size=None, name='ResLSTMBlock'):
-    super().__init__(name=name)
-    self.layernorm = LayerNorm()
-    self.lstm = snt.LSTM(hidden_size or residual_size)
-    # initialize the resnet as the identity function
-    self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
-
-  def initial_state(self, batch_size):
-    return self.lstm.initial_state(batch_size)
-
-  def __call__(self, residual, prev_state):
-    x = residual
-    x = self.layernorm(x)
-    x, next_state = self.lstm(x, prev_state)
-    x = self.decoder(x)
-    return residual + x, next_state
-
-class DeepResLSTM(Network):
-  CONFIG=dict(
-      hidden_size=128,
-      num_layers=1,
-  )
-
-  def __init__(self, hidden_size, num_layers, name='DeepResLSTM'):
-    super().__init__(name=name)
-    self.encoder = snt.Linear(hidden_size)
-    self.deep_rnn = snt.DeepRNN(
-        [ResLSTMBlock(hidden_size) for _ in range(num_layers)])
-
-  def initial_state(self, batch_size):
-    return self.deep_rnn.initial_state(batch_size)
-
-  def step(self, inputs, prev_state):
-    inputs = self.encoder(inputs)
-    return self.deep_rnn(inputs, prev_state)
-
-  def unroll(self, inputs, prev_state):
-    inputs = self.encoder(inputs)
-    return tf_utils.dynamic_rnn(self.deep_rnn, inputs, prev_state)
-
-class GRU(Network):
-  CONFIG=dict(hidden_size=128)
-
-  def __init__(self, hidden_size, name='GRU'):
-    super().__init__(name=name)
-    self._hidden_size = hidden_size
-    self._gru = snt.GRU(hidden_size)
-
-  def initial_state(self, batch_size):
-    return self._gru.initial_state(batch_size)
-
-  def step(self, inputs, prev_state):
-    return self._gru(inputs, prev_state)
-
-  def unroll(self, inputs, prev_state):
-    return tf_utils.dynamic_rnn(self._gru, inputs, prev_state)
-
 class RecurrentWrapper(Network):
   """Wraps an RNNCore as a Network."""
 
@@ -312,8 +256,12 @@ class FFWWrapper(Network):
     del prev_state
     return self._mlp(inputs), ()
 
-  def unroll(self, inputs, prev_state):
-    del prev_state
+  def unroll(self, inputs, reset, prev_state):
+    del reset, prev_state
+    return self._mlp(inputs), ()
+
+  def scan(self, inputs, reset, prev_state):
+    del reset, prev_state
     return self._mlp(inputs), ()
 
 class Sequential(Network):
@@ -332,17 +280,17 @@ class Sequential(Network):
       next_states.append(next_state)
     return inputs, next_states
 
-  def unroll(self, inputs, prev_state):
+  def unroll(self, inputs, reset, prev_state):
     final_states = []
     for layer, state in zip(self._layers, prev_state):
-      inputs, final_state = layer.unroll(inputs, state)
+      inputs, final_state = layer.unroll(inputs, reset, state)
       final_states.append(final_state)
     return inputs, final_states
 
-  def scan(self, inputs, prev_state):
+  def scan(self, inputs, reset, prev_state):
     hidden_states = []
     for layer, state in zip(self._layers, prev_state):
-      inputs, hidden_state = layer.scan(inputs, state)
+      inputs, hidden_state = layer.scan(inputs, reset, state)
       hidden_states.append(hidden_state)
     return inputs, hidden_states
 
@@ -359,15 +307,67 @@ class ResidualWrapper(Network):
     outputs, next_state = self._net.step(inputs, prev_state)
     return inputs + outputs, next_state
 
-  def unroll(self, inputs, prev_state):
-    outputs, final_state = self._net.unroll(inputs, prev_state)
+  def unroll(self, inputs, reset, prev_state):
+    outputs, final_state = self._net.unroll(inputs, reset, prev_state)
     return inputs + outputs, final_state
 
-  def scan(self, inputs, prev_state):
-    outputs, hidden_state = self._net.scan(inputs, prev_state)
+  def scan(self, inputs, reset, prev_state):
+    outputs, hidden_state = self._net.scan(inputs, reset, prev_state)
     return inputs + outputs, hidden_state
 
-class TransformerLike(Network):
+class GRU(RecurrentWrapper):
+  CONFIG=dict(hidden_size=128)
+
+  def __init__(self, hidden_size, name='GRU'):
+    super().__init__(snt.GRU(hidden_size), name=name)
+
+class LSTM(Sequential):
+  CONFIG=dict(
+      hidden_size=128,
+      num_res_blocks=0,
+  )
+
+  def __init__(self, hidden_size, num_res_blocks, name='LSTM'):
+    super().__init__([
+        FFWWrapper(resnet(num_res_blocks, hidden_size)),
+        RecurrentWrapper(snt.LSTM(hidden_size)),
+    ], name=name)
+
+
+class ResLSTMBlock(snt.RNNCore):
+
+  def __init__(self, residual_size, hidden_size=None, name='ResLSTMBlock'):
+    super().__init__(name=name)
+    self.layernorm = LayerNorm()
+    self.lstm = snt.LSTM(hidden_size or residual_size)
+    # initialize the resnet as the identity function
+    self.decoder = snt.Linear(residual_size, w_init=tf.zeros_initializer())
+
+  def initial_state(self, batch_size):
+    return self.lstm.initial_state(batch_size)
+
+  def __call__(self, residual, prev_state):
+    x = residual
+    x = self.layernorm(x)
+    x, next_state = self.lstm(x, prev_state)
+    x = self.decoder(x)
+    return residual + x, next_state
+
+class DeepResLSTM(Sequential):
+  CONFIG=dict(
+      hidden_size=128,
+      num_layers=1,
+  )
+
+  def __init__(self, hidden_size, num_layers, name='DeepResLSTM'):
+    layers = [FFWWrapper(snt.Linear(hidden_size, name='encoder'))]
+
+    for _ in range(num_layers):
+      layers.append(RecurrentWrapper(ResLSTMBlock(hidden_size)))
+
+    super().__init__(layers, name=name)
+
+class TransformerLike(Sequential):
   """Alternates recurrent and FFW layers."""
 
   CONFIG=dict(
@@ -387,7 +387,6 @@ class TransformerLike(Network):
       activation: str,
       name='TransformerLike',
   ):
-    super().__init__(name=name)
     self._hidden_size = hidden_size
     self._num_layers = num_layers
     self._ffw_multiplier = ffw_multiplier
@@ -414,19 +413,8 @@ class TransformerLike(Network):
           activation=getattr(tf.nn, activation))
       layers.append(FFWWrapper(ffw_layer))
 
-    self._net = Sequential(layers)
+    super().__init__(layers, name=name)
 
-  def initial_state(self, batch_size: int) -> RecurrentState:
-    return self._net.initial_state(batch_size)
-
-  def step(self, inputs: Inputs, prev_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
-    return self._net.step(inputs, prev_state)
-
-  def unroll(self, inputs: Inputs, initial_state: RecurrentState) -> Tuple[Tensor, RecurrentState]:
-    return self._net.unroll(inputs, initial_state)
-
-  def scan(self, inputs, initial_state):
-    return self._net.scan(inputs, initial_state)
 
 CONSTRUCTORS = dict(
     mlp=MLP,

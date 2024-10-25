@@ -81,12 +81,12 @@ class StateAction(NamedTuple):
 
 class Frames(NamedTuple):
   state_action: StateAction
-  # This will have length one less than the states and actions.
+  is_resetting: bool
+  # The reward will have length one less than the states and actions.
   reward: np.float32
 
 class Batch(NamedTuple):
   frames: Frames
-  needs_reset: bool
   count: int  # For reproducing batches
   meta: ChunkMeta
 
@@ -335,21 +335,27 @@ class DataSource:
         and
         game.p1.character[0] in self.allowed_opponents)
 
-  def process_game(self, game: Game, name_code: int) -> Frames:
-    # These could be deferred to the learner.
+  def process_game(
+      self, game: Game, name_code: int, needs_reset: bool) -> Frames:
+    game_length = game_len(game)
+    assert game_length == self.chunk_size
+    # Rewards could be deferred to the learner.
     rewards = reward.compute_rewards(game, damage_ratio=self.damage_ratio)
-    name_codes = np.full([game_len(game)], name_code, np.int32)
+    name_codes = np.full([game_length], name_code, np.int32)
     state_action = StateAction(game, game.p0.controller, name_codes)
-    return Frames(state_action=state_action, reward=rewards)
+    is_resetting = np.full([game_length], False)
+    is_resetting[0] = needs_reset
+    return Frames(
+        state_action=state_action, reward=rewards, is_resetting=is_resetting)
 
   def process_batch(self, chunks: list[Chunk]) -> Batch:
     batches: List[Batch] = []
 
     for chunk in chunks:
       name_code = self.encode_name(chunk.meta.info.main_player.name)
+      needs_reset = chunk.meta.start == 0
       batches.append(Batch(
-          frames=self.process_game(chunk.states, name_code),
-          needs_reset=chunk.meta.start == 0,
+          frames=self.process_game(chunk.states, name_code, needs_reset),
           count=self.batch_counter,
           meta=chunk.meta))
 
