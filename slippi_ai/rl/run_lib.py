@@ -61,19 +61,22 @@ class AgentConfig:
   path: tp.Optional[str] = None
   tag: tp.Optional[str] = None
   compile: bool = True
+  jit_compile: bool = True
   name: str = nametags.DEFAULT_NAME
   batch_steps: int = 0
   async_inference: bool = False
 
   def get_kwargs(self) -> dict:
-    state = eval_lib.load_state(path=self.path, tag=self.tag)
-    return dict(
-        state=state,
+    kwargs = dict(
         compile=self.compile,
+        jit_compile=self.jit_compile,
         name=self.name,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
     )
+    if self.path or self.tag:
+      kwargs['state'] = eval_lib.load_state(path=self.path, tag=self.tag)
+    return kwargs
 
 class OpponentType(enum.Enum):
   CPU = 'cpu'
@@ -344,11 +347,8 @@ def run(config: Config):
       **config.dolphin.to_kwargs(),
   )
 
-  main_agent_kwargs = dict(
-      state=rl_state,
-      compile=config.agent.compile,
-      name=config.agent.name,
-  )
+  main_agent_kwargs = config.agent.get_kwargs()
+  main_agent_kwargs['state'] = rl_state
   agent_kwargs = {PORT: main_agent_kwargs}
 
   if config.opponent.type is OpponentType.SELF:
