@@ -8,7 +8,8 @@ from slippi_ai import (
     learner, networks, data, tf_utils, embed
 )
 
-def assert_tensors_close(t1, t2):
+def assert_tensors_close(t1: tf.Tensor, t2: tf.Tensor):
+  # TODO: relax tolerance when running on GPU
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
 
 def default_network(name):
@@ -45,4 +46,6 @@ class NetworksTest(unittest.TestCase):
       tf.nest.map_structure(assert_tensors_close, unroll_final_state, step_final_state)
 
 if __name__ == '__main__':
+  if tf.config.list_physical_devices('GPU'):
+    raise RuntimeError("Tests don't work properly on GPU")
   unittest.main(failfast=True)
