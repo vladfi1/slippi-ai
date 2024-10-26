@@ -31,7 +31,7 @@ class LearnerConfig:
   # TODO: unify this with the imitation config?
   learning_rate: float = 1e-4
   compile: bool = True
-  jit_compile: bool = True
+  jit_compile: bool = False
   policy_gradient_weight: float = 1
   kl_teacher_weight: float = 1e-1
   reverse_kl_teacher_weight: float = 0
@@ -122,6 +122,9 @@ class Learner:
     self.value_optimizer = snt.optimizers.Adam(config.learning_rate)
 
     self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
+
+    if config.jit_compile:
+      raise ValueError('jit_compile leads to instability')
 
     if config.compile:
       maybe_compile = tf.function(

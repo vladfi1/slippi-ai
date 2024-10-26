@@ -56,7 +56,7 @@ class AgentConfig:
   name: str = nametags.DEFAULT_NAME
 
   compile: bool = True
-  jit_compile: bool = True
+  jit_compile: bool = False
   batch_steps: int = 0
   async_inference: bool = False
 
@@ -221,6 +221,8 @@ class AgentManager:
 
   def agent_kwargs(self) -> dict:
     """Kwargs for eval_lib.build_delayed_agent."""
+    if self.agent_config.jit_compile:
+      raise ValueError('jit_compile leads to instability')
     return dict(
         state=self.get_state(),
         name=self.agent_config.name,
@@ -444,8 +446,9 @@ def run(config: Config):
 
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['ppo_step']['0']
-    actor_kl = pre_update['actor_kl']['max']
-    print(f'max_actor_kl: {actor_kl:.3g}')
+    mean_actor_kl = pre_update['actor_kl']['mean']
+    max_actor_kl = pre_update['actor_kl']['max']
+    print(f'actor_kl: mean={mean_actor_kl:.3g} max={max_actor_kl:.3g}')
     teacher_kl = pre_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
