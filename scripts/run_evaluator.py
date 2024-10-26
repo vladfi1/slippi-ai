@@ -105,12 +105,14 @@ if __name__ == '__main__':
 
       timer = utils.Profiler(burnin=0)
       with timer:
-        stats, timings = evaluator.rollout(ROLLOUT_LENGTH.value)
+        stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value)
 
     num_frames = NUM_ENVS.value * ROLLOUT_LENGTH.value
     num_minutes = num_frames / (60 * 60)
     kdpm = stats[1].reward / num_minutes
     print('ko diff per minute:', kdpm)
+
+    timings = metrics['timing']
     print('timings:', utils.map_single_structure(lambda f: f'{f:.3f}', timings))
 
     sps = ROLLOUT_LENGTH.value / timer.cumtime
