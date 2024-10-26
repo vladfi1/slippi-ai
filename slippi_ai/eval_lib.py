@@ -146,15 +146,13 @@ class BasicAgent:
         name=np.full([self._batch_size], self._name_code),
     )
 
-    # Sample an action.
+    # Keep hidden state and _prev_controller on device.
     sample_outputs: SampleOutputs
     sample_outputs, self.hidden_state = self._sample(
         state_action, self.hidden_state, needs_reset)
-    sample_outputs = utils.map_single_structure(
-        lambda t: t.numpy(), sample_outputs)
-
     self._prev_controller = sample_outputs.controller_state
-    return sample_outputs
+
+    return utils.map_single_structure(lambda t: t.numpy(), sample_outputs)
 
   def multi_step(
       self,
@@ -165,14 +163,13 @@ class BasicAgent:
         for game, needs_reset in states
     ]
 
+    # Keep hidden state and _prev_controller on device.
     sample_outputs: list[SampleOutputs]
     sample_outputs, self.hidden_state = self._multi_sample(
         states, self._prev_controller, self.hidden_state)
-    sample_outputs = utils.map_single_structure(
-        lambda t: t.numpy(), sample_outputs)
-
     self._prev_controller = sample_outputs[-1].controller_state
-    return sample_outputs
+
+    return utils.map_single_structure(lambda t: t.numpy(), sample_outputs)
 
   def step_unbatched(
       self,
