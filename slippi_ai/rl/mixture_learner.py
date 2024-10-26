@@ -35,6 +35,11 @@ class LearnerState(tp.NamedTuple):
   mixture: MixtureState
   rl: learner.LearnerState  # Teacher/VF state on exploiter trajectory
 
+class MixtureOutputs(tp.NamedTuple):
+  unroll: UnrollOutputs
+  kl: tf.Tensor
+  entropy: tf.Tensor
+
 class LearnerOutputs(tp.NamedTuple):
   rl: learner.LearnerOutputs  # unused
   stats: dict
@@ -91,7 +96,7 @@ class Learner:
       self,
       trajectory: Trajectory,
       initial_state: RecurrentState,
-  ) -> tp.Tuple[UnrollOutputs, tf.Tensor]:
+  ) -> MixtureOutputs:
     # Currently, resetting states can only occur on the first frame, which
     # conveniently means we don't have to deal with resets inside `unroll`.
     is_resetting = trajectory.is_resetting[0]  # [B]
@@ -116,14 +121,16 @@ class Learner:
 
     mixture_distribution = get_distribution(outputs.distances.logits)
     kl = self._learner._compute_kl(actor_distribution, mixture_distribution)
+    entropy = self._learner._compute_entropy(mixture_distribution)
 
-    return outputs, kl
+    return MixtureOutputs(outputs, kl, entropy)
 
   def unroll_mixture(
       self,
       exploiter_trajectory: Trajectory,
       mixture_trajectory: Trajectory,
       initial_state: MixtureState,
+      teacher_outputs: UnrollOutputs,  # on exploiter trajectory
       train_mixture_policy: bool = False,
       exploiter_weight: tp.Optional[float] = None,
   ) -> tp.Tuple[MixtureState, dict]:
@@ -133,11 +140,21 @@ class Learner:
         exploiter_weight = self._config.exploiter_weight
 
       # We could batch these together.
-      mixture_exploiter_outputs, exploiter_kl = self._unroll_mixture_policy(
+      mixture_exploiter_outputs = self._unroll_mixture_policy(
           exploiter_trajectory, initial_state.exploiter)
+      exploiter_kl = mixture_exploiter_outputs.kl
 
-      mixture_mixture_outputs, mixture_kl = self._unroll_mixture_policy(
+      mixture_exploiter_distribution = self._learner._get_distribution(
+          mixture_exploiter_outputs.unroll.distances.logits)
+
+      teacher_distribution = self._learner._get_distribution(
+          teacher_outputs.distances.logits)
+      teacher_kl = self._learner._compute_kl(
+          teacher_distribution, mixture_exploiter_distribution)
+
+      mixture_mixture_outputs = self._unroll_mixture_policy(
           mixture_trajectory, initial_state.mixture)
+      mixture_kl = mixture_mixture_outputs.kl
 
       mixture_loss = (
           exploiter_kl * exploiter_weight
@@ -150,14 +167,17 @@ class Learner:
         self.mixture_optimizer.apply(grads, mixture_params)
 
     final_state = MixtureState(
-        exploiter=mixture_exploiter_outputs.final_state,
-        mixture=mixture_mixture_outputs.final_state,
+        exploiter=mixture_exploiter_outputs.unroll.final_state,
+        mixture=mixture_mixture_outputs.unroll.final_state,
     )
 
     stats = dict(
         exploiter_kl=exploiter_kl,
         mixture_kl=mixture_kl,
         mixture_loss=mixture_loss,
+        entropy_exploiter=mixture_exploiter_outputs.entropy,
+        entropy_mixture=mixture_mixture_outputs.entropy,
+        teacher_kl=teacher_kl,
     )
 
     return final_state, stats
@@ -183,7 +203,9 @@ class Learner:
         mixture_trajectory=mixture_trajectory,
         initial_state=initial_state.mixture,
         train_mixture_policy=train_mixture_policy,
-        exploiter_weight=exploiter_weight)
+        exploiter_weight=exploiter_weight,
+        teacher_outputs=rl_outputs.teacher,
+    )
 
     final_state = LearnerState(
         mixture=mixture_final_state,
@@ -206,13 +228,19 @@ class Learner:
       exploiter_weight: tp.Optional[float] = None,
       train_mixture_policy: bool = True,
   ) -> tp.Tuple[LearnerState, dict]:
+    rl_outputs, rl_final_state, rl_stats = self._learner.ppo(
+        trajectories=exploiter_trajectories,
+        initial_state=initial_state.rl,
+        num_epochs=num_ppo_epochs)
+
     mixture_stats = []
     mixture_hidden_state = initial_state.mixture
-    for exploiter_trajectory, mixture_trajectory in zip(
-        exploiter_trajectories, mixture_trajectories):
+    for exploiter_trajectory, mixture_trajectory, rl_output in zip(
+        exploiter_trajectories, mixture_trajectories, rl_outputs):
       mixture_hidden_state, stats = self.compiled_unroll_mixture(
           exploiter_trajectory=exploiter_trajectory,
           mixture_trajectory=mixture_trajectory,
+          teacher_outputs=rl_output.teacher,
           initial_state=mixture_hidden_state,
           train_mixture_policy=train_mixture_policy,
           exploiter_weight=exploiter_weight,
@@ -221,11 +249,6 @@ class Learner:
     mixture_stats = utils.map_single_structure(
         lambda t: t.numpy(), mixture_stats)
     mixture_stats = utils.batch_nest(mixture_stats)
-
-    rl_final_state, rl_stats = self._learner.ppo(
-        trajectories=exploiter_trajectories,
-        initial_state=initial_state.rl,
-        num_epochs=num_ppo_epochs)
 
     stats = dict(
         mixture=mixture_stats,

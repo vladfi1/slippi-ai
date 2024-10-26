@@ -19,6 +19,7 @@ from slippi_ai import (
     utils,
 )
 
+from slippi_ai.types import Game
 from slippi_ai import value_function as vf_lib
 from slippi_ai.rl import mixture_learner as learner_lib
 from slippi_ai.rl import run_lib
@@ -142,8 +143,9 @@ class ExperimentManager:
 
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['rl']['ppo_step']['0']
-    actor_kl = pre_update['actor_kl']['mean']
-    print(f'actor_kl: {actor_kl:.3g}')
+    mean_actor_kl = pre_update['actor_kl']['mean']
+    max_actor_kl = pre_update['actor_kl']['max']
+    print(f'actor_kl: mean={mean_actor_kl:.3g} max={max_actor_kl:.3g}')
     teacher_kl = pre_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["rl"]["value"]["uev"]:.3f}')
@@ -169,7 +171,7 @@ class ExperimentManager:
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor_timing']
+    actor_timing = metrics['actor']['timing']
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
@@ -178,14 +180,18 @@ class ExperimentManager:
     learner_metrics = metrics['learner']
 
     # concatenate along the batch dimension
-    states = tf.nest.map_structure(
+    states: Game = tf.nest.map_structure(
         lambda *xs: np.concatenate(xs, axis=1),
         *[t.states for t in trajectories])
-    kos = reward.compute_rewards(states, damage_ratio=0)
-    kos_per_minute = kos.mean() * (60 * 60)
+
+    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
+    p1_stats = reward.player_stats(states.p1, states.p0, states.stage)
+    ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
     return dict(
-        ko_diff=kos_per_minute,
+        p0=p0_stats,
+        p1=p1_stats,
+        ko_diff=ko_diff,
         timings=timings,
         learner=learner_metrics,
     )
@@ -246,15 +252,15 @@ class ExperimentManager:
     with self.rollout_profiler:
       exploiter_trajectories = []
       mixture_trajectories = []
-      actor_timings = []
+      actor_metrics = []
       for _ in range(self._num_ppo_batches):
         trajectories, timings = self._rollout()
         exploiter_trajectories.append(trajectories[self._exploiter_port])
         mixture_trajectories.append(trajectories[self._mixture_port])
-        actor_timings.append(timings)
+        actor_metrics.append(timings)
 
-      actor_timings = tf.nest.map_structure(
-          lambda *xs: np.mean(xs), *actor_timings)
+      actor_metrics = tf.nest.map_structure(
+          lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
       if self._config.scale_exploiter_weight:
@@ -268,7 +274,8 @@ class ExperimentManager:
           num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy,
           exploiter_weight=exploiter_weight)
 
-    stats = dict(learner=metrics, actor_timing=actor_timings)
+    metrics['exploiter_weight'] = exploiter_weight
+    stats = dict(learner=metrics, actor=actor_metrics)
 
     return exploiter_trajectories, stats
 

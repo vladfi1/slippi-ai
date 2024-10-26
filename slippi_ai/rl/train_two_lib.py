@@ -312,7 +312,7 @@ class ExperimentManager:
       metrics = {}
 
       for port, learner in self._learners.items():
-        self._hidden_states[port], metrics[port] = learner.ppo(
+        _, self._hidden_states[port], metrics[port] = learner.ppo(
             trajectories[port], self._hidden_states[port], num_epochs=ppo_steps)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)

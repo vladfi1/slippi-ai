@@ -214,7 +214,7 @@ class LearnerManager:
           lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
-      self._hidden_state, metrics = self._learner.ppo(
+      _, self._hidden_state, metrics = self._learner.ppo(
           trajectories, self._hidden_state, num_epochs=ppo_steps)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)

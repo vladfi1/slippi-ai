@@ -415,7 +415,7 @@ class Learner:
       trajectories: list[Trajectory],
       initial_state: LearnerState,
       num_epochs: int = None,
-  ) -> tuple[LearnerState, dict]:
+  ) -> tuple[list[LearnerOutputs], LearnerState, dict]:
     assert self._use_separate_vf
 
     trajectories = [
@@ -467,7 +467,7 @@ class Learner:
         reverted=reverted,
     )
 
-    return hidden_state, metrics
+    return learner_outputs, hidden_state, metrics
 
   def initialize(self, trajectory: Trajectory):
     """Initialize model and optimizer variables."""
