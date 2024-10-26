@@ -387,7 +387,7 @@ def run(config: Config):
   def get_log_data(
       trajectories: list[evaluators.Trajectory],
       metrics: dict,
-  ):
+  ) -> dict:
     timings = {}
 
     # TODO: we shouldn't take the mean over these timings
@@ -404,13 +404,11 @@ def run(config: Config):
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor']['timing']
+    actor_timing = metrics['actor'].pop('timing')
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
       timings[key] = actor_timing[key][PORT]
-
-    learner_metrics = metrics['learner']
 
     # concatenate along the batch dimension
     states = tf.nest.map_structure(
@@ -418,12 +416,15 @@ def run(config: Config):
         *[t.states for t in trajectories])
     kos = reward.compute_rewards(states, damage_ratio=0)
     kos_per_minute = kos.mean() * (60 * 60)
+    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
 
-    return dict(
+    metrics.update(
         ko_diff=kos_per_minute,
         timings=timings,
-        learner=learner_metrics,
+        p0=p0_stats,
     )
+
+    return metrics
 
   logger = Logger()
 
@@ -444,8 +445,8 @@ def run(config: Config):
 
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['ppo_step']['0']
-    actor_kl = pre_update['actor_kl']['mean']
-    print(f'actor_kl: {actor_kl:.3g}')
+    actor_kl = pre_update['actor_kl']['max']
+    print(f'max_actor_kl: {actor_kl:.3g}')
     teacher_kl = pre_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')

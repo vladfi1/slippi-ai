@@ -382,7 +382,7 @@ def run(config: Config):
       all_trajectories: dict[int, list[evaluators.Trajectory]],
       metrics: dict,
   ) -> dict:
-    main_port = PORTS[0]
+    main_port, other_port = PORTS
     trajectories = all_trajectories[main_port]
     timings = {}
 
@@ -400,13 +400,11 @@ def run(config: Config):
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor']['timing']
+    actor_timing = metrics['actor'].pop('timing')
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
       timings[key] = actor_timing[key][main_port]
-
-    learner_metrics = metrics['learner'][main_port]
 
     # concatenate along the batch dimension
     states: embed.Game = tf.nest.map_structure(
@@ -422,8 +420,9 @@ def run(config: Config):
         p1=p1_stats,
         ko_diff=ko_diff,
         timings=timings,
-        learner=learner_metrics,
-        learner2=metrics['learner'][PORTS[1]],
+        actor=metrics['actor'],
+        learner=metrics['learner'][main_port],
+        learner2=metrics['learner'][other_port],
     )
 
   logger = Logger()
@@ -445,8 +444,8 @@ def run(config: Config):
 
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['ppo_step']['0']
-    actor_kl = pre_update['actor_kl']['mean']
-    print(f'actor_kl: {actor_kl:.3g}')
+    actor_kl = pre_update['actor_kl']['max']
+    print(f'max_actor_kl: {actor_kl:.3g}')
     teacher_kl = pre_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
