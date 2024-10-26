@@ -109,6 +109,7 @@ class RolloutWorker:
       max_env_buffer = self._env.num_steps - 1
 
       if max_agent_buffer + max_env_buffer >= slack:
+        self._env.stop()
         raise ValueError(
             f'Agent and environment step buffer sizes are too large: '
             f'{max_agent_buffer} + {max_env_buffer} >= {slack}')
