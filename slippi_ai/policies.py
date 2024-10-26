@@ -264,10 +264,9 @@ class Policy(snt.Module):
     if is_resetting is None:
       batch_size = input.shape[0]
       is_resetting = tf.fill([batch_size], False)
-    else:
-      raise NotImplementedError('is_resetting not yet supported')
 
-    output, final_state = self.network.step(input, initial_state)
+    output, final_state = self.network.step_with_reset(
+        input, is_resetting, initial_state)
 
     prev_action = state_action.action
     next_action = self.controller_head.sample(

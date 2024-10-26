@@ -84,17 +84,13 @@ class BasicAgent:
     default_controller = self._embed_controller.dummy([batch_size])
     self._prev_controller = default_controller
 
-    initial_state = policy.initial_state(batch_size)
-
     def sample(
         state_action: embed.StateAction,
         prev_state: policies.RecurrentState,
         needs_reset: tf.Tensor,
     ) -> tuple[SampleOutputs, policies.RecurrentState]:
-      prev_state = tf.nest.map_structure(
-          lambda x, y: tf_utils.where(needs_reset, x, y),
-          initial_state, prev_state)
-      return policy.sample(state_action, prev_state, **sample_kwargs)
+      return policy.sample(
+          state_action, prev_state, needs_reset, **sample_kwargs)
 
     def multi_sample(
         states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed

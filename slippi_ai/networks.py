@@ -22,8 +22,9 @@ class Network(snt.Module, abc.ABC):
       inputs: Inputs,
       prev_state: RecurrentState,
   ) -> Tuple[tf.Tensor, RecurrentState]:
-    '''
-      Returns outputs and next recurrent state.
+    '''Step without reset.
+
+    Arguments:
       inputs: (batch_size, x_dim)
       prev_state: (batch, state_dim)
 
