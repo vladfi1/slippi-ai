@@ -35,18 +35,30 @@ class Environment:
   def __init__(
       self,
       dolphin_kwargs: dict,
+      swap_ports: bool = False,
       check_controller_outputs: bool = False,
   ):
-    self._dolphin = dolphin.Dolphin(**dolphin_kwargs)
-    self.players = self._dolphin._players
+    players: dict[Port, dolphin.Player] = dolphin_kwargs['players']
+    if len(players) != 2:
+      raise ValueError('Environment requires exactly 2 players.')
 
-    assert len(self.players) == 2
+    ports = list(players)
+    actual_ports = list(reversed(ports)) if swap_ports else ports
+    self.port_to_actual = dict(zip(ports, actual_ports))
+    self.port_from_actual = dict(zip(actual_ports, ports))
+
+    actual_players = {
+        actual_port: players[port]
+        for port, actual_port in self.port_to_actual.items()
+    }
+
+    actual_dolphin_kwargs = dict(dolphin_kwargs, players=actual_players)
+    self._dolphin = dolphin.Dolphin(**actual_dolphin_kwargs)
 
     self._opponents: Mapping[int, int] = {}
-    ports = list(self.players)
 
-    for port, opponent_port in zip(ports, reversed(ports)):
-      if isinstance(self.players[port], dolphin.AI):
+    for port, opponent_port in zip(actual_ports, reversed(actual_ports)):
+      if isinstance(actual_players[port], dolphin.AI):
         self._opponents[port] = opponent_port
 
     self._prev_state: Optional[GameState] = None
@@ -61,8 +73,9 @@ class Environment:
     needs_reset = is_initial_frame(self._prev_state)
 
     games = {}
-    for port, opponent_port in self._opponents.items():
-      games[port] = get_game(self._prev_state, (port, opponent_port))
+    for actual_port, opponent in self._opponents.items():
+      port = self.port_from_actual[actual_port]
+      games[port] = get_game(self._prev_state, (actual_port, opponent))
 
     return EnvOutput(games, needs_reset)
 
@@ -76,7 +89,8 @@ class Environment:
     """Send controllers for each AI. Return the next state."""
 
     for port, controller in controllers.items():
-      send_controller(self._dolphin.controllers[port], controller)
+      actual_port = self.port_to_actual[port]
+      send_controller(self._dolphin.controllers[actual_port], controller)
 
     # TODO: compute reward?
     self._prev_state = self._dolphin.step()
@@ -95,9 +109,10 @@ T = tp.TypeVar('T')
 class SafeEnvironment:
   """Wraps an environment with retries on disconnect."""
 
-  def __init__(self, dolphin_kwargs: dict, num_retries: int = 2):
+  def __init__(self, dolphin_kwargs: dict, num_retries: int = 2, **env_kwargs):
     self._dolphin_kwargs = dolphin_kwargs.copy()
     self._num_retries = num_retries
+    self._env_kwargs = env_kwargs
     self._build_environment()
 
   def _reset_port(self):
@@ -108,7 +123,7 @@ class SafeEnvironment:
 
   def _build_environment(self):
     self._env = utils.retry(
-        lambda: Environment(self._dolphin_kwargs),
+        lambda: Environment(self._dolphin_kwargs, **self._env_kwargs),
         on_exception={dolphin.ConnectFailed: self._reset_port},
         num_retries=2)
 
@@ -162,15 +177,21 @@ class BatchedEnvironment:
       dolphin_kwargs: dict,
       slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
+      swap_ports: bool = True,  # Swap ports on half of the environments.
   ):
     self._dolphin_kwargs = dolphin_kwargs
-
     slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
+
+    if swap_ports and num_envs % 2 != 0:
+      raise ValueError('swap_ports=True requires an even number of environments.')
+
     envs: list[SafeEnvironment] = []
-    for slippi_port in slippi_ports:
-      kwargs = dolphin_kwargs.copy()
-      kwargs.update(slippi_port=slippi_port)
-      env = SafeEnvironment(kwargs, num_retries=num_retries)
+    for i in range(num_envs):
+      dolphin_kwargs_i = dolphin_kwargs.copy()
+      dolphin_kwargs_i.update(slippi_port=slippi_ports[i])
+      env = SafeEnvironment(
+          dolphin_kwargs_i, num_retries=num_retries,
+          swap_ports=swap_ports and i >= num_envs // 2)
       envs.append(env)
 
     self._envs = envs
@@ -231,20 +252,22 @@ class BatchedEnvironment:
     return self._output_queue[-1]
 
 def build_environment(
-    num_envs: int,
+    num_envs: int,  # zero means unbatched env
     dolphin_kwargs: dict,
     slippi_ports: Optional[list[int]] = None,
     num_retries: int = 2,
+    **env_kwargs,
 ) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
     if slippi_ports:
       assert len(slippi_ports) == 1
       dolphin_kwargs = dolphin_kwargs.copy()
       dolphin_kwargs['slippi_port'] = slippi_ports[0]
-    return SafeEnvironment(dolphin_kwargs, num_retries=num_retries)
+    return SafeEnvironment(dolphin_kwargs, num_retries=num_retries, **env_kwargs)
 
   # BatchedEnvironment uses SafeEnvironment internally
-  return BatchedEnvironment(num_envs, dolphin_kwargs, slippi_ports, num_retries)
+  return BatchedEnvironment(
+      num_envs, dolphin_kwargs, slippi_ports, num_retries, **env_kwargs)
 
 def _run_env(
     build_env_kwargs: dict,
@@ -302,6 +325,7 @@ class AsyncEnvMP:
       slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
       batch_time: bool = False,
+      **env_kwargs,
   ):
     context = mp.get_context('forkserver')
     self._parent_conn, child_conn = context.Pipe()
@@ -312,6 +336,7 @@ class AsyncEnvMP:
         dolphin_kwargs=dolphin_kwargs,
         slippi_ports=slippi_ports,
         num_retries=num_retries,
+        **env_kwargs,
     )
     # self._stop = mp.Event()
     self._process = context.Process(
@@ -396,11 +421,15 @@ class AsyncBatchedEnvironmentMP:
       num_steps: int = 0,
       inner_batch_size: int = 1,
       num_retries: int = 2,
+      swap_ports: bool = True,
   ):
     if num_envs % inner_batch_size != 0:
       raise ValueError(
           f'num_envs={num_envs} must be divisible by '
           f'inner_batch_size={inner_batch_size}')
+
+    if swap_ports and inner_batch_size % 2 != 0:
+      raise ValueError('swap_ports=True requires an even inner_batch_size.')
 
     self._total_batch_size = num_envs
     self._outer_batch_size = num_envs // inner_batch_size
@@ -418,6 +447,7 @@ class AsyncBatchedEnvironmentMP:
           batch_time=(num_steps > 0),
           slippi_ports=self._slice(i, slippi_ports),
           num_retries=num_retries,
+          swap_ports=swap_ports,
       )
       self._envs.append(env)
 
