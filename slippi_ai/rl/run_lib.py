@@ -358,7 +358,7 @@ def run(config: Config):
   elif config.opponent.type is OpponentType.OTHER:
     agent_kwargs[ENEMY_PORT] = config.opponent.other.get_kwargs()
 
-  env_kwargs = {}
+  env_kwargs = dict(swap_ports=False)
   if config.actor.async_envs:
     env_kwargs.update(
         num_steps=config.actor.num_env_steps,

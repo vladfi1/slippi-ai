@@ -354,7 +354,8 @@ def run(config: Config):
       **config.dolphin.to_kwargs(),
   )
 
-  env_kwargs = {}
+  # Allow testing with one env; swap_ports generally needs an even number.
+  env_kwargs = dict(swap_ports=config.actor.num_envs > 1)
   if config.actor.async_envs:
     env_kwargs.update(
         num_steps=config.actor.num_env_steps,
