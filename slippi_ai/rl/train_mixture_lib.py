@@ -35,6 +35,8 @@ class Config(run_lib.Config):
 
   # Number of steps to train the exploiter agent against the old mixture policy.
   # After this many steps, we update the opponent to the new mixture policy.
+  # Note: unlike the env/optimizer/value function burnin steps, this measures
+  # ppo epochs, so is effectively multiplied by the number of ppo batches.
   exploiter_train_steps: int = 2
   # After updating the opponent to the new mixture policy, we can also reset the
   # exploiter policy to the same new mixture policy. This reduces correlation
@@ -171,13 +173,11 @@ class ExperimentManager:
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor']['timing']
+    actor_timing = metrics['actor'].pop('timing')
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
       timings[key] = actor_timing[key][self._exploiter_port]
-
-    learner_metrics = metrics['learner']
 
     # concatenate along the batch dimension
     states: Game = tf.nest.map_structure(
@@ -193,7 +193,7 @@ class ExperimentManager:
         p1=p1_stats,
         ko_diff=ko_diff,
         timings=timings,
-        learner=learner_metrics,
+        **metrics,
     )
 
   def _env_burnin(self):
@@ -245,6 +245,7 @@ class ExperimentManager:
       ppo_steps: int = None,  # Set to 0 to train only the value function.
       train_mixture_policy: bool = True,
   ) -> tuple[list[evaluators.Trajectory], dict]:
+    ppo_steps = ppo_steps or self._config.learner.ppo.num_epochs
 
     if self.should_reset_env():
       self.reset_env()
@@ -269,13 +270,16 @@ class ExperimentManager:
       else:
         exploiter_weight = self._config.learner.exploiter_weight
 
-      self._hidden_state, metrics = self._learner.step(
+      self._hidden_state, learner_metrics = self._learner.step(
           exploiter_trajectories, mixture_trajectories, self._hidden_state,
           num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy,
           exploiter_weight=exploiter_weight)
 
-    metrics['exploiter_weight'] = exploiter_weight
-    stats = dict(learner=metrics, actor=actor_metrics)
+    learner_metrics.update(
+        exploiter_weight=exploiter_weight,
+        ppo_steps=ppo_steps,
+    )
+    stats = dict(learner=learner_metrics, actor=actor_metrics)
 
     return exploiter_trajectories, stats
 
@@ -297,13 +301,16 @@ class ExperimentManager:
     learning_rate.assign(self._config.learner.learning_rate)
 
   def value_function_burnin(self):
-    logging.info('Value function burnin')
     # Flush logger before and after because log structure changes.
     self.flush()
+
+    logging.info('Value function burnin')
     for _ in range(self._config.value_burnin_steps // self._num_ppo_batches):
-      self.step_and_log(ppo_steps=0, train_mixture_policy=False)
       self._step += 1
+      self.step_and_log(ppo_steps=0, train_mixture_policy=False)
     self.flush()
+
+    logging.info('Finished value function burnin')
 
   def run(self):
     try:
@@ -314,9 +321,10 @@ class ExperimentManager:
 
       for _ in range(self._config.runtime.max_step):
         self.update_variables()  # Will do value function burnin on step 0.
-        self.step_and_log()
 
         self._step += 1
+        self.step_and_log()
+
         self._maybe_save()
 
       self.save()
