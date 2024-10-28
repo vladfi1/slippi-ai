@@ -674,6 +674,7 @@ class AgentSummary:
   delay: int
   character: melee.Character
   opponent: Optional[melee.Character]
+  version: tuple[int]
 
   @classmethod
   def from_checkpoint(cls, path: str) -> 'AgentSummary':
@@ -691,22 +692,34 @@ class AgentSummary:
       agent_type = AgentType.IMITATION
       opponent = None
 
+    version_component = path.split('_')[-1]
+    if version_component.startswith('v'):
+      version = tuple(map(int, version_component[1:].split('.')))
+    else:
+      version = (0,)
+
     return cls(
         type=agent_type,
         delay=config['policy']['delay'],
         character=character,
         opponent=opponent,
+        version=version,
     )
 
-# TODO: filter by delay
 def build_matchup_table(
       models_path: str,
+      delay: int,
 ) -> dict[melee.Character, dict[melee.Character, str]]:
   models = os.listdir(models_path)
 
   agent_summaries = {
       model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
       for model in models
+  }
+
+  agent_summaries = {
+      model: summary for model, summary in agent_summaries.items()
+      if summary.delay == delay
   }
 
   table: dict[melee.Character, dict[melee.Character, str]] = {}
@@ -750,10 +763,11 @@ class EnsembleAgent:
       character: melee.Character,
       models_path: str,
       opponent_port: int,
+      delay: int,
       **agent_kwargs,
   ):
     self._models_path = models_path
-    self.opponent_table = build_matchup_table(models_path)[character]
+    self.opponent_table = build_matchup_table(models_path, delay)[character]
 
     self.opponent_port = opponent_port
     self._agent_kwargs = agent_kwargs.copy()

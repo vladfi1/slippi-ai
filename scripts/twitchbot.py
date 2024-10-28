@@ -131,6 +131,7 @@ class Session:
       agent_kwargs: dict,
       extra_dolphin_kwargs: dict = {},
       auto_character: Optional[melee.Character] = None,
+      auto_delay: int = 18,
       models_path: Optional[str] = None,
   ):
     eval_lib.disable_gpus()
@@ -217,6 +218,7 @@ class Session:
       if auto_character:
         agent = eval_lib.EnsembleAgent(
             character=auto_character,
+            delay=auto_delay,
             models_path=models_path,
             port=actual_port,
             opponent_port=opponent_port,
@@ -316,6 +318,7 @@ class Bot(commands.Bot):
       bot_session_interval: float = 1, # in minutes
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
+      auto_delay: int = 18,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -334,6 +337,8 @@ class Bot(commands.Bot):
     }
     self._bot1 = bot1
     self._bot2 = bot2
+
+    self._auto_delay = auto_delay
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -380,7 +385,8 @@ class Bot(commands.Bot):
       state = {k: state[k] for k in keys if k in state}
       self._models[agent] = state
 
-    self._matchup_table = eval_lib.build_matchup_table(self._models_path)
+    self._matchup_table = eval_lib.build_matchup_table(
+        self._models_path, delay=self._auto_delay)
 
   @commands.command()
   async def reload(self, ctx: commands.Context):
@@ -454,6 +460,7 @@ class Bot(commands.Bot):
 
     elif agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
+      # models_str might be too big for Twitch :(
       # models_str = ", ".join(self._models)
       # await ctx.send(f'Available agents: {models_str}')
       return
