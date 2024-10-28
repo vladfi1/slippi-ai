@@ -119,6 +119,9 @@ def extract_7z(src: str, dst_dir: str):
         ['7z', 'x', src, '-o' + dst_dir],
         stdout=subprocess.DEVNULL)
 
+class FileReadException(Exception):
+  """Failed to read a file."""
+
 class LocalFile(abc.ABC):
   """Identifies a file on the local system."""
 
@@ -226,9 +229,12 @@ class ZipFile(LocalFile):
     return self.path.removesuffix(_GZ_SUFFIX)
 
   def read(self) -> bytes:
-    result = subprocess.run(
-        ['unzip', '-p', self.root, self.path],
-        check=True, stdout=subprocess.PIPE)
+    try:
+      result = subprocess.run(
+          ['unzip', '-p', self.root, self.path],
+          check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+      raise FileReadException(e.stderr.decode()) from e
     data = result.stdout
     if self.is_gzipped:
       data = gzip.decompress(data)

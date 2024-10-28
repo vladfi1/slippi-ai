@@ -33,20 +33,21 @@ def parse_slp(
     compression: CompressionType = CompressionType.NONE,
     compression_level: Optional[int] = None,
 ) -> dict:
-  with file.extract(tmpdir) as path:
-    with open(path, 'rb') as f:
-      slp_bytes = f.read()
-      slp_size = len(slp_bytes)
-      md5 = utils.md5(slp_bytes)
-      del slp_bytes
+  result = dict(name=file.name)
 
-    result = dict(
-        name=file.name,
-        slp_md5=md5,
-        slp_size=slp_size,
-    )
+  try:
+    with file.extract(tmpdir) as path:
+      with open(path, 'rb') as f:
+        slp_bytes = f.read()
+        slp_size = len(slp_bytes)
+        md5 = utils.md5(slp_bytes)
+        del slp_bytes
 
-    try:
+      result.update(
+          slp_md5=md5,
+          slp_size=slp_size,
+      )
+
       game = peppi_py.read_slippi(path)
       metadata = preprocessing.get_metadata(game)
       is_training, reason = preprocessing.is_training_replay(metadata)
@@ -71,14 +72,14 @@ def parse_slp(
         with open(os.path.join(output_dir, md5), 'wb') as f:
           f.write(game_bytes)
 
-    except KeyboardInterrupt as e:
-      raise
-    except BaseException as e:
-      result.update(valid=False, reason=repr(e))
-    # except:  # should be a catch-all, but sadly prevents KeyboardInterrupt?
-    #   result.update(valid=False, reason='uncaught exception')
+  except KeyboardInterrupt as e:
+    raise
+  except BaseException as e:
+    result.update(valid=False, reason=repr(e))
+  # except:  # should be a catch-all, but sadly prevents KeyboardInterrupt?
+  #   result.update(valid=False, reason='uncaught exception')
 
-    return result
+  return result
 
 def parse_files(
     files: list[utils.LocalFile],
@@ -207,6 +208,14 @@ def parse_7zs(
 
   return results
 
+md5_key = 'slp_md5'
+
+def get_key(row: dict):
+  if md5_key in row:
+    return row[md5_key]
+
+  return (row['raw'], row['name'])
+
 def run_parsing(
     root: str,
     num_threads: int = 1,
@@ -281,6 +290,10 @@ def run_parsing(
   # Combine 7z and zip results
   results.extend(zip_results)
 
+  if results:
+    num_valid = sum(r['valid'] for r in results)
+    print(f"Processed {num_valid}/{len(results)} valid files.")
+
   # Now record the results.
   for raw_name in to_process:
     raw_by_name[raw_name].update(
@@ -301,12 +314,13 @@ def run_parsing(
   else:
     slp_meta = []
 
-  by_md5 = {row['slp_md5']: row for row in slp_meta}
+  by_key = {get_key(row): row for row in slp_meta}
+
   for result in results:
-    by_md5[result['slp_md5']] = result
+    by_key[get_key(result)] = result
 
   with open(os.path.join(root, 'parsed.pkl'), 'wb') as f:
-    pickle.dump(list(by_md5.values()), f)
+    pickle.dump(list(by_key.values()), f)
 
 def main(_):
   run_parsing(
