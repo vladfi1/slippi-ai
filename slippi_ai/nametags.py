@@ -26,7 +26,11 @@ name_groups = [
   ('S2J', 'Mr Plow', 'John Redcorn', 'SSJ#998'),
   ('Amsa', 'AMSA#0'),
   ('Phillip AI', 'PHAI#591'),
-  # TODO: Aklo and Hax codes
+  ('Hax', 'XX#02', 'HAX#472'),
+  ('Aklo', 'AKLO#381'),
+  ('Morsecode', 'MORS#762'),
+  ('YCZ6', 'YCZ#667', 'YCZ#6', 'WH#0'),
+  ('BBB', 'BBB#960'),
 ]
 
 name_map = {}
