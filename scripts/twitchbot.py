@@ -275,13 +275,13 @@ HELP_MESSAGE = """
 !bots <agent1> [<agent2>]: Set one or two bot agents.
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
-If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
 """.strip()
 
 ABOUT_MESSAGE = """
 Melee AI trained with a combination of imitation learning from slippi replays and self-play reinforcement learning.
  Replays are mostly from ranked, with some tournaments and personal dumps.
+ Agents by default have a reaction time of 18 frames (300 ms).
  Code at https://github.com/vladfi1/slippi-ai.
 """.strip()
 
