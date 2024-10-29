@@ -86,6 +86,7 @@ class BotSession:
           controller=dolphin.controllers[port],
           opponent_port=opponent_port,
           run_on_cpu=True,
+          console_delay=dolphin.console.online_delay,
           **agent_kwargs[port],
       )
 
