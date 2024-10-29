@@ -43,7 +43,10 @@ MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
 agent_flags = eval_lib.AGENT_FLAGS.copy()
-agent_flags['async_inference'] = ff.Boolean(True)
+agent_flags.update(
+    async_inference=ff.Boolean(True),
+    jit_compile=ff.Boolean(False),
+)
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')

@@ -70,7 +70,7 @@ class BasicAgent:
       name_code: int,
       sample_kwargs: dict = {},
       compile: bool = True,
-      jit_compile: bool = True,
+      jit_compile: bool = False,
       run_on_cpu: bool = False,
   ):
     self._policy = policy
@@ -113,7 +113,7 @@ class BasicAgent:
       return actions, hidden_state
 
     if run_on_cpu:
-      if jit_compile:
+      if jit_compile and tf.config.list_physical_devices('GPU'):
         raise UserWarning("jit compilation may ignore run_on_cpu")
       sample = tf_utils.run_on_cpu(sample)
       multi_sample = tf_utils.run_on_cpu(multi_sample)
@@ -541,7 +541,7 @@ AGENT_FLAGS = dict(
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
-    jit_compile=ff.Boolean(True, 'Jit-compile the sample function.'),
+    jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
     name=ff.String(nametags.DEFAULT_NAME, 'Name of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),

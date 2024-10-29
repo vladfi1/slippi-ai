@@ -33,7 +33,10 @@ if __name__ == '__main__':
   USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
-  AGENT = ff.DEFINE_dict('agent', **eval_lib.AGENT_FLAGS)
+
+  agent_flags = eval_lib.AGENT_FLAGS.copy()
+  agent_flags['jit_compile'] = ff.Boolean(True)
+  AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
   OPPONENT = ff.DEFINE_dict('opponent', **eval_lib.PLAYER_FLAGS)
