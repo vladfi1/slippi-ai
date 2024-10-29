@@ -100,6 +100,8 @@ class Dolphin:
             'Headless requires mainline dolphin or a custom dolphin build. '
             'See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions')
 
+    self.menu_helper = melee.MenuHelper()
+
     console = melee.Console(
         path=path,
         online_delay=online_delay,
@@ -169,7 +171,7 @@ class Dolphin:
     while is_menu_state(gamestate):
       for i, (controller, player) in enumerate(self._menuing_controllers):
 
-        melee.MenuHelper.menu_helper_simple(
+        self.menu_helper.menu_helper_simple(
             gamestate, controller,
             stage_selected=self._stage,
             connect_code=self._connect_code,
@@ -194,7 +196,7 @@ class Dolphin:
 
         for i, (controller, player) in enumerate(self._menuing_controllers):
 
-          melee.MenuHelper.menu_helper_simple(
+          self.menu_helper.menu_helper_simple(
               gamestate, controller,
               stage_selected=self._stage,
               connect_code=self._connect_code,
