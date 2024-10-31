@@ -215,6 +215,11 @@ class DelayedAgent:
     self._policy = policy
     self.embed_controller = policy.controller_embedding
 
+    if console_delay > policy.delay:
+      raise ValueError(
+          f'console delay ({console_delay}) must be <='
+          f' policy delay ({policy.delay})')
+
     self.delay = policy.delay - console_delay
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
       = utils.PeekableQueue()
