@@ -24,6 +24,8 @@ DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
 
 CHECK_INPUTS = flags.DEFINE_boolean('check_inputs', False, 'Check inputs.')
 
+RUNTIME = flags.DEFINE_integer('runtime', None, 'Runtime in seconds.')
+
 FLAGS = flags.FLAGS
 
 def main(_):
@@ -73,6 +75,8 @@ def main(_):
   # Main loop
   agent.start()
   try:
+    num_frames = 0
+
     while True:
       if gamestate.frame == -123:
         action_queue = collections.deque(
@@ -102,6 +106,11 @@ def main(_):
         # deadzone can change observed stick values
         if CHECK_INPUTS.value and observed.buttons != expected.buttons:
           raise ValueError('Wrong controller seen')
+
+      num_frames += 1
+
+      if RUNTIME.value is not None and num_frames >= RUNTIME.value * 60:
+        break
 
   finally:
     agent.stop()
