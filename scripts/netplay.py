@@ -2,6 +2,7 @@
 
 import collections
 import json
+import logging
 
 from absl import app
 from absl import flags
@@ -104,8 +105,12 @@ def main(_):
             get_controller(gamestate.players[actual_port].controller_state))
 
         # deadzone can change observed stick values
-        if CHECK_INPUTS.value and observed.buttons != expected.buttons:
-          raise ValueError('Wrong controller seen')
+        if observed.buttons != expected.buttons:
+          frame = gamestate.frame + 123
+          if CHECK_INPUTS.value:
+            raise ValueError(f'Wrong controller seen on frame {frame}')
+          else:
+            logging.error(f'Wrong controller seen on frame {frame}')
 
       num_frames += 1
 
