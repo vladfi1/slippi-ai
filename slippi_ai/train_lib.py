@@ -384,6 +384,7 @@ def train(config: Config):
         train=train_stats,
         test=test_stats,
         timings=timings,
+        num_frames=num_frames,
     )
     train_lib.log_stats(all_stats, total_steps)
 
@@ -441,7 +442,10 @@ def train(config: Config):
         counts=np.array(counts, dtype=np.uint32),
     )
 
-    to_log = dict(eval_names=to_log)
+    to_log = dict(
+        eval_names=to_log,
+        num_frames=total_steps * FRAMES_PER_STEP,
+    )
     train_lib.log_stats(to_log, total_steps, take_mean=False)
 
   start_time = time.time()
