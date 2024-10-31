@@ -5,6 +5,8 @@ import logging
 from typing import Dict, Mapping, Optional, Iterator
 
 import fancyflags as ff
+import portpicker
+
 import melee
 from melee.console import get_dolphin_version, DumpConfig, DolphinBuild
 
@@ -65,7 +67,7 @@ class Dolphin:
       online_delay: int = 0,  # overrides Console's default of 2
       blocking_input: bool = True,
       console_timeout: Optional[float] = None,
-      slippi_port: int = 51441,
+      slippi_port: Optional[int] = None,  # Picked automatically if None
       save_replays=False,  # Override default in Console
       env_vars: Optional[dict] = None,
       headless: bool = False,
@@ -99,6 +101,8 @@ class Dolphin:
         raise ValueError(
             'Headless requires mainline dolphin or a custom dolphin build. '
             'See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions')
+
+    slippi_port = slippi_port or portpicker.pick_unused_port()
 
     self.menu_helper = melee.MenuHelper()
 
@@ -233,7 +237,7 @@ class DolphinConfig:
   online_delay: int = 0  # Simulate online delay.
   blocking_input: bool = True  # Have game wait for AIs to send inputs.
   console_timeout: Optional[float] = None  # Seconds to wait for console inpouts before throwing an error.
-  slippi_port: int = 51441  # Local ip port to communicate with dolphin.
+  slippi_port: Optional[int] = None  # Local ip port to communicate with dolphin.
   fullscreen: bool = False # Run dolphin in full screen mode
   render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
   save_replays: bool = False  # Save slippi replays to the usual location.
@@ -269,7 +273,7 @@ DOLPHIN_FLAGS = dict(
     stage=ff.EnumClass(melee.Stage.RANDOM_STAGE, melee.Stage, 'Which stage to play on.'),
     online_delay=ff.Integer(0, 'Simulate online delay.'),
     blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),
-    slippi_port=ff.Integer(51441, 'Local ip port to communicate with dolphin.'),
+    slippi_port=ff.Integer(None, 'Local ip port to communicate with dolphin.'),
     fullscreen=ff.Boolean(False, 'Run dolphin in full screen mode.'),
     render=ff.Boolean(None, 'Render frames. Only disable if using vladfi1\'s slippi fork.'),
     save_replays=ff.Boolean(False, 'Save slippi replays to the usual location.'),
