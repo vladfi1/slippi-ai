@@ -59,22 +59,24 @@ def main(_):
   # Start game
   gamestate = dolphin.step()
 
-  with open(DOLPHIN.value['user_json_path']) as f:
-    user_json = json.load(f)
-  display_name = user_json['displayName']
+  if len(agents) == 1:
+    with open(DOLPHIN.value['user_json_path']) as f:
+      user_json = json.load(f)
+    display_name = user_json['displayName']
 
-  name_to_port = {
-      player.displayName: port for port, player in gamestate.players.items()
-  }
+    name_to_port = {
+        player.displayName: port for port, player in gamestate.players.items()
+    }
 
-  actual_port = name_to_port[display_name]
-  ports = list(gamestate.players)
-  ports.remove(actual_port)
-  opponent_port = ports[0]
-  agent.players = (actual_port, opponent_port)
+    actual_port = name_to_port[display_name]
+    ports = list(gamestate.players)
+    ports.remove(actual_port)
+    opponent_port = ports[0]
+    agent.players = (actual_port, opponent_port)
 
-  # Main loop
-  agent.start()
+    # Main loop
+    agent.start()
+
   try:
     num_frames = 0
 
@@ -86,7 +88,7 @@ def main(_):
       # "step" to the next frame
       prev_frame = gamestate.frame
       gamestate = dolphin.step()
-      if CHECK_INPUTS.value:
+      if CHECK_INPUTS.value and gamestate.frame != -123:
         assert gamestate.frame == prev_frame + 1
 
       for agent in agents:
@@ -118,7 +120,8 @@ def main(_):
         break
 
   finally:
-    agent.stop()
+    for agent in agents:
+      agent.stop()
     dolphin.stop()
 
 if __name__ == '__main__':
