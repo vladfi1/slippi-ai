@@ -22,7 +22,7 @@ def process_damages(damages: np.ndarray) -> np.ndarray:
   return np.maximum(damages[1:] - damages[:-1], 0)
 
 def grabbed_ledge(player_action: np.ndarray) -> np.ndarray:
-  is_ledge_grab = player_action == 0xFC  # "CliffCatch"
+  is_ledge_grab = player_action == melee.Action.EDGE_CATCHING.value
   return np.logical_and(np.logical_not(is_ledge_grab[:-1]), is_ledge_grab[1:])
 
 def get_bad_ledge_grabs(player: Player, opponent: Player) -> np.ndarray:
