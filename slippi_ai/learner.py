@@ -23,7 +23,7 @@ class LearnerConfig:
   jit_compile: bool = True
   decay_rate: float = 0.
   value_cost: float = 0.5
-  reward_halflife: float = 2
+  reward_halflife: float = 4
 
 
 # TODO: should this be a snt.Module?
