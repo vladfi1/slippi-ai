@@ -11,6 +11,6 @@ python slippi_ai/rl/train_mixture.py \
   --config.runtime.reset_every_n_steps=5 \
   --config.optimizer_burnin_steps=2 \
   --config.value_burnin_steps=2 \
-  --config.exploiter_train_steps=4 \
+  --config.mixture.exploiter_train_steps=4 \
   --wandb.mode=offline \
   "$@"

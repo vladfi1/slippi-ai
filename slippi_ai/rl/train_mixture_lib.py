@@ -29,15 +29,13 @@ Port = evaluators.Port
 field = run_lib.field
 
 @dataclasses.dataclass
-class Config(run_lib.Config):
-  learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
-  opponent: bool = False  # unused
-
+class MixtureConfig:
   # Number of steps to train the exploiter agent against the old mixture policy.
   # After this many steps, we update the opponent to the new mixture policy.
   # Note: unlike the env/optimizer/value function burnin steps, this measures
   # ppo epochs, so is effectively multiplied by the number of ppo batches.
   exploiter_train_steps: int = 2
+
   # After updating the opponent to the new mixture policy, we can also reset the
   # exploiter policy to the same new mixture policy. This reduces correlation
   # between exploiter training phases, but we may prefer to start from the old
@@ -46,9 +44,16 @@ class Config(run_lib.Config):
 
   # Set the exploiter mixture weight to 1 / (num_phases + 1); in principle this
   # mixes uniformly across all previous exploiter training phases. The
-  # alternative is to use a fixed exploiter weight which is results in an
-  # exponential moving average over the exploiter policies.
+  # alternative is to use a fixed exploiter weight (learner.exploiter_weight)
+  # which results in an exponential moving average over the exploiter policies.
   scale_exploiter_weight: bool = False
+
+@dataclasses.dataclass
+class Config(run_lib.Config):
+  learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
+  opponent: bool = False  # unused
+
+  mixture: MixtureConfig = field(MixtureConfig)
 
 DEFAULT_CONFIG = Config()
 DEFAULT_CONFIG.dolphin.console_timeout = 30
@@ -228,11 +233,11 @@ class ExperimentManager:
   def update_variables(self):
     variables = {self._exploiter_port: self._learner.exploiter_variables()}
 
-    new_training_phase = self._step % self._config.exploiter_train_steps == 0
+    new_training_phase = self._step % self._config.mixture.exploiter_train_steps == 0
     if new_training_phase:
       logging.info('Starting new exploiter training phase')
       variables[self._mixture_port] = self._learner.mixture_variables()
-      if self._config.reset_exploiter:
+      if self._config.mixture.reset_exploiter:
         self._learner.reset_exploiter_policy()
 
     self.actor.update_variables(variables)
@@ -264,8 +269,8 @@ class ExperimentManager:
           lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
-      if self._config.scale_exploiter_weight:
-        num_phases = 1 + self._step // self._config.exploiter_train_steps
+      if self._config.mixture.scale_exploiter_weight:
+        num_phases = 1 + self._step // self._config.mixture.exploiter_train_steps
         exploiter_weight = 1 / (num_phases + 1)
       else:
         exploiter_weight = self._config.learner.exploiter_weight
