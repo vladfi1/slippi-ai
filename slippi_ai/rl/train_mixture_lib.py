@@ -48,6 +48,10 @@ class MixtureConfig:
   # which results in an exponential moving average over the exploiter policies.
   scale_exploiter_weight: bool = False
 
+  # After training the exploiter, also train the mixture policy for this number
+  # of steps. Like exploiter_train_steps, this is measured in ppo epochs.
+  mixture_train_steps: int = 1
+
 @dataclasses.dataclass
 class Config(run_lib.Config):
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
@@ -230,20 +234,13 @@ class ExperimentManager:
       return False
     return self.num_steps_since_env_reset >= reset_interval
 
-  def update_variables(self):
-    variables = {self._exploiter_port: self._learner.exploiter_variables()}
-
-    new_training_phase = self._step % self._config.mixture.exploiter_train_steps == 0
-    if new_training_phase:
-      logging.info('Starting new exploiter training phase')
-      variables[self._mixture_port] = self._learner.mixture_variables()
-      if self._config.mixture.reset_exploiter:
-        self._learner.reset_exploiter_policy()
-
-    self.actor.update_variables(variables)
-
-    if new_training_phase:
-      self.value_function_burnin()
+  def current_phase(self) -> int:
+    num_steps_per_phase = sum([
+        self._value_burnin_steps,
+        self._config.mixture.exploiter_train_steps,
+        self._config.mixture.mixture_train_steps,
+    ])
+    return self._step // num_steps_per_phase
 
   def step(
       self,
@@ -270,7 +267,7 @@ class ExperimentManager:
 
     with self.learner_profiler:
       if self._config.mixture.scale_exploiter_weight:
-        num_phases = 1 + self._step // self._config.mixture.exploiter_train_steps
+        num_phases = 1 + self.current_phase()
         exploiter_weight = 1 / (num_phases + 1)
       else:
         exploiter_weight = self._config.learner.exploiter_weight
@@ -305,17 +302,63 @@ class ExperimentManager:
       self.step()  # don't log this data
     learning_rate.assign(self._config.learner.learning_rate)
 
+  @property
+  def _value_burnin_steps(self) -> int:
+    return self._config.value_burnin_steps // self._num_ppo_batches
+
   def value_function_burnin(self):
     # Flush logger before and after because log structure changes.
     self.flush()
 
     logging.info('Value function burnin')
-    for _ in range(self._config.value_burnin_steps // self._num_ppo_batches):
+    for _ in range(self._value_burnin_steps):
       self._step += 1
       self.step_and_log(ppo_steps=0, train_mixture_policy=False)
     self.flush()
 
     logging.info('Finished value function burnin')
+
+  def _update_variables(self, mixture: bool = False):
+    variables = {
+        self._exploiter_port: self._learner.exploiter_variables(),
+    }
+    if mixture:
+      variables[self._mixture_port] = self._learner.mixture_variables()
+    self.actor.update_variables(variables)
+
+  def training_phase(self):
+    logging.info('Starting new exploiter training phase')
+
+    if self._config.mixture.reset_exploiter:
+      self._learner.reset_exploiter_policy()
+
+    # Set opponent to new mixture policy.
+    self._update_variables(mixture=True)
+
+    # Get the value function used to the new opponent.
+    self.value_function_burnin()
+
+    # Train the exploiter policy against the fixed opponent.
+    logging.info('Training exploiter policy')
+    for _ in range(self._config.mixture.exploiter_train_steps):
+      self._step += 1
+      # Note: we also train the new mixture policy while the exploiter is
+      # training -- might as well use the data.
+      self.step_and_log(train_mixture_policy=True)
+      self._update_variables()
+
+    self.flush()
+
+    # Fix the exploiter policy and train the new mixture policy.
+    logging.info('Fixed exploiter policy, training mixture policy')
+    for _ in range(self._config.mixture.mixture_train_steps):
+      self._step += 1
+      # We could also turn off training the value function.
+      self.step_and_log(ppo_steps=0, train_mixture_policy=True)
+
+    self.flush()
+
+    self.save()
 
   def run(self):
     try:
@@ -324,15 +367,9 @@ class ExperimentManager:
 
       logging.info('Main training loop')
 
-      for _ in range(self._config.runtime.max_step):
-        self.update_variables()  # Will do value function burnin on step 0.
+      while self._step < self._config.runtime.max_step:
+        self.training_phase()
 
-        self._step += 1
-        self.step_and_log()
-
-        self._maybe_save()
-
-      self.save()
     finally:
       self.actor.stop()
 
