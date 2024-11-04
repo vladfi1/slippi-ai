@@ -31,6 +31,7 @@ name_groups = [
   ('Morsecode', 'MORS#762'),
   ('YCZ6', 'YCZ#667', 'YCZ#6', 'WH#0'),
   ('BBB', 'BBB#960'),
+  ('Kodorin', 'KOD#0', '8#9'),
 ]
 
 name_map = {}
