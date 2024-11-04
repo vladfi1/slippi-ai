@@ -14,6 +14,7 @@ import typing as tp
 import sonnet as snt
 import tensorflow as tf
 
+from slippi_ai.controller_heads import ControllerType
 from slippi_ai.policies import Policy, UnrollOutputs
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.networks import RecurrentState
@@ -130,7 +131,7 @@ class Learner:
       exploiter_trajectory: Trajectory,
       mixture_trajectory: Trajectory,
       initial_state: MixtureState,
-      teacher_outputs: UnrollOutputs,  # on exploiter trajectory
+      teacher_logits: ControllerType,  # on exploiter trajectory
       train_mixture_policy: bool = False,
       exploiter_weight: tp.Optional[float] = None,
   ) -> tp.Tuple[MixtureState, dict]:
@@ -147,8 +148,7 @@ class Learner:
       mixture_exploiter_distribution = self._learner._get_distribution(
           mixture_exploiter_outputs.unroll.distances.logits)
 
-      teacher_distribution = self._learner._get_distribution(
-          teacher_outputs.distances.logits)
+      teacher_distribution = self._learner._get_distribution(teacher_logits)
       teacher_kl = self._learner._compute_kl(
           teacher_distribution, mixture_exploiter_distribution)
 
@@ -156,9 +156,10 @@ class Learner:
           mixture_trajectory, initial_state.mixture)
       mixture_kl = mixture_mixture_outputs.kl
 
-      mixture_loss = (
-          exploiter_kl * exploiter_weight
-          + mixture_kl * (1 - exploiter_weight))
+      mixture_loss = tf.add_n([
+          exploiter_kl * exploiter_weight,
+          mixture_kl * (1 - exploiter_weight),
+      ])
 
       if train_mixture_policy:
         mixture_params = self.mixture_policy.trainable_variables
@@ -204,7 +205,7 @@ class Learner:
         initial_state=initial_state.mixture,
         train_mixture_policy=train_mixture_policy,
         exploiter_weight=exploiter_weight,
-        teacher_outputs=rl_outputs.teacher,
+        teacher_logits=rl_outputs.teacher.distances.logits,
     )
 
     final_state = LearnerState(
@@ -240,7 +241,7 @@ class Learner:
       mixture_hidden_state, stats = self.compiled_unroll_mixture(
           exploiter_trajectory=exploiter_trajectory,
           mixture_trajectory=mixture_trajectory,
-          teacher_outputs=rl_output.teacher,
+          teacher_outputs=rl_output.teacher.distances.logits,
           initial_state=mixture_hidden_state,
           train_mixture_policy=train_mixture_policy,
           exploiter_weight=exploiter_weight,
