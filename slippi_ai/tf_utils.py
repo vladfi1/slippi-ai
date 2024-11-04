@@ -177,3 +177,40 @@ def move_axis(x: tf.Tensor, src: int, dst: int) -> tf.Tensor:
   perm.pop(src)
   perm.insert(dst, src)
   return tf.transpose(x, perm)
+
+def minibatch(
+    f: tp.Callable[..., T], size: int, batch_dim: int,
+) -> tp.Callable[..., T]:
+  """Create a minibatched version of f."""
+
+  @functools.wraps(f)
+  def minibatched_f(*args, **kwargs):
+    assert not args
+
+    kwargs = tf.nest.map_structure(tf.convert_to_tensor, kwargs)
+
+    flat_kwargs = tf.nest.flatten(kwargs)
+
+    batch_size = flat_kwargs[0].shape[batch_dim]
+    assert batch_size % size == 0
+    num_batches = batch_size // size
+
+    def split_or_tile(t: tf.Tensor) -> list[tf.Tensor]:
+      if len(t.shape) == 0:
+        return [t] * num_batches
+
+      assert t.shape[batch_dim] == batch_size
+      return tf.split(t, num_batches, axis=batch_dim)
+
+    flat_split_kwargs = map(split_or_tile, flat_kwargs)
+    split_flat_kwargs = zip(*flat_split_kwargs)
+
+    outputs = []
+    for flat_kwargs in split_flat_kwargs:
+      minibatch_kwargs = tf.nest.pack_sequence_as(kwargs, flat_kwargs)
+      outputs.append(f(**minibatch_kwargs))
+
+    return tf.nest.map_structure(
+        lambda *xs: tf.concat(xs, axis=batch_dim), *outputs)
+
+  return minibatched_f
