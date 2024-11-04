@@ -30,11 +30,18 @@ field = run_lib.field
 
 @dataclasses.dataclass
 class MixtureConfig:
+  # Measured in ppo epochs, like the other two here (and unlike regular RL).
+  value_train_steps: int = 1
+
   # Number of steps to train the exploiter agent against the old mixture policy.
   # After this many steps, we update the opponent to the new mixture policy.
   # Note: unlike the env/optimizer/value function burnin steps, this measures
   # ppo epochs, so is effectively multiplied by the number of ppo batches.
   exploiter_train_steps: int = 2
+
+  # After training the exploiter, also train the mixture policy for this number
+  # of steps. Like exploiter_train_steps, this is measured in ppo epochs.
+  mixture_train_steps: int = 1
 
   # After updating the opponent to the new mixture policy, we can also reset the
   # exploiter policy to the same new mixture policy. This reduces correlation
@@ -47,10 +54,6 @@ class MixtureConfig:
   # alternative is to use a fixed exploiter weight (learner.exploiter_weight)
   # which results in an exponential moving average over the exploiter policies.
   scale_exploiter_weight: bool = False
-
-  # After training the exploiter, also train the mixture policy for this number
-  # of steps. Like exploiter_train_steps, this is measured in ppo epochs.
-  mixture_train_steps: int = 1
 
 @dataclasses.dataclass
 class Config(run_lib.Config):
@@ -130,13 +133,18 @@ class ExperimentManager:
       f.write(pickled_state)
 
   def flush(self):
+    num_steps = self._step * self._num_ppo_batches
     num_frames = (
-        self._config.actor.num_envs * self._config.actor.rollout_length
-        * self._num_ppo_batches * self._step
+        self._config.actor.num_envs
+        * self._config.actor.rollout_length
+        * num_steps
     )
     metrics = self._logger.flush(
-        step=self._step * self._num_ppo_batches,
-        extras=dict(num_frames=num_frames),
+        step=num_steps,
+        extras=dict(
+            num_frames=num_frames,
+            num_ppo_epochs=self._step,
+        ),
     )
 
     if metrics is None:
@@ -236,7 +244,7 @@ class ExperimentManager:
 
   def current_phase(self) -> int:
     num_steps_per_phase = sum([
-        self._value_burnin_steps,
+        self._config.mixture.value_train_steps,
         self._config.mixture.exploiter_train_steps,
         self._config.mixture.mixture_train_steps,
     ])
@@ -302,21 +310,15 @@ class ExperimentManager:
       self.step()  # don't log this data
     learning_rate.assign(self._config.learner.learning_rate)
 
-  @property
-  def _value_burnin_steps(self) -> int:
-    return self._config.value_burnin_steps // self._num_ppo_batches
-
   def value_function_burnin(self):
     # Flush logger before and after because log structure changes.
     self.flush()
 
     logging.info('Value function burnin')
-    for _ in range(self._value_burnin_steps):
+    for _ in range(self._config.mixture.value_train_steps):
       self._step += 1
       self.step_and_log(ppo_steps=0, train_mixture_policy=False)
     self.flush()
-
-    logging.info('Finished value function burnin')
 
   def _update_variables(self, mixture: bool = False):
     variables = {
