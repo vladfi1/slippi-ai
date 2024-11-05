@@ -222,7 +222,7 @@ class AgentManager:
   def agent_kwargs(self) -> dict:
     """Kwargs for eval_lib.build_delayed_agent."""
     if self.agent_config.jit_compile:
-      raise ValueError('jit_compile leads to instability')
+      logging.warning('jit_compile leads to instability')
     return dict(
         state=self.get_state(),
         name=self.agent_config.name,

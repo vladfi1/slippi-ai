@@ -68,7 +68,7 @@ class AgentConfig:
 
   def get_kwargs(self) -> dict:
     if self.jit_compile:
-      raise ValueError('jit_compile leads to instability')
+      logging.warning('jit_compile may lead to instability')
     kwargs = dict(
         compile=self.compile,
         jit_compile=self.jit_compile,

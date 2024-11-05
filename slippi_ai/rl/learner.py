@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import typing as tp
 
 import numpy as np
@@ -124,7 +125,7 @@ class Learner:
     self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
 
     if config.jit_compile:
-      raise ValueError('jit_compile leads to instability')
+      logging.warning('jit_compile may lead to instability')
 
     if config.compile:
       maybe_compile = tf.function(
