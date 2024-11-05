@@ -270,12 +270,13 @@ HELP_MESSAGE = """
 !status: Displays selected agent and current sessions.
 !play <code>: Have the bot connect to you.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
-!agents: List available agents to play against.
+!agents: List available agents to play against. The auto-* agents will change automatically based on the matchup.
 !agent <name>: Select an agent to play against.
-!bots <agent1> [<agent2>]: Set one or two bot agents.
+!bots <agent1> [<agent2>]: Set one or two screensaver agents.
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
+As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/hvb-0.0.1-dolphin-type
 """.strip()
 
 ABOUT_MESSAGE = """
@@ -609,6 +610,7 @@ class Bot(commands.Bot):
     config.save_replays = False
     extra_dolphin_kwargs = {}
     if render:
+      extra_dolphin_kwargs['emulation_speed'] = 1
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
