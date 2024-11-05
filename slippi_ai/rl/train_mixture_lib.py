@@ -30,30 +30,7 @@ field = run_lib.field
 
 @dataclasses.dataclass
 class MixtureConfig:
-  # Measured in ppo epochs, like the other two here (and unlike regular RL).
-  value_train_steps: int = 1
-
-  # Number of steps to train the exploiter agent against the old mixture policy.
-  # After this many steps, we update the opponent to the new mixture policy.
-  # Note: unlike the env/optimizer/value function burnin steps, this measures
-  # ppo epochs, so is effectively multiplied by the number of ppo batches.
-  exploiter_train_steps: int = 2
-
-  # After training the exploiter, also train the mixture policy for this number
-  # of steps. Like exploiter_train_steps, this is measured in ppo epochs.
-  mixture_train_steps: int = 1
-
-  # After updating the opponent to the new mixture policy, we can also reset the
-  # exploiter policy to the same new mixture policy. This reduces correlation
-  # between exploiter training phases, but we may prefer to start from the old
-  # exploiter policy as it is likely still good against the new mixture policy.
-  reset_exploiter: bool = True
-
-  # Set the exploiter mixture weight to 1 / (num_phases + 1); in principle this
-  # mixes uniformly across all previous exploiter training phases. The
-  # alternative is to use a fixed exploiter weight (learner.exploiter_weight)
-  # which results in an exponential moving average over the exploiter policies.
-  scale_exploiter_weight: bool = False
+  learning_rate_decrease: float = 0
 
 @dataclasses.dataclass
 class Config(run_lib.Config):
@@ -74,8 +51,7 @@ class ExperimentManager:
       learner: learner_lib.Learner,
       config: Config,
       build_actor: tp.Callable[[], evaluators.RolloutWorker],
-      exploiter_port: int,
-      mixture_port: int,
+      ports: tuple[int, int],
       step: int,
       pickle_path: str,
       teacher_state: dict,
@@ -84,8 +60,7 @@ class ExperimentManager:
     self._learner = learner
     self._build_actor = build_actor
     self._unroll_length = config.actor.rollout_length
-    self._exploiter_port = exploiter_port
-    self._mixture_port = mixture_port
+    self.ports = ports
     self._num_ppo_batches = config.learner.ppo.num_batches
     self._step = step
     self._pickle_path = pickle_path
@@ -100,7 +75,7 @@ class ExperimentManager:
       raise UserWarning('Spending more than half of the time in env burnin.')
 
     batch_size = config.actor.num_envs
-    self._hidden_state = learner.initial_state(batch_size)
+    self._hidden_state = learner.initial_state(2 * batch_size)
 
     self.step_profiler = utils.Profiler()
     self.update_profiler = utils.Profiler(burnin=0)
@@ -194,7 +169,7 @@ class ExperimentManager:
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
     for key in ['agent_pop', 'agent_step']:
-      timings[key] = actor_timing[key][self._exploiter_port]
+      timings[key] = actor_timing[key][self.ports[0]]
 
     # concatenate along the batch dimension
     states: Game = tf.nest.map_structure(
@@ -226,29 +201,22 @@ class ExperimentManager:
 
   def _rollout(self):
     self.num_steps_since_env_reset += 1
-    return self.actor.rollout(self._unroll_length)
+    trajectories, timings = self.actor.rollout(self._unroll_length)
+    # Note: unnecessary conversion of initial states and logits to numpy.
+    trajectory = evaluators.Trajectory.batch(
+        [trajectories[p] for p in self.ports])
+    return trajectory, timings
 
   def unroll(self):
-    trajectories, _ = self._rollout()
+    trajectory, _ = self._rollout()
     _, self._hidden_state = self._learner.compiled_unroll(
-        exploiter_trajectory=trajectories[self._exploiter_port],
-        mixture_trajectory=trajectories[self._mixture_port],
-        initial_state=self._hidden_state,
-    )
+        trajectory, self._hidden_state)
 
   def should_reset_env(self):
     reset_interval = self._config.runtime.reset_every_n_steps
     if reset_interval is None:
       return False
     return self.num_steps_since_env_reset >= reset_interval
-
-  def current_phase(self) -> int:
-    num_steps_per_phase = sum([
-        self._config.mixture.value_train_steps,
-        self._config.mixture.exploiter_train_steps,
-        self._config.mixture.mixture_train_steps,
-    ])
-    return self._step // num_steps_per_phase
 
   def step(
       self,
@@ -260,38 +228,39 @@ class ExperimentManager:
     if self.should_reset_env():
       self.reset_env()
 
+    self.actor.update_variables({
+        port: self._learner.exploiter_variables()
+        for port in self.ports
+    })
+
     with self.rollout_profiler:
-      exploiter_trajectories = []
-      mixture_trajectories = []
+      trajectories = []
       actor_metrics = []
       for _ in range(self._num_ppo_batches):
-        trajectories, timings = self._rollout()
-        exploiter_trajectories.append(trajectories[self._exploiter_port])
-        mixture_trajectories.append(trajectories[self._mixture_port])
+        trajectory, timings = self._rollout()
+        trajectories.append(trajectory)
         actor_metrics.append(timings)
 
       actor_metrics = tf.nest.map_structure(
           lambda *xs: np.mean(xs), *actor_metrics)
 
-    with self.learner_profiler:
-      if self._config.mixture.scale_exploiter_weight:
-        num_phases = 1 + self.current_phase()
-        exploiter_weight = 1 / (num_phases + 1)
-      else:
-        exploiter_weight = self._config.learner.exploiter_weight
+    learning_rate_decrease = 1 + self._config.mixture.learning_rate_decrease * self._step
+    learning_rate = self._config.learner.learning_rate / learning_rate_decrease
+    self._set_learning_rate(learning_rate)
 
+    with self.learner_profiler:
       self._hidden_state, learner_metrics = self._learner.step(
-          exploiter_trajectories, mixture_trajectories, self._hidden_state,
-          num_ppo_epochs=ppo_steps, train_mixture_policy=train_mixture_policy,
-          exploiter_weight=exploiter_weight)
+          trajectories, self._hidden_state,
+          num_ppo_epochs=ppo_steps,
+          train_mixture_policy=train_mixture_policy)
 
     learner_metrics.update(
-        exploiter_weight=exploiter_weight,
         ppo_steps=ppo_steps,
+        learning_rate=learning_rate,
     )
     stats = dict(learner=learner_metrics, actor=actor_metrics)
 
-    return exploiter_trajectories, stats
+    return trajectories, stats
 
   def step_and_log(self, **kwargs):
     with self.step_profiler:
@@ -301,76 +270,43 @@ class ExperimentManager:
     self._logger.record(log_data)
     self._maybe_flush()
 
-  def optimizer_burnin(self):
-    logging.info('Optimizer burnin')
+  @property
+  def _learning_rate(self) -> tf.Variable:
     learning_rate = self._learner._config.learning_rate  # TODO: hacky
     assert isinstance(learning_rate, tf.Variable)
-    learning_rate.assign(0)
+    return learning_rate
+
+  def _set_learning_rate(self, learning_rate: float):
+    self._learning_rate.assign(learning_rate)
+
+  def optimizer_burnin(self):
+    logging.info('Optimizer burnin')
+    self._set_learning_rate(0)
     for _ in range(self._config.optimizer_burnin_steps // self._num_ppo_batches):
       self.step()  # don't log this data
-    learning_rate.assign(self._config.learner.learning_rate)
+    self._set_learning_rate(self._config.learner.learning_rate)
 
   def value_function_burnin(self):
     # Flush logger before and after because log structure changes.
     self.flush()
 
     logging.info('Value function burnin')
-    for _ in range(self._config.mixture.value_train_steps):
+    for _ in range(self._config.value_burnin_steps // self._num_ppo_batches):
       self._step += 1
       self.step_and_log(ppo_steps=0, train_mixture_policy=False)
     self.flush()
-
-  def _update_variables(self, mixture: bool = False):
-    variables = {
-        self._exploiter_port: self._learner.exploiter_variables(),
-    }
-    if mixture:
-      variables[self._mixture_port] = self._learner.mixture_variables()
-    self.actor.update_variables(variables)
-
-  def training_phase(self):
-    logging.info('Starting new exploiter training phase')
-
-    if self._config.mixture.reset_exploiter:
-      self._learner.reset_exploiter_policy()
-
-    # Set opponent to new mixture policy.
-    self._update_variables(mixture=True)
-
-    # Get the value function used to the new opponent.
-    self.value_function_burnin()
-
-    # Train the exploiter policy against the fixed opponent.
-    logging.info('Training exploiter policy')
-    for _ in range(self._config.mixture.exploiter_train_steps):
-      self._step += 1
-      # Note: we also train the new mixture policy while the exploiter is
-      # training -- might as well use the data.
-      self.step_and_log(train_mixture_policy=True)
-      self._update_variables()
-
-    self.flush()
-
-    # Fix the exploiter policy and train the new mixture policy.
-    logging.info('Fixed exploiter policy, training mixture policy')
-    for _ in range(self._config.mixture.mixture_train_steps):
-      self._step += 1
-      # We could also turn off training the value function.
-      self.step_and_log(ppo_steps=0, train_mixture_policy=True)
-
-    self.flush()
-
-    self.save()
 
   def run(self):
     try:
       if self._step == 0:
         self.optimizer_burnin()
+        self.value_function_burnin()
 
       logging.info('Main training loop')
 
       while self._step < self._config.runtime.max_step:
-        self.training_phase()
+        self._step += 1
+        self.step_and_log()
 
     finally:
       self.actor.stop()
@@ -491,25 +427,19 @@ def run(config: Config):
   else:
     learner.restore_from_imitation(teacher_state['state'])
 
-  EXPLOITER_PORT = 1
-  MIXTURE_PORT = 2
+  ports = (1, 2)
 
   dolphin_kwargs = dict(
-      players={
-          EXPLOITER_PORT: dolphin_lib.AI(),
-          MIXTURE_PORT: dolphin_lib.AI(),
-      },
+      players={p: dolphin_lib.AI() for p in ports},
       **config.dolphin.to_kwargs(),
   )
 
-  common_agent_kwargs = dict(
+  agent_kwargs = dict(
+      state=exploiter_policy_state,
       compile=config.agent.compile,
       name=config.agent.name,
   )
-  agent_kwargs = {
-      EXPLOITER_PORT: dict(common_agent_kwargs, state=exploiter_policy_state),
-      MIXTURE_PORT: dict(common_agent_kwargs, state=mixture_policy_state),
-  }
+  per_agent_kwargs = {p: agent_kwargs for p in ports}
 
   env_kwargs = {}
   if config.actor.async_envs:
@@ -519,7 +449,7 @@ def run(config: Config):
     )
 
   build_actor = lambda: evaluators.RolloutWorker(
-      agent_kwargs=agent_kwargs,
+      agent_kwargs=per_agent_kwargs,
       dolphin_kwargs=dolphin_kwargs,
       env_kwargs=env_kwargs,
       num_envs=config.actor.num_envs,
@@ -532,8 +462,7 @@ def run(config: Config):
   experiment_manager = ExperimentManager(
       config=config,
       learner=learner,
-      exploiter_port=EXPLOITER_PORT,
-      mixture_port=MIXTURE_PORT,
+      ports=ports,
       build_actor=build_actor,
       step=step,
       pickle_path=pickle_path,

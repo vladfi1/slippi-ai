@@ -15,6 +15,9 @@ import numpy as np
 
 T = tp.TypeVar('T')
 
+def identity(x: T) -> T:
+  return x
+
 def field(default_factory: tp.Callable[[], T]) -> T:
   return dataclasses.field(default_factory=default_factory)
 
