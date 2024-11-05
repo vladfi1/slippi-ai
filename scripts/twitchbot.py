@@ -37,7 +37,7 @@ _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
     save_replays=True,
     replay_dir='Replays/Twitchbot',
-    console_timeout=10,
+    console_timeout=120,  # allow opponent to pause
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
