@@ -21,7 +21,7 @@ def name_from_metadata(player_meta: dict) -> str:
 # TODO: put this in a json?
 name_groups = [
   ('Mang0', 'mang', 'mang0', 'MANG#0'),
-  ('Zain', 'zain', 'DontTestMe', 'ZAIN#0'),
+  ('Zain', 'zain', 'DontTestMe', 'ZAIN#0', 'DTM#664'),
   ('Cody', 'iBDW', 'cody', 'IBDW#0', 'IBDW#734', 'JBDW#120'),
   ('S2J', 'Mr Plow', 'John Redcorn', 'SSJ#998'),
   ('Amsa', 'AMSA#0'),
