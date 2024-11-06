@@ -25,6 +25,7 @@ from slippi_ai.rl import learner
 @dataclasses.dataclass
 class LearnerConfig(learner.LearnerConfig):
   exploiter_weight: float = 0.1
+  use_exploiter_state: bool = False
 
 class LearnerState(tp.NamedTuple):
   # We get the exploiter state from the actor in the Trajectory.
@@ -88,13 +89,8 @@ class Learner:
       trajectory: Trajectory,
       initial_state: RecurrentState,
   ) -> MixtureOutputs:
-    # Currently, resetting states can only occur on the first frame, which
-    # conveniently means we don't have to deal with resets inside `unroll`.
-    is_resetting = trajectory.is_resetting[0]  # [B]
-    batch_size = is_resetting.shape[0]
-    initial_state = tf.nest.map_structure(
-        lambda x, y: tf_utils.where(is_resetting, x, y),
-        self.mixture_policy.initial_state(batch_size), initial_state)
+    if self._config.use_exploiter_state:
+      initial_state = trajectory.initial_state
 
     outputs = self.mixture_policy.unroll(
         frames=learner.get_delayed_frames(trajectory),
