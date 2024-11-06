@@ -7,6 +7,8 @@ python slippi_ai/rl/train_mixture.py \
   --config.actor.use_fake_envs=True \
   --config.actor.num_envs=1 \
   --config.actor.rollout_length=64 \
+  --config.runtime.eval_every_n_steps=6 \
+  --config.runtime.num_eval_steps=2 \
   --config.runtime.burnin_steps_after_reset=1 \
   --config.runtime.reset_every_n_steps=5 \
   --config.optimizer_burnin_steps=2 \

@@ -33,7 +33,13 @@ class MixtureConfig:
   learning_rate_decrease: float = 0
 
 @dataclasses.dataclass
+class RuntimeConfig(run_lib.RuntimeConfig):
+  eval_every_n_steps: int = 1024
+  num_eval_steps: int = 100
+
+@dataclasses.dataclass
 class Config(run_lib.Config):
+  runtime: RuntimeConfig = field(RuntimeConfig)
   learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
   opponent: bool = False  # unused
 
@@ -74,14 +80,14 @@ class ExperimentManager:
     if 2 * config.runtime.burnin_steps_after_reset > config.runtime.reset_every_n_steps:
       raise UserWarning('Spending more than half of the time in env burnin.')
 
-    batch_size = config.actor.num_envs
-    self._hidden_state = learner.initial_state(2 * batch_size)
+    self.batch_size = config.actor.num_envs
+    self._hidden_state = learner.initial_state(2 * self.batch_size)
 
     self.step_profiler = utils.Profiler()
-    self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
+    self.eval_profiler = utils.Profiler(burnin=0)
 
     with self.reset_profiler:
       self.actor = self._build_actor()
@@ -195,14 +201,18 @@ class ExperimentManager:
 
   def _rollout(self):
     self.num_steps_since_env_reset += 1
-    trajectories, timings = self.actor.rollout(self._unroll_length)
+    return self.actor.rollout(self._unroll_length)
+
+  def _rollout_merged(self):
+    """Merges the two ports along the batch dimension."""
+    trajectories, timings = self._rollout()
     # Note: unnecessary conversion of initial states and logits to numpy.
     trajectory = evaluators.Trajectory.batch(
         [trajectories[p] for p in self.ports])
     return trajectory, timings
 
   def unroll(self):
-    trajectory, _ = self._rollout()
+    trajectory, _ = self._rollout_merged()
     _, self._hidden_state = self._learner.compiled_unroll(
         trajectory, self._hidden_state)
 
@@ -211,6 +221,12 @@ class ExperimentManager:
     if reset_interval is None:
       return False
     return self.num_steps_since_env_reset >= reset_interval
+
+  def _update_variables(self):
+    self.actor.update_variables({
+        port: self._learner.exploiter_variables()
+        for port in self.ports
+    })
 
   def step(
       self,
@@ -222,16 +238,13 @@ class ExperimentManager:
     if self.should_reset_env():
       self.reset_env()
 
-    self.actor.update_variables({
-        port: self._learner.exploiter_variables()
-        for port in self.ports
-    })
+    self._update_variables()
 
     with self.rollout_profiler:
       trajectories = []
       actor_metrics = []
       for _ in range(self._num_ppo_batches):
-        trajectory, timings = self._rollout()
+        trajectory, timings = self._rollout_merged()
         trajectories.append(trajectory)
         actor_metrics.append(timings)
 
@@ -290,17 +303,70 @@ class ExperimentManager:
       self.step_and_log(ppo_steps=0, train_mixture_policy=False)
     self.flush()
 
+  def eval(self):
+    """Evaluate the mixture policy against the exploiter."""
+
+    logging.info('Evaluating mixture policy')
+
+    with self.eval_profiler:
+      # Note: the mixture policy might not understand exploiter hidden states.
+      exploiter_port, mixture_port = self.ports
+      self.actor.update_variables({
+          exploiter_port: self._learner.exploiter_variables(),
+          mixture_port: self._learner.mixture_variables(),
+      })
+
+      mixture_trajectories: list[evaluators.Trajectory] = []
+      for _ in range(self._config.runtime.num_eval_steps):
+        trajectories, _ = self._rollout()
+        mixture_trajectories.append(trajectories[mixture_port])
+
+      # Refresh initial states before training.
+      self._update_variables()
+      self.unroll()
+
+      # concatenate along the batch dimension
+      states: Game = tf.nest.map_structure(
+          lambda *xs: np.concatenate(xs, axis=1),
+          *[t.states for t in mixture_trajectories])
+
+      mixture_stats = reward.player_stats_from_game(states)
+      exploiter_stats = reward.player_stats_from_game(states, swap=True)
+      ko_diff = exploiter_stats['deaths'] - mixture_stats['deaths']
+
+    num_steps = self._step * self._num_ppo_batches
+    num_frames = (
+        self._config.actor.num_envs
+        * self._config.actor.rollout_length
+        * num_steps
+    )
+
+    to_log = dict(
+        ko_diff=ko_diff,
+        mixture=mixture_stats,
+        exploiter=exploiter_stats,
+        time=self.eval_profiler.mean_time(),
+        num_frames=num_frames,
+        num_ppo_epochs=self._step,
+    )
+    train_lib.log_stats(dict(eval=to_log), num_steps)
+
   def run(self):
     try:
       if self._step == 0:
         self.optimizer_burnin()
         self.value_function_burnin()
 
+      eval_interval = self._config.runtime.eval_every_n_steps // self._num_ppo_batches
+
       logging.info('Main training loop')
 
       while self._step < self._config.runtime.max_step:
         self._step += 1
         self.step_and_log()
+
+        if self._step % eval_interval == 0:
+          self.eval()
 
     finally:
       self.actor.stop()
