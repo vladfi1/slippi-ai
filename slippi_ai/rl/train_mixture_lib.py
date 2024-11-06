@@ -132,9 +132,6 @@ class ExperimentManager:
         ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
     print(timing_str)
 
-    ko_diff = metrics['ko_diff']
-    print(f'KO_diff_per_minute: {ko_diff:.3f}')
-
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['rl']['ppo_step']['0']
     mean_actor_kl = pre_update['actor_kl']['mean']
@@ -176,14 +173,11 @@ class ExperimentManager:
         lambda *xs: np.concatenate(xs, axis=1),
         *[t.states for t in trajectories])
 
-    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
-    p1_stats = reward.player_stats(states.p1, states.p0, states.stage)
-    ko_diff = p1_stats['deaths'] - p0_stats['deaths']
+    # due to self-play p0 and p1 will have the same stats
+    p0_stats = reward.player_stats_from_game(states)
 
     return dict(
         p0=p0_stats,
-        p1=p1_stats,
-        ko_diff=ko_diff,
         timings=timings,
         **metrics,
     )
