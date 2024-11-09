@@ -6,6 +6,7 @@ python slippi_ai/rl/run.py \
   --config.actor.use_fake_envs=True \
   --config.actor.num_envs=1 \
   --config.actor.rollout_length=64 \
+  --config.opponent.type=self \
   --config.runtime.burnin_steps_after_reset=1 \
   --config.runtime.reset_every_n_steps=3 \
   --config.optimizer_burnin_steps=2 \

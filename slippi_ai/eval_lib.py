@@ -67,14 +67,18 @@ class BasicAgent:
       self,
       policy: policies.Policy,
       batch_size: int,
-      name_code: int,
+      name_code: tp.Union[int, tp.Sequence[int]],
       sample_kwargs: dict = {},
       compile: bool = True,
       jit_compile: bool = False,
       run_on_cpu: bool = False,
   ):
     self._policy = policy
-    self._name_code = embed.NAME_DTYPE(name_code)
+    if isinstance(name_code, int):
+      name_code = [name_code] * batch_size
+    elif len(name_code) != batch_size:
+      raise ValueError(f'name_code list must have length batch_size={batch_size}')
+    self._name_code = np.array(name_code, dtype=embed.NAME_DTYPE)
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
 
@@ -103,7 +107,7 @@ class BasicAgent:
         state_action = embed.StateAction(
             state=game,
             action=prev_action,
-            name=tf.fill([self._batch_size], self._name_code),
+            name=self._name_code,
         )
         next_action, hidden_state = sample(
             state_action, hidden_state, needs_reset)
@@ -143,7 +147,7 @@ class BasicAgent:
     state_action = embed.StateAction(
         state=self._policy.embed_game.from_state(game),
         action=self._prev_controller,
-        name=np.full([self._batch_size], self._name_code),
+        name=self._name_code,
     )
 
     # Keep hidden state and _prev_controller on device.
@@ -433,7 +437,7 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def get_name_from_rl_state(state: dict) -> Optional[str]:
+def get_name_from_rl_state(state: dict) -> Optional[tp.Union[str, list[str]]]:
   # For RL, we know the name that was used during training.
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
@@ -445,7 +449,7 @@ def get_name_from_rl_state(state: dict) -> Optional[str]:
 def build_delayed_agent(
     state: dict,
     console_delay: int,
-    name: Optional[str] = None,
+    name: Optional[tp.Union[str, list[str]]] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
     **agent_kwargs,
@@ -455,15 +459,26 @@ def build_delayed_agent(
   rl_name = get_name_from_rl_state(state)
   if rl_name is not None:
     name = rl_name
+    if isinstance(name, list):
+      if len(name) > 1:
+        logging.warning('Agent trained with multiple names, using first.')
+        # TODO: cycle through names?
+      name = name[0]
+
     logging.info('Setting agent name to "%s" from RL', name)
 
   if name is None:
     raise ValueError('Must specify an agent name.')
 
+  if isinstance(name, str):
+    name_code = get_name_code(state, name)
+  else:
+    name_code = [get_name_code(state, n) for n in name]
+
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
-      name_code=get_name_code(state, name),
+      name_code=name_code,
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
       **agent_kwargs,
