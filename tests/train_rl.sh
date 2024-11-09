@@ -4,7 +4,7 @@ python slippi_ai/rl/run.py \
   --config.learner.learning_rate=0 \
   --config.teacher=slippi_ai/data/checkpoints/demo \
   --config.actor.use_fake_envs=True \
-  --config.actor.num_envs=1 \
+  --config.actor.num_envs=2 \
   --config.actor.rollout_length=64 \
   --config.opponent.type=self \
   --config.runtime.burnin_steps_after_reset=1 \
