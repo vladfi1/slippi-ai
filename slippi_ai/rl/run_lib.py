@@ -1,5 +1,6 @@
 import dataclasses
 import enum
+import itertools
 import logging
 import os
 import pickle
@@ -62,7 +63,7 @@ class AgentConfig:
   tag: tp.Optional[str] = None
   compile: bool = True
   jit_compile: bool = False
-  name: str = nametags.DEFAULT_NAME
+  name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
   batch_steps: int = 0
   async_inference: bool = False
 
@@ -72,7 +73,6 @@ class AgentConfig:
     kwargs = dict(
         compile=self.compile,
         jit_compile=self.jit_compile,
-        name=self.name,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
     )
@@ -346,10 +346,28 @@ def run(config: Config):
   main_agent_kwargs['state'] = rl_state
   agent_kwargs = {PORT: main_agent_kwargs}
 
-  if config.opponent.type is OpponentType.SELF:
-    agent_kwargs[ENEMY_PORT] = main_agent_kwargs
-  elif config.opponent.type is OpponentType.OTHER:
-    agent_kwargs[ENEMY_PORT] = config.opponent.other.get_kwargs()
+  batch_size = config.actor.num_envs
+
+  if config.opponent.type is OpponentType.CPU:
+    names = itertools.islice(itertools.cycle(config.agent.name), batch_size)
+    main_agent_kwargs['name'] = list(names)
+  else:
+    if config.opponent.type is OpponentType.SELF:
+      opponent_kwargs = main_agent_kwargs.copy()
+      opponent_names = config.agent.name
+    elif config.opponent.type is OpponentType.OTHER:
+      opponent_kwargs = config.opponent.other.get_kwargs()
+      opponent_names = config.opponent.other.name
+
+    name_combinations = itertools.product(config.agent.name, opponent_names)
+    name_combinations = itertools.islice(
+        itertools.cycle(name_combinations), batch_size)
+
+    main_agent_names, opponent_names = zip(*name_combinations)
+    main_agent_kwargs['name'] = main_agent_names
+    opponent_kwargs['name'] = opponent_names
+
+    agent_kwargs[ENEMY_PORT] = opponent_kwargs
 
   env_kwargs = dict(swap_ports=False)
   if config.actor.async_envs:
