@@ -148,6 +148,10 @@ def player_stats(player: Player, opponent: Player, stage: np.ndarray) -> dict:
       stalling=is_stalling_offstage(player, stage).mean(),
   )
 
+def player_stats_from_game(game: Game, swap: bool = False) -> dict:
+  p0, p1 = (game.p1, game.p0) if swap else (game.p0, game.p1)
+  return player_stats(p0, p1, game.stage)
+
 # TODO: test that the two ways of getting reward yield the same results
 def get_reward(
     prev_state: melee.GameState,
