@@ -23,6 +23,7 @@ from slippi_ai import (
     utils,
 )
 
+from slippi_ai.types import Game
 from slippi_ai import value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 
@@ -237,6 +238,11 @@ class Logger:
     self.buffer = []
     return to_log
 
+def concise_name(name: str) -> str:
+  if name == 'Master Player':
+    return 'MP'
+  return name
+
 def dummy_trajectory(
     policy: policies.Policy,
     unroll_length: int,
@@ -359,11 +365,12 @@ def run(config: Config):
       opponent_kwargs = config.opponent.other.get_kwargs()
       opponent_names = config.opponent.other.name
 
-    name_combinations = itertools.product(config.agent.name, opponent_names)
-    name_combinations = itertools.islice(
-        itertools.cycle(name_combinations), batch_size)
+    name_combinations = list(itertools.product(
+        config.agent.name, opponent_names))
+    name_combination_batch = list(itertools.islice(
+        itertools.cycle(name_combinations), batch_size))
 
-    main_agent_names, opponent_names = zip(*name_combinations)
+    main_agent_names, opponent_names = zip(*name_combination_batch)
     main_agent_kwargs['name'] = main_agent_names
     opponent_kwargs['name'] = opponent_names
 
@@ -397,6 +404,51 @@ def run(config: Config):
 
   step_profiler = utils.Profiler()
 
+  MINUTES_PER_FRAME = 60 * 60
+
+  rev = lambda x: x[::-1]
+
+  if config.opponent.type is OpponentType.SELF:
+    ordered_name_combinations: list[tuple[str, str]] = []
+    for i, n1 in enumerate(config.agent.name):
+      for j, n2 in enumerate(config.agent.name):
+        if i < j:
+          ordered_name_combinations.append((n1, n2))
+
+    ordered_name_combination_indices: dict[tuple[str, str], list[int]] = {
+        name_combination: [] for name_combination in ordered_name_combinations
+    }
+    # TODO: would be easier to disallow unordered name combinations
+    reversed_name_combination_indices: dict[tuple[str, str], list[int]] = {
+        name_combination: [] for name_combination in ordered_name_combinations
+    }
+
+    for i, name_combination in enumerate(name_combination_batch):
+      if name_combination in ordered_name_combination_indices:
+        ordered_name_combination_indices[name_combination].append(i)
+      elif rev(name_combination) in reversed_name_combination_indices:
+        reversed_name_combination_indices[rev(name_combination)].append(i)
+      # We don't log mirror matches as the ko_diff will be 0.
+
+    def get_matchup_stats(states: Game) -> dict:
+      tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+      bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
+
+      stats = {}
+      for name_combination, indices in ordered_name_combination_indices.items():
+        key = '_'.join(map(concise_name, name_combination))
+        ko_diff = np.concatenate([
+            bm_kos[indices],
+            -bm_kos[reversed_name_combination_indices[name_combination]],
+        ], axis=0).mean() * MINUTES_PER_FRAME
+        stats[key] = dict(ko_diff=ko_diff)
+
+      # TODO: log reward hacking stats
+
+      return stats
+
+  # TODO: log per-name stats for CPU and OTHER opponents
+
   def get_log_data(
       trajectories: list[evaluators.Trajectory],
       metrics: dict,
@@ -423,16 +475,21 @@ def run(config: Config):
     for key in ['agent_pop', 'agent_step']:
       timings[key] = actor_timing[key][PORT]
 
-    # concatenate along the batch dimension
-    states = tf.nest.map_structure(
-        lambda *xs: np.concatenate(xs, axis=1),
+    # Stack to shape [T, P, B] where P is the number of trajectories
+    states: Game = utils.map_nt(
+        lambda *xs: np.stack(xs, axis=1),
         *[t.states for t in trajectories])
-    kos = reward.compute_rewards(states, damage_ratio=0)
-    kos_per_minute = kos.mean() * (60 * 60)
+
     p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
 
+    if config.opponent.type is OpponentType.SELF:
+      # The second half of the batch just has the players reversed.
+      deduplicated_states = utils.map_single_structure(
+          lambda x: x[:, :, :batch_size], states)
+      matchup_stats = get_matchup_stats(deduplicated_states)
+      metrics.update(by_name=matchup_stats)
+
     metrics.update(
-        ko_diff=kos_per_minute,
         timings=timings,
         p0=p0_stats,
     )
@@ -453,8 +510,9 @@ def run(config: Config):
         ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
     print(timing_str)
 
-    ko_diff = metrics['ko_diff']
-    print(f'KO_diff_per_minute: {ko_diff:.3f}')
+    ko_diff = metrics.get('ko_diff')
+    if ko_diff is not None:
+      print(f'KO_diff_per_minute: {ko_diff:.3f}')
 
     learner_metrics = metrics['learner']
     pre_update = learner_metrics['ppo_step']['0']
