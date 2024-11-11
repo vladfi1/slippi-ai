@@ -116,6 +116,7 @@ class AgentManager:
     self.port = port
     self.enemy_port = ENEMY_PORTS[port]
     self.expt_dir = expt_dir
+    self.learner_config = learner_config
 
     suffix = f'-{port}.pkl'
     self.found = False
@@ -173,21 +174,13 @@ class AgentManager:
           embed_state_action=self.policy.embed_state_action,
       )
 
-    # This allows us to only update the optimizer state.
-    self.learning_rate = tf.Variable(
-        learner_config.learning_rate,
-        name='learning_rate',
-        trainable=False)
-    self.learner_config = learner_config  # save desired learning rate
-    learner_config = dataclasses.replace(
-        learner_config, learning_rate=self.learning_rate)
-
     self.learner = learner_lib.Learner(
         config=learner_config,
         teacher=teacher,
         policy=self.policy,
         value_function=value_function,
     )
+    self.learning_rate = self.learner.learning_rate
 
     # Initialize and restore variables
     self.learner.initialize(run_lib.dummy_trajectory(self.policy, 1, 1))

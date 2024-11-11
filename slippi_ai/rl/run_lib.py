@@ -317,20 +317,13 @@ def run(config: Config):
         embed_state_action=policy.embed_state_action,
     )
 
-  # This allows us to only update the optimizer state.
-  learning_rate = tf.Variable(
-      config.learner.learning_rate,
-      name='learning_rate',
-      trainable=False)
-  learner_config = dataclasses.replace(
-      config.learner, learning_rate=learning_rate)
-
   learner = learner_lib.Learner(
-      config=learner_config,
+      config=config.learner,
       teacher=teacher,
       policy=policy,
       value_function=value_function,
   )
+  learning_rate = learner.learning_rate
 
   # Initialize and restore variables
   learner.initialize(dummy_trajectory(policy, 1, 1))

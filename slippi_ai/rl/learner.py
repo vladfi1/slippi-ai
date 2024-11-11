@@ -111,6 +111,7 @@ class Learner:
       config: LearnerConfig,
       policy: Policy,
       teacher: Policy,
+      learning_rate: tp.Optional[tf.Variable] = None,
       value_function: tp.Optional[vf_lib.ValueFunction] = None,
   ) -> None:
     self._config = config
@@ -119,8 +120,11 @@ class Learner:
     self._use_separate_vf = value_function is not None
     self._value_function = value_function or vf_lib.FakeValueFunction()
 
-    self.policy_optimizer = snt.optimizers.Adam(config.learning_rate)
-    self.value_optimizer = snt.optimizers.Adam(config.learning_rate)
+    if learning_rate is None:
+      learning_rate = tf.Variable(config.learning_rate, trainable=False)
+    self.learning_rate = learning_rate
+    self.policy_optimizer = snt.optimizers.Adam(learning_rate)
+    self.value_optimizer = snt.optimizers.Adam(learning_rate)
 
     self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
 
@@ -495,6 +499,10 @@ class Learner:
     tf.nest.map_structure(
         lambda var, val: var.assign(val),
         tf_state, state)
+
+    # Unfortunately the optimizer state includes the learning rate, so it will
+    # be overridden by the imitation learning rate.
+    self.learning_rate.assign(self._config.learning_rate)
 
   def get_vars(self) -> dict:
     # For restoration, this structure needs to conform to imitation learning.
