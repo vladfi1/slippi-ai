@@ -1,4 +1,5 @@
 import contextlib
+import enum
 import logging
 import threading, queue
 from typing import Callable, Optional, Tuple
@@ -74,13 +75,9 @@ class BasicAgent:
       run_on_cpu: bool = False,
   ):
     self._policy = policy
-    if isinstance(name_code, int):
-      name_code = [name_code] * batch_size
-    elif len(name_code) != batch_size:
-      raise ValueError(f'name_code list must have length batch_size={batch_size}')
-    self._name_code = np.array(name_code, dtype=embed.NAME_DTYPE)
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
+    self.set_name_code(name_code)
 
     # The controller_head may discretize certain components of the action.
     # Agents only work with the discretized action space; you will need
@@ -131,6 +128,13 @@ class BasicAgent:
     self._multi_sample = multi_sample
 
     self.hidden_state = self._policy.initial_state(batch_size)
+
+  def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
+    if isinstance(name_code, int):
+      name_code = [name_code] * self._batch_size
+    elif len(name_code) != self._batch_size:
+      raise ValueError(f'name_code list must have length batch_size={self._batch_size}')
+    self._name_code = np.array(name_code, dtype=embed.NAME_DTYPE)
 
   def warmup(self):
     """Warm up the agent by running a dummy step."""
@@ -437,14 +441,18 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def get_name_from_rl_state(state: dict) -> Optional[tp.Union[str, list[str]]]:
+def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
   # For RL, we know the name that was used during training.
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
-    return state['rl_config']['agent']['name']
+    name = state['rl_config']['agent']['name']
   elif 'agent_config' in state:  # rl/train_two.py
-    return state['agent_config']['name']
-  return None
+    name = state['agent_config']['name']
+  else:
+    return None
+
+  return [name] if isinstance(name, str) else name
+
 
 def build_delayed_agent(
     state: dict,
@@ -459,9 +467,6 @@ def build_delayed_agent(
   rl_name = get_name_from_rl_state(state)
 
   if rl_name is not None:
-    if isinstance(rl_name, str):
-      rl_name = [rl_name]
-
     override = False
 
     if name is None:
@@ -496,15 +501,22 @@ def build_delayed_agent(
       **agent_kwargs,
   )
 
+class NameChangeMode(enum.Enum):
+  FIXED = enum.auto()
+  CYCLE = enum.auto()
+  RANDOM = enum.auto()
+
 class Agent:
   """Wraps a Policy to interact with Dolphin."""
 
   def __init__(
       self,
+      state: dict,
       opponent_port: int,
       config: dict,  # use train.Config instead
       port: tp.Optional[int] = None,
       controller: tp.Optional[melee.Controller] = None,
+      name_change_mode: NameChangeMode = NameChangeMode.FIXED,
       **agent_kwargs,
   ):
     self._controller = controller
@@ -517,8 +529,17 @@ class Agent:
 
     self.players = (self._port, opponent_port)
     self.config = config
+    self.name_change_mode = name_change_mode
 
-    self._agent = build_delayed_agent(batch_size=1, **agent_kwargs)
+    self.name_map: dict[str, int] = state['name_map']
+    rl_names = get_name_from_rl_state(state)
+    if rl_names is not None:
+      self.name_codes = [self.name_map[n] for n in rl_names]
+    else:
+      self.name_codes = list(set(self.name_map.values()))
+    self.name_index = 0
+
+    self._agent = build_delayed_agent(state, batch_size=1, **agent_kwargs)
     self._agent.warmup()
     # Forward async interface
     self.run = self._agent.run
@@ -530,8 +551,21 @@ class Agent:
       raise ValueError('Controller has wrong port.')
     self._controller = controller
 
+  def update_name(self):
+    if self.name_change_mode == NameChangeMode.FIXED:
+      return
+    elif self.name_change_mode == NameChangeMode.CYCLE:
+      self.name_index = (self.name_index + 1) % len(self.name_codes)
+    elif self.name_change_mode == NameChangeMode.RANDOM:
+      self.name_index = np.random.randint(len(self.name_codes))
+    self._agent._agent.set_name_code(self.name_codes[self.name_index])
+
   def step(self, gamestate: melee.GameState) -> SampleOutputs:
-    needs_reset = np.array([gamestate.frame == -123])
+    new_game = gamestate.frame == -123
+    if new_game:
+      self.update_name()
+
+    needs_reset = np.array([new_game])
     game = get_game(gamestate, ports=self.players)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
 
@@ -542,7 +576,6 @@ class Agent:
     action = self._agent.embed_controller.decode(action)
     send_controller(self._controller, action)
     return sample_outputs
-
 
 def build_agent(
     opponent_port: int,
@@ -580,6 +613,9 @@ AGENT_FLAGS = dict(
     fake=ff.Boolean(False, 'Use fake agents.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
+    name_change_mode=ff.EnumClass(
+        NameChangeMode.FIXED, NameChangeMode,
+        'How to change the agent name.'),
 )
 
 PLAYER_FLAGS = dict(
