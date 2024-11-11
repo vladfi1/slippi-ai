@@ -129,9 +129,9 @@ def dataclass_from_dict(cls: tp.Type[T], nest: dict) -> T:
 
 def override_dict(
     base: dict,
-    overrides: flags.FlagHolder,
+    overrides: flags.FlagHolder[dict],
     prefix: tp.Sequence[str],
-) -> str:
+) -> dict:
   """Override a base config value from another dictionary."""
 
   def maybe_update(path: tp.Sequence[str], base_value):
