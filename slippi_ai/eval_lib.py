@@ -601,7 +601,7 @@ def build_agent(
       **agent_kwargs,
   )
 
-AGENT_FLAGS = dict(
+BATCH_AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
     tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
@@ -613,6 +613,10 @@ AGENT_FLAGS = dict(
     fake=ff.Boolean(False, 'Use fake agents.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
+)
+
+AGENT_FLAGS = dict(
+    BATCH_AGENT_FLAGS,
     name_change_mode=ff.EnumClass(
         NameChangeMode.FIXED, NameChangeMode,
         'How to change the agent name.'),
@@ -625,6 +629,11 @@ PLAYER_FLAGS = dict(
         'Character selected by agent or CPU.'),
     level=ff.Integer(9, 'CPU level.'),
     ai=AGENT_FLAGS,
+)
+
+BATCH_PLAYER_FLAGS = dict(
+    PLAYER_FLAGS,
+    ai=BATCH_AGENT_FLAGS,
 )
 
 
