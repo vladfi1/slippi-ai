@@ -28,7 +28,7 @@ if __name__ == '__main__':
   INNER_BATCH_SIZE = flags.DEFINE_integer(
       'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
-  AGENT_FLAGS = eval_lib.AGENT_FLAGS.copy()
+  AGENT_FLAGS = eval_lib.BATCH_AGENT_FLAGS.copy()
   del AGENT_FLAGS['name']
   AGENT_FLAGS['num_names'] = ff.Integer(4, 'Number of names to evaluate.')
   AGENT_FLAGS['names'] = ff.StringList(None)
