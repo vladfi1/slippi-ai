@@ -478,6 +478,7 @@ def build_delayed_agent(
       for n in name:
         if n not in rl_name:
           raise ValueError(f'Agent trained with name(s) {rl_name}, got "{n}"')
+      logging.info('Requested agent name batch is valid.')
 
     if override:
       logging.info('Setting agent name to "%s" from RL', name)
