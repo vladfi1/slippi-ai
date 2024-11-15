@@ -582,24 +582,25 @@ def run(config: Config):
       reset_interval = reset_interval // steps_per_epoch
 
     # Optimizer burnin
-    learning_rate.assign(0)
-    for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
-      learner_manager.step(0, ppo_steps=1)
+    if step == 0:
+      logging.info('Optimizer burnin')
 
-    step = rl_state['step']
+      learning_rate.assign(0)
+      for _ in range(config.optimizer_burnin_steps // steps_per_epoch):
+        learner_manager.step(0, ppo_steps=1)
+      learning_rate.assign(config.learner.learning_rate)
 
-    logging.info('Value function burnin')
+      logging.info('Value function burnin')
 
-    learning_rate.assign(config.learner.learning_rate)
-    for i in range(config.value_burnin_steps // steps_per_epoch):
-      with step_profiler:
-        trajectories, metrics = learner_manager.step(step, ppo_steps=0)
+      for i in range(config.value_burnin_steps // steps_per_epoch):
+        with step_profiler:
+          trajectories, metrics = learner_manager.step(step, ppo_steps=0)
 
-      if i > 0:
-        logger.record(get_log_data(trajectories, metrics))
-        maybe_flush(step)
+        if i > 0:
+          logger.record(get_log_data(trajectories, metrics))
+          maybe_flush(step)
 
-      step += 1
+        step += 1
 
     # Need flush here because logging structure changes based on ppo_steps.
     flush(step)
