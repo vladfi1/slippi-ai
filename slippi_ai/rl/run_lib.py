@@ -8,6 +8,7 @@ import typing as tp
 
 import numpy as np
 import tensorflow as tf
+import wandb
 
 from slippi_ai import (
     dolphin as dolphin_lib,
@@ -275,27 +276,49 @@ def run(config: Config):
   logging.info('experiment directory: %s', expt_dir)
 
   # Restore from existing save file if it exists.
+  restore_path = None
+  restore_from_checkpoint = False
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
-  if not config.restore and os.path.exists(pickle_path):
-    logging.info('Setting restore path to %s', pickle_path)
-    config.restore = pickle_path
-
-  if config.teacher:
-    if config.restore:
-      raise ValueError('Must pass exactly one of "teacher" and "restore".')
-    teacher_state = saving.load_state_from_disk(config.teacher)
-    rl_state = teacher_state
-    rl_state['step'] = 0
+  if os.path.exists(pickle_path):
+    logging.info('Restoring from checkpoint %s', pickle_path)
+    restore_path = pickle_path
+    restore_from_checkpoint = True
   elif config.restore:
-    rl_state = saving.load_state_from_disk(config.restore)
+    restore_path = config.restore
+
+  if config.teacher and config.restore:
+    raise ValueError('Must pass exactly one of "teacher" and "restore".')
+
+  if restore_path:
+    rl_state = saving.load_state_from_disk(restore_path)
 
     previous_config = flag_utils.dataclass_from_dict(
         Config, rl_state['rl_config'])
 
+    if (restore_from_checkpoint and previous_config.restore
+        and previous_config.restore != config.restore):
+      raise ValueError(
+          'Requested restore path does not match checkpoint: '
+          f'{config.restore} (requested) != {previous_config.restore} (checkpoint)')
+
     # Older configs used agent.path instead of config.teacher
-    config.teacher = previous_config.teacher or previous_config.agent.path
-    logging.info(f'Using teacher: {config.teacher}')
+    previous_teacher = previous_config.teacher or previous_config.agent.path
+
+    if config.teacher and config.teacher != previous_teacher:
+      assert restore_from_checkpoint
+      raise ValueError(
+          'Requested teacher does not match checkpoint: '
+          f'{config.teacher} (requested) != {previous_teacher} (checkpoint)')
+
+    logging.info(f'Using teacher: {previous_teacher}')
+    teacher_state = saving.load_state_from_disk(previous_teacher)
+    wandb.config.update(dict(teacher=previous_teacher))
+
+    step = rl_state['step']
+  elif config.teacher:
+    logging.info(f'Initializing from teacher: {config.teacher}')
     teacher_state = saving.load_state_from_disk(config.teacher)
+    step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
