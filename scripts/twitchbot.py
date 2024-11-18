@@ -402,8 +402,7 @@ class Bot(commands.Bot):
   async def reload(self, ctx: commands.Context):
     with self.lock:
       self._reload_models()
-    models_str = ", ".join(self._models)
-    await ctx.send(f'Available agents: {models_str}')
+    await self.agents(ctx)
 
   @commands.command()
   async def config(self, ctx: commands.Context):
