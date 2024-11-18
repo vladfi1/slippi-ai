@@ -301,8 +301,7 @@ def run(config: Config):
           'Requested restore path does not match checkpoint: '
           f'{config.restore} (requested) != {previous_config.restore} (checkpoint)')
 
-    # Older configs used agent.path instead of config.teacher
-    previous_teacher = previous_config.teacher or previous_config.agent.path
+    previous_teacher = previous_config.teacher
 
     if config.teacher and config.teacher != previous_teacher:
       assert restore_from_checkpoint
@@ -311,8 +310,8 @@ def run(config: Config):
           f'{config.teacher} (requested) != {previous_teacher} (checkpoint)')
 
     logging.info(f'Using teacher: {previous_teacher}')
+    config.teacher = previous_teacher  # For saving
     teacher_state = saving.load_state_from_disk(previous_teacher)
-    wandb.config.update(dict(teacher=previous_teacher))
 
     step = rl_state['step']
   elif config.teacher:
