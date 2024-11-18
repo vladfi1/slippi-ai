@@ -23,7 +23,7 @@ def needs_copy(src, dst):
     return True
 
   src_time = os.path.getmtime(src)
-  dst_time = os.path.getmtime(src)
+  dst_time = os.path.getmtime(dst)
 
   return src_time > dst_time
 
@@ -36,8 +36,6 @@ def run(src: str, dst: str, verbose: bool = False):
     dst_path = os.path.join(dst, model)
 
     if not needs_copy(src_path, dst_path):
-      if verbose:
-        print(f'Skipping {model}')
       continue
 
     with open(src_path, 'rb') as f:
@@ -49,7 +47,7 @@ def run(src: str, dst: str, verbose: bool = False):
       pickle.dump(combined_state, f)
 
     if verbose:
-      print(f'Stripped {model}, saved to {dst_path}')
+      print(f'Stripped {model}')
 
 def main(_):
   run(SRC.value, DST.value, VERBOSE.value)
