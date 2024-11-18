@@ -119,6 +119,16 @@ class BotSession:
 
 RemoteBotSession = ray.remote(BotSession)
 
+def get_ports(gamestate: melee.GameState, display_name: str):
+  name_to_port = {
+      player.displayName: port for port, player in gamestate.players.items()
+  }
+  actual_port = name_to_port[display_name]
+  ports = list(gamestate.players)
+  ports.remove(actual_port)
+  opponent_port = ports[0]
+  return actual_port, opponent_port
+
 @dataclasses.dataclass
 class SessionStatus:
   num_menu_frames: int
@@ -208,13 +218,7 @@ class Session:
         self._num_menu_frames += 1
 
       # Now we have access to the display names to set the correct ports.
-      name_to_port = {
-          player.displayName: port for port, player in gamestate.players.items()
-      }
-      actual_port = name_to_port[display_name]
-      ports = list(gamestate.players)
-      ports.remove(actual_port)
-      opponent_port = ports[0]
+      actual_port, opponent_port = get_ports(gamestate, display_name)
 
       if auto_character:
         agent = eval_lib.EnsembleAgent(
@@ -229,7 +233,7 @@ class Session:
             **agent_kwargs,
         )
       else:
-        agent.players = (actual_port, opponent_port)
+        agent.set_ports(actual_port, opponent_port)
 
       # Main loop
       agent.start()
@@ -239,6 +243,9 @@ class Session:
         while not self.stop_requested.is_set():
           gamestate = next(gamestates)
           if not dolphin_lib.is_menu_state(gamestate):
+            if gamestate.frame == -123:
+              agent.set_ports(*get_ports(gamestate, display_name))
+
             agent.step(gamestate)
             self._num_menu_frames = 0
           else:

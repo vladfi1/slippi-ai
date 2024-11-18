@@ -551,6 +551,9 @@ class Agent:
     self.start = self._agent.start
     self.stop = self._agent.stop
 
+  def set_ports(self, port: int, opponent_port: int):
+    self.players = (port, opponent_port)
+
   def set_controller(self, controller: melee.Controller):
     if controller.port != self._port:
       raise ValueError('Controller has wrong port.')
@@ -775,6 +778,14 @@ class EnsembleAgent:
 
     self.current_model: Optional[str] = None
     self._agent: Optional[Agent] = None
+
+  def set_ports(self, port, opponent_port):
+    if self._agent is not None:
+      self._agent.players = (port, opponent_port)
+    self.opponent_port = opponent_port
+    self._agent_kwargs.update(
+        port=port, opponent_port=opponent_port,
+    )
 
   def _get_agent(self, model: str) -> Agent:
     if model == self.current_model:
