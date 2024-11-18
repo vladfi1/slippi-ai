@@ -290,7 +290,8 @@ ABOUT_MESSAGE = """
 Melee AI trained with a combination of imitation learning from slippi replays and self-play reinforcement learning.
  Replays are mostly from ranked, with some tournaments and personal dumps.
  Agents by default have a reaction time of 18 frames (300 ms).
- Code at https://github.com/vladfi1/slippi-ai.
+ Agents cannot see Randall, FoD platforms, Nana, and items or projectiles.
+ Code: https://github.com/vladfi1/slippi-ai. Discord: https://discord.gg/gG3WWcDx.
 """.strip()
 
 @dataclasses.dataclass
