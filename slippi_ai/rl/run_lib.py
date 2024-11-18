@@ -318,6 +318,7 @@ def run(config: Config):
   elif config.teacher:
     logging.info(f'Initializing from teacher: {config.teacher}')
     teacher_state = saving.load_state_from_disk(config.teacher)
+    rl_state = teacher_state
     step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
