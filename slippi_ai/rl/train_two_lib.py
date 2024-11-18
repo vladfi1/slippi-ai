@@ -1,7 +1,7 @@
 """Train two agents against each other."""
 
 import dataclasses
-import enum
+import itertools
 import logging
 import os
 import pickle
@@ -53,7 +53,7 @@ class RuntimeConfig:
 @dataclasses.dataclass
 class AgentConfig:
   teacher: tp.Optional[str] = None
-  name: str = nametags.DEFAULT_NAME
+  name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
 
   compile: bool = True
   jit_compile: bool = False
@@ -218,7 +218,6 @@ class AgentManager:
       logging.warning('jit_compile leads to instability')
     return dict(
         state=self.get_state(),
-        name=self.agent_config.name,
         compile=self.agent_config.compile,
         jit_compile=self.agent_config.jit_compile,
         batch_steps=self.agent_config.batch_steps,
@@ -321,6 +320,39 @@ def run(config: Config):
     config.runtime.expt_dir = expt_dir
   logging.info('experiment directory: %s', expt_dir)
 
+  batch_size = config.actor.num_envs
+
+  name_combinations = list(itertools.product(
+      config.p1.name, config.p2.name))
+  name_combination_batch = list(itertools.islice(
+      itertools.cycle(name_combinations), batch_size))
+
+  port_to_names: dict[int, list[str]] = {}
+  for port, *names in zip(PORTS, *name_combination_batch):
+    port_to_names[port] = names
+
+  name_combination_indices: dict[tuple[str, str], list[int]] = {
+      name_combination: [] for name_combination in name_combinations
+  }
+  for i, name_combination in enumerate(name_combination_batch):
+    name_combination_indices[name_combination].append(i)
+
+  MINUTES_PER_FRAME = 60 * 60
+
+  def get_matchup_stats(states: embed.Game) -> dict:
+    tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+    bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
+
+    stats = {}
+    for name_combination, indices in name_combination_indices.items():
+      key = '_'.join(map(run_lib.concise_name, name_combination))
+      ko_diff = bm_kos[indices].mean() * MINUTES_PER_FRAME
+      stats[key] = dict(ko_diff=ko_diff)
+
+    # TODO: log reward hacking stats
+
+    return stats
+
   agents: dict[int, AgentManager] = {}
   for port in PORTS:
     agents[port] = AgentManager(
@@ -338,6 +370,8 @@ def run(config: Config):
       port: agent.agent_kwargs()
       for port, agent in agents.items()
   }
+  for port, names in port_to_names.items():
+    agent_kwargs[port]['name'] = names
 
   dolphin_kwargs = dict(
       players={
@@ -402,9 +436,9 @@ def run(config: Config):
     for key in ['agent_pop', 'agent_step']:
       timings[key] = actor_timing[key][main_port]
 
-    # concatenate along the batch dimension
-    states: embed.Game = tf.nest.map_structure(
-        lambda *xs: np.concatenate(xs, axis=1),
+    # Stack to shape [T, P, B] where P is the number of trajectories
+    states: embed.Game = utils.map_nt(
+        lambda *xs: np.stack(xs, axis=1),
         *[t.states for t in trajectories])
 
     p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
@@ -419,6 +453,7 @@ def run(config: Config):
         actor=metrics['actor'],
         learner=metrics['learner'][main_port],
         learner2=metrics['learner'][other_port],
+        by_name=get_matchup_stats(states),
     )
 
   logger = Logger()
@@ -448,13 +483,6 @@ def run(config: Config):
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
-
-  # The OpponentType enum sadly needs to be converted.
-  rl_config_jsonnable = dataclasses.asdict(config)
-  rl_config_jsonnable = tf.nest.map_structure(
-      lambda x: x.value if isinstance(x, enum.Enum) else x,
-      rl_config_jsonnable
-  )
 
   def save(step: int):
     for agent in agents.values():
