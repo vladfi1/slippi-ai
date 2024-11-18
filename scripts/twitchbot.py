@@ -283,7 +283,7 @@ HELP_MESSAGE = """
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
-As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/hvb-0.0.1-dolphin-type
+As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/hvb-0.0.2-dt
 """.strip()
 
 ABOUT_MESSAGE = """
