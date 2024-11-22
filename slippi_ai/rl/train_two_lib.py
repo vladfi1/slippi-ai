@@ -445,7 +445,7 @@ def run(config: Config):
     p1_stats = reward.player_stats(states.p1, states.p0, states.stage)
     ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
-    return dict(
+    log_data = dict(
         p0=p0_stats,
         p1=p1_stats,
         ko_diff=ko_diff,
@@ -453,8 +453,13 @@ def run(config: Config):
         actor=metrics['actor'],
         learner=metrics['learner'][main_port],
         learner2=metrics['learner'][other_port],
-        by_name=get_matchup_stats(states),
     )
+
+    character_matchup = '_'.join(
+        agents[port].character.name.lower() for port in PORTS)
+    log_data[character_matchup] = get_matchup_stats(states)
+
+    return log_data
 
   logger = Logger()
 
