@@ -44,6 +44,8 @@ DOLPHIN = ff.DEFINE_dict(
 
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 
+MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
+
 # Serves as the default agent people play against, and the "screensaver" agent.
 agent_flags = eval_lib.AGENT_FLAGS.copy()
 agent_flags.update(
@@ -816,6 +818,7 @@ def main(_):
       prefix='!',
       channel=CHANNEL.value,
       models_path=MODELS_PATH.value,
+      max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
