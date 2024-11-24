@@ -134,6 +134,9 @@ class SessionStatus:
   num_menu_frames: int
   is_alive: bool
 
+# Depends on gecko code. TODO: configure
+MAX_DOLPHIN_DELAY = 24
+
 class Session:
 
   def __init__(
@@ -150,19 +153,18 @@ class Session:
     self.agent_kwargs = agent_kwargs
     self.stop_requested = threading.Event()
 
-    agent_path = self.agent_kwargs['path']
-    agent_state = eval_lib.load_state(path=agent_path)
-    agent_config = flag_utils.dataclass_from_dict(
-        train_lib.Config, agent_state['config'])
+    if auto_character:
+      agent_delay = auto_delay
+    else:
+      agent_path = self.agent_kwargs['path']
+      agent_state = eval_lib.load_state(path=agent_path)
+      agent_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, agent_state['config'])
+      agent_delay = agent_config.policy.delay
 
-    # Console delay should be at least two to avoid rollbacks, and
-    # local delay doesn't need to be more than three.
-    max_local_delay = 3
-    agent_delay = agent_config.policy.delay
-    min_console_delay = min(2, agent_delay)
-    margin = agent_delay - min_console_delay
-    local_delay = min(margin, max_local_delay)
-    console_delay = agent_delay - local_delay
+    # Leave a local delay of 1 for async inference.
+    target_delay = max(agent_delay - 1, 0)
+    console_delay = min(target_delay, MAX_DOLPHIN_DELAY)
 
     dolphin_config.online_delay = console_delay
     logging.info(f'Setting console delay to {console_delay}')
@@ -283,7 +285,7 @@ HELP_MESSAGE = """
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
-As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/hvb-0.0.2-dt
+As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/0.0.3-hvb-dt
 """.strip()
 
 ABOUT_MESSAGE = """
