@@ -481,7 +481,7 @@ def build_delayed_agent(
       logging.info('Requested agent name batch is valid.')
 
     if override:
-      logging.info('Setting agent name to "%s" from RL', name)
+      logging.info('Setting agent name to "%s" from RL', rl_name[0])
       name = rl_name[0]
 
   if name is None:
