@@ -278,17 +278,20 @@ class Session:
 RemoteSession = ray.remote(Session)
 
 HELP_MESSAGE = """
-!status: Displays selected agent and current sessions.
-!play <code>: Have the bot connect to you.
-!stop: Stop the bot after you are done. Doesn't work if the game is paused.
-!agents: List available agents to play against. The auto-* agents will change automatically based on the matchup.
+!play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
+!agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker.
 !agent <name>: Select an agent to play against.
-!bots <agent1> [<agent2>]: Set one or two screensaver agents.
-!about: Some info about the this AI.
-To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
+!more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
 As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://drive.google.com/file/d/1GT2L4FlpTF1FjPILtOSJunIivaRd9tFH
 """.strip()
+
+EXTRA_HELP_MESSAGE = """
+!status: Displays selected agent and current sessions.
+!stop: Stop the bot after you are done. Doesn't work if the game is paused.
+!bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream.
+!about: Print some info about the this AI.
+"""
 
 ABOUT_MESSAGE = """
 Melee AI trained with a combination of imitation learning from slippi replays and self-play reinforcement learning.
@@ -393,6 +396,11 @@ class Bot(commands.Bot):
   @commands.command()
   async def help(self, ctx: commands.Context):
     for line in self.help_message.split('\n'):
+      await ctx.send(line)
+
+  @commands.command()
+  async def more(self, ctx: commands.Context):
+    for line in EXTRA_HELP_MESSAGE.split('\n'):
       await ctx.send(line)
 
   @commands.command()
