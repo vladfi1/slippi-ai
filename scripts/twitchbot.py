@@ -287,7 +287,7 @@ HELP_MESSAGE = """
 !about: Some info about the this AI.
 To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
-As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://github.com/vladfi1/slippi-Ishiiruka/releases/tag/0.0.3-hvb-dt
+As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://drive.google.com/file/d/1GT2L4FlpTF1FjPILtOSJunIivaRd9tFH
 """.strip()
 
 ABOUT_MESSAGE = """
@@ -295,7 +295,7 @@ Melee AI trained with a combination of imitation learning from slippi replays an
  Replays are mostly from ranked, with some tournaments and personal dumps.
  Agents by default have a reaction time of 18 frames (300 ms).
  Agents cannot see Randall, FoD platforms, Nana, and items or projectiles.
- Code: https://github.com/vladfi1/slippi-ai. Discord: https://discord.gg/gG3WWcDx.
+ Code: https://github.com/vladfi1/slippi-ai. Discord: https://discord.gg/hfVTXGu.
 """.strip()
 
 @dataclasses.dataclass
