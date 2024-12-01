@@ -709,6 +709,23 @@ class AgentSummary:
         version=version,
     )
 
+def get_imitation_agents(
+    models_path: str,
+    delay: int,
+) -> dict[melee.Character, str]:
+  models = os.listdir(models_path)
+
+  agent_summaries = {
+      model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
+      for model in models
+  }
+
+  return {
+      summary.character: model
+      for model, summary in agent_summaries.items()
+      if summary.delay == delay and summary.type is AgentType.IMITATION
+  }
+
 def build_matchup_table(
       models_path: str,
       delay: int,

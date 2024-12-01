@@ -312,6 +312,7 @@ def format_td(td: datetime.timedelta) -> str:
 
 
 auto_prefix = 'auto-'
+imitation_prefix = 'basic-'
 
 def parse_auto_char(agent: str) -> Optional[melee.Character]:
   if not agent.startswith(auto_prefix):
@@ -319,6 +320,17 @@ def parse_auto_char(agent: str) -> Optional[melee.Character]:
 
   char_str = agent.removeprefix(auto_prefix)
   return eval_lib.data.name_to_character.get(char_str)
+
+def parse_imitation_char(agent: str) -> Optional[melee.Character]:
+  if not agent.startswith(imitation_prefix):
+    return None
+
+  char_str = agent.removeprefix(imitation_prefix)
+  return eval_lib.data.name_to_character.get(char_str)
+
+
+def tokens(message: str) -> list[str]:
+  return [x for x in message.split(' ') if x != '']
 
 class Bot(commands.Bot):
 
@@ -399,6 +411,9 @@ class Bot(commands.Bot):
       state = {k: state[k] for k in keys if k in state}
       self._models[agent] = state
 
+    self._imitation_agents = eval_lib.get_imitation_agents(
+        self._models_path, delay=self._auto_delay)
+
     self._matchup_table = eval_lib.build_matchup_table(
         self._models_path, delay=self._auto_delay)
 
@@ -406,7 +421,7 @@ class Bot(commands.Bot):
   async def reload(self, ctx: commands.Context):
     with self.lock:
       self._reload_models()
-    await self.agents(ctx)
+    await self.agents_full(ctx)
 
   @commands.command()
   async def config(self, ctx: commands.Context):
@@ -431,6 +446,16 @@ class Bot(commands.Bot):
   @commands.command()
   async def agents(self, ctx: commands.Context):
     agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    for c in self._imitation_agents:
+      agents.append(imitation_prefix + c.name.lower())
+
+    await ctx.send(' '.join(agents))
+
+  @commands.command()
+  async def agents_full(self, ctx: commands.Context):
+    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    for c in self._imitation_agents:
+      agents.append(imitation_prefix + c.name.lower())
     agents.extend(self._models)
 
     max_chars = 500
@@ -461,6 +486,7 @@ class Bot(commands.Bot):
       return
 
     agent: str = words[1]
+    validated = False
 
     auto_char = parse_auto_char(agent)
     if auto_char:
@@ -470,8 +496,19 @@ class Bot(commands.Bot):
             f'No agents trained to play as {auto_char.name.lower()}.'
             f' Available characters are {valid_chars}.')
         return
+      validated = True
 
-    elif agent not in self._models:
+    imitation_char = parse_imitation_char(agent)
+    if imitation_char:
+      if imitation_char not in self._imitation_agents:
+        valid_chars = ', '.join(c.name.lower() for c in self._imitation_agents)
+        await ctx.send(
+            f'No basic agents trained to play as {auto_char.name.lower()}.'
+            f' Available basic characters are {valid_chars}.')
+        return
+      validated = True
+
+    if not validated and agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
       # models_str might be too big for Twitch :(
       # models_str = ", ".join(self._models)
@@ -600,9 +637,13 @@ class Bot(commands.Bot):
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
     auto_character = parse_auto_char(agent)
+    imitation_character = parse_imitation_char(agent)
 
     agent_kwargs = self.agent_kwargs.copy()
-    if auto_character is None:
+    if imitation_character:
+      agent_kwargs['path'] = os.path.join(
+          self._models_path, self._imitation_agents[imitation_character])
+    elif auto_character is None:
       agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
     return RemoteSession.remote(
@@ -727,6 +768,8 @@ class Bot(commands.Bot):
     with self.lock:
       ray.wait([info.session.stop.remote() for info in infos])
 
+      logging.info(f'Stopped {len(infos)} human sessions.')
+
       for info in infos:
         del self._sessions[info.twitch_name]
         if self._streaming_against == info.twitch_name:
@@ -802,6 +845,7 @@ class Bot(commands.Bot):
 
   def shutdown(self):
     with self.lock:
+      logging.info('Shutting down')
       self._stop_sessions(list(self._sessions.values()))
       self._stop_bot_session()
       self._do_chores.stop()
