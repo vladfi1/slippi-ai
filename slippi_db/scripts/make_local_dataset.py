@@ -1,9 +1,13 @@
+"""The final step of dataset creation.
+
+python slippi_db/scripts/make_local_dataset.py --root=Root
+"""
+
 import collections
 import os
 import pickle
 import json
 import tarfile
-import tempfile
 import tqdm
 
 from absl import app, flags

@@ -1,3 +1,5 @@
+"""Train a model using imitation learning."""
+
 from absl import app
 import fancyflags as ff
 

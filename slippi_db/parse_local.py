@@ -1,12 +1,32 @@
 """Run parsing in the local filesystem.
 
-We skip the "slp" step, parsing directly from raw archives.
+It is assumed that everything is organized under a "root" directory:
 
 Root
   Raw
   raw.json
   Parsed
-  parsed.pq
+  parsed.pkl
+  meta.json
+
+Raw contains .zip and .7z archives of .slp files, possibly nested under
+subdirectories. The raw.json metadata file contains information about each
+raw archive, including whether it has been processed. Once a raw archive has
+been processed, it may be removed to save space.
+
+The Parsed directory is populated by this script with a parquet file for each
+processed .slp file. These files are named by the MD5 hash of the .slp file,
+and are used by imitation learning. The parsed.pkl pickle file contains
+metadata about each processed .slp in Parsed.
+
+The meta.json file is created by scripts/make_local_dataset.py and is used by
+imitation learning to know which files to train on.
+TODO: consider merging meta.json and parsed.pkl
+
+Usage: python slippi_db/parse_local.py --root=Root [--threads N] [--dry_run]
+
+This will process all unprocessed .zip and .7z files in the Raw directory,
+overwriting any existing files in Parsed, and will update parsed.pkl.
 """
 
 import concurrent.futures
