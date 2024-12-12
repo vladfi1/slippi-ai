@@ -57,7 +57,9 @@ jobs:
         chmod +x dolphin
 
     - name: Install dolphin dependencies
-      run: sudo apt install -y libfuse2 libegl1
+      run: |
+        sudo apt update
+        sudo apt install -y libfuse2 libegl1
 
     - name: Cache the SSBM iso
       uses: actions/cache@v4
