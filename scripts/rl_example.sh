@@ -37,7 +37,7 @@ python slippi_ai/rl/run.py \
   --config.opponent.train=True \
   --config.actor.rollout_length=240 \
   --config.actor.num_envs=96 \
-  --config.actor.inner_batch_size=10 \
+  --config.actor.inner_batch_size=8 \
   --config.actor.async_envs=True \
   --config.actor.num_env_steps=4 \
   --config.actor.gpu_inference=True \

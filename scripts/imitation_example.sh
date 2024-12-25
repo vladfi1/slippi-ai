@@ -17,8 +17,10 @@ python scripts/train.py \
   --wandb.mode=online \
   --config.tag=${CHAR}_delay_${DELAY} \
   --config.policy.delay=$DELAY \
-  --config.data.batch_size=256 \
-  --config.data.unroll_length=120 \
+  --config.data.batch_size=512 \
+  --config.data.unroll_length=80 \
+  --config.learner.learning_rate=1e-4 \
+  --config.learner.reward_halflife=4 \
   --config.network.name=tx_like \
   --config.network.tx_like.num_layers=3 \
   --config.network.tx_like.hidden_size=512 \
