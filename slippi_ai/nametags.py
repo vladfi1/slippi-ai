@@ -32,6 +32,7 @@ name_groups = [
   ('YCZ6', 'YCZ#667', 'YCZ#6', 'WH#0'),
   ('BBB', 'BBB#960'),
   ('Kodorin', 'KOD#0', '8#9'),
+  ('SFAT', 'SFAT#9', 'OHMA#175', 'SFAT#99', 'SFAT#783'),
 ]
 
 name_map = {}
