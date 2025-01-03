@@ -1,4 +1,26 @@
-"""Test a trained model."""
+"""Run a game between two trained agents, or vs a human player.
+
+To run two agents against each other:
+
+```shell
+python scripts/eval_two.py \
+  --dolphin.path=/path/to/slippi-dolphin \
+  --dolphin.iso=/path/to/SSBM.iso \
+  --p1.ai.path=/path/to/agent1 \
+  --p2.ai.path=/path/to/agent2
+```
+
+To run an agent against a human player in port 1:
+
+```shell
+python scripts/eval_two.py \
+  --dolphin.path=/path/to/slippi-dolphin \
+  --dolphin.iso=/path/to/SSBM.iso \
+  --p1.type=human \
+  --p2.ai.path=/path/to/agent
+```
+
+"""
 
 import logging
 import os
@@ -12,7 +34,10 @@ from slippi_ai import dolphin as dolphin_lib
 
 PORTS = (1, 2)
 
-PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **eval_lib.PLAYER_FLAGS) for p in PORTS}
+player_flags = eval_lib.PLAYER_FLAGS.copy()
+player_flags['ai']['async_inference'] == ff.Boolean(True)
+
+PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **player_flags) for p in PORTS}
 
 dolphin_config = dolphin_lib.DolphinConfig(
     headless=False,
@@ -22,8 +47,6 @@ dolphin_config = dolphin_lib.DolphinConfig(
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
-
-flags.DEFINE_integer('runtime', 300, 'Running time, in seconds.')
 
 FLAGS = flags.FLAGS
 
@@ -59,13 +82,11 @@ def main(_):
   for agent in agents:
     agent.set_controller(dolphin.controllers[agent._port])
 
-  total_frames = 60 * FLAGS.runtime
-
   step_timer = utils.Profiler()
 
   # Main loop
   try:
-    for i in range(total_frames):
+    while True:
       # "step" to the next frame
       gamestate = dolphin.step()
 
@@ -76,7 +97,7 @@ def main(_):
         for agent in agents:
           agent.step(gamestate)
 
-      if i > 0 and i % (15 * 60) == 0:
+      if gamestate.frame > 0 and gamestate.frame % (15 * 60) == 0:
         logging.info(f'step_time: {step_timer.mean_time():.3f}')
   finally:
     for agent in agents:
