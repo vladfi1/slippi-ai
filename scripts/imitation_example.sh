@@ -39,8 +39,8 @@ python scripts/train.py \
   --config.dataset.allowed_opponents=all \
   --config.dataset.data_dir=$DATA_DIR \
   --config.dataset.meta_path=$META_PATH \
-  --runtime.eval_every_n=2000 \
-  --runtime.num_eval_steps=20 \
+  --config.runtime.eval_every_n=5000 \
+  --config.runtime.num_eval_steps=200 \
   --config.runtime.max_runtime=$RUNTIME \
   --config.runtime.log_interval=300 \
   --config.runtime.save_interval=600 \
