@@ -123,11 +123,11 @@ def scan_rnn(
 
   return tf.scan(fn, inputs, initializer)
 
-
 def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   """Broadcasting tf.where, with cond of shape [B]."""
   rank = len(x.shape)
-  cond = tf.expand_dims(cond, list(range(1, rank)))
+  for _ in range(rank - len(cond.shape)):
+    cond = tf.expand_dims(cond, -1)
   return tf.where(cond, x, y)
 
 T = tp.TypeVar('T')

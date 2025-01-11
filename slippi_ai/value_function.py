@@ -3,7 +3,9 @@ import typing as tp
 import tensorflow as tf
 import sonnet as snt
 
-from slippi_ai import data, embed, networks, tf_utils
+from melee.enums import Action
+
+from slippi_ai import data, embed, networks, tf_utils, types
 from slippi_ai.rl_lib import discounted_returns
 from slippi_ai.networks import RecurrentState
 
@@ -13,6 +15,12 @@ class ValueOutputs(tp.NamedTuple):
   loss: tf.Tensor
   metrics: dict
 
+def player_respawn(player: types.Player) -> tf.Tensor:
+  """Returns a boolean mask indicating when a player respawns."""
+  actions = player.action
+  # Note: players seem to be able to skip ON_HALO_WAIT
+  respawn = Action.ON_HALO_DESCENT.value
+  return tf.logical_and(actions[:-1] != respawn, actions[1:] == respawn)
 
 class ValueFunction(snt.Module):
 
@@ -41,7 +49,8 @@ class ValueFunction(snt.Module):
         Assumed to have one frame of overlap.
       initial_state: Batch of initial recurrent states.
       discount: Per-frame discount factor for returns.
-      discount_on_death: Discount factor to use when a player dies.
+      discount_on_death: Discount factor to use when either player *respawns*.
+        The reward for KOs comes on the frame of death, which precedes respawn.
     """
     rewards = frames.reward
 
@@ -60,9 +69,15 @@ class ValueFunction(snt.Module):
     discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
 
     if discount_on_death is not None:
-      death_happened = tf.abs(rewards) > 0.9  # this is a hack
-      discounts = tf.where(
-          death_happened, tf.cast(discount_on_death, tf.float32), discounts)
+      respawn_happened = tf.logical_or(
+          player_respawn(frames.state_action.state.p0),
+          player_respawn(frames.state_action.state.p1))
+
+      discounts_on_death = tf.fill(
+          discounts.shape, tf.cast(discount_on_death, tf.float32))
+
+      discounts = tf.where(respawn_happened, discounts_on_death, discounts)
+      assert discounts.shape == rewards.shape
 
     value_targets = discounted_returns(
         rewards=rewards,
