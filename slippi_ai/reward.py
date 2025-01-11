@@ -70,9 +70,13 @@ get_edge_x = np.vectorize(lambda x: stage_to_edge_x.get(x, 100))
 
 def amount_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
   stage_xs = get_edge_x(stage[0])
-  below = np.minimum(player.y, 0)
-  offstage = np.maximum(np.abs(player.x) - stage_xs, 0)
-  return np.sqrt(np.square(below) + np.square(offstage))
+  dx = np.maximum(np.abs(player.x) - stage_xs, 0)
+
+  below = -np.minimum(player.y, 0)
+  above = np.maximum(player.y - 50, 0)
+  dy = np.maximum(below, above)
+
+  return np.sqrt(np.square(dx) + np.square(dy))
 
 def is_stalling_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
   return amount_offstage(player, stage) > 20  # arbitrary
@@ -88,8 +92,9 @@ def is_aerial_shine(player: Player):
   return np.logical_and(is_spacie, is_shine)
 
 def find_offstage_shine_stalls(player: Player, stage: np.ndarray):
-  offstage = is_stalling_offstage(player, stage) > 20
-  return np.logical_and(offstage, is_aerial_shine(player))
+  return np.logical_and(
+      is_stalling_offstage(player, stage),
+      is_aerial_shine(player))
 
 @dataclasses.dataclass
 class RewardConfig:
