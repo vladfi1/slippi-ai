@@ -27,7 +27,7 @@ name_groups = [
   ('Amsa', 'AMSA#0'),
   ('Phillip AI', 'PHAI#591'),
   ('Hax', 'XX#02', 'HAX#472'),
-  ('Aklo', 'AKLO#381'),
+  ('Aklo', 'AKLO#381', 'AKLO#239'),
   ('Morsecode', 'MORS#762'),
   ('YCZ6', 'YCZ#667', 'YCZ#6', 'WH#0'),
   ('BBB', 'BBB#960'),
