@@ -38,7 +38,7 @@ class LearnerConfig:
   reverse_kl_teacher_weight: float = 0
   entropy_weight: float = 0
   value_cost: float = 0.5
-  reward_halflife: float = 2  # measured in seconds
+  reward_halflife: float = 4  # measured in seconds
   discount_on_death: tp.Optional[float] = None
   reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
   ppo: PPOConfig = field(PPOConfig)
