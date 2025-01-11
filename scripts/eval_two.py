@@ -34,8 +34,8 @@ from slippi_ai import dolphin as dolphin_lib
 
 PORTS = (1, 2)
 
-player_flags = eval_lib.PLAYER_FLAGS.copy()
-player_flags['ai']['async_inference'] == ff.Boolean(True)
+player_flags = utils.map_nt(lambda x: x, eval_lib.PLAYER_FLAGS)
+player_flags['ai']['async_inference'] = ff.Boolean(True)
 
 PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **player_flags) for p in PORTS}
 
