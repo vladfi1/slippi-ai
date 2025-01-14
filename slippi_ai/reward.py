@@ -68,12 +68,16 @@ stage_to_edge_x = {
 }
 get_edge_x = np.vectorize(lambda x: stage_to_edge_x.get(x, 100))
 
+# Above this height is considered offstage for the purposes of stalling.
+# The highest top platform is at 54.4 on Battlefield.
+MAX_STALLING_Y = 60
+
 def amount_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
   stage_xs = get_edge_x(stage[0])
   dx = np.maximum(np.abs(player.x) - stage_xs, 0)
 
   below = -np.minimum(player.y, 0)
-  above = np.maximum(player.y - 50, 0)
+  above = np.maximum(player.y - MAX_STALLING_Y, 0)
   dy = np.maximum(below, above)
 
   return np.sqrt(np.square(dx) + np.square(dy))
