@@ -34,6 +34,7 @@ name_groups = [
   ('Kodorin', 'KOD#0', '8#9'),
   ('SFAT', 'SFAT#9', 'OHMA#175', 'SFAT#99', 'SFAT#783'),
   ('Solobattle', '666#666', 'SOLO#735'),  # TODO: many Solobattle games have no name
+  ('Frenzy', 'FRNZ#141'),
 ]
 
 name_map = {}
