@@ -410,7 +410,14 @@ def train(config: Config):
     eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
-    to_log = dict(eval=eval_stats)
+    total_frames = total_steps * FRAMES_PER_STEP
+    train_epoch = epoch_tracker.last
+    counters = dict(
+        total_frames=total_frames,
+        train_epoch=train_epoch,
+    )
+
+    to_log = dict(eval=eval_stats, **counters)
     train_lib.log_stats(to_log, total_steps)
 
     # Log losses aggregated by name.
@@ -442,10 +449,7 @@ def train(config: Config):
         counts=np.array(counts, dtype=np.uint32),
     )
 
-    to_log = dict(
-        eval_names=to_log,
-        num_frames=total_steps * FRAMES_PER_STEP,
-    )
+    to_log = dict(eval_names=to_log, **counters)
     train_lib.log_stats(to_log, total_steps, take_mean=False)
 
   start_time = time.time()
