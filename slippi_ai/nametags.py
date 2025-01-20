@@ -1,20 +1,50 @@
 """Track known player nametags and connect codes."""
 
-DEFAULT_NAME = 'Master Player'
+from typing import Optional
 
-def name_from_metadata(player_meta: dict) -> str:
+import melee
+
+DEFAULT_NAME = 'Master Player'
+NAME_UNKNOWN = ''
+
+def get_player(raw: str) -> Optional[str]:
+  """The convention for personal dumps is Players/NAME/..."""
+  if raw.startswith('Players/'):
+    return raw.split('/')[1]
+  return None
+
+# Some player dumps have a lot of local games with no name or code.
+# For such players, we assume any game with that player's main is them.
+PLAYER_MAINS = {
+    ('Solobattle', melee.Character.JIGGLYPUFF),
+    ('Franz', melee.Character.DOC),
+}
+
+def name_from_metadata(player_meta: dict, raw: Optional[str] = None) -> str:
   netplay = player_meta['netplay']
 
+  if netplay is not None:
+    # Player dumps will have netplay codes, while the ranked-anonymized dumps
+    # have an empty code and the name set to "Platinum/Diamond/Master Player".
+    if netplay['code']:
+      # Internally, connect codes use the Shift-JIS hash sign.
+      return netplay['code'].replace('＃', '#')
+
+    if netplay['name']:
+      return netplay['name']
+
+  if raw:
+    player_name = get_player(raw)
+    if player_name:
+      char = melee.Character(player_meta['character'])
+      if (player_name, char) in PLAYER_MAINS:
+        return player_name
+
   # Offline games (e.g. tournaments)
-  if netplay is None:
+  if player_meta['name_tag']:
     return player_meta['name_tag']
 
-  # Player dumps will have netplay codes, while the ranked-anonymized dumps
-  # have an empty code and the name set to "Platinum/Diamond/Master Player".
-  if netplay['code']:
-    # Internally, connect codes use the Shift-JIS hash sign.
-    return netplay['code'].replace('＃', '#')
-  return netplay['name']
+  return NAME_UNKNOWN
 
 # TODO: we could scrape code -> ELO from the slippi website?
 
@@ -35,6 +65,9 @@ name_groups = [
   ('SFAT', 'SFAT#9', 'OHMA#175', 'SFAT#99', 'SFAT#783'),
   ('Solobattle', '666#666', 'SOLO#735'),  # TODO: many Solobattle games have no name
   ('Frenzy', 'FRNZ#141'),
+  ('Gosu', 'WIZZ#310'),
+  # Most Franz games are local with no name; for those we assume any Doctor Mario is Franz.
+  ('Franz', 'XELA#158', 'PLATO#0'),
 ]
 
 name_map = {}
@@ -65,3 +98,6 @@ for name in BANNED_NAMES:
 
 def is_banned_name(name: str) -> bool:
   return normalize_name(name) in BANNED_NAMES
+
+for name, _ in PLAYER_MAINS:
+  assert name in name_map.values(), name

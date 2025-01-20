@@ -26,10 +26,10 @@ class PlayerMeta(NamedTuple):
   name: str
 
   @classmethod
-  def from_metadata(cls, player_meta: dict) -> 'PlayerMeta':
+  def from_metadata(cls, player_meta: dict, raw: str) -> 'PlayerMeta':
     return cls(
         character=player_meta['character'],
-        name=nametags.name_from_metadata(player_meta))
+        name=nametags.name_from_metadata(player_meta, raw=raw))
 
 class ReplayMeta(NamedTuple):
   p0: PlayerMeta
@@ -39,9 +39,10 @@ class ReplayMeta(NamedTuple):
 
   @classmethod
   def from_metadata(cls, metadata: dict) -> 'ReplayMeta':
+    raw = metadata['raw']
     return cls(
-        p0=PlayerMeta.from_metadata(metadata['players'][0]),
-        p1=PlayerMeta.from_metadata(metadata['players'][1]),
+        p0=PlayerMeta.from_metadata(metadata['players'][0], raw),
+        p1=PlayerMeta.from_metadata(metadata['players'][1], raw),
         stage=metadata['stage'],
         slp_md5=metadata['slp_md5'])
 
