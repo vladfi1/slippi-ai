@@ -298,7 +298,8 @@ def train(config: Config):
   train_stats, _ = train_manager.step()
   logging.info('loss initial: %f', _get_loss(train_stats))
 
-  step = tf.Variable(0, trainable=False, name="step")
+  with tf.device('/cpu:0'):
+    step = tf.Variable(0, trainable=False, name="step", dtype=tf.int64)
 
   # saving and restoring
   tf_state = dict(
@@ -400,7 +401,7 @@ def train(config: Config):
     print()
 
   def maybe_eval():
-    total_steps = step.numpy()
+    total_steps = int(step.numpy())
     if total_steps % runtime.eval_every_n != 0:
       return
 
