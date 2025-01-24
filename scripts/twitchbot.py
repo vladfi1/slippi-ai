@@ -283,7 +283,7 @@ HELP_MESSAGE = """
 !agent <name>: Select an agent to play against.
 !more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
-As an experimental feature, you can play lag-free against the bot by using a custom dolphin build: https://drive.google.com/file/d/1GT2L4FlpTF1FjPILtOSJunIivaRd9tFH
+NOTE: the experimental lagless feature has been merged into regular slippi dolphin; a custom build is no longer needed.
 """.strip()
 
 EXTRA_HELP_MESSAGE = """
