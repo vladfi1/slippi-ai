@@ -84,6 +84,9 @@ class Dolphin:
     if render is None:
       render = not headless
 
+    if not render:
+      console_kwargs.update(gfx_backend='Null')
+
     if headless:
       console_kwargs.update(
           disable_audio=True,
@@ -113,7 +116,6 @@ class Dolphin:
         polling_mode=console_timeout is not None,
         polling_timeout=console_timeout,
         slippi_port=slippi_port,
-        gfx_backend='' if render else 'Null',
         copy_home_directory=False,
         setup_gecko_codes=True,
         save_replays=save_replays,
@@ -236,12 +238,14 @@ class DolphinConfig:
   stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
   online_delay: int = 0  # Simulate online delay.
   blocking_input: bool = True  # Have game wait for AIs to send inputs.
-  console_timeout: Optional[float] = None  # Seconds to wait for console inpouts before throwing an error.
+  console_timeout: Optional[float] = None  # Seconds to wait for console inputs before throwing an error.
   slippi_port: Optional[int] = None  # Local ip port to communicate with dolphin.
   fullscreen: bool = False # Run dolphin in full screen mode
   render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
+  gfx_backend: str = ''  # Graphics backend to use.
+  disable_audio: bool = False  # Disable dolphin audio.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
   emulation_speed: float = 1.0  # Set to 0 for unlimited speed. Mainline only.
   infinite_time: bool = True  # Infinite time no stocks.
