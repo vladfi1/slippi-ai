@@ -209,12 +209,14 @@ class DelayedAgent:
 
   def __init__(
       self,
-      policy: policies.Policy,
+      state: dict,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    policy = saving.load_policy_from_state(state)
+
     self._batch_steps = batch_steps
     self._input_queue = []
 
@@ -296,121 +298,131 @@ class DelayedAgent:
   def stop(self):
     """For compatibility with the async agent."""
 
+import multiprocessing as mp
+from typing import Optional, Tuple
 
-def _run_agent(
-    agent: BasicAgent,
-    state_queue: queue.Queue,
-    controller_queue: queue.Queue,
-    batch_steps: int,
-    state_queue_profiler: utils.Profiler,
-    step_profiler: utils.Profiler,
+def _run_agent_mp(
+    state: dict,
+    batch_size: int,
+    agent_kwargs: dict,
+    state_queue: mp.Queue,
+    controller_queue: mp.Queue,
+    batch_steps: int,  # number of timesteps to process at a time
 ):
-  """Breaks circular references."""
-  # Not needed anymore since we rely on context managers instead of __del__.
+  policy = saving.load_policy_from_state(state)
+  agent = build_basic_agent(
+      policy=policy,
+      batch_size=batch_size,
+      **agent_kwargs
+  )
+
   while batch_steps == 0:
-    with state_queue_profiler:
-      next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+    next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
     if next_item is None:
-      state_queue.task_done()
       return
     game, needs_reset = next_item
-    with step_profiler:
-      sampled_controller = agent.step(game, needs_reset)
+    sampled_controller = agent.step(game, needs_reset)
     controller_queue.put(sampled_controller)
-    state_queue.task_done()
 
   while batch_steps > 0:
     states = []
     for _ in range(batch_steps):
-      with state_queue_profiler:
-        next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+      next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
       if next_item is None:
-        state_queue.task_done()
         return
       states.append(next_item)
 
-    with step_profiler:
-      sampled_controllers = agent.multi_step(states)
+    sampled_controllers = agent.multi_step(states)
 
     for controller in sampled_controllers:
       controller_queue.put(controller)
-      state_queue.task_done()
+
+def _run_agent_mp_wrapper(*args, **kwargs):
+  try:
+    _run_agent_mp(*args, **kwargs)
+  except KeyboardInterrupt:
+    # Exit gracefully on keyboard interrupt
+    pass
 
 class AsyncDelayedAgent:
-  """Delayed agent that runs inference asynchronously."""
 
   def __init__(
       self,
-      policy: policies.Policy,
+      state: dict,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    self._state = state
     self._batch_size = batch_size
     self._batch_steps = batch_steps
-    self._agent = build_basic_agent(
-        policy=policy,
-        batch_size=batch_size,
-        **agent_kwargs)
-    self.warmup = self._agent.warmup
-    self._policy = policy
+    self._agent_kwargs = agent_kwargs
+
+    # Temporarily load the policy to get the delay/controller embedding.
+    policy = saving.load_policy_from_state(state)
     self.embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
-    self._output_queue: utils.PeekableQueue[SampleOutputs] \
-      = utils.PeekableQueue()
+    if self.delay < 0:
+      raise ValueError(
+          f"Console delay ({console_delay}) cannot exceed policy delay ({policy.delay})."
+      )
 
+    # We create separate multiprocessing queues for input (state) and output (controllers).
+    self._state_queue = mp.Queue()
+    self._controller_queue = mp.Queue()
+
+    # This queue holds the final delayed frames in the parent (in memory).
+    self._output_delay_queue = utils.PeekableQueue[SampleOutputs](q=self._controller_queue)
+
+    # Fill the initial "delay queue" with dummy frames
     self.dummy_sample_outputs = dummy_sample_outputs(
         self.embed_controller, [batch_size])
     for _ in range(self.delay):
-      self._output_queue.put(self.dummy_sample_outputs)
+      self._output_delay_queue.put(self.dummy_sample_outputs)
 
-    self.state_queue_profiler = utils.Profiler()
-    self.step_profiler = utils.Profiler()
-    self._state_queue = queue.Queue()
-    self._worker_thread = None
+    self._worker_process = None
 
-    self.pop = self._output_queue.get
-    self.peek_n = self._output_queue.peek_n
+    self.pop = self._output_delay_queue.get
+    self.peek_n = self._output_delay_queue.peek_n
 
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
 
-  @property
-  def hidden_state(self):
-    return self._agent.hidden_state
-
-  @property
-  def name_code(self):
-    return self._agent._name_code
-
   def start(self):
-    if self._worker_thread:
-      raise RuntimeError('Already started.')
+    if self._worker_process is not None:
+      raise RuntimeError("AsyncDelayedAgent is already started.")
 
-    self._worker_thread = threading.Thread(
-        target=_run_agent, kwargs=dict(
-            agent=self._agent,
+    # Spawn the separate process, passing only the picklable data
+    self._worker_process = mp.Process(
+        name="DelayedAgent",
+        target=_run_agent_mp_wrapper,
+        kwargs=dict(
+            state=self._state,
+            batch_size=self._batch_size,
+            agent_kwargs=self._agent_kwargs,
             state_queue=self._state_queue,
-            controller_queue=self._output_queue,
+            controller_queue=self._controller_queue,
             batch_steps=self._batch_steps,
-            state_queue_profiler=self.state_queue_profiler,
-            step_profiler=self.step_profiler,
-        ))
-    self._worker_thread.start()
+        ),
+    )
+    self._worker_process.start()
 
   def stop(self):
-    if self._worker_thread:
-      self._state_queue.put(None)
-      self._worker_thread.join()
-      self._worker_thread = None
+    """Send a sentinel (None) to the child and join it."""
+    if self._worker_process:
+      self._state_queue.put(None)  # sentinel to exit
+      self._worker_process.join()
+      self._worker_process = None
 
+  # Optional context manager for ease of use
   @contextlib.contextmanager
   def run(self):
+    """Context manager that calls start/stop for you."""
+    self.start()
     try:
-      self.start()
       yield self
     finally:
       self.stop()
@@ -418,17 +430,9 @@ class AsyncDelayedAgent:
   def push(self, game: embed.Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
-  def __del__(self):
-    self.stop()
-
-  def step(
-      self,
-      game: embed.Game,
-      needs_reset: np.ndarray
-  ) -> SampleOutputs:
-    self._state_queue.put((game, needs_reset))
-    delayed_controller = self._output_queue.get()
-    return delayed_controller
+  def step(self, game: embed.Game, needs_reset: np.ndarray) -> SampleOutputs:
+    self.push(game, needs_reset)
+    return self._output_delay_queue.get()
 
 def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
   if path:
@@ -465,8 +469,6 @@ def build_delayed_agent(
     sample_temperature: float = 1.0,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
-  policy = saving.load_policy_from_state(state)
-
   rl_name = get_name_from_rl_state(state)
 
   if rl_name is not None:
@@ -498,7 +500,7 @@ def build_delayed_agent(
 
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
-      policy=policy,
+      state=state,
       name_code=name_code,
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
@@ -544,7 +546,7 @@ class Agent:
     self.name_index = 0
 
     self._agent = build_delayed_agent(state, batch_size=1, **agent_kwargs)
-    self._agent.warmup()
+    # self._agent.warmup()
     # Forward async interface
     self.run = self._agent.run
     self.start = self._agent.start

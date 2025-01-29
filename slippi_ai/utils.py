@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import gc
 import logging
+import multiprocessing as mp
 import platform
 import queue
 import random
@@ -163,10 +164,12 @@ def peek_deque(d: collections.deque, n: int) -> list:
   d.extend(reversed(items))
   return items
 
+Queue = tp.Union[queue.Queue, mp.Queue]
+
 class PeekableQueue(tp.Generic[T]):
 
-  def __init__(self):
-    self.queue = queue.Queue()
+  def __init__(self, q: tp.Optional[Queue] = None):
+    self.queue = q or queue.Queue()
     self._peeked = collections.deque()
 
   def put(self, item: T):
