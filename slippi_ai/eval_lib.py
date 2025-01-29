@@ -359,14 +359,15 @@ class AsyncDelayedAgent:
     self._batch_steps = batch_steps
     self._agent_kwargs = agent_kwargs
 
-    # Temporarily load the policy to get the delay/controller embedding.
-    policy = saving.load_policy_from_state(state)
-    self.embed_controller = policy.controller_embedding
+    config = state['config']
+    policy_delay = config['policy']['delay']
+    self.embed_controller = embed.get_controller_embedding(
+        **config['embed']['controller'])
 
-    self.delay = policy.delay - console_delay
+    self.delay = policy_delay - console_delay
     if self.delay < 0:
       raise ValueError(
-          f"Console delay ({console_delay}) cannot exceed policy delay ({policy.delay})."
+          f"Console delay ({console_delay}) cannot exceed policy delay ({policy_delay})."
       )
 
     # We create separate multiprocessing queues for input (state) and output (controllers).
