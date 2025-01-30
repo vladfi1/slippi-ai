@@ -511,7 +511,7 @@ class Bot(commands.Bot):
       if imitation_char not in self._imitation_agents:
         valid_chars = ', '.join(c.name.lower() for c in self._imitation_agents)
         await ctx.send(
-            f'No basic agents trained to play as {auto_char.name.lower()}.'
+            f'No basic agents trained to play as {imitation_char.name.lower()}.'
             f' Available basic characters are {valid_chars}.')
         return
       validated = True
