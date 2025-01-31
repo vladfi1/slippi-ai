@@ -103,7 +103,7 @@ def main(_):
         if gamestate.frame < 0:
           continue
 
-        observed = agent._agent._policy.controller_embedding.from_state(
+        observed = agent._agent.embed_controller.from_state(
             get_controller(gamestate.players[actual_port].controller_state))
 
         # deadzone can change observed stick values
