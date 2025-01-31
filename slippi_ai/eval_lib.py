@@ -61,6 +61,9 @@ class FakeAgent:
   ) -> list[SampleOutputs]:
     return [self._sample_outputs] * len(states)
 
+  def warmup(self):
+    pass
+
 class BasicAgent:
   """Wraps a Policy to track hidden state."""
 
