@@ -28,6 +28,8 @@ ACCESS_TOKEN = flags.DEFINE_string(
     required=default_access_token is None)
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
 
+STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
+
 BOT_SESSION_INTERVAL = flags.DEFINE_float(
     'bot_session_interval', 1,
     'minutes before starting a bot session, negative means disabled')
@@ -56,7 +58,6 @@ AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
 BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
-
 
 class BotSession:
   """Session between two bots playing locally."""
@@ -344,6 +345,7 @@ class Bot(commands.Bot):
       models_path: str,
       max_sessions: int = 4,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
+      stream: bool = True,
       bot_session_interval: float = 1, # in minutes
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
@@ -356,6 +358,7 @@ class Bot(commands.Bot):
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
+    self._stream = stream
     self._bot_session_interval = bot_session_interval
 
     bot1 = bot or agent_kwargs['path']
@@ -567,7 +570,7 @@ class Bot(commands.Bot):
         await ctx.send('Sorry, too many sessions already active.')
         return
 
-      is_stream = self._streaming_against is None
+      is_stream = self._stream and (self._streaming_against is None)
       if is_stream:
         self._stop_bot_session()
 
@@ -874,6 +877,7 @@ def main(_):
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
+      stream=STREAM.value,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
       bot=BOT.value,
       bot2=BOT2.value,
