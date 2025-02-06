@@ -68,6 +68,7 @@ name_groups = [
   ('Gosu', 'WIZZ#310'),
   # Most Franz games are local with no name; for those we assume any Doctor Mario is Franz.
   ('Franz', 'XELA#158', 'PLATO#0'),
+  ('Isdsar', 'ISDS#767'),
 ]
 
 name_map = {}
