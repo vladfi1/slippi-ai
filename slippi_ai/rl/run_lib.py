@@ -480,8 +480,8 @@ def run(config: Config):
 
     # TODO: we shouldn't take the mean over these timings
     step_time = step_profiler.mean_time()
-    steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-    fps = len(trajectories) * steps_per_rollout / step_time
+    frames_per_rollout = config.actor.num_envs * config.actor.rollout_length
+    fps = len(trajectories) * frames_per_rollout / step_time
     mps = fps / (60 * 60)  # in-game minutes per second
 
     timings.update(
@@ -495,8 +495,13 @@ def run(config: Config):
     actor_timing = metrics['actor'].pop('timing')
     for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
-    for key in ['agent_pop', 'agent_step']:
+
+    agent_keys = ['agent_step']
+    if config.agent.async_inference:
+      agent_keys.append('agent_pop')
+    for key in agent_keys:
       timings[key] = actor_timing[key][PORT]
+      timings[key + '_total'] = sum(actor_timing[key].values())
 
     # Stack to shape [T, P, B] where P is the number of trajectories
     states: Game = utils.map_nt(
