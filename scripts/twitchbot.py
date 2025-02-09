@@ -15,6 +15,8 @@ from twitchio.ext import commands, routines
 import portpicker
 import ray
 
+import melee
+
 from slippi_ai import train_lib
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib
@@ -26,6 +28,8 @@ ACCESS_TOKEN = flags.DEFINE_string(
     required=default_access_token is None)
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
 
+STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
+
 BOT_SESSION_INTERVAL = flags.DEFINE_float(
     'bot_session_interval', 1,
     'minutes before starting a bot session, negative means disabled')
@@ -35,11 +39,14 @@ _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
     save_replays=True,
     replay_dir='Replays/Twitchbot',
+    console_timeout=120,  # allow opponent to pause
 )
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
 
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
+
+MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
 agent_flags = eval_lib.AGENT_FLAGS.copy()
@@ -49,6 +56,7 @@ agent_flags.update(
 )
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
+BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
 class BotSession:
@@ -61,6 +69,7 @@ class BotSession:
       extra_dolphin_kwargs: dict = {},
   ):
     eval_lib.disable_gpus()
+    logging.basicConfig(level=logging.INFO)
     self.dolphin_config = dolphin_config
     self.stop_requested = threading.Event()
 
@@ -80,6 +89,7 @@ class BotSession:
           controller=dolphin.controllers[port],
           opponent_port=opponent_port,
           run_on_cpu=True,
+          console_delay=dolphin.console.online_delay,
           **agent_kwargs[port],
       )
 
@@ -112,10 +122,23 @@ class BotSession:
 
 RemoteBotSession = ray.remote(BotSession)
 
+def get_ports(gamestate: melee.GameState, display_name: str):
+  name_to_port = {
+      player.displayName: port for port, player in gamestate.players.items()
+  }
+  actual_port = name_to_port[display_name]
+  ports = list(gamestate.players)
+  ports.remove(actual_port)
+  opponent_port = ports[0]
+  return actual_port, opponent_port
+
 @dataclasses.dataclass
 class SessionStatus:
   num_menu_frames: int
   is_alive: bool
+
+# Depends on gecko code. TODO: configure
+MAX_DOLPHIN_DELAY = 24
 
 class Session:
 
@@ -124,25 +147,27 @@ class Session:
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       extra_dolphin_kwargs: dict = {},
+      auto_character: Optional[melee.Character] = None,
+      auto_delay: int = 18,
+      models_path: Optional[str] = None,
   ):
     eval_lib.disable_gpus()
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
     self.stop_requested = threading.Event()
 
-    agent_path = self.agent_kwargs['path']
-    agent_state = eval_lib.load_state(path=agent_path)
-    agent_config = flag_utils.dataclass_from_dict(
-        train_lib.Config, agent_state['config'])
+    if auto_character:
+      agent_delay = auto_delay
+    else:
+      agent_path = self.agent_kwargs['path']
+      agent_state = eval_lib.load_state(path=agent_path)
+      agent_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, agent_state['config'])
+      agent_delay = agent_config.policy.delay
 
-    # Console delay should be at least two to avoid rollbacks, and
-    # local delay doesn't need to be more than three.
-    max_local_delay = 3
-    agent_delay = agent_config.policy.delay
-    min_console_delay = min(2, agent_delay)
-    margin = agent_delay - min_console_delay
-    local_delay = min(margin, max_local_delay)
-    console_delay = agent_delay - local_delay
+    # Leave a local delay of 1 for async inference.
+    target_delay = max(agent_delay - 1, 0)
+    console_delay = min(target_delay, MAX_DOLPHIN_DELAY)
 
     dolphin_config.online_delay = console_delay
     logging.info(f'Setting console delay to {console_delay}')
@@ -157,16 +182,18 @@ class Session:
         **dolphin_kwargs,
     )
 
-    agent = eval_lib.build_agent(
-        controller=dolphin.controllers[port],
-        opponent_port=None,  # will be set later
-        console_delay=console_delay,
-        run_on_cpu=True,
-        state=agent_state,
-        **agent_kwargs,
-    )
-
-    eval_lib.update_character(player, agent.config)
+    if auto_character:
+      player.character = auto_character
+    else:
+      agent = eval_lib.build_agent(
+          controller=dolphin.controllers[port],
+          opponent_port=None,  # will be set later
+          console_delay=console_delay,
+          run_on_cpu=True,
+          state=agent_state,
+          **agent_kwargs,
+      )
+      eval_lib.update_character(player, agent.config)
 
     # In netplay the ports are going to be randomized. We use the displayName
     # to figure out which port we actually are. The connect code would be better
@@ -178,6 +205,8 @@ class Session:
     self._num_menu_frames = 0
 
     def run():
+      nonlocal agent
+
       # Don't block in the menu so that we can stop if asked to.
       gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
 
@@ -194,21 +223,34 @@ class Session:
         self._num_menu_frames += 1
 
       # Now we have access to the display names to set the correct ports.
-      name_to_port = {
-          player.displayName: port for port, player in gamestate.players.items()
-      }
-      actual_port = name_to_port[display_name]
-      ports = list(gamestate.players)
-      ports.remove(actual_port)
-      opponent_port = ports[0]
-      agent.players = (actual_port, opponent_port)
+      actual_port, opponent_port = get_ports(gamestate, display_name)
+
+      if auto_character:
+        agent = eval_lib.EnsembleAgent(
+            character=auto_character,
+            delay=auto_delay,
+            models_path=models_path,
+            port=actual_port,
+            opponent_port=opponent_port,
+            controller=dolphin.controllers[port],
+            console_delay=console_delay,
+            run_on_cpu=True,
+            **agent_kwargs,
+        )
+      else:
+        agent.set_ports(actual_port, opponent_port)
 
       # Main loop
       agent.start()
       try:
+        agent.step(gamestate)
+
         while not self.stop_requested.is_set():
           gamestate = next(gamestates)
           if not dolphin_lib.is_menu_state(gamestate):
+            if gamestate.frame == -123:
+              agent.set_ports(*get_ports(gamestate, display_name))
+
             agent.step(gamestate)
             self._num_menu_frames = 0
           else:
@@ -224,6 +266,7 @@ class Session:
     return self._num_menu_frames
 
   def status(self) -> SessionStatus:
+    # Return current_model from EnsembleAgent
     return SessionStatus(
         num_menu_frames=self._num_menu_frames,
         is_alive=self._thread.is_alive(),
@@ -236,23 +279,27 @@ class Session:
 RemoteSession = ray.remote(Session)
 
 HELP_MESSAGE = """
-!help: Display this message.
-!status: Displays current status.
-!play <code>: Have the bot connect to you.
-!stop: Stop the bot after you are done. Doesn't work if the game is paused.
-!reset: Have the bot stop and reconnect with you. Useful after choosing an agent.
-!agents: List available agents to play against.
+!play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
+!agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker.
 !agent <name>: Select an agent to play against.
-!about: Some info about the this AI.
-To play against the bot, use the !play command with your connect code, and then direct connect to code {bot_code}.
-If you disconnect from the bot in the direct connect lobby, you will have to stop and restart it.
+!more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
+NOTE: the experimental lagless feature has been merged into regular slippi dolphin; a custom build is no longer needed.
 """.strip()
+
+EXTRA_HELP_MESSAGE = """
+!status: Displays selected agent and current sessions.
+!stop: Stop the bot after you are done. Doesn't work if the game is paused.
+!bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream.
+!about: Print some info about the this AI.
+"""
 
 ABOUT_MESSAGE = """
 Melee AI trained with a combination of imitation learning from slippi replays and self-play reinforcement learning.
  Replays are mostly from ranked, with some tournaments and personal dumps.
- Code at https://github.com/vladfi1/slippi-ai.
+ Agents by default have a reaction time of 18 frames (300 ms).
+ Agents cannot see Randall, FoD platforms, Nana, and items or projectiles.
+ Code: https://github.com/vladfi1/slippi-ai. Discord: https://discord.gg/hfVTXGu.
 """.strip()
 
 @dataclasses.dataclass
@@ -267,6 +314,28 @@ def format_td(td: datetime.timedelta) -> str:
   """Chop off microseconds."""
   return str(td).split('.')[0]
 
+
+auto_prefix = 'auto-'
+imitation_prefix = 'basic-'
+
+def parse_auto_char(agent: str) -> Optional[melee.Character]:
+  if not agent.startswith(auto_prefix):
+    return None
+
+  char_str = agent.removeprefix(auto_prefix)
+  return eval_lib.data.name_to_character.get(char_str)
+
+def parse_imitation_char(agent: str) -> Optional[melee.Character]:
+  if not agent.startswith(imitation_prefix):
+    return None
+
+  char_str = agent.removeprefix(imitation_prefix)
+  return eval_lib.data.name_to_character.get(char_str)
+
+
+def tokens(message: str) -> list[str]:
+  return [x for x in message.split(' ') if x != '']
+
 class Bot(commands.Bot):
 
   def __init__(
@@ -276,8 +345,11 @@ class Bot(commands.Bot):
       models_path: str,
       max_sessions: int = 4,  # Includes stream session.
       menu_timeout: float = 3,  # in minutes
+      stream: bool = True,
       bot_session_interval: float = 1, # in minutes
+      bot: Optional[str] = None,
       bot2: Optional[str] = None,
+      auto_delay: int = 18,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -286,11 +358,19 @@ class Bot(commands.Bot):
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
+    self._stream = stream
     self._bot_session_interval = bot_session_interval
 
-    self._bot_agent_kwargs = {1: agent_kwargs, 2: agent_kwargs.copy()}
-    if bot2:
-      self._bot_agent_kwargs[2]['path'] = bot2
+    bot1 = bot or agent_kwargs['path']
+    bot2 = bot2 or bot1
+    self._bot_agent_kwargs = {
+        1: dict(agent_kwargs, path=bot1),
+        2: dict(agent_kwargs, path=bot2),
+    }
+    self._bot1 = bot1
+    self._bot2 = bot2
+
+    self._auto_delay = auto_delay
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -310,7 +390,7 @@ class Bot(commands.Bot):
     self._models_path = models_path
     self._reload_models()
 
-    self._default_agent_name = os.path.basename(agent_kwargs['path'])
+    self._default_agent_name = 'auto-fox'
     self._requested_agents = {}
     self._play_codes = {}
 
@@ -322,6 +402,11 @@ class Bot(commands.Bot):
       await ctx.send(line)
 
   @commands.command()
+  async def more(self, ctx: commands.Context):
+    for line in EXTRA_HELP_MESSAGE.split('\n'):
+      await ctx.send(line)
+
+  @commands.command()
   async def about(self, ctx: commands.Context):
     await ctx.send(ABOUT_MESSAGE)
 
@@ -329,18 +414,25 @@ class Bot(commands.Bot):
     self._models: dict[str, dict] = {}
     agents = os.listdir(self._models_path)
 
+    keys = ['step', 'config', 'rl_config', 'agent_config']
+
     for agent in agents:
       path = os.path.join(self._models_path, agent)
       state = eval_lib.load_state(path=path)
-      state = {k: state[k] for k in ['step', 'config', 'rl_config'] if k in state}
+      state = {k: state[k] for k in keys if k in state}
       self._models[agent] = state
+
+    self._imitation_agents = eval_lib.get_imitation_agents(
+        self._models_path, delay=self._auto_delay)
+
+    self._matchup_table = eval_lib.build_matchup_table(
+        self._models_path, delay=self._auto_delay)
 
   @commands.command()
   async def reload(self, ctx: commands.Context):
     with self.lock:
       self._reload_models()
-    models_str = ", ".join(self._models)
-    await ctx.send(f'Available agents: {models_str}')
+    await self.agents_full(ctx)
 
   @commands.command()
   async def config(self, ctx: commands.Context):
@@ -364,8 +456,37 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
-    models_str = ", ".join(self._models)
-    await ctx.send(f'Available agents: {models_str}')
+    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    for c in self._imitation_agents:
+      agents.append(imitation_prefix + c.name.lower())
+
+    await ctx.send(' '.join(agents))
+
+  @commands.command()
+  async def agents_full(self, ctx: commands.Context):
+    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    for c in self._imitation_agents:
+      agents.append(imitation_prefix + c.name.lower())
+    agents.extend(self._models)
+
+    max_chars = 500
+    chunks = [[]]
+    chunk_size = 0
+    for model in sorted(agents):
+      chunk = chunks[-1]
+      new_chunk_size = chunk_size + len(model) + 1
+      if new_chunk_size > max_chars:
+        chunk = []
+        chunks.append(chunk)
+        chunk_size = len(model)
+      else:
+        chunk_size = new_chunk_size
+      chunk.append(model)
+
+    for chunk in chunks:
+      message = " ".join(chunk)
+      assert len(message) <= max_chars
+      await ctx.send(message)
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
@@ -375,14 +496,46 @@ class Bot(commands.Bot):
       await ctx.send('You must specify a single agent.')
       return
 
-    agent = words[1]
-    if agent not in self._models:
+    agent: str = words[1]
+    validated = False
+
+    auto_char = parse_auto_char(agent)
+    if auto_char:
+      if auto_char not in self._matchup_table:
+        valid_chars = ', '.join(c.name.lower() for c in self._matchup_table)
+        await ctx.send(
+            f'No agents trained to play as {auto_char.name.lower()}.'
+            f' Available characters are {valid_chars}.')
+        return
+      validated = True
+
+    imitation_char = parse_imitation_char(agent)
+    if imitation_char:
+      if imitation_char not in self._imitation_agents:
+        valid_chars = ', '.join(c.name.lower() for c in self._imitation_agents)
+        await ctx.send(
+            f'No basic agents trained to play as {imitation_char.name.lower()}.'
+            f' Available basic characters are {valid_chars}.')
+        return
+      validated = True
+
+    if not validated and agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
-      models_str = ", ".join(self._models)
-      await ctx.send(f'Available agents: {models_str}')
+      # models_str might be too big for Twitch :(
+      # models_str = ", ".join(self._models)
+      # await ctx.send(f'Available agents: {models_str}')
       return
 
-    self._requested_agents[ctx.author.name] = agent
+    name = ctx.author.name
+    self._requested_agents[name] = agent
+    await ctx.send(f'{name} has selected {agent}')
+
+    # Auto-restart if the person is already playing
+    if name in self._sessions:
+      with self.lock:
+        await ctx.send(f'Restarting session with {name}')
+        self._stop_sessions([self._sessions[name]])
+        await self._play(ctx)
 
   async def event_ready(self):
     # Notify us when everything is ready!
@@ -404,6 +557,8 @@ class Bot(commands.Bot):
   async def _play(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
+      connect_code = self._play_codes[name]
+      assert connect_code
 
       if name in self._sessions:
         await ctx.send(f'{name}, you are already playing')
@@ -415,21 +570,7 @@ class Bot(commands.Bot):
         await ctx.send('Sorry, too many sessions already active.')
         return
 
-      words = ctx.message.content.split(' ')
-
-      if len(words) == 1:
-        connect_code = self._play_codes.get(name)
-        if connect_code is None:
-          await ctx.send('You must specify a connect code')
-          return
-      else:
-        connect_code = words[1].upper()
-        if '#' not in connect_code:
-          await ctx.send(f'{connect_code} is invalid')
-          return
-        self._play_codes[name] = connect_code
-
-      is_stream = self._streaming_against is None
+      is_stream = self._stream and (self._streaming_against is None)
       if is_stream:
         self._stop_bot_session()
 
@@ -456,6 +597,21 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def play(self, ctx: commands.Context):
+    name = ctx.author.name
+    words = ctx.message.content.split(' ')
+
+    if len(words) == 1:
+      connect_code = self._play_codes.get(name)
+      if connect_code is None:
+        await ctx.send('You must specify a connect code')
+        return
+    else:
+      connect_code = words[1].upper()
+      if '#' not in connect_code:
+        await ctx.send(f'{connect_code} is not a valid connect code')
+        return
+      self._play_codes[name] = connect_code
+
     await self._play(ctx)
 
   @commands.command()
@@ -476,6 +632,7 @@ class Bot(commands.Bot):
       self,
       connect_code: str,
       agent: str,
+      auto_character: Optional[melee.Character] = None,
       render: bool = False,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
@@ -483,17 +640,28 @@ class Bot(commands.Bot):
     config.connect_code = connect_code
     config.render = render
     config.headless = not render
+    config.replay_dir = os.path.join(config.replay_dir, agent)
+    os.makedirs(config.replay_dir, exist_ok=True)
     extra_dolphin_kwargs = {}
     if render:
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
+    auto_character = parse_auto_char(agent)
+    imitation_character = parse_imitation_char(agent)
+
     agent_kwargs = self.agent_kwargs.copy()
-    agent_kwargs['path'] = os.path.join(self._models_path, agent)
+    if imitation_character:
+      agent_kwargs['path'] = os.path.join(
+          self._models_path, self._imitation_agents[imitation_character])
+    elif auto_character is None:
+      agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
     return RemoteSession.remote(
         config, agent_kwargs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
+        auto_character=auto_character,
+        models_path=self._models_path,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
@@ -505,6 +673,7 @@ class Bot(commands.Bot):
     config.save_replays = False
     extra_dolphin_kwargs = {}
     if render:
+      extra_dolphin_kwargs['emulation_speed'] = 1
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
@@ -532,9 +701,11 @@ class Bot(commands.Bot):
       self._bot_session = self._start_bot_session()
       logging.info('Started bot session.')
       chan = self.get_channel(self.owner)
+      # Might be None if we haven't logged in yet
       if chan:
-        # Might be None if we haven't logged in yet
-        await chan.send('Started bot session on stream.')
+        bot1 = os.path.basename(self._bot1)
+        bot2 = os.path.basename(self._bot2)
+        await chan.send(f'Started {bot1} vs. {bot2} on stream.')
       return True
 
   @commands.command()
@@ -545,6 +716,32 @@ class Bot(commands.Bot):
     else:
       await ctx.send('Did not start bot session on stream.')
 
+  @commands.command()
+  async def bots(self, ctx: commands.Context):
+    words = ctx.message.content.split(' ')[1:]
+
+    if len(words) == 1:
+      bot1 = bot2 = words[0]
+    elif len(words) == 2:
+      bot1, bot2 = words
+    else:
+      await ctx.send('Must specify one or two agent names')
+      return
+
+    for agent in (bot1, bot2):
+      if agent not in self._models:
+        await ctx.send(f'{agent} is not a valid agent')
+        return
+
+    with self.lock:
+      self._bot1 = os.path.join(self._models_path, bot1)
+      self._bot2 = os.path.join(self._models_path, bot2)
+      self._bot_agent_kwargs[1]['path'] = self._bot1
+      self._bot_agent_kwargs[2]['path'] = self._bot2
+
+      self._stop_bot_session()
+      await self._maybe_start_bot_session()
+
   def _get_opponent(self, name: str) -> str:
     return self._requested_agents.get(name, self._default_agent_name)
 
@@ -553,10 +750,12 @@ class Bot(commands.Bot):
     with self.lock:
 
       agent_name = self._get_opponent(ctx.author.name)
-      await ctx.send(f'Selected bot: {agent_name}')
+      await ctx.send(f'Selected agent: {agent_name}')
 
       if self._bot_session:
-        await ctx.send('Bot vs. bot on stream.')
+        bot1 = os.path.basename(self._bot1)
+        bot2 = os.path.basename(self._bot2)
+        await ctx.send(f'{bot1} vs. {bot2} on stream.')
 
       if not self._sessions:
         await ctx.send('No active sessions.')
@@ -580,6 +779,8 @@ class Bot(commands.Bot):
     with self.lock:
       ray.wait([info.session.stop.remote() for info in infos])
 
+      logging.info(f'Stopped {len(infos)} human sessions.')
+
       for info in infos:
         del self._sessions[info.twitch_name]
         if self._streaming_against == info.twitch_name:
@@ -602,6 +803,25 @@ class Bot(commands.Bot):
 
     self._stop_bot_session()
     await ctx.send('Stopped bot session.')
+
+  @commands.command()
+  async def kick(self, ctx: commands.Context):
+    if not ctx.author.is_mod:
+      await ctx.send('Only mods can kick players.')
+      return
+
+    words = ctx.message.content.split(' ')[1:]
+    if len(words) != 1:
+      await ctx.send('Must specify a player to kick')
+      return
+
+    name = words[0]
+    if name not in self._sessions:
+      await ctx.send(f'"{name}" isn\'t playing right now')
+      return
+
+    self._stop_sessions([self._sessions[name]])
+    await ctx.send(f'Kicked {name}')
 
   async def _gc_sessions(self) -> list[SessionInfo]:
     """Stop sessions that have been in the menu for too long."""
@@ -636,6 +856,7 @@ class Bot(commands.Bot):
 
   def shutdown(self):
     with self.lock:
+      logging.info('Shutting down')
       self._stop_sessions(list(self._sessions.values()))
       self._stop_bot_session()
       self._do_chores.stop()
@@ -652,10 +873,13 @@ def main(_):
       prefix='!',
       channel=CHANNEL.value,
       models_path=MODELS_PATH.value,
+      max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
       agent_kwargs=agent_kwargs,
+      stream=STREAM.value,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
+      bot=BOT.value,
       bot2=BOT2.value,
   )
 
