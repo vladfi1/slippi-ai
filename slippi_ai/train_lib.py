@@ -405,10 +405,15 @@ def train(config: Config):
     if total_steps % runtime.eval_every_n != 0:
       return
 
-    eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    eval_stats = []
+    batches = []
 
-    eval_stats, batches = zip(*eval_results)
-    eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
+    for _ in range(runtime.num_eval_steps):
+      stats, batch = test_manager.step()
+      # Convert to numpy to free up GPU memory.
+      eval_stats.append(utils.map_nt(tf_utils.to_numpy, stats))
+      batches.append(batch)
+
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
 
     total_frames = total_steps * FRAMES_PER_STEP
