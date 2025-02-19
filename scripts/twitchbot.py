@@ -254,6 +254,7 @@ class Session:
             agent.step(gamestate)
             self._num_menu_frames = 0
           else:
+            agent._controller.release_all()
             self._num_menu_frames += 1
       finally:
         agent.stop()
