@@ -1,4 +1,3 @@
-
 """Train (and test) a network via imitation learning."""
 
 import collections
@@ -320,7 +319,10 @@ def train(config: Config):
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  def save():
+  # Initialize the best eval loss to infinity
+  best_eval_loss = float('inf')
+
+  def save(eval_loss=None):
     # Local Save
     tf_state = get_tf_state()
 
@@ -329,6 +331,7 @@ def train(config: Config):
         state=tf_state,
         config=dataclasses.asdict(config),
         name_map=name_map,
+        best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
     )
     pickled_state = pickle.dumps(combined_state)
 
@@ -344,6 +347,7 @@ def train(config: Config):
 
   if restored:
     set_tf_state(combined_state['state'])
+    best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
@@ -401,6 +405,7 @@ def train(config: Config):
     print()
 
   def maybe_eval():
+    nonlocal best_eval_loss  # Allow modification of the best_eval_loss variable
     total_steps = int(step.numpy())
     if total_steps % runtime.eval_every_n != 0:
       return
@@ -425,6 +430,16 @@ def train(config: Config):
 
     to_log = dict(eval=eval_stats, **counters)
     train_lib.log_stats(to_log, total_steps)
+
+    # Calculate the mean eval loss
+    eval_loss = eval_stats['policy']['loss'].mean()
+    logging.info('eval loss: %f', eval_loss)
+
+    # Save if the eval loss is the best so far
+    if eval_loss < best_eval_loss:
+      logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
+      best_eval_loss = eval_loss
+      save(eval_loss=best_eval_loss)
 
     # Log losses aggregated by name.
 
