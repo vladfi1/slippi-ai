@@ -59,6 +59,11 @@ AGENT = ff.DEFINE_dict('agent', **agent_flags)
 BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
+@dataclasses.dataclass
+class SessionStatus:
+  num_menu_frames: int
+  is_alive: bool
+
 class BotSession:
   """Session between two bots playing locally."""
 
@@ -120,6 +125,13 @@ class BotSession:
     self.stop_requested.set()
     self._thread.join()
 
+  def status(self) -> SessionStatus:
+    return SessionStatus(
+        num_menu_frames=0,
+        is_alive=self._thread.is_alive(),
+    )
+
+
 RemoteBotSession = ray.remote(BotSession)
 
 def get_ports(gamestate: melee.GameState, display_name: str):
@@ -131,11 +143,6 @@ def get_ports(gamestate: melee.GameState, display_name: str):
   ports.remove(actual_port)
   opponent_port = ports[0]
   return actual_port, opponent_port
-
-@dataclasses.dataclass
-class SessionStatus:
-  num_menu_frames: int
-  is_alive: bool
 
 # Depends on gecko code. TODO: configure
 MAX_DOLPHIN_DELAY = 24
@@ -825,8 +832,14 @@ class Bot(commands.Bot):
     await ctx.send(f'Kicked {name}')
 
   async def _gc_sessions(self) -> list[SessionInfo]:
-    """Stop sessions that have been in the menu for too long."""
+    """Stop sessions that have died or been in the menu for too long."""
     with self.lock:
+      if self._bot_session is not None:
+        status: SessionStatus = ray.get(self._bot_session.status.remote())
+        if not status.is_alive:
+          logging.info('Bot session died.')
+          self._stop_bot_session()
+
       to_gc: list[SessionInfo] = []
       for info in self._sessions.values():
         status: SessionStatus = ray.get(info.session.status.remote())
