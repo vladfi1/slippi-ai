@@ -96,6 +96,7 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
     chars = list(melee.Character)
   return set(c.value for c in chars)
 
+ALL = 'all'
 
 @dataclasses.dataclass
 class DatasetConfig:
@@ -103,11 +104,24 @@ class DatasetConfig:
   meta_path: Optional[str] = None
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
-  allowed_characters: str = 'all'
-  allowed_opponents: str = 'all'
+  allowed_characters: str = ALL
+  allowed_opponents: str = ALL
+  allowed_names: str = ALL
+
   swap: bool = True  # yield swapped versions of each replay
   seed: int = 0
 
+def create_name_filter(allowed_names: str) -> Callable[[str], bool]:
+  """Creates a function that filters names based on the allowed names."""
+  if allowed_names == ALL:
+    return lambda _: True
+
+  allowed_names_set = set(allowed_names.split(','))
+
+  def is_allowed(name: str) -> bool:
+    return nametags.normalize_name(name) in allowed_names_set
+
+  return is_allowed
 
 def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
   replays = []
@@ -117,6 +131,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   allowed_characters = _charset(chars_from_string(config.allowed_characters))
   allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
+  name_filter = create_name_filter(config.allowed_names)
 
   banned_counts = collections.Counter()
 
@@ -156,6 +171,10 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
         banned_counts[p0.name] += 1
         continue
 
+      if not name_filter(p0.name):
+        banned_counts[p0.name] += 1
+        continue
+
       replays.append(ReplayInfo(replay_path, swap, replay_meta))
 
   print('Banned names:', banned_counts)
@@ -177,8 +196,8 @@ def train_test_split(
     filenames_set = set(filenames)
     assert all(info.meta.slp_md5 in filenames_set for info in replays)
   else:
-    if not (config.allowed_characters == 'all'
-            and config.allowed_opponents == 'all'):
+    if not (config.allowed_characters == ALL
+            and config.allowed_opponents == ALL):
       raise ValueError(
           "Can't filter by character without metadata. "
           "Please provide a metadata file.")
@@ -201,7 +220,7 @@ def train_test_split(
 name_to_character = {c.name.lower(): c for c in melee.Character}
 
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
-  if chars == 'all':
+  if chars == ALL:
     return None
   chars = chars.split(',')
   return [name_to_character[c] for c in chars]
