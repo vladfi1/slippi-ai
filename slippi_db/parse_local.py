@@ -242,7 +242,7 @@ def run_parsing(
     compression_options: dict = {},
     chunk_size_gb: float = 0.5,
     in_memory: bool = True,
-    wipe: bool = False,
+    reprocess: bool = False,
     dry_run: bool = False,
 ):
   # Cache tmp dir once
@@ -266,7 +266,7 @@ def run_parsing(
       path = os.path.join(reldirpath, name).removeprefix('./')
       if path not in raw_by_name:
         raw_by_name[path] = dict(processed=False, name=path)
-      if wipe or not raw_by_name[path]['processed']:
+      if reprocess or not raw_by_name[path]['processed']:
         to_process.append(path)
 
   print("To process:", to_process)
@@ -352,7 +352,7 @@ def main(_):
           compression=COMPRESSION.value,
           compression_level=COMPRESSION_LEVEL.value,
       ),
-      wipe=WIPE.value,
+      reprocess=REPROCESS.value,
       dry_run=DRY_RUN.value,
   )
 
@@ -369,7 +369,7 @@ if __name__ == '__main__':
       enum_class=parsing_utils.CompressionType,
       help='Type of compression to use.')
   COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
-  WIPE = flags.DEFINE_bool('wipe', False, 'Wipe existing metadata')
+  REPROCESS = flags.DEFINE_bool('reprocess', False, 'Reprocess raw archives.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
 
   app.run(main)
