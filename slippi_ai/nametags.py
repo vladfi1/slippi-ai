@@ -76,7 +76,7 @@ name_groups = [
   ('KJH', 'KJH#23'),
   ('BillyBoPeep', 'BILLY#0'),
   ('Spark', 'ZAID#0'),
-  ('Trif', 'TRIF#0'),
+  ('Trif', 'TRIF#0', 'TRIF#268'),
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),
