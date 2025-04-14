@@ -97,6 +97,7 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
   return set(c.value for c in chars)
 
 ALL = 'all'
+NONE = 'none'
 
 @dataclasses.dataclass
 class DatasetConfig:
@@ -106,20 +107,33 @@ class DatasetConfig:
   # comma-separated lists of characters, or "all"
   allowed_characters: str = ALL
   allowed_opponents: str = ALL
+  # Filter by player
   allowed_names: str = ALL
+  banned_names: str = NONE
 
   swap: bool = True  # yield swapped versions of each replay
   seed: int = 0
 
-def create_name_filter(allowed_names: str) -> Callable[[str], bool]:
+def create_name_filter(
+    allowed_names: str,
+    banned_names: str = NONE,
+) -> Callable[[str], bool]:
   """Creates a function that filters names based on the allowed names."""
-  if allowed_names == ALL:
-    return lambda _: True
+  if allowed_names != ALL:
+    allowed_names_set = set(allowed_names.split(','))
 
-  allowed_names_set = set(allowed_names.split(','))
+  if banned_names == NONE:
+    banned_names_set = set()
+  else:
+    banned_names_set = set(banned_names.split(','))
 
   def is_allowed(name: str) -> bool:
-    return nametags.normalize_name(name) in allowed_names_set
+    name = nametags.normalize_name(name)
+    if name in banned_names_set:
+      return False
+    if allowed_names == ALL:
+      return True
+    return name in allowed_names_set
 
   return is_allowed
 
@@ -131,7 +145,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   allowed_characters = _charset(chars_from_string(config.allowed_characters))
   allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
-  name_filter = create_name_filter(config.allowed_names)
+  name_filter = create_name_filter(config.allowed_names, config.banned_names)
 
   banned_counts = collections.Counter()
 
