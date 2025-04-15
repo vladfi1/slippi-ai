@@ -77,11 +77,13 @@ name_groups = [
   ('BillyBoPeep', 'BILLY#0'),
   ('Spark', 'ZAID#0'),
   ('Trif', 'TRIF#0', 'TRIF#268'),
+  ('Inky', 'INKY#398'),  # Sheik Player from Nova Scotia
+  ('JChu', 'JCHU#536'),
+  ('Axe', 'AXE#845'),
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),
   ('Zamu', 'A#9'),
-  ('JChu', 'JCHU#536'),
 ]
 
 name_map = {}
@@ -113,7 +115,7 @@ BANNED_NAMES = {
     'Mang0', 'Zain', 'Wizzrobe', 'Hungrybox',
 
     # Haven't asked yet, so don't train on for now.
-    'Ossify', 'Zamu', 'JChu',
+    'Ossify', 'Zamu',
 
     'Phillip AI',  # This is us!
 }
