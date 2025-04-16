@@ -223,11 +223,10 @@ class Learner:
           frames, initial_states, self.discount)
 
     # Compute the q-values of the sampled actions
-    sample_q_values = snt.BatchApply(
-        self.q_function.multi_q_values_from_hidden_states, num_dims=3)(
-            hidden_states=q_outputs.hidden_states,
-            actions=policy_samples,
-        )
+    sample_q_values = self.q_function.multi_q_values_from_hidden_states(
+        hidden_states=q_outputs.hidden_states,
+        actions=policy_samples,
+    )
 
     # Defer updating q_function until after we apply it to the policy_samples
     if train:
@@ -259,10 +258,10 @@ class Learner:
     nash_variables, stats = snt.BatchApply(solve_nash)(q_values)
 
     # Convert [T, B, S] -> [S, T, B]
-    nash_variables.p1 = tf.transpose(nash_variables.p1, [2, 0, 1])
-    nash_variables.p2 = tf.transpose(nash_variables.p2, [2, 0, 1])
-
-    return nash_variables
+    return nash_variables._replace(
+        p1=tf.transpose(nash_variables.p1, [2, 0, 1]),
+        p2=tf.transpose(nash_variables.p2, [2, 0, 1]),
+    )
 
   def _train_q_policy(
       self,
@@ -297,12 +296,12 @@ class Learner:
     replicate_samples = lambda nest: tf.nest.map_structure(
         replicate(num_samples), nest)
 
-    # Train the q_policy by argmaxing the q_function over the sample_policy
+    # Train the q_policy by regressing to the compute nash policy
     with tf.GradientTape() as tape:
       q_policy_outputs = self.q_policy.unroll_with_outputs(
           frames, initial_states)
 
-      # Construct a target distribution over the subsample and regress the
+      # Find the Nash policy over the action subsample and regress the
       # q_policy to this target.
       replicated_q_policy_outputs = replicate_samples(q_policy_outputs.outputs)
       q_policy_distances = self.q_policy.controller_head.distance(
@@ -323,7 +322,7 @@ class Learner:
       q_policy_cross_entropy = -tf.reduce_sum(
           nash_distribution * q_policy_log_probs, axis=0)
       nash_entropy = entropy(nash_distribution, axis=0)
-      q_policy_nash_kl = nash_entropy - q_policy_cross_entropy
+      q_policy_nash_kl = q_policy_cross_entropy - nash_entropy
 
       sample_q_values = (sample_q_values[0] - sample_q_values[1]) / 2
       payoff_matrices = tf.transpose(sample_q_values, [2, 3, 0, 1])
@@ -435,13 +434,13 @@ class Learner:
         train=train and self.should_train_sample_policy)
 
     (
-      sample_q_values,  # [2, S, S, T, B]
+      q_function_outputs,  # [2, S, S, T, B]
       final_states['q_function'],
       metrics['q_function'],
     ) = self.train_q_function(
         tm_frames, initial_states['q_function'], policy_samples, train)
 
-    nash_policy = self._compute_nash(sample_q_values)
+    nash_policy = self._compute_nash(q_function_outputs.sample_q_values)
 
     (
       final_states['q_policy'],
@@ -450,7 +449,7 @@ class Learner:
         tm_frames,
         initial_states=initial_states['q_policy'],
         policy_samples=policy_samples,
-        sample_q_values=sample_q_values,
+        sample_q_values=q_function_outputs.sample_q_values,
         nash_policy=nash_policy,
         train=train,
     )
@@ -461,6 +460,6 @@ class Learner:
     }
 
     # satisfy train_q_lib._get_loss
-    metrics['total_loss'] = metrics['q_policy']['q_loss']
+    metrics['total_loss'] = metrics['q_policy']['nash_kl']
 
     return metrics, final_states

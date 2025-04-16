@@ -2,7 +2,7 @@
 
 DATASET=slippi_ai/data/toy_dataset
 
-python -m ipdb -c c slippi_ai/nash/train.py \
+python slippi_ai/nash/train.py \
   --config.dataset.data_dir=$DATASET/games \
   --config.dataset.meta_path=$DATASET/meta.json \
   --config.dataset.test_ratio=0.5 \
@@ -23,5 +23,6 @@ python -m ipdb -c c slippi_ai/nash/train.py \
   --config.rl_evaluator.runtime_seconds=0.5 \
   --config.rl_evaluator.use_fake_envs=True \
   --config.rl_evaluator.rollout_length=30 \
+  --config.rl_evaluator.agent.name="Diamond Player" \
   --config.rl_evaluator.opponent=slippi_ai/data/checkpoints/demo \
   "$@"

@@ -35,10 +35,12 @@ def make_value_head(
     hidden_size: int,
     name: str = 'value_head',
 ) -> snt.Module:
-  return snt.Sequential([
-      snt.nets.MLP([hidden_size] * num_layers + [1]),
-      lambda x: tf.squeeze(x, -1),
-  ], name=name)
+  with tf.name_scope(name):
+    return snt.Sequential([
+        snt.nets.MLP([hidden_size] * num_layers + [1]),
+        lambda x: tf.squeeze(x, -1),
+    ])
+
 
 def to_merged_value_outputs(outputs: tf.Tensor, batch_dim=1) -> tf.Tensor:
   split_outputs = split(outputs, axis=batch_dim)
@@ -166,7 +168,7 @@ class QFunction(snt.Module):
       self,
       hidden_states: RecurrentState,  # [T, 2B, ...]
       actions: embed.Action,  # [T, 2B, ...]
-  ) -> tf.Tensor:
+  ) -> tf.Tensor:  # [T, 2B]
     action_inputs = self.embed_action(actions)
     outputs, _ = snt.BatchApply(self.action_net.step)(
         action_inputs, hidden_states)
@@ -180,18 +182,22 @@ class QFunction(snt.Module):
       actions: embed.Action,  # [S, T, 2B, ...]
       sample_dim: int = 0,
       batch_dim: int = 2,
-  ) -> tf.Tensor:
+  ) -> tf.Tensor:  # [S, T, 2B]
     action_inputs = self.embed_action(actions)
-    s = action_inputs.shape[sample_dim]
+    s = action_inputs.shape[0]
     hidden_states = expand_tile(hidden_states, axis=sample_dim, multiple=s)
 
     outputs, _ = snt.BatchApply(self.action_net.step, num_dims=3)(
         action_inputs, hidden_states)
     p0_outputs, p1_outputs = split(outputs, axis=batch_dim)  # [S, B, H]
 
-    p0_outputs = expand_tile(p0_outputs, axis=sample_dim+1, multiple=s)
-    p1_outputs = expand_tile(p1_outputs, axis=sample_dim, multiple=s)
-    value_outputs = tf.stack([p0_outputs, p1_outputs], axis=0)  # [2, S, S, T, B, 2H]
+    p0_outputs = expand_tile(p0_outputs, axis=sample_dim+1, multiple=s)  # [S, S, B, H]
+    p1_outputs = expand_tile(p1_outputs, axis=sample_dim, multiple=s)  # [S, S, B, H]
+
+    p01_outputs = tf.concat([p0_outputs, p1_outputs], axis=-1)  # [S, S, B, 2H]
+    p10_outputs = tf.concat([p1_outputs, p0_outputs], axis=-1)  # [S, S, B, 2H]
+
+    value_outputs = tf.stack([p01_outputs, p10_outputs], axis=0)  # [2, S, S, T, B, 2H]
     q_values = self.q_head(value_outputs)   # [2, S, S, T, B]
 
     return q_values

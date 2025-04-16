@@ -16,7 +16,6 @@ import tensorflow as tf
 import wandb
 
 from slippi_ai import (
-    embed,
     evaluators,
     flag_utils,
     nametags,
@@ -115,6 +114,9 @@ def train(config: Config):
     char_filters[key] = data_lib.chars_from_string(chars_string)
 
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  if len(test_replays) == 0:
+    logging.warning('No test replays found, using training data for testing')
+    test_replays = train_replays
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
@@ -245,6 +247,7 @@ def train(config: Config):
     logging.info('loss post-restore: %f', _get_loss(test_manager.step()[0]))
 
   FRAMES_PER_MINUTE = 60 * 60
+  FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step.numpy())
   epoch_tracker = utils.Tracker(0)
@@ -258,8 +261,7 @@ def train(config: Config):
     elapsed_time = log_tracker.update(time.time())
     total_steps = step.numpy()
     steps = step_tracker.update(total_steps)
-    # assume num_frames is constant per step
-    num_frames = steps * train_stats['num_frames']
+    num_frames = steps * FRAMES_PER_STEP
 
     epoch = train_stats['epoch']
     delta_epoch = epoch_tracker.update(epoch)
@@ -309,38 +311,6 @@ def train(config: Config):
 
     to_log = dict(eval=eval_stats)
     train_lib.log_stats(to_log, total_steps)
-
-    # Log losses aggregated by name.
-
-    # Stats have shape [num_eval_steps, unroll_length, batch_size]
-    time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['q_function']['q']['loss'])
-    assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
-
-    # Metadata only has a batch dimension.
-    metas: list[data_lib.ChunkMeta] = [batch.meta for batch in batches]
-    meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
-
-    # Name of the player we're imitating.
-    name = np.where(
-        meta.info.swap, meta.info.meta.p1.name, meta.info.meta.p0.name)
-    encoded_name = batch_encode_name(name)
-    assert encoded_name.dtype == np.uint8
-    assert encoded_name.shape == loss.shape
-
-    loss_sums_and_counts = []
-    for i in range(num_codes):
-      mask = encoded_name == i
-      loss_sums_and_counts.append((np.sum(loss * mask), np.sum(mask)))
-
-    losses, counts = zip(*loss_sums_and_counts)
-    to_log = dict(
-        losses=np.array(losses, dtype=np.float32),
-        counts=np.array(counts, dtype=np.uint32),
-    )
-
-    to_log = dict(eval_names=to_log)
-    train_lib.log_stats(to_log, total_steps, take_mean=False)
 
   if config.rl_evaluator.use:
     if config.rl_evaluator.opponent:
