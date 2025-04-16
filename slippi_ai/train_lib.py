@@ -343,8 +343,6 @@ def train(config: Config):
       logging.info('saving state to S3: %s', s3_keys.combined)
       s3_store.put(s3_keys.combined, pickled_state)
 
-  maybe_save = utils.Periodically(save, runtime.save_interval)
-
   if restored:
     set_tf_state(combined_state['state'])
     best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
@@ -480,5 +478,3 @@ def train(config: Config):
     step.assign_add(1)
     maybe_log(train_stats)
     maybe_eval()
-
-    maybe_save()
