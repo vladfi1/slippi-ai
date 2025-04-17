@@ -131,6 +131,7 @@ class Learner:
                 lambda t: t[self.delay:], state_action.action),
             name=state_action.name[:unroll_length],
         ),
+        is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.
         reward=frames.reward[self.delay:],
     )
@@ -414,7 +415,7 @@ class Learner:
     # train_q_function. Hopefully we don't take much of a performance hit
     # from this? (Compiling this also results in the same OOM.)
     initial_states = self.reset_initial_states(
-        initial_states, batch.needs_reset)
+        initial_states, batch.needs_reset[:, 0])
 
     initial_states = {
         key: nash_data.merge(initial_state, axis=0)
