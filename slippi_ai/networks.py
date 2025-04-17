@@ -417,6 +417,80 @@ class TransformerLike(Sequential):
     super().__init__(layers, name=name)
 
 
+class SkipRNN(snt.RNNCore):
+  """RNN that only updates every N steps."""
+
+  def __init__(self, core: snt.RNNCore, skip_every: int, name='SkipRNN'):
+    super().__init__(name=name)
+    self._core = core
+    self._skip_every = skip_every
+
+  def initial_state(self, batch_size: int) -> RecurrentState:
+    return tf.zeros([batch_size]), self._core.initial_state(batch_size)
+
+  def __call__(self, inputs, prev_state):
+    indices, state = prev_state
+    update = tf.equal(indices, 0)
+    outputs, next_state = self._core(inputs, state)
+    next_state = tf.nest.map_structure(
+        lambda x, y: tf_utils.where(update, x, y),
+        next_state, state)
+    next_indices = tf.math.mod(indices + 1, self._skip_every)
+    return outputs, (next_indices, next_state)
+
+
+class DilatedTransformerLike(Sequential):
+  """Tx-Like, but with SkipRNNs for better longer-term dependencies."""
+
+  CONFIG=dict(
+      hidden_size=128,
+      dilation_multipliers=[2],
+      ffw_multiplier=4,
+      recurrent_layer='lstm',
+      activation='gelu',
+  )
+
+  def __init__(
+      self,
+      hidden_size: int,
+      dilation_multipliers: list[int],
+      ffw_multiplier: int,
+      recurrent_layer: str,
+      activation: str,
+      name='DilatedTransformerLike',
+  ):
+    self._hidden_size = hidden_size
+    self._ffw_multiplier = ffw_multiplier
+
+    self._recurrent_constructor = dict(
+        lstm=snt.LSTM,
+        gru=snt.GRU,
+    )[recurrent_layer]
+
+    layers = []
+
+    # We need to encode for the first residual
+    encoder = snt.Linear(hidden_size, name='encoder')
+    layers.append(FFWWrapper(encoder))
+
+    skip_everys = [1]
+    for dilation_multiplier in dilation_multipliers:
+      skip_everys.append(skip_everys[-1] * dilation_multiplier)
+
+    for skip_every in skip_everys:
+      core = SkipRNN(self._recurrent_constructor(hidden_size), skip_every)
+      # consider adding layernorm here?
+      recurrent_layer = ResidualWrapper(RecurrentWrapper(core))
+      layers.append(recurrent_layer)
+
+      ffw_layer = ResBlock(
+          hidden_size, hidden_size * ffw_multiplier,
+          activation=getattr(tf.nn, activation))
+      layers.append(FFWWrapper(ffw_layer))
+
+    super().__init__(layers, name=name)
+
+
 CONSTRUCTORS = dict(
     mlp=MLP,
     # frame_stack_mlp=FrameStackingMLP,
@@ -424,6 +498,7 @@ CONSTRUCTORS = dict(
     gru=GRU,
     res_lstm=DeepResLSTM,
     tx_like=TransformerLike,
+    dilated_tx_like=DilatedTransformerLike,
 )
 
 DEFAULT_CONFIG = dict(
@@ -434,6 +509,7 @@ DEFAULT_CONFIG = dict(
     gru=GRU.CONFIG,
     res_lstm=DeepResLSTM.CONFIG,
     tx_like=TransformerLike.CONFIG,
+    dilated_tx_like=DilatedTransformerLike.CONFIG,
 )
 
 def construct_network(name, **config):
