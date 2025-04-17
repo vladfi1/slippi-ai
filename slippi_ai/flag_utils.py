@@ -15,6 +15,7 @@ TYPE_TO_ITEM = {
     str: ff.String,
     float: ff.Float,
     list[str]: ff.StringList,
+    list[int]: ff.Sequence[int],
 }
 
 def maybe_undo_optional(t: type) -> type:
@@ -48,6 +49,12 @@ def is_leaf(type_: type) -> bool:
     return False
   return True
 
+def get_type(value: tp.Any) -> type:
+  """Tries to infer the element type of a list."""
+  if isinstance(value, list) and len(value) > 0:
+    return list[get_type(value[0])]
+  return type(value)
+
 def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
   if isinstance(default, dict):
     result = {}
@@ -68,7 +75,7 @@ def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
         result[field.name] = get_flags_from_default(getattr(default, field.name))
     return result
 
-  field_type = type(default)
+  field_type = get_type(default)
   return get_leaf_flag(field_type, default)
 
 
