@@ -316,11 +316,10 @@ class ResidualWrapper(Network):
     outputs, hidden_state = self._net.scan(inputs, reset, initial_state)
     return inputs + outputs, hidden_state
 
-class GRU(RecurrentWrapper):
-  CONFIG=dict(hidden_size=128)
+GRU_CONFIG = dict(hidden_size=128)
 
-  def __init__(self, hidden_size, name='GRU'):
-    super().__init__(snt.GRU(hidden_size), name=name)
+def make_gru(hidden_size, name='GRU'):
+  return RecurrentWrapper(snt.GRU(hidden_size, name=name))
 
 class LSTM(Sequential):
   CONFIG=dict(
@@ -329,10 +328,10 @@ class LSTM(Sequential):
   )
 
   def __init__(self, hidden_size, num_res_blocks, name='LSTM'):
-    super().__init__([
-        FFWWrapper(resnet(num_res_blocks, hidden_size)),
-        RecurrentWrapper(snt.LSTM(hidden_size)),
-    ], name=name)
+    super().__init__([], name=name)
+
+    self._layers.append(FFWWrapper(resnet(num_res_blocks, hidden_size)))
+    self._layers.append(RecurrentWrapper(snt.LSTM(hidden_size)))
 
 
 class ResLSTMBlock(snt.RNNCore):
@@ -361,12 +360,13 @@ class DeepResLSTM(Sequential):
   )
 
   def __init__(self, hidden_size, num_layers, name='DeepResLSTM'):
-    layers = [FFWWrapper(snt.Linear(hidden_size, name='encoder'))]
+    super().__init__([], name=name)
+
+    self._layers.append(FFWWrapper(snt.Linear(hidden_size, name='encoder')))
 
     for _ in range(num_layers):
-      layers.append(RecurrentWrapper(ResLSTMBlock(hidden_size)))
+      self._layers.append(RecurrentWrapper(ResLSTMBlock(hidden_size)))
 
-    super().__init__(layers, name=name)
 
 class TransformerLike(Sequential):
   """Alternates recurrent and FFW layers."""
@@ -388,6 +388,10 @@ class TransformerLike(Sequential):
       activation: str,
       name='TransformerLike',
   ):
+    # First initialize the Sonnet module so that submodules can use the
+    # correct name scope.
+    super().__init__([], name=name)
+
     self._hidden_size = hidden_size
     self._num_layers = num_layers
     self._ffw_multiplier = ffw_multiplier
@@ -397,31 +401,27 @@ class TransformerLike(Sequential):
         gru=snt.GRU,
     )[recurrent_layer]
 
-    layers = []
-
     # We need to encode for the first residual
     encoder = snt.Linear(hidden_size, name='encoder')
-    layers.append(FFWWrapper(encoder))
+    self._layers.append(FFWWrapper(encoder))
 
     for _ in range(num_layers):
       # consider adding layernorm here?
       recurrent_layer = ResidualWrapper(RecurrentWrapper(
           self._recurrent_constructor(hidden_size)))
-      layers.append(recurrent_layer)
+      self._layers.append(recurrent_layer)
 
       ffw_layer = ResBlock(
           hidden_size, hidden_size * ffw_multiplier,
           activation=getattr(tf.nn, activation))
-      layers.append(FFWWrapper(ffw_layer))
-
-    super().__init__(layers, name=name)
+      self._layers.append(FFWWrapper(ffw_layer))
 
 
 CONSTRUCTORS = dict(
     mlp=MLP,
     # frame_stack_mlp=FrameStackingMLP,
     lstm=LSTM,
-    gru=GRU,
+    gru=make_gru,
     res_lstm=DeepResLSTM,
     tx_like=TransformerLike,
 )
@@ -431,7 +431,7 @@ DEFAULT_CONFIG = dict(
     mlp=MLP.CONFIG,
     # frame_stack_mlp=FrameStackingMLP.CONFIG,
     lstm=LSTM.CONFIG,
-    gru=GRU.CONFIG,
+    gru=GRU_CONFIG,
     res_lstm=DeepResLSTM.CONFIG,
     tx_like=TransformerLike.CONFIG,
 )
