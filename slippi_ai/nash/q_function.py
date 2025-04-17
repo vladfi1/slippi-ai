@@ -74,7 +74,9 @@ class QFunction(snt.Module):
     dummy_state_action = tf.nest.map_structure(
         tf.convert_to_tensor, self.embed_state_action.dummy([2, 2]))
     dummy_reward = tf.zeros([1, 2], tf.float32)
-    dummy_frames = data.Frames(dummy_state_action, dummy_reward)
+    dummy_resetting = tf.zeros([2, 2], tf.bool)
+    dummy_frames = data.Frames(
+        dummy_state_action, dummy_resetting, dummy_reward)
     initial_state = tf.concat(self.initial_state(1), axis=0)
     self.loss(dummy_frames, initial_state, discount=0)
 
@@ -100,7 +102,11 @@ class QFunction(snt.Module):
 
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
-    outputs, hidden_states = self.core_net.scan(inputs, initial_state)
+    outputs, hidden_states = self.core_net.scan(
+        inputs=inputs,
+        reset=frames.is_resetting[:-1],
+        initial_state=initial_state,
+    )
     final_state = tf.nest.map_structure(lambda t: t[-1], hidden_states)
 
     # Includes "overlap" frame.

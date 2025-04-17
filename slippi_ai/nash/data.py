@@ -43,13 +43,14 @@ def convert_batch(
   )
   p1_frames = data_lib.Frames(
       state_action=p1_state_action,
+      is_resetting=batch.frames.is_resetting,
       reward=-batch.frames.reward,  # assume 0-sum
   )
 
   return TwoPlayerBatch(
       p0_frames=batch.frames,
       p1_frames=p1_frames,
-      needs_reset=batch.needs_reset,
+      needs_reset=batch.frames.is_resetting,
       count=batch.count,
       meta=batch.meta,
   )
