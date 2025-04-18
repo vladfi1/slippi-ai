@@ -11,3 +11,4 @@ dnspython
 fancyflags
 pyarrow
 git+https://github.com/vladfi1/py7zr.git@dev
+parameterized
