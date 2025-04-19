@@ -433,10 +433,8 @@ class AsyncDelayedAgent:
 def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
   if path:
     return saving.load_state_from_disk(path)
-  elif tag:
-    return saving.load_state_from_s3(tag)
   else:
-    raise ValueError('Must specify one of "tag" or "path".')
+    raise ValueError('Must specify "path".')
 
 def get_name_code(state: dict, name: str) -> int:
   name_map: dict[str, int] = state['name_map']

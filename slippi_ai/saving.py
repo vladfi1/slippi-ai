@@ -12,7 +12,6 @@ from slippi_ai import (
     networks,
     controller_heads,
     embed,
-    s3_lib,
 )
 
 VERSION = 3
@@ -107,15 +106,15 @@ def load_policy_from_state(state: dict) -> policies.Policy:
 
   return policy
 
-def load_state_from_s3(tag: str) -> dict:
-  key = s3_lib.get_keys(tag).combined
-  store = s3_lib.get_store()
-  obj = store.get(key)
-  return pickle.loads(obj)
+# def load_state_from_s3(tag: str) -> dict:
+#   key = s3_lib.get_keys(tag).combined
+#   store = s3_lib.get_store()
+#   obj = store.get(key)
+#   return pickle.loads(obj)
 
-def load_policy_from_s3(tag: str) -> policies.Policy:
-  state = load_state_from_s3(tag)
-  return load_policy_from_state(state)
+# def load_policy_from_s3(tag: str) -> policies.Policy:
+#   state = load_state_from_s3(tag)
+#   return load_policy_from_state(state)
 
 def load_state_from_disk(path: str) -> dict:
   with open(path, 'rb') as f:
