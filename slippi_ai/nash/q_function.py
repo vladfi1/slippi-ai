@@ -43,10 +43,11 @@ def make_value_head(
 
 
 def to_merged_value_outputs(outputs: tf.Tensor, batch_dim=1) -> tf.Tensor:
+  """Goes from [T, 2B, O] to [T, 2B, 2O]."""
   split_outputs = split(outputs, axis=batch_dim)
   p0_outputs = tf.concat(split_outputs, -1)
   p1_outputs = tf.concat(list(reversed(split_outputs)), -1)
-  return merge([p0_outputs, p1_outputs], axis=batch_dim)
+  return tf.concat([p0_outputs, p1_outputs], axis=batch_dim)
 
 class QFunction(snt.Module):
 
@@ -71,13 +72,18 @@ class QFunction(snt.Module):
     return [self.core_net.initial_state(batch_size)] * 2
 
   def initialize_variables(self):
+    T = 2
+    B = 1
     dummy_state_action = tf.nest.map_structure(
-        tf.convert_to_tensor, self.embed_state_action.dummy([2, 2]))
-    dummy_reward = tf.zeros([1, 2], tf.float32)
-    dummy_resetting = tf.zeros([2, 2], tf.bool)
+        tf.convert_to_tensor, self.embed_state_action.dummy([T, 2 * B]))
+    dummy_reward = tf.zeros([T - 1, 2 * B], tf.float32)
+    dummy_resetting = tf.zeros([T, 2 * B], tf.bool)
     dummy_frames = data.Frames(
         dummy_state_action, dummy_resetting, dummy_reward)
-    initial_state = tf.concat(self.initial_state(1), axis=0)
+
+    initial_state = tf.nest.map_structure(
+        lambda *xs: tf.concat(xs, axis=0),
+        *self.initial_state(B))
     self.loss(dummy_frames, initial_state, discount=0)
 
   def loss(
@@ -100,6 +106,7 @@ class QFunction(snt.Module):
 
     # Below tensors are merged by default.
 
+    # TODO: The core_net only sees one player's actions; should it see both?
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
     outputs, hidden_states = self.core_net.scan(
@@ -177,9 +184,9 @@ class QFunction(snt.Module):
   ) -> tf.Tensor:  # [T, 2B]
     action_inputs = self.embed_action(actions)
     outputs, _ = snt.BatchApply(self.action_net.step)(
-        action_inputs, hidden_states)
-    value_outputs = to_merged_value_outputs(outputs)
-    q_values = self.q_head(value_outputs)
+        action_inputs, hidden_states)  # [T, 2B, O]
+    value_outputs = to_merged_value_outputs(outputs)  # [T, 2B, 2O]
+    q_values = self.q_head(value_outputs)  # [T, 2B]
     return q_values
 
   def multi_q_values_from_hidden_states(
@@ -188,22 +195,25 @@ class QFunction(snt.Module):
       actions: embed.Action,  # [S, T, 2B, ...]
       sample_dim: int = 0,
       batch_dim: int = 2,
-  ) -> tf.Tensor:  # [S, T, 2B]
+  ) -> tf.Tensor:  # [2, S, S, T, 2B]
     action_inputs = self.embed_action(actions)
     s = action_inputs.shape[0]
-    hidden_states = expand_tile(hidden_states, axis=sample_dim, multiple=s)
+
+    hidden_states = tf.nest.map_structure(
+        lambda x: expand_tile(x, axis=sample_dim, multiple=s),
+        hidden_states)  # [S, T, 2B, ...]
 
     outputs, _ = snt.BatchApply(self.action_net.step, num_dims=3)(
-        action_inputs, hidden_states)
-    p0_outputs, p1_outputs = split(outputs, axis=batch_dim)  # [S, B, H]
+        action_inputs, hidden_states)  # [S, T, 2B, O]
+    p0_outputs, p1_outputs = split(outputs, axis=batch_dim)  # [S, T, B, O]
 
-    p0_outputs = expand_tile(p0_outputs, axis=sample_dim+1, multiple=s)  # [S, S, B, H]
-    p1_outputs = expand_tile(p1_outputs, axis=sample_dim, multiple=s)  # [S, S, B, H]
+    p0_outputs = expand_tile(p0_outputs, axis=sample_dim+1, multiple=s)  # [S, S, T, B, O]
+    p1_outputs = expand_tile(p1_outputs, axis=sample_dim, multiple=s)  # [S, S, T, B, O]
 
-    p01_outputs = tf.concat([p0_outputs, p1_outputs], axis=-1)  # [S, S, B, 2H]
-    p10_outputs = tf.concat([p1_outputs, p0_outputs], axis=-1)  # [S, S, B, 2H]
+    p01_outputs = tf.concat([p0_outputs, p1_outputs], axis=-1)  # [S, S, T, B, 2O]
+    p10_outputs = tf.concat([p1_outputs, p0_outputs], axis=-1)  # [S, S, T, B, 2O]
 
-    value_outputs = tf.stack([p01_outputs, p10_outputs], axis=0)  # [2, S, S, T, B, 2H]
+    value_outputs = tf.stack([p01_outputs, p10_outputs], axis=0)  # [2, S, S, T, B, 2O]
     q_values = self.q_head(value_outputs)   # [2, S, S, T, B]
 
     return q_values
