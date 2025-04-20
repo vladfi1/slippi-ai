@@ -441,7 +441,7 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
       # Create a list of basenames to feed to zip -@ command
       file_list = '\n'.join(os.listdir(temp_dir))
       
-      # Create a new zip with all files
+      # Create a new zip with all files using zip -j with -@
       process = subprocess.Popen(
           ['zip', '-j', dest_zip, '-@'],  # -j to store just the basename
           stdin=subprocess.PIPE,
