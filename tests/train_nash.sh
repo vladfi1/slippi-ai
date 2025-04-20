@@ -15,9 +15,10 @@ python slippi_ai/nash/train.py \
   --config.runtime.num_eval_steps=1 \
   --config.network.name=gru \
   --config.network.gru.hidden_size=3 \
+  --config.learner.min_uev_delta=-100 \
   --config.q_function.head.hidden_size=5 \
-  --config.q_function.network.name=gru \
-  --config.q_function.network.gru.hidden_size=3 \
+  --config.q_function.network.name=lstm \
+  --config.q_function.network.lstm.hidden_size=3 \
   --config.rl_evaluator.use=True \
   --config.rl_evaluator.interval_seconds=4 \
   --config.rl_evaluator.runtime_seconds=0.5 \
