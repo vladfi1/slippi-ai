@@ -379,3 +379,52 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
     if any(path.endswith(s) for s in VALID_SUFFIXES):
       files.append(ZipFile(root, path))
   return files
+
+def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+  """Copies specified files from source zip archive to destination zip archive.
+
+  Extracts specified files from the source archive and adds them to the destination
+  archive. If the destination archive doesn't exist, it will be created.
+
+  Args:
+    source_zip: Path to the source zip archive.
+    file_names: List of file names within the source archive to copy.
+    dest_zip: Path to the destination zip archive.
+  """
+  # Create destination zip if it doesn't exist
+  if not os.path.exists(dest_zip):
+    with zipfile.ZipFile(dest_zip, 'w'):
+      pass
+
+  with tempfile.TemporaryDirectory() as temp_dir:
+    # Extract the specified files from source zip to temp directory
+    for file_name in file_names:
+      try:
+        subprocess.check_call(
+            ['unzip', '-j', source_zip, file_name, '-d', temp_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+      except subprocess.CalledProcessError:
+        # Skip files that don't exist in the source archive
+        print(f"Warning: File {file_name} not found in {source_zip}")
+        continue
+
+    # Create a new temporary zip file
+    temp_zip = dest_zip + '.temp'
+    with zipfile.ZipFile(temp_zip, 'w') as new_zip:
+      # Copy all existing files except those we're going to replace
+      if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
+        with zipfile.ZipFile(dest_zip, 'r') as existing_zip:
+          for item in existing_zip.infolist():
+            if item.filename not in [os.path.basename(f) for f in file_names]:
+              new_zip.writestr(item, existing_zip.read(item.filename))
+
+      # Add the new files
+      for file_name in file_names:
+        base_name = os.path.basename(file_name)
+        extracted_path = os.path.join(temp_dir, base_name)
+        if os.path.exists(extracted_path):
+          new_zip.write(extracted_path, base_name)
+
+    # Replace the original zip with the new one
+    os.replace(temp_zip, dest_zip)
