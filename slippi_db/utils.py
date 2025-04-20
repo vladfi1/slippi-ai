@@ -415,3 +415,26 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
 
   else:
     extract_zip_files(source_zip, file_names, dest_zip)
+
+def copy_multi_zip_files(
+    sources_and_files: list[tuple[str, list[str]]],
+    dest_zip: str) -> None:
+  """Copies specified files from multiple source zip archives to destination zip archive.
+
+  Extracts specified files from the source archives and adds them to the destination
+  archive. If the destination archive doesn't exist, it will be created.
+
+  Args:
+    sources_and_files: List of tuples, where each tuple contains a source zip archive path
+      and a list of file names within the source archive to copy.
+    dest_zip: Path to the destination zip archive.
+  """
+
+  with tempfile.TemporaryDirectory() as tmpdir:
+    tmp_zips = []
+    for i, (source_zip, file_names) in enumerate(sources_and_files):
+      tmp_zip = os.path.join(tmpdir, f'tmp_{i}.zip')
+      extract_zip_files(source_zip, file_names, tmp_zip)
+      tmp_zips.append(tmp_zip)
+
+    subprocess.check_call(['zipmerge', dest_zip, *tmp_zips])
