@@ -257,12 +257,12 @@ class FFWWrapper(Network):
     del prev_state
     return self._mlp(inputs), ()
 
-  def unroll(self, inputs, reset, prev_state):
-    del reset, prev_state
+  def unroll(self, inputs, reset, initial_state):
+    del reset, initial_state
     return self._mlp(inputs), ()
 
-  def scan(self, inputs, reset, prev_state):
-    del reset, prev_state
+  def scan(self, inputs, reset, initial_state):
+    del reset, initial_state
     return self._mlp(inputs), ()
 
 class Sequential(Network):
@@ -281,16 +281,16 @@ class Sequential(Network):
       next_states.append(next_state)
     return inputs, next_states
 
-  def unroll(self, inputs, reset, prev_state):
+  def unroll(self, inputs, reset, initial_state):
     final_states = []
-    for layer, state in zip(self._layers, prev_state):
+    for layer, state in zip(self._layers, initial_state):
       inputs, final_state = layer.unroll(inputs, reset, state)
       final_states.append(final_state)
     return inputs, final_states
 
-  def scan(self, inputs, reset, prev_state):
+  def scan(self, inputs, reset, initial_state):
     hidden_states = []
-    for layer, state in zip(self._layers, prev_state):
+    for layer, state in zip(self._layers, initial_state):
       inputs, hidden_state = layer.scan(inputs, reset, state)
       hidden_states.append(hidden_state)
     return inputs, hidden_states
@@ -308,12 +308,12 @@ class ResidualWrapper(Network):
     outputs, next_state = self._net.step(inputs, prev_state)
     return inputs + outputs, next_state
 
-  def unroll(self, inputs, reset, prev_state):
-    outputs, final_state = self._net.unroll(inputs, reset, prev_state)
+  def unroll(self, inputs, reset, initial_state):
+    outputs, final_state = self._net.unroll(inputs, reset, initial_state)
     return inputs + outputs, final_state
 
-  def scan(self, inputs, reset, prev_state):
-    outputs, hidden_state = self._net.scan(inputs, reset, prev_state)
+  def scan(self, inputs, reset, initial_state):
+    outputs, hidden_state = self._net.scan(inputs, reset, initial_state)
     return inputs + outputs, hidden_state
 
 class GRU(RecurrentWrapper):
