@@ -103,7 +103,7 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[NashVariables]):
     ], axis=-1)
 
 def solve_zero_sum_nash_tf(payoff_matrices: np.ndarray, **kwargs):
-  print('retracing with shape', payoff_matrices.shape)
+  print('[solve_zero_sum_nash_tf] retracing with shape', payoff_matrices.shape)
   problem = ZeroSumNashProblem(payoff_matrices)
   return optimization.solve_feasibility(problem, optimum=0, **kwargs)
 

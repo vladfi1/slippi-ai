@@ -215,7 +215,7 @@ class Policy(snt.Module):
       frames: data.Frames,
       initial_state: RecurrentState,
       discount: float = 0.99,
-  ):
+  ) -> UnrollWithOutputs:
     all_inputs = self.embed_state_action(frames.state_action)
     inputs, last_input = all_inputs[:-1], all_inputs[-1]
     outputs, final_state = self.network.unroll(
@@ -246,7 +246,7 @@ class Policy(snt.Module):
 
     return UnrollWithOutputs(
         imitation_loss=policy_loss,
-        distances=distances,
+        distances=distance_outputs,
         outputs=outputs,
         final_state=final_state,
         metrics=metrics,

@@ -10,6 +10,7 @@ from slippi_ai.data import Batch, Frames
 from slippi_ai.policies import Policy, RecurrentState
 from slippi_ai.nash import q_function as q_lib
 from slippi_ai import tf_utils, embed
+from slippi_ai.controller_heads import ControllerType
 from slippi_ai.nash import data as nash_data
 from slippi_ai.nash import nash as nash_lib
 from slippi_ai.nash import optimization as opt_lib
@@ -138,6 +139,24 @@ class Learner:
         reward=frames.reward[self.delay:],
     )
 
+  def _get_distribution(self, logits: ControllerType):
+    """Returns a Controller-shaped structure of distributions."""
+    # TODO: return an actual JointDistribution instead?
+    return self.q_policy.controller_embedding.map(
+        lambda e, t: e.distribution(t), logits)
+
+  def _compute_entropy(self, dist: ControllerType):
+    controller_embedding = self.q_policy.controller_embedding
+    entropies = controller_embedding.map(lambda _, d: d.entropy(), dist)
+    return tf.add_n(list(controller_embedding.flatten(entropies)))
+
+  def _compute_kl(self, dist1: ControllerType, dist2: ControllerType):
+    controller_embedding = self.q_policy.controller_embedding
+    kls = controller_embedding.map(
+        lambda _, d1, d2: d1.kl_divergence(d2),
+        dist1, dist2)
+    return tf.add_n(list(controller_embedding.flatten(kls)))
+
   def _train_sample_policy(
       self,
       frames: Frames, # merged
@@ -176,13 +195,13 @@ class Learner:
     # using the sample_policy.
     replicated_sample_policy_outputs = replicate_samples(sample_policy_outputs.outputs)
     replicated_prev_action = tf.nest.map_structure(replicate_samples, prev_action)
-    policy_samples = self.sample_policy.controller_head.sample(
+    policy_sample_outputs = self.sample_policy.controller_head.sample(
         replicated_sample_policy_outputs, replicated_prev_action)
 
     # Include the actual action taken among the samples.
     policy_samples = tf.nest.map_structure(
         lambda samples, na: tf.concat([samples, tf.expand_dims(na, 0)], 0),
-        policy_samples.controller_state, next_action,
+        policy_sample_outputs.controller_state, next_action,
     )
 
     # Defer updating the policy until after we sample from it.
@@ -195,7 +214,8 @@ class Learner:
     return (
         policy_samples,
         sample_policy_outputs.final_state,
-        sample_policy_outputs.metrics
+        sample_policy_outputs.metrics,
+        sample_policy_outputs.distances.logits,  # Only for action taken.
     )
 
   def _train_q_function(
@@ -271,7 +291,8 @@ class Learner:
       frames: Frames,
       # batch: Batch,
       initial_states: RecurrentState,
-      policy_samples: embed.Action,
+      policy_samples: embed.Action,  # [S, T, 2B]
+      sample_policy_logits: ControllerType,  # [T, 2B] (only on action taken)
       sample_q_values: tf.Tensor,  # [2, S, S, T, B]
       nash_policy: nash_lib.NashVariables,  # [S, T, B]
       # q_function_outputs: QFunctionOutputs,
@@ -315,12 +336,17 @@ class Learner:
       q_policy_log_probs = -tf.add_n(list(
           self.q_policy.controller_embedding.flatten(
               q_policy_distances.distance)))
+
+      # The action taken is the last one along the first (sample) axis.
+      # Note that this measures the distance to the actual replay data,
+      # not to the sample policy which only estimates the data distribution.
       q_policy_imitation_loss = -q_policy_log_probs[-1]
 
       # Normalize log-probs for the finite sample
       q_policy_log_probs -= tf.math.reduce_logsumexp(
           q_policy_log_probs, axis=0, keepdims=True)
 
+      # nash_distribution: [S, T, 2B]
       nash_distribution = tf.concat([nash_policy.p1, nash_policy.p2], axis=2)
       q_policy_cross_entropy = -tf.reduce_sum(
           nash_distribution * q_policy_log_probs, axis=0)
@@ -328,22 +354,26 @@ class Learner:
       q_policy_nash_kl = q_policy_cross_entropy - nash_entropy
 
       sample_q_values = (sample_q_values[0] - sample_q_values[1]) / 2
-      payoff_matrices = tf.transpose(sample_q_values, [2, 3, 0, 1])
-      p1_nash = tf.transpose(nash_policy.p1, [1, 2, 0])
-      p2_nash = tf.transpose(nash_policy.p2, [1, 2, 0])
+      payoff_matrices = tf.transpose(sample_q_values, [2, 3, 0, 1])  # [T, B, S, S]
+      p1_nash_policy = tf.transpose(nash_policy.p1, [1, 2, 0])  # [T, B, S]
+      p2_nash_policy = tf.transpose(nash_policy.p2, [1, 2, 0])  # [T, B, S]
 
-      p1_nash_payoffs = tf.linalg.matvec(payoff_matrices, p2_nash)
-      p2_nash_payoffs = -tf.linalg.matvec(payoff_matrices, p1_nash, transpose_a=True)
-      nash_payoffs = tf.concat([p1_nash_payoffs, p2_nash_payoffs], axis=1)
+      # Compute payoffs against the Nash policy.
+      p1_vs_nash_payoffs = tf.linalg.matvec(
+          payoff_matrices, p2_nash_policy)  # [T, B, S]
+      p2_vs_nash_payoffs = -tf.linalg.matvec(
+          payoff_matrices, p1_nash_policy, transpose_a=True)  # [T, B, S]
+      vs_nash_payoffs = tf.concat(
+          [p1_vs_nash_payoffs, p2_vs_nash_payoffs], axis=1)  # [T, 2B, S]
 
       q_policy_probs = tf.exp(q_policy_log_probs)  # [S, T, 2B]
       q_policy_probs = tf.transpose(q_policy_probs, [1, 2, 0])  # [T, 2B, S]
-      q_policy_vs_nash = tf.reduce_sum(nash_payoffs * q_policy_probs, axis=2)
+      q_policy_vs_nash = tf.reduce_sum(vs_nash_payoffs * q_policy_probs, axis=2)
 
       nash_values = tf.concat([
           nash_policy.p1_nash_value,
           -nash_policy.p1_nash_value,
-      ], axis=1)
+      ], axis=1)  # [T, 2B]
 
       regret = q_policy_vs_nash - nash_values
 
@@ -355,6 +385,22 @@ class Learner:
 
     action_taken_nash_prob = nash_distribution[-1]
 
+    # Estimate the entropy of the q_policy.
+    q_policy_samples = self.q_policy.controller_head.sample(
+        inputs=q_policy_outputs.outputs,
+        prev_controller_state=prev_action,
+    )
+    q_policy_entropy = self._compute_entropy(
+        self._get_distribution(q_policy_samples.logits))
+
+    # Compute KL to sample policy (on action taken)
+    q_policy_logits = tf.nest.map_structure(
+        lambda t: t[-1], q_policy_distances.logits)
+    q_policy_sample_kl = self._compute_kl(
+        self._get_distribution(sample_policy_logits),
+        self._get_distribution(q_policy_logits),
+    )
+
     q_policy_metrics = dict(
         nash_entropy=nash_entropy,
         nash_loss=q_policy_cross_entropy,
@@ -362,6 +408,8 @@ class Learner:
         imitation_loss=q_policy_imitation_loss,
         regret=regret,
         action_taken_nash_prob=action_taken_nash_prob,
+        entropy=q_policy_entropy,
+        sample_policy_kl=q_policy_sample_kl,
     )
 
     if train:
@@ -392,11 +440,12 @@ class Learner:
   ) -> tuple[dict, RecurrentState]:
     del compile  # TODO: use this
 
+    # merged_frames: [2B, T]
     merged_frames = tf.nest.map_structure(
         lambda *xs: np.concatenate(xs, axis=0),
         batch.p0_frames, batch.p1_frames)
 
-    # switch axes to time-major
+    # switch axes to time-major: [T, 2B]
     tm_frames: Frames = tf.nest.map_structure(
         lambda a: np.swapaxes(a, 0, 1), merged_frames)
 
@@ -419,6 +468,7 @@ class Learner:
     initial_states = self.reset_initial_states(
         initial_states, batch.needs_reset[:, 0])
 
+    # inital_states: [2B, ...]
     initial_states = {
         key: nash_data.merge(initial_state, axis=0)
         for key, initial_state in initial_states.items()
@@ -429,9 +479,10 @@ class Learner:
     metrics = {}
 
     (
-      policy_samples,  # [S, T, 2B, ...]
+      policy_samples,  # [S, T, 2B]
       final_states['sample_policy'],
       metrics['sample_policy'],
+      sample_policy_logits,  # [T, 2B]
     ) = self.train_sample_policy(
         tm_frames, initial_states['sample_policy'],
         train=train and self.should_train_sample_policy)
@@ -461,6 +512,7 @@ class Learner:
         tm_frames,
         initial_states=initial_states['q_policy'],
         policy_samples=policy_samples,
+        sample_policy_logits=sample_policy_logits,
         sample_q_values=q_function_outputs.sample_q_values,
         nash_policy=nash_policy,
         train=train_q_policy,
