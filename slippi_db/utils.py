@@ -379,3 +379,39 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
     if any(path.endswith(s) for s in VALID_SUFFIXES):
       files.append(ZipFile(root, path))
   return files
+
+def extract_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+  """Extracts specified files without recompressing."""
+
+  if os.path.exists(dest_zip):
+    raise FileExistsError(f'Destination zip file {dest_zip} already exists')
+
+  with subprocess.Popen(
+      ['zip',  '-U', source_zip, '-@', '--out', dest_zip],
+      stdin=subprocess.PIPE) as zip_proc:
+    for file_name in file_names:
+      zip_proc.stdin.write(file_name.encode('utf-8'))
+      zip_proc.stdin.write(b'\n')
+    zip_proc.stdin.close()
+    zip_proc.wait()
+
+def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+  """Copies specified files from source zip archive to destination zip archive.
+
+  Extracts specified files from the source archive and adds them to the destination
+  archive. If the destination archive doesn't exist, it will be created.
+
+  Args:
+    source_zip: Path to the source zip archive.
+    file_names: List of file names within the source archive to copy.
+    dest_zip: Path to the destination zip archive.
+  """
+
+  if os.path.exists(dest_zip):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      tmp_zip = os.path.join(tmpdir, 'tmp.zip')
+      extract_zip_files(source_zip, file_names, tmp_zip)
+      subprocess.check_call(['zipmerge', dest_zip, tmp_zip])
+
+  else:
+    extract_zip_files(source_zip, file_names, dest_zip)
