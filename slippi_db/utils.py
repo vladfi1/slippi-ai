@@ -384,8 +384,9 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
 def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
   """Copies specified files from source zip archive to destination zip archive.
 
-  Uses `zip -U` to copy specified files from the source archive to the destination
-  archive. If the destination archive doesn't exist, it will be created.
+  Uses `zip -U` with `-@` to read desired files from standard input, with the output
+  archive specified using `--out`. If the destination archive doesn't exist, it will
+  be created.
 
   Args:
     source_zip: Path to the source zip archive.
@@ -399,43 +400,74 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
   
   with tempfile.TemporaryDirectory() as temp_dir:
     # Extract the specified files from source zip to temp directory
+    extracted_basenames = []
     for file_name in file_names:
       try:
         subprocess.check_call(
             ['unzip', '-j', source_zip, file_name, '-d', temp_dir],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
+        extracted_basenames.append(os.path.basename(file_name))
       except subprocess.CalledProcessError:
         print(f"Warning: File {file_name} not found in {source_zip}")
         continue
     
-    # Get the list of extracted files (using basenames)
-    extracted_files = []
-    for file_name in file_names:
-      base_name = os.path.basename(file_name)
-      extracted_path = os.path.join(temp_dir, base_name)
-      if os.path.exists(extracted_path):
-        extracted_files.append((base_name, extracted_path))
-    
-    if not extracted_files:
+    if not extracted_basenames:
       return  # No files to copy
     
-    # Create a new temporary zip with all files
-    temp_zip = os.path.join(temp_dir, 'temp_dest.zip')
-    
-    if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
-      with zipfile.ZipFile(dest_zip, 'r') as src_zip:
-        with zipfile.ZipFile(temp_zip, 'w') as dst_zip:
-          for item in src_zip.infolist():
-            if item.filename not in [name for name, _ in extracted_files]:
-              dst_zip.writestr(item, src_zip.read(item.filename))
+    try:
+      if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
+        # First, extract all files from the destination zip
+        dest_dir = os.path.join(temp_dir, 'dest_files')
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        try:
+          # Extract all files from destination zip
+          subprocess.check_call(
+              ['unzip', '-o', dest_zip, '-d', dest_dir],
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL)
           
-          for base_name, extracted_path in extracted_files:
-            dst_zip.write(extracted_path, base_name)
-    else:
-      with zipfile.ZipFile(temp_zip, 'w') as dst_zip:
-        for base_name, extracted_path in extracted_files:
-          dst_zip.write(extracted_path, base_name)
-    
-    # Replace the original destination with the temporary one
-    shutil.copy2(temp_zip, dest_zip)
+          for root, _, files in os.walk(dest_dir):
+            for file in files:
+              if file not in extracted_basenames:
+                rel_path = os.path.relpath(os.path.join(root, file), dest_dir)
+                src_path = os.path.join(dest_dir, rel_path)
+                dst_path = os.path.join(temp_dir, os.path.basename(rel_path))
+                shutil.copy2(src_path, dst_path)
+        except subprocess.CalledProcessError:
+          print(f"Warning: Failed to extract files from {dest_zip}")
+      
+      # Create a list of basenames to feed to zip -@ command
+      file_list = '\n'.join(os.listdir(temp_dir))
+      
+      # Create a new zip with all files
+      process = subprocess.Popen(
+          ['zip', '-j', dest_zip, '-@'],  # -j to store just the basename
+          stdin=subprocess.PIPE,
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+          cwd=temp_dir,  # Run in temp_dir where all files are
+          text=True)
+      
+      process.communicate(input=file_list)
+      
+      if process.returncode != 0:
+        raise subprocess.SubprocessError("zip command failed")
+      
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+      print(f"Warning: zip command failed, falling back to zipfile module: {e}")
+      
+      # Create a new zip with all files
+      with zipfile.ZipFile(dest_zip, 'w') as dst_zip:
+        if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
+          with zipfile.ZipFile(dest_zip, 'r') as src_zip:
+            for item in src_zip.infolist():
+              if item.filename not in extracted_basenames:
+                dst_zip.writestr(item, src_zip.read(item.filename))
+        
+        # Add our extracted files
+        for basename in extracted_basenames:
+          extracted_path = os.path.join(temp_dir, basename)
+          if os.path.exists(extracted_path):
+            dst_zip.write(extracted_path, basename)
