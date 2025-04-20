@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import numpy as np
 import os
+import shutil
 from typing import Generator
 import py7zr
 import subprocess
@@ -383,7 +384,7 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
 def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
   """Copies specified files from source zip archive to destination zip archive.
 
-  Extracts specified files from the source archive and adds them to the destination
+  Uses `zip -U` to copy specified files from the source archive to the destination
   archive. If the destination archive doesn't exist, it will be created.
 
   Args:
@@ -395,7 +396,7 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
   if not os.path.exists(dest_zip):
     with zipfile.ZipFile(dest_zip, 'w'):
       pass
-
+  
   with tempfile.TemporaryDirectory() as temp_dir:
     # Extract the specified files from source zip to temp directory
     for file_name in file_names:
@@ -405,26 +406,36 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
       except subprocess.CalledProcessError:
-        # Skip files that don't exist in the source archive
         print(f"Warning: File {file_name} not found in {source_zip}")
         continue
-
-    # Create a new temporary zip file
-    temp_zip = dest_zip + '.temp'
-    with zipfile.ZipFile(temp_zip, 'w') as new_zip:
-      # Copy all existing files except those we're going to replace
-      if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
-        with zipfile.ZipFile(dest_zip, 'r') as existing_zip:
-          for item in existing_zip.infolist():
-            if item.filename not in [os.path.basename(f) for f in file_names]:
-              new_zip.writestr(item, existing_zip.read(item.filename))
-
-      # Add the new files
-      for file_name in file_names:
-        base_name = os.path.basename(file_name)
-        extracted_path = os.path.join(temp_dir, base_name)
-        if os.path.exists(extracted_path):
-          new_zip.write(extracted_path, base_name)
-
-    # Replace the original zip with the new one
-    os.replace(temp_zip, dest_zip)
+    
+    # Get the list of extracted files (using basenames)
+    extracted_files = []
+    for file_name in file_names:
+      base_name = os.path.basename(file_name)
+      extracted_path = os.path.join(temp_dir, base_name)
+      if os.path.exists(extracted_path):
+        extracted_files.append((base_name, extracted_path))
+    
+    if not extracted_files:
+      return  # No files to copy
+    
+    # Create a new temporary zip with all files
+    temp_zip = os.path.join(temp_dir, 'temp_dest.zip')
+    
+    if os.path.exists(dest_zip) and os.path.getsize(dest_zip) > 0:
+      with zipfile.ZipFile(dest_zip, 'r') as src_zip:
+        with zipfile.ZipFile(temp_zip, 'w') as dst_zip:
+          for item in src_zip.infolist():
+            if item.filename not in [name for name, _ in extracted_files]:
+              dst_zip.writestr(item, src_zip.read(item.filename))
+          
+          for base_name, extracted_path in extracted_files:
+            dst_zip.write(extracted_path, base_name)
+    else:
+      with zipfile.ZipFile(temp_zip, 'w') as dst_zip:
+        for base_name, extracted_path in extracted_files:
+          dst_zip.write(extracted_path, base_name)
+    
+    # Replace the original destination with the temporary one
+    shutil.copy2(temp_zip, dest_zip)
