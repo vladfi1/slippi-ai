@@ -384,9 +384,9 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
 def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
   """Copies specified files from source zip archive to destination zip archive.
 
-  Uses `zip -U` with `-@` to read desired files from standard input, with the output
-  archive specified using `--out`. If the destination archive doesn't exist, it will
-  be created.
+  Uses `zip -j` with `-@` to read desired files from standard input. The `-j` flag
+  ensures that only the basename of the files is stored in the destination archive.
+  If the destination archive doesn't exist, it will be created.
 
   Args:
     source_zip: Path to the source zip archive.
