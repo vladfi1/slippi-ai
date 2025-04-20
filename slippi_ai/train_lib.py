@@ -221,6 +221,7 @@ def train(config: Config):
     restore_delay = restore_config['policy']['delay']
     if restore_delay != config.policy.delay:
       logging.warning(f'WARNING: Changing delay from {restore_delay} to {config.policy.delay}.')
+      combined_state['best_eval_loss'] = float('inf')  # reset best eval loss
 
     for key in ['network', 'controller_head']:
       setattr(config, key, restore_config[key])
