@@ -32,6 +32,8 @@ class LearnerConfig:
   num_samples: int = 1
   q_policy_imitation_weight: float = 0
 
+  # Only train the q_policy if the q function is sufficiently good.
+  min_uev_delta: Optional[float] = None
 
 replicate = lambda n: lambda t: tf_utils.expand_tile(t, axis=0, multiple=n)
 
@@ -72,7 +74,7 @@ class Learner:
       num_samples: int,
       train_sample_policy: bool = True,
       q_policy_imitation_weight: float = 0,
-      q_policy_expected_return_weight: float = 0,
+      min_uev_delta: Optional[float] = None,
       jit_compile: Optional[bool] = None,
   ):
     self.q_function = q_function
@@ -96,7 +98,7 @@ class Learner:
 
     self.num_samples = num_samples
     self.q_policy_imitation_weight = q_policy_imitation_weight
-    self.q_policy_expected_return_weight = q_policy_expected_return_weight
+    self.min_uev_delta = min_uev_delta
 
     self.delay = q_policy.delay
     assert sample_policy.delay == self.delay
@@ -443,6 +445,15 @@ class Learner:
 
     nash_policy = self._compute_nash(q_function_outputs.sample_q_values)
 
+    # Only start training the q_policy when the q function is decent.
+    # Empirically the q function is worse than the value function at the start,
+    # likely because the targets are bootstrapped from the value function.
+    train_q_policy = train
+    if train_q_policy and self.min_uev_delta is not None:
+      uev_delta = metrics['q_function']['q']['uev_delta'].numpy().mean()
+      if uev_delta < self.min_uev_delta:
+        train_q_policy = False
+
     (
       final_states['q_policy'],
       metrics['q_policy'],
@@ -452,7 +463,7 @@ class Learner:
         policy_samples=policy_samples,
         sample_q_values=q_function_outputs.sample_q_values,
         nash_policy=nash_policy,
-        train=train,
+        train=train_q_policy,
     )
 
     final_states = {
