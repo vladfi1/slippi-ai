@@ -25,12 +25,15 @@ jobs:
         pip install tensorflow ray
         pip install -r requirements.txt
         pip install .
+        sudo apt update
+        sudo apt install -y zipmerge
 
     - name: Run Unit Tests
       run: |
         python tests/networks_test.py
         python tests/rl_lib_test.py
         python tests/unit_tests.py
+        python tests/slippi_db_test.py
 
     - name: Test Imitation
       run: ./tests/training_test.sh
