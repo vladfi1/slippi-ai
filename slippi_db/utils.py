@@ -438,3 +438,28 @@ def copy_multi_zip_files(
       tmp_zips.append(tmp_zip)
 
     subprocess.check_call(['zipmerge', dest_zip, *tmp_zips])
+
+def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
+  """Renames files within a zip archive.
+
+  Args:
+    zip_path: Path to the zip archive.
+    to_rename: List of (old, new) file names.
+  """
+
+  # Note: zipnote is very picky about the input format.
+  with subprocess.Popen(['zipnote', zip_path], stdout=subprocess.PIPE) as proc:
+      lines = proc.stdout.readlines()
+      proc.wait()
+
+  rename_mapping = {}
+  for src, dst in to_rename:
+    rename_mapping[f'@ {src}\n'.encode('utf-8')] = f'@={dst}\n'.encode('utf-8')
+
+  with subprocess.Popen(['zipnote', '-w', zip_path], stdin=subprocess.PIPE) as proc:
+    for line in lines:
+      proc.stdin.write(line)
+      if line in rename_mapping:
+        proc.stdin.write(rename_mapping.pop(line))
+    proc.stdin.close()
+    proc.wait()
