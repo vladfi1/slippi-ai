@@ -605,7 +605,7 @@ def build_agent(
 
 BATCH_AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
-    tag=ff.String(None, 'Tag used to save state in s3.'),
+    tag=ff.String(None, 'Tag used to identify the experiment.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),

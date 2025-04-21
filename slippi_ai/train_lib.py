@@ -170,7 +170,7 @@ def train(config: Config):
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
-  restore_s3_keys = None
+
 
   # attempt to restore parameters
   restored = False

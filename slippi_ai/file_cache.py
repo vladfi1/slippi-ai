@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import typing as tp
 
-DATASET_TEMPLATE = "https://slp-replays.s3.amazonaws.com/{version}/datasets/pq/{file}"
+DATASET_TEMPLATE = "https://example.com/{version}/datasets/pq/{file}"
 
 DATASET_VERSIONS = (
     'test', 'prod',

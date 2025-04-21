@@ -7,7 +7,7 @@ import tree
 
 from slippi_ai import eval_lib, embed, data
 
-flags.DEFINE_string('tag', None, 'Experiment tag to pull from S3.')
+flags.DEFINE_string('tag', None, 'Experiment tag.')
 flags.DEFINE_string('saved_model', None, 'Path to local saved model.')
 flags.DEFINE_integer('batch_size', None, 'batch size', required=True)
 flags.DEFINE_integer('runtime', 5, 'How long to run, in seconds.')

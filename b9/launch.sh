@@ -27,29 +27,12 @@ else
   pushd $SLIPPI ; git switch $BRANCH ; git pull ; popd
 fi
 
-# get data from s3
 
 # rm -rf $DATA_ROOT ;
 
 if [ ! -d $DATA_DIR ]; then
   mkdir -p $DATA_ROOT
-
-  # download dataset
-  DATASET_VERSION=prod
-  DATASET_URL="https://slp-replays.s3.amazonaws.com/$DATASET_VERSION/datasets/pq/games.tar"
-  GAMES_TAR=$DATA_ROOT/games.tar
-  curl $DATASET_URL -o $GAMES_TAR
-
-  # extract games
   mkdir $DATA_DIR
-  tar xf $GAMES_TAR -C $DATA_DIR
-  rm $GAMES_TAR
-fi
-
-# download meta df
-if [ ! -f $META_PATH ]; then
-  META_URL="https://slp-replays.s3.amazonaws.com/$DATASET_VERSION/datasets/pq/meta.pq"
-  curl $META_URL -o $META_PATH
 fi
 
 # install additional environment, if not already here
@@ -73,11 +56,7 @@ popd
 
 # local: 192.168.1.5
 
-# S3 bucket for saving parameters
-export S3_CREDS=
-
-# managed mongodb for experiment logging
-export MONGO_URI=
+# Configuration for experiment logging
 
 NUM_DAYS=3
 RUNTIME=$(($NUM_DAYS * 24 * 60 * 60))
@@ -93,4 +72,3 @@ python -u $SLIPPI/scripts/train.py with \
   runtime.max_runtime=$RUNTIME \
   runtime.log_interval=300 \
   runtime.save_interval=600 \
-  save_to_s3=True

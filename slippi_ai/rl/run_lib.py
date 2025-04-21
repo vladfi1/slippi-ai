@@ -570,7 +570,6 @@ def run(config: Config):
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
 
-    # TODO: save to s3?
 
   maybe_save = utils.Periodically(save, config.runtime.save_interval)
 

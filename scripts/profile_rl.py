@@ -12,7 +12,7 @@ from slippi_ai.data import CompressedGame
 
 flags.DEFINE_string('dolphin_path', None, 'Path to dolphin directory.', required=True)
 flags.DEFINE_string('iso_path', None, 'Path to SSBM iso.', required=True)
-flags.DEFINE_string('tag', None, 'Experiment tag to pull from S3.')
+flags.DEFINE_string('tag', None, 'Experiment tag.')
 flags.DEFINE_string('saved_model', None, 'Path to local saved model.')
 flags.DEFINE_integer('batch_size', None, 'batch size', required=True)
 flags.DEFINE_integer('runtime', 10, 'How long to run, in seconds.')
