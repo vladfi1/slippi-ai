@@ -4,9 +4,6 @@ git+https://github.com/vladfi1/libmelee.git@v0.38.0
 gdown
 tensorflow_probability[tf]
 wandb
-git+https://github.com/mbr/simplekv.git
-boto3
-pymongo
 dnspython
 fancyflags
 pyarrow
