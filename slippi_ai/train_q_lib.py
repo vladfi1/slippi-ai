@@ -23,7 +23,6 @@ from slippi_ai import (
     networks,
     policies,
     saving,
-    s3_lib,
     tf_utils,
     train_lib,
     utils,
@@ -110,8 +109,6 @@ class Config:
   tag: tp.Optional[str] = None
 
   # TODO: group these into their own subconfig
-  save_to_s3: bool = False
-  restore_tag: tp.Optional[str] = None
   restore_pickle: tp.Optional[str] = None
   initialize_policies_from: tp.Optional[str] = None
 
@@ -192,35 +189,11 @@ def train(config: Config):
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
-  save_to_s3 = config.save_to_s3
-  if save_to_s3 or config.restore_tag:
-    if 'S3_CREDS' not in os.environ:
-      raise ValueError('must set the S3_CREDS environment variable')
 
-    s3_store = s3_lib.get_store()
-    s3_keys = s3_lib.get_keys(tag)
-
-  if config.restore_tag:
-    restore_s3_keys = s3_lib.get_keys(config.restore_tag)
-  elif save_to_s3:
-    restore_s3_keys = s3_keys
-  else:
-    restore_s3_keys = None
 
   # attempt to restore parameters
   restored = False
-  if restore_s3_keys is not None:
-    try:
-      restore_key = restore_s3_keys.combined
-      obj = s3_store.get(restore_key)
-      logging.info('restoring from %s', restore_key)
-      combined_state = pickle.loads(obj)
-      restored = True
-      # TODO: do some config compatibility validation
-    except KeyError:
-      # TODO: re-raise if user specified restore_tag
-      logging.info('no params found at %s', restore_key)
-  elif config.restore_pickle:
+  if config.restore_pickle:
     logging.info('restoring from %s', config.restore_pickle)
     with open(config.restore_pickle, 'rb') as f:
       combined_state = pickle.load(f)
@@ -307,9 +280,6 @@ def train(config: Config):
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
 
-    if save_to_s3:
-      logging.info('saving state to S3: %s', s3_keys.combined)
-      s3_store.put(s3_keys.combined, pickled_state)
 
   maybe_save = utils.Periodically(save, runtime.save_interval)
 

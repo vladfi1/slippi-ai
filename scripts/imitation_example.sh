@@ -44,5 +44,4 @@ python scripts/train.py \
   --config.runtime.max_runtime=$RUNTIME \
   --config.runtime.log_interval=300 \
   --config.runtime.save_interval=600 \
-  --config.save_to_s3=False \
   "$@"
