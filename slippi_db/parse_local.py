@@ -101,6 +101,9 @@ def parse_slp(
 
   return result
 
+def parse_slp_with_index(index: int, *args, **kwargs):
+  return index, parse_slp(*args, **kwargs)
+
 def parse_files(
     files: list[utils.LocalFile],
     output_dir: str,
@@ -122,12 +125,15 @@ def parse_files(
   with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
     try:
       futures = [
-          pool.submit(parse_slp, f, **parse_slp_kwargs)
-          for f in files]
+          pool.submit(parse_slp_with_index, i, f, **parse_slp_kwargs)
+          for i, f in enumerate(files)]
       as_completed = concurrent.futures.as_completed(futures)
-      results = [
-          f.result() for f in
-          tqdm.tqdm(as_completed, total=len(files), smoothing=0, unit='slp')]
+      as_completed = tqdm.tqdm(
+          as_completed, total=len(files), smoothing=0, unit='slp')
+      results = [None] * len(files)
+      for future in as_completed:
+        index, result = future.result()
+        results[index] = result
       return results
     except KeyboardInterrupt:
       print('KeyboardInterrupt, shutting down')
@@ -286,16 +292,14 @@ def run_parsing(
   print("Processing zip files.")
   slp_files: list[utils.LocalFile] = []
   raw_names: list[str] = []
-  for f in to_process:
-    raw_path = os.path.join(raw_dir, f)
-    if f.endswith('.zip'):
-      fs = utils.traverse_slp_files_zip(raw_path)
-    else:
-      # print(f"Can't handle {f} yet.")
+  for raw in to_process:
+    raw_path = os.path.join(raw_dir, raw)
+    if not raw.endswith('.zip'):
       continue
-    print(f"Found {len(fs)} slp files in {f}")
-    slp_files.extend(fs)
-    raw_names.extend([f] * len(fs))
+    files = utils.traverse_slp_files_zip(raw_path)
+    print(f"Found {len(files)} slp files in {raw}")
+    slp_files.extend(files)
+    raw_names.extend([raw] * len(files))
 
   # TODO: handle raw .slp and .slp.gz files
 
