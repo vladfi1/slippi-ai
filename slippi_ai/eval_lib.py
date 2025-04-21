@@ -430,12 +430,6 @@ class AsyncDelayedAgent:
     delayed_controller = self._output_queue.get()
     return delayed_controller
 
-def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
-  if path:
-    return saving.load_state_from_disk(path)
-  else:
-    raise ValueError('Must specify "path".')
-
 def get_name_code(state: dict, name: str) -> int:
   name_map: dict[str, int] = state['name_map']
   if name not in name_map:
@@ -586,11 +580,10 @@ def build_agent(
     controller: tp.Optional[melee.Controller] = None,
     state: Optional[dict] = None,
     path: Optional[str] = None,
-    tag: Optional[str] = None,
     **agent_kwargs,
 ) -> Agent:
   if state is None:
-    state = load_state(path, tag)
+    state = saving.load_state_from_disk(path)
 
   return Agent(
       controller=controller,
@@ -605,7 +598,6 @@ def build_agent(
 
 BATCH_AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
-    tag=ff.String(None, 'Tag used to identify the experiment.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
