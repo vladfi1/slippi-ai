@@ -290,7 +290,7 @@ def find_open_udp_ports(num: int):
 
   system = platform.system()
   if system == 'Linux':
-    netstat_command = ['netstat', '-an', '--udp']
+    netstat_command = ['ss', '-an', '--udp']
     port_delimiter = ':'
   elif system == 'Darwin':
     netstat_command = ['netstat', '-an', '-p', 'udp']
