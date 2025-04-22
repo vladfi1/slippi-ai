@@ -38,6 +38,7 @@ jobs:
 
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
+        python tests/replay_parser_test.py
 
     - name: Test Imitation
       run: ./tests/training_test.sh
