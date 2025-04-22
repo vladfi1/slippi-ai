@@ -30,63 +30,60 @@ def get_buttons(button_bits: np.ndarray) -> types.Buttons:
       for name, button in types.LIBMELEE_BUTTONS.items()
   })
 
-def to_libmelee_stick(raw_stick: np.ndarray) -> np.ndarray:
-  return (raw_stick / 2.) + 0.5
+def to_libmelee_stick(raw_stick: pa.FloatArray) -> np.ndarray:
+  return (raw_stick.to_numpy() / 2.) + 0.5
 
-def get_stick(stick) -> types.Stick:
+def get_stick(stick: peppi_py.frame.Position) -> types.Stick:
   return types.Stick(
-      x=to_libmelee_stick(stick.field('x').to_numpy()),
-      y=to_libmelee_stick(stick.field('y').to_numpy()),
+      x=to_libmelee_stick(stick.x),
+      y=to_libmelee_stick(stick.y),
   )
 
-def get_player(player: pa.StructArray) -> types.Player:
-  leader = player.field('leader')
+def get_player(player: peppi_py.frame.PortData) -> types.Player:
+  leader = player.leader
 
-  post = leader.field('post')
-  get_post = lambda key: post.field(key)
-  position = post.field('position')
-  pre = leader.field('pre')
+  post = leader.post
+  position = post.position
+  pre = leader.pre
 
   return types.Player(
-      percent=np.asarray(get_post('percent'), dtype=np.uint16),
-      facing=get_post('direction').to_numpy() > 0,
-      x=position.field('x'),
-      y=position.field('y'),
-      action=get_post('state'),
+      percent=np.asarray(post.percent, dtype=np.uint16),
+      facing=post.direction.to_numpy() > 0,
+      x=position.x,
+      y=position.y,
+      action=post.state,
       # libmelee does extra processing to determine invulnerability
-      invulnerable=get_post('hurtbox_state').to_numpy() != 0,
-      character=get_post('character'),  # uint8
-      jumps_left=get_post('jumps'),  # uint8
-      shield_strength=get_post('shield'),  # float
+      invulnerable=post.hurtbox_state.to_numpy() != 0,
+      character=post.character,  # uint8
+      jumps_left=post.jumps,  # uint8
+      shield_strength=post.shield,  # float
       controller=types.Controller(
-          main_stick=get_stick(pre.field('joystick')),
-          c_stick=get_stick(pre.field('cstick')),
+          main_stick=get_stick(pre.joystick),
+          c_stick=get_stick(pre.cstick),
           # libmelee reads the logical value and assigns it to both l/r
-          shoulder=pre.field('triggers'),
-          buttons=get_buttons(pre.field('buttons_physical')),
+          shoulder=pre.triggers,
+          buttons=get_buttons(pre.buttons_physical),
       ),
-      on_ground=np.logical_not(
-          post.field('airborne').to_numpy(zero_copy_only=False)),
+      on_ground=np.logical_not(post.airborne),
   )
 
 def from_peppi(game: peppi_py.Game) -> types.GAME_TYPE:
   frames = game.frames
 
   players = {}
-  port_names = sorted(p['port'] for p in game.start['players'])
-  ports_data = frames.field('ports')
-  for i, port_name in enumerate(port_names):
-    players[f'p{i}'] = get_player(ports_data.field(port_name))
+  for i, player in enumerate(frames.ports):
+    players[f'p{i}'] = get_player(player)
 
-  stage = melee.enums.to_internal_stage(game.start['stage'])
-  stage = np.full([len(frames)], stage.value, dtype=np.uint8)
+  stage = melee.enums.to_internal_stage(game.start.stage)
+  stage = np.full([len(frames.id)], stage.value, dtype=np.uint8)
 
   game = types.Game(stage=stage, **players)
   game_array = types.array_from_nt(game)
 
-  index = frames.field('id').to_numpy()
+  index = frames.id.to_numpy()
   first_indices = []
-  next_idx = -123
+  next_idx = index[0]
+  assert next_idx == -123
   for i, idx in enumerate(index):
     if idx == next_idx:
       first_indices.append(i)
