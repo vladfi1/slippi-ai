@@ -181,13 +181,6 @@ def get_metadata_safe(path: str) -> dict:
   except:  # should be a catch-all
     return dict(invalid=True, reason='uncaught exception')
 
-# def get_metadata(game: data.Game) -> Metadata:
-#   return Metadata(
-#       characters={port: xs['character'][0] for port, xs in game['players'].items()},
-#       stage=game['stage'][0],
-#       num_frames=len(game['stage']),
-#   )
-
 
 BANNED_CHARACTERS = set([
     # Kirby's actions aren't fully mapped out yet
