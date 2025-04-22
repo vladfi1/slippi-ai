@@ -320,7 +320,7 @@ def find_open_udp_ports(num: int):
   if len(available_ports) < num:
     raise RuntimeError('Not enough available ports.')
 
-  return random.sample(available_ports, num)
+  return random.sample(list(available_ports), num)
 
 
 def ref_path_exists(
