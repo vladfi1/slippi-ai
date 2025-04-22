@@ -34,6 +34,7 @@ jobs:
         python tests/rl_lib_test.py
         python tests/unit_tests.py
         python tests/slippi_db_test.py
+        python tests/replay_parser_test.py
 
     - name: Test Imitation
       run: ./tests/training_test.sh
