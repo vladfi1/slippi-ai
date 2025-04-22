@@ -15,6 +15,7 @@ from slippi_db import utils
 TEST_DATASET_URL = "https://www.dropbox.com/scl/fi/xbja5vqqlg3m8jutyjcn7/TestDataset-32.zip?rlkey=nha6ycc6npr3wmxzickeyqpfh&st=i87xxfxk&dl=1"
 
 FLAGS = flags.FLAGS
+flags.DEFINE_string('dataset_path', None, 'Path to the dataset to test')
 flags.DEFINE_string("url", TEST_DATASET_URL, "URL to download the test dataset from")
 flags.DEFINE_string("temp_dir", None, "Temporary directory to extract files to (default: system temp dir)")
 flags.DEFINE_boolean("keep_files", False, "Whether to keep the downloaded and extracted files")
@@ -49,9 +50,9 @@ def test_parsing_equality(directory):
   print(f"Found {len(files)} .slp files to test")
 
   results = {
-    "passed": 0,
-    "failed": 0,
-    "errors": []
+      "passed": 0,
+      "failed": 0,
+      "errors": []
   }
 
   for i, file in enumerate(files):
@@ -73,34 +74,38 @@ def test_parsing_equality(directory):
 
 
 def main(_):
-  base_temp_dir = FLAGS.temp_dir or tempfile.gettempdir()
-  with tempfile.TemporaryDirectory(dir=base_temp_dir) as temp_dir:
-    zip_path = os.path.join(temp_dir, "test_dataset.zip")
-    download_file(FLAGS.url, zip_path)
+  if FLAGS.dataset_path:
+    results = test_parsing_equality(FLAGS.dataset_path)
+  else:
+    base_temp_dir = FLAGS.temp_dir or tempfile.gettempdir()
 
-    extract_dir = os.path.join(temp_dir, "extracted")
-    os.makedirs(extract_dir, exist_ok=True)
-    extract_zip(zip_path, extract_dir)
+    with tempfile.TemporaryDirectory(dir=base_temp_dir) as temp_dir:
+      zip_path = os.path.join(temp_dir, "test_dataset.zip")
+      download_file(FLAGS.url, zip_path)
 
-    results = test_parsing_equality(extract_dir)
+      extract_dir = os.path.join(temp_dir, "extracted")
+      os.makedirs(extract_dir, exist_ok=True)
+      extract_zip(zip_path, extract_dir)
 
-    print("\nTest Summary:")
-    print(f"  Passed: {results['passed']}")
-    print(f"  Failed: {results['failed']}")
+      results = test_parsing_equality(extract_dir)
 
-    if results["errors"]:
-      print("\nFailures:")
-      for name, error in results["errors"]:
-        print(f"  {name}: {error}")
+  print("\nTest Summary:")
+  print(f"  Passed: {results['passed']}")
+  print(f"  Failed: {results['failed']}")
 
-    if FLAGS.keep_files:
-      keep_dir = os.path.join(os.getcwd(), "test_dataset")
-      print(f"\nKeeping files in {keep_dir}")
-      if not os.path.exists(keep_dir):
-        os.makedirs(keep_dir)
-      os.system(f"cp -r {extract_dir}/* {keep_dir}/")
+  if results["errors"]:
+    print("\nFailures:")
+    for name, error in results["errors"]:
+      print(f"  {name}: {error}")
 
-    return 0 if results["failed"] == 0 else 1
+  if FLAGS.keep_files:
+    keep_dir = os.path.join(os.getcwd(), "test_dataset")
+    print(f"\nKeeping files in {keep_dir}")
+    if not os.path.exists(keep_dir):
+      os.makedirs(keep_dir)
+    os.system(f"cp -r {extract_dir}/* {keep_dir}/")
+
+  return 0 if results["failed"] == 0 else 1
 
 
 if __name__ == "__main__":
