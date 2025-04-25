@@ -35,6 +35,9 @@ jobs:
         python tests/unit_tests.py
         python tests/slippi_db_test.py
 
+    - name: Test Evaluator
+      run: ./tests/run_evaluator.sh
+
     - name: Test Imitation
       run: ./tests/training_test.sh
 
