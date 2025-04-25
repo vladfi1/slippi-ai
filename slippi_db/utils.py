@@ -4,17 +4,19 @@ from contextlib import contextmanager
 import functools
 import gzip
 import hashlib
-import numpy as np
 import os
 from typing import Generator
-import py7zr
+
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import typing as tp
 import zipfile
+
+import numpy as np
+import py7zr
+
 
 T = tp.TypeVar('T')
 
@@ -97,9 +99,9 @@ def get_tmp_dir(in_memory: bool) -> tp.Optional[str]:
     subprocess.check_call(['diskutil', 'eraseVolume', 'APFS', _MACOS_SHM_DISK, disk_name])
     print(f'Created ramdisk {disk_name} at {shm_dir}')
 
-    def cleanup():
-      subprocess.check_call(['umount', shm_dir])
-      subprocess.check_call(['hdiutil', 'detach', disk_name])
+    # def cleanup():
+    #   subprocess.check_call(['umount', shm_dir])
+    #   subprocess.check_call(['hdiutil', 'detach', disk_name])
     # atexit.register(cleanup)
 
     return shm_dir
@@ -201,20 +203,20 @@ class SevenZipFile(LocalFile):
     return self.path
 
   def read(self) -> bytes:
-    result = subprocess.run(
+    result = subprocess.check_call(
         ['7z', 'e', '-so', self.root, self.path],
         stdout=subprocess.PIPE)
     return result.stdout
 
   @contextmanager
   def extract(self, tmpdir: str) -> Generator[str, None, None]:
-    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_dir:
       subprocess.check_call(
-        ['7z', 'x', '-o' + tmpdir, self.root, self.path],
+        ['7z', 'x', '-o' + tmp_dir, self.root, self.path],
         stdout=subprocess.DEVNULL)
       # with py7zr.SevenZipFile(self.root) as archive:
       #   archive.extract(path=tmpdir, targets=[self.path])
-      yield os.path.join(tmpdir, self.path)
+      yield os.path.join(tmp_dir, self.path)
 
 class ZipFile(LocalFile):
   """File inside a zip archive."""
@@ -270,17 +272,6 @@ def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
     if path.endswith('.slp'):
       files.append(SevenZipFile(root, path))
   return files
-
-class SevenZipChunk:
-
-  def __init__(self, path: str, files: list[str]) -> None:
-    self.path = path
-    self.files = files
-
-  def __enter__(self):
-    self.tmpdir = tempfile.TemporaryDirectory(dir=get_tmp_dir(in_memory=True))
-    self.extract()
-    return self
 
 class SevenZipChunk:
 
@@ -449,8 +440,8 @@ def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
 
   # Note: zipnote is very picky about the input format.
   with subprocess.Popen(['zipnote', zip_path], stdout=subprocess.PIPE) as proc:
-      lines = proc.stdout.readlines()
-      proc.wait()
+    lines = proc.stdout.readlines()
+    proc.wait()
 
   rename_mapping = {}
   for src, dst in to_rename:

@@ -444,7 +444,15 @@ disable=raw-checker-failed,
         too-many-arguments,
         too-many-locals,
         too-many-instance-attributes,
-        too-many-return-statements
+        too-many-return-statements,
+        unnecessary-lambda-assignment,
+        fixme,
+        use-dict-literal,
+        redefined-builtin,
+        invalid-field-call,
+        too-many-positional-arguments,
+        no-else-return,
+        multiple-imports
 
 # Enable the message, report, category or checker with the given id(s). You can
 # either give multiple identifier separated by comma (,) or put this option
