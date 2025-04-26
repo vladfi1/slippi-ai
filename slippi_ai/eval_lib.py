@@ -12,7 +12,8 @@ import tensorflow as tf
 import melee
 
 from slippi_ai import (
-  embed, policies, dolphin, saving, data, utils, tf_utils, nametags
+  embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
+  observations, flag_utils
 )
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
@@ -72,6 +73,7 @@ class BasicAgent:
       policy: policies.Policy,
       batch_size: int,
       name_code: tp.Union[int, tp.Sequence[int]],
+      observation_filter: observations.ObservationFilter,
       sample_kwargs: dict = {},
       compile: bool = True,
       jit_compile: bool = False,
@@ -81,6 +83,7 @@ class BasicAgent:
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
     self.set_name_code(name_code)
+    self._observation_filter = observation_filter
 
     # The controller_head may discretize certain components of the action.
     # Agents only work with the discretized action space; you will need
@@ -151,6 +154,8 @@ class BasicAgent:
       needs_reset: np.ndarray
   ) -> SampleOutputs:
     """Doesn't take into account delay."""
+    game = self._observation_filter.filter(game)
+
     state_action = embed.StateAction(
         state=self._policy.embed_game.from_state(game),
         action=self._prev_controller,
@@ -169,6 +174,11 @@ class BasicAgent:
       self,
       states: list[tuple[embed.Game, np.ndarray]],
   ) -> list[SampleOutputs]:
+    states = [
+        (self._observation_filter.filter(game), needs_reset)
+        for game, needs_reset in states
+    ]
+
     states = [
         (self._policy.embed_game.from_state(game), needs_reset)
         for game, needs_reset in states
@@ -436,27 +446,57 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
-  # For RL, we know the name that was used during training.
+def get_agent_config(state: dict) -> Optional[dict]:
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
-    name = state['rl_config']['agent']['name']
+    return state['rl_config']['agent']
   elif 'agent_config' in state:  # rl/train_two.py
-    name = state['agent_config']['name']
-  else:
-    return None
+    return state['agent_config']
+  return None
 
+def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
+  # For RL, we know the name that was used during training.
+  agent_config = get_agent_config(state)
+  if agent_config is None:
+    return None
+  name = agent_config['name']
   return [name] if isinstance(name, str) else name
+
+
+def get_observation_config(state: dict) -> observations.ObservationConfig:
+  # TODO: do this via a config upgrade
+  agent_config = get_agent_config(state)
+
+  if agent_config is None:
+    # TODO: filter observations during imitation learning
+    logging.info('Imitation agent, using null observation config.')
+    return observations.NULL_OBSERVATION_CONFIG
+
+  if 'observation' not in agent_config:
+    # Older agents didn't use an observation filter.
+    logging.info('Older RL agent, using null observation config.')
+    return observations.NULL_OBSERVATION_CONFIG
+
+  return flag_utils.dataclass_from_dict(
+      observations.ObservationConfig, agent_config['observation'])
 
 
 def build_delayed_agent(
     state: dict,
+    batch_size: int,
     console_delay: int,
     name: Optional[tp.Union[str, list[str]]] = None,
+    observation_config: Optional[observations.ObservationConfig] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
+  """Build an [Async]DelayedAgent given a state dict.
+
+  Note: various agent parameters may be stored in the state dict. This function
+  does the slightly tricky task of figuring out whether to use the parameters
+  from the state dict or the function arguments.
+  """
   policy = saving.load_policy_from_state(state)
 
   rl_name = get_name_from_rl_state(state)
@@ -488,11 +528,17 @@ def build_delayed_agent(
   else:
     name_code = [get_name_code(state, n) for n in name]
 
+  if observation_config is None:
+    observation_config = get_observation_config(state)
+
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
+      batch_size=batch_size,
       name_code=name_code,
       console_delay=console_delay,
+      observation_filter=observations.build_observation_filter(
+          observation_config, batch_size),
       sample_kwargs=dict(temperature=sample_temperature),
       **agent_kwargs,
   )
@@ -593,6 +639,8 @@ def build_agent(
       # The rest are passed through to build_delayed_agent
       state=state,
       name=name,
+      # TODO: allow overriding observation config?
+      observation_config=get_observation_config(state),
       **agent_kwargs,
   )
 
