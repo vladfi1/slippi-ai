@@ -8,7 +8,6 @@ import typing as tp
 
 import numpy as np
 import tensorflow as tf
-import wandb
 
 from slippi_ai import (
     dolphin as dolphin_lib,
@@ -16,6 +15,7 @@ from slippi_ai import (
     evaluators,
     flag_utils,
     nametags,
+    observations,
     policies,
     reward,
     saving,
@@ -67,6 +67,7 @@ class AgentConfig:
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
   batch_steps: int = 0
   async_inference: bool = False
+  observation: observations.ObservationConfig = field(observations.ObservationConfig)
 
   def get_kwargs(self) -> dict:
     if self.jit_compile:
@@ -76,6 +77,7 @@ class AgentConfig:
         jit_compile=self.jit_compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
+        observation_config=self.observation,
     )
     if self.path:
       kwargs['state'] = saving.load_state_from_disk(self.path)

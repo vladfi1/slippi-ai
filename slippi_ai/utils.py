@@ -56,8 +56,6 @@ class Profiler:
   def mean_time(self):
     return self.cumtime / self.num_calls
 
-T = tp.TypeVar('T')
-
 class Periodically:
   def __init__(self, f: tp.Callable[..., T], interval: float):
     self.f = f
@@ -143,6 +141,14 @@ def unbatch_nest(nest: T) -> list[T]:
       tree.unflatten_as(nest, flat_slice)
       for flat_slice in zip(*tree.flatten(nest))
   ]
+
+def replace_nt(nt: T, path: list[str], value: tp.Any) -> T:
+  """Replace a value in a nested namedtuple."""
+
+  if not path:
+    return value
+
+  return nt._replace(**{path[0]: replace_nt(getattr(nt, path[0]), path[1:], value)})
 
 def reify_tuple_type(t: type[T]) -> T:
   """Takes a tuple type and returns a structure with types at the leaves."""

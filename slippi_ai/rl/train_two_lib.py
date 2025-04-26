@@ -17,6 +17,7 @@ from slippi_ai import (
     evaluators,
     flag_utils,
     nametags,
+    observations,
     reward,
     saving,
     tf_utils,
@@ -54,6 +55,7 @@ class RuntimeConfig:
 class AgentConfig:
   teacher: tp.Optional[str] = None
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
+  observation: observations.ObservationConfig = field(observations.ObservationConfig)
 
   compile: bool = True
   jit_compile: bool = False
@@ -222,6 +224,7 @@ class AgentManager:
         jit_compile=self.agent_config.jit_compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
+        observation_config=self.agent_config.observation,
     )
 
 
