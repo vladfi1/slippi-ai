@@ -73,7 +73,8 @@ class BasicAgent:
       policy: policies.Policy,
       batch_size: int,
       name_code: tp.Union[int, tp.Sequence[int]],
-      observation_filter: observations.ObservationFilter,
+      observation_config: observations.ObservationConfig,
+      # observation_filter: observations.ObservationFilter,
       sample_kwargs: dict = {},
       compile: bool = True,
       jit_compile: bool = False,
@@ -83,7 +84,9 @@ class BasicAgent:
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
     self.set_name_code(name_code)
-    self._observation_filter = observation_filter
+    self.observation_config = observation_config
+    self._observation_filter = observations.build_observation_filter(
+        observation_config, batch_size)
 
     # The controller_head may discretize certain components of the action.
     # Agents only work with the discretized action space; you will need
@@ -262,12 +265,16 @@ class DelayedAgent:
     return self._batch_steps or 1
 
   @property
-  def hidden_state(self):
+  def hidden_state(self) -> policies.RecurrentState:
     return self._agent.hidden_state
 
   @property
-  def name_code(self):
+  def name_code(self) -> np.ndarray:
     return self._agent._name_code
+
+  @property
+  def observation_config(self) -> observations.ObservationConfig:
+    return self._agent.observation_config
 
   def step(
       self,
@@ -396,6 +403,10 @@ class AsyncDelayedAgent:
   def name_code(self):
     return self._agent._name_code
 
+  @property
+  def observation_config(self) -> observations.ObservationConfig:
+    return self._agent.observation_config
+
   def start(self):
     if self._worker_thread:
       raise RuntimeError('Already started.')
@@ -469,12 +480,12 @@ def get_observation_config(state: dict) -> observations.ObservationConfig:
 
   if agent_config is None:
     # TODO: filter observations during imitation learning
-    logging.info('Imitation agent, using null observation config.')
+    logging.info('Found imitation agent, using null observation config.')
     return observations.NULL_OBSERVATION_CONFIG
 
   if 'observation' not in agent_config:
     # Older agents didn't use an observation filter.
-    logging.info('Older RL agent, using null observation config.')
+    logging.info('Found older RL agent, using null observation config.')
     return observations.NULL_OBSERVATION_CONFIG
 
   return flag_utils.dataclass_from_dict(
@@ -483,7 +494,6 @@ def get_observation_config(state: dict) -> observations.ObservationConfig:
 
 def build_delayed_agent(
     state: dict,
-    batch_size: int,
     console_delay: int,
     name: Optional[tp.Union[str, list[str]]] = None,
     observation_config: Optional[observations.ObservationConfig] = None,
@@ -529,16 +539,22 @@ def build_delayed_agent(
     name_code = [get_name_code(state, n) for n in name]
 
   if observation_config is None:
+    # This is common if we're evaluating a state.
+    logging.info('No observation config provided, loading from state.')
     observation_config = get_observation_config(state)
+  else:
+    # This branch is taken by RL. Typically, the existing state comes from
+    # imitation learning, which doesn't filter observations.
+    # TODO: consider the case where the state already has an observation config
+    # and maybe warn if it doesn't match.
+    logging.info('Using provided observation config.')
 
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
-      batch_size=batch_size,
       name_code=name_code,
       console_delay=console_delay,
-      observation_filter=observations.build_observation_filter(
-          observation_config, batch_size),
+      observation_config=observation_config,
       sample_kwargs=dict(temperature=sample_temperature),
       **agent_kwargs,
   )
