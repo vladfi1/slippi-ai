@@ -3,7 +3,6 @@
 import collections
 import contextlib
 import typing as tp
-import cProfile
 
 import numpy as np
 import ray
@@ -12,6 +11,7 @@ from slippi_ai import envs as env_lib
 from slippi_ai import (
     embed,
     eval_lib,
+    observations,
     policies,
     reward,
     utils,
@@ -78,6 +78,12 @@ class RolloutWorker:
       eval_lib.update_character(
           self._dolphin_kwargs['players'][port],
           kwargs['state']['config'])
+
+    self._observation_filters = {
+        port: observations.build_observation_filter(
+            agent.observation_config, batch_size=num_envs)
+        for port, agent in self._agents.items()
+    }
 
     self._prev_agent_outputs = collections.deque()
     self._prev_agent_outputs.append({
@@ -197,7 +203,10 @@ class RolloutWorker:
         prev_agent_outputs: dict[Port, SampleOutputs],
     ):
       for port, game in env_output.gamestates.items():
-        gamestates[port].append(game)
+        # TODO: ideally we would only filter observations in one place
+        # rather than both here and inside the agent.
+        filtered_game = self._observation_filters[port].filter(game)
+        gamestates[port].append(filtered_game)
         sample_outputs[port].append(prev_agent_outputs[port])
       is_resetting.append(env_output.needs_reset)
 
