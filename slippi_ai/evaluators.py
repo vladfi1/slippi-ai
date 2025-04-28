@@ -143,6 +143,8 @@ class RolloutWorker:
       self._env = env_class(
           self._num_envs, self._dolphin_kwargs, **self._env_kwargs)
 
+    self._cached_filtered_observations: tp.Optional[dict[Port, embed.Game]] = None
+
   def reset_env(self):
     self._env.stop()
     self._build_env()
@@ -201,14 +203,28 @@ class RolloutWorker:
     def record_state(
         env_output: env_lib.EnvOutput,
         prev_agent_outputs: dict[Port, SampleOutputs],
+        cache_filtered: bool = False,
     ):
-      for port, game in env_output.gamestates.items():
-        # TODO: ideally we would only filter observations in one place
+      # Cache the filtered observations on the last frame to avoid filtering
+      # them again on the first frame of the next rollout.
+      if self._cached_filtered_observations is not None:
+        filtered_observations = self._cached_filtered_observations
+        self._cached_filtered_observations = None  # Clear the cache.
+      else:
+        # TODO: ideally we would only filter observations in one place,
         # rather than both here and inside the agent.
-        filtered_game = self._observation_filters[port].filter(game)
+        filtered_observations = {
+            port: self._observation_filters[port].filter(game)
+            for port, game in env_output.gamestates.items()
+        }
+
+      for port, filtered_game in filtered_observations.items():
         gamestates[port].append(filtered_game)
         sample_outputs[port].append(prev_agent_outputs[port])
       is_resetting.append(env_output.needs_reset)
+
+      if cache_filtered:
+        self._cached_filtered_observations = filtered_observations
 
     for _ in range(num_steps):
       # Note that there will always be a first gamestate before any actions
@@ -230,7 +246,7 @@ class RolloutWorker:
 
     # Record the last gamestate and action, but don't pop them as we will
     # also use them to begin the next rollout.
-    record_state(self._env.peek(), self._prev_agent_outputs[0])
+    record_state(self._env.peek(), self._prev_agent_outputs[0], cache_filtered=True)
 
     # Record the delayed actions.
     assert len(self._prev_agent_outputs) == 1 + self.env_runahead
