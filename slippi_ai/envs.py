@@ -13,7 +13,7 @@ import portpicker
 from melee.slippstream import EnetDisconnected
 from melee import GameState, Stage
 
-from slippi_ai import dolphin, utils
+from slippi_ai import dolphin, utils, observations
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
 from slippi_ai import data
@@ -36,6 +36,7 @@ class Environment:
       self,
       dolphin_kwargs: dict,
       swap_ports: bool = False,
+      observation_configs: Optional[dict[Port, observations.ObservationConfig]] = None,
       check_controller_outputs: bool = False,
   ):
     players: dict[Port, dolphin.Player] = dolphin_kwargs['players']
@@ -55,11 +56,16 @@ class Environment:
     actual_dolphin_kwargs = dict(dolphin_kwargs, players=actual_players)
     self._dolphin = dolphin.Dolphin(**actual_dolphin_kwargs)
 
-    self._opponents: Mapping[int, int] = {}
+    self._opponents: Mapping[Port, Port] = {}
 
     for port, opponent_port in zip(actual_ports, reversed(actual_ports)):
       if isinstance(actual_players[port], dolphin.AI):
         self._opponents[port] = opponent_port
+
+    self._observation_filters: dict[Port, observations.ObservationFilter] = {}
+    if observation_configs:
+      for port, config in observation_configs.items():
+        self._observation_filters[port] = observations.build_observation_filter(config)
 
     self._prev_state: Optional[GameState] = None
 
@@ -76,6 +82,12 @@ class Environment:
     for actual_port, opponent in self._opponents.items():
       port = self.port_from_actual[actual_port]
       games[port] = get_game(self._prev_state, (actual_port, opponent))
+
+      if port in self._observation_filters:
+        obs_filter = self._observation_filters[port]
+        if needs_reset:
+          obs_filter.reset()
+        games[port] = obs_filter.filter(games[port])
 
     return EnvOutput(games, needs_reset)
 
