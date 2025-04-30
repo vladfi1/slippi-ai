@@ -27,6 +27,10 @@ def concat(*vals):
 def batch_nest(nests: tp.Sequence[T]) -> T:
   return tree.map_structure(stack, *nests)
 
+def unstack_nest(nest: T, axis: int = 0) -> list[T]:
+  leaves = tree.flatten(nest)
+  unstacked = [np.unstack(leaf, axis=axis) for leaf in leaves]
+  return [tree.unflatten_as(nest, flat_slice) for flat_slice in zip(*unstacked)]
 
 class Profiler:
   def __init__(self, burnin: int = 1):

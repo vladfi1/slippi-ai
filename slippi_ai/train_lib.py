@@ -33,7 +33,7 @@ from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai import value_function as vf_lib
 from slippi_ai import embed as embed_lib
-
+from slippi_ai import observations as obs_lib
 
 def get_experiment_tag():
   today = datetime.date.today()
@@ -105,6 +105,7 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
@@ -170,8 +171,6 @@ def train(config: Config):
   runtime = config.runtime
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
-
-
 
   # attempt to restore parameters
   restored = False
@@ -270,6 +269,7 @@ def train(config: Config):
       dataclasses.asdict(config.data),
       extra_frames=1 + policy.delay,
       name_map=name_map,
+      observation_config=config.observation,
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
