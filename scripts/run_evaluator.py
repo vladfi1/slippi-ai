@@ -11,7 +11,6 @@ if __name__ == '__main__':
   import fancyflags as ff
 
   from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils
-  from slippi_ai import saving
 
   default_dolphin_config = dolphin.DolphinConfig(
       infinite_time=False,

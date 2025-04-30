@@ -3,18 +3,17 @@ import pickle
 
 from absl import logging
 import tree
-import tensorflow as tf
 
 from slippi_ai import (
-    data,
     embed,
+    observations,
     policies,
     networks,
     controller_heads,
     embed,
 )
 
-VERSION = 3
+VERSION = 4
 
 def upgrade_config(config: dict):
   """Upgrades a config to the latest version."""
@@ -54,6 +53,13 @@ def upgrade_config(config: dict):
     config['embed'] = dataclasses.asdict(old_embed_config)
     config['version'] = 3
     logging.warning('Upgraded config version 2 -> 3')
+
+  if config['version'] == 3:
+    assert 'observation' not in config
+    config['observation'] = dataclasses.asdict(
+        observations.NULL_OBSERVATION_CONFIG)
+    config['version'] = 4
+    logging.warning('Upgraded config version 3 -> 4')
 
   assert config['version'] == VERSION
   return config

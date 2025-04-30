@@ -13,7 +13,7 @@ import melee
 
 from slippi_ai import (
   embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
-  observations, flag_utils
+  observations, flag_utils, train_lib
 )
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
@@ -73,8 +73,6 @@ class BasicAgent:
       policy: policies.Policy,
       batch_size: int,
       name_code: tp.Union[int, tp.Sequence[int]],
-      observation_config: observations.ObservationConfig,
-      # observation_filter: observations.ObservationFilter,
       sample_kwargs: dict = {},
       compile: bool = True,
       jit_compile: bool = False,
@@ -84,9 +82,6 @@ class BasicAgent:
     self._embed_controller = policy.controller_embedding
     self._batch_size = batch_size
     self.set_name_code(name_code)
-    self.observation_config = observation_config
-    self._observation_filter = observations.build_observation_filter(
-        observation_config, batch_size)
 
     # The controller_head may discretize certain components of the action.
     # Agents only work with the discretized action space; you will need
@@ -157,8 +152,6 @@ class BasicAgent:
       needs_reset: np.ndarray
   ) -> SampleOutputs:
     """Doesn't take into account delay."""
-    game = self._observation_filter.filter(game)
-
     state_action = embed.StateAction(
         state=self._policy.embed_game.from_state(game),
         action=self._prev_controller,
@@ -177,11 +170,6 @@ class BasicAgent:
       self,
       states: list[tuple[embed.Game, np.ndarray]],
   ) -> list[SampleOutputs]:
-    states = [
-        (self._observation_filter.filter(game), needs_reset)
-        for game, needs_reset in states
-    ]
-
     states = [
         (self._policy.embed_game.from_state(game), needs_reset)
         for game, needs_reset in states
@@ -223,11 +211,13 @@ class DelayedAgent:
   def __init__(
       self,
       policy: policies.Policy,
+      observation_config: observations.ObservationConfig,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    self.observation_config = observation_config
     self._batch_steps = batch_steps
     self._input_queue = []
 
@@ -271,10 +261,6 @@ class DelayedAgent:
   @property
   def name_code(self) -> np.ndarray:
     return self._agent._name_code
-
-  @property
-  def observation_config(self) -> observations.ObservationConfig:
-    return self._agent.observation_config
 
   def step(
       self,
@@ -359,11 +345,13 @@ class AsyncDelayedAgent:
   def __init__(
       self,
       policy: policies.Policy,
+      observation_config: observations.ObservationConfig,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    self.observation_config = observation_config
     self._batch_size = batch_size
     self._batch_steps = batch_steps
     self._agent = build_basic_agent(
@@ -402,10 +390,6 @@ class AsyncDelayedAgent:
   @property
   def name_code(self):
     return self._agent._name_code
-
-  @property
-  def observation_config(self) -> observations.ObservationConfig:
-    return self._agent.observation_config
 
   def start(self):
     if self._worker_thread:
@@ -473,30 +457,10 @@ def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
   name = agent_config['name']
   return [name] if isinstance(name, str) else name
 
-
-def get_observation_config(state: dict) -> observations.ObservationConfig:
-  # TODO: do this via a config upgrade
-  agent_config = get_agent_config(state)
-
-  if agent_config is None:
-    # TODO: filter observations during imitation learning
-    logging.info('Found imitation agent, using null observation config.')
-    return observations.NULL_OBSERVATION_CONFIG
-
-  if 'observation' not in agent_config:
-    # Older agents didn't use an observation filter.
-    logging.info('Found older RL agent, using null observation config.')
-    return observations.NULL_OBSERVATION_CONFIG
-
-  return flag_utils.dataclass_from_dict(
-      observations.ObservationConfig, agent_config['observation'])
-
-
 def build_delayed_agent(
     state: dict,
     console_delay: int,
     name: Optional[tp.Union[str, list[str]]] = None,
-    observation_config: Optional[observations.ObservationConfig] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
     **agent_kwargs,
@@ -507,6 +471,7 @@ def build_delayed_agent(
   does the slightly tricky task of figuring out whether to use the parameters
   from the state dict or the function arguments.
   """
+  imitation_config = saving.upgrade_config(state['config'])
   policy = saving.load_policy_from_state(state)
 
   rl_name = get_name_from_rl_state(state)
@@ -538,23 +503,16 @@ def build_delayed_agent(
   else:
     name_code = [get_name_code(state, n) for n in name]
 
-  if observation_config is None:
-    # This is common if we're evaluating a state.
-    logging.info('No observation config provided, loading from state.')
-    observation_config = get_observation_config(state)
-  else:
-    # This branch is taken by RL. Typically, the existing state comes from
-    # imitation learning, which doesn't filter observations.
-    # TODO: consider the case where the state already has an observation config
-    # and maybe warn if it doesn't match.
-    logging.info('Using provided observation config.')
+  # Stick the observation_config into the agent for future use.
+  observation_config = flag_utils.dataclass_from_dict(
+          observations.ObservationConfig, imitation_config['observation'])
 
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
+      observation_config=observation_config,
       name_code=name_code,
       console_delay=console_delay,
-      observation_config=observation_config,
       sample_kwargs=dict(temperature=sample_temperature),
       **agent_kwargs,
   )
@@ -604,6 +562,9 @@ class Agent:
     self.start = self._agent.start
     self.stop = self._agent.stop
 
+    self._observation_filter = observations.build_observation_filter(
+        self._agent.observation_config)
+
   def set_controller(self, controller: melee.Controller):
     if controller.port != self._port:
       raise ValueError('Controller has wrong port.')
@@ -622,9 +583,11 @@ class Agent:
     new_game = gamestate.frame == -123
     if new_game:
       self.update_name()
+      self._observation_filter.reset()
 
     needs_reset = np.array([new_game])
     game = get_game(gamestate, ports=self.players)
+    game = self._observation_filter.filter(game)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
 
     sample_outputs = self._agent.step(game, needs_reset)
@@ -655,8 +618,6 @@ def build_agent(
       # The rest are passed through to build_delayed_agent
       state=state,
       name=name,
-      # TODO: allow overriding observation config?
-      observation_config=get_observation_config(state),
       **agent_kwargs,
   )
 

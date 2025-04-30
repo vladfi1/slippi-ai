@@ -15,7 +15,6 @@ from slippi_ai import (
     evaluators,
     flag_utils,
     nametags,
-    observations,
     policies,
     reward,
     saving,
@@ -67,7 +66,6 @@ class AgentConfig:
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
   batch_steps: int = 0
   async_inference: bool = False
-  observation: observations.ObservationConfig = field(observations.ObservationConfig)
 
   def get_kwargs(self) -> dict:
     if self.jit_compile:
@@ -77,7 +75,6 @@ class AgentConfig:
         jit_compile=self.jit_compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
-        observation_config=self.observation,
     )
     if self.path:
       kwargs['state'] = saving.load_state_from_disk(self.path)
@@ -333,7 +330,7 @@ def run(config: Config):
   policy = saving.load_policy_from_state(rl_state)
 
   pretraining_config = flag_utils.dataclass_from_dict(
-      train_lib.Config, teacher_state['config'])
+      train_lib.Config, saving.upgrade_config(teacher_state['config']))
 
   # TODO: put this code into saving.py or train_lib.py
   vf_config = pretraining_config.value_function
