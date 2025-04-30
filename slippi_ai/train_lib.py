@@ -20,6 +20,7 @@ import wandb
 
 from slippi_ai import (
     controller_heads,
+    flag_utils,
     nametags,
     networks,
     policies,
@@ -188,15 +189,20 @@ def train(config: Config):
     logging.info('not restoring any params')
 
   if restored:
-    restore_config = combined_state['config']
+    restore_config = flag_utils.dataclass_from_dict(
+        Config, saving.upgrade_config(combined_state['config']))
 
     # We can update the delay as it doesn't affect the network architecture.
-    restore_delay = restore_config['policy']['delay']
-    if restore_delay != config.policy.delay:
-      logging.warning(f'WARNING: Changing delay from {restore_delay} to {config.policy.delay}.')
+    if restore_config.policy.delay != config.policy.delay:
+      logging.warning(f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
 
-    for key in ['network', 'controller_head']:
-      setattr(config, key, restore_config[key])
+    # These we can't change after the fact.
+    for key in ['network', 'controller_head', 'embed']:
+      current = getattr(config, key)
+      previous = getattr(restore_config, key)
+      if current != previous:
+        logging.warning(f'Requested {key} config doesn\'t match, overriding from checkpoint.')
+        setattr(config, key, previous)
 
   policy = saving.policy_from_config(dataclasses.asdict(config))
 
