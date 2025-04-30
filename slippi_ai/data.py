@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 
 import melee
 
-from slippi_ai import reward, utils, nametags, paths
+from slippi_ai import reward, utils, nametags, paths, observations
 from slippi_ai.types import Game, game_array_to_nt, Controller
 
 class PlayerMeta(NamedTuple):
@@ -253,12 +253,14 @@ class TrajectoryManager:
       overlap: int = 1,
       compressed: bool = True,
       game_filter: Optional[Callable[[Game], bool]] = None,
+      observation_filter: Optional[observations.ObservationFilter] = None,
   ):
     self.source = source
     self.compressed = compressed
     self.unroll_length = unroll_length
     self.overlap = overlap
     self.game_filter = game_filter or (lambda _: True)
+    self.observation_filter = observation_filter
 
     self.game: Game = None
     self.frame: int = None
@@ -279,6 +281,11 @@ class TrajectoryManager:
       if not self.game_filter(game):
         continue
       break
+
+    if self.observation_filter is not None:
+      self.observation_filter.reset()
+      game = self.observation_filter.filter_time(game)
+
     self.game = game
     self.frame = 0
     self.info = info
@@ -332,6 +339,7 @@ class DataSource:
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
       name_map: Optional[dict[str, int]] = None,
+      observation_config: Optional[observations.ObservationConfig] = None,
   ):
     self.replays = replays
     self.batch_size = batch_size
@@ -341,6 +349,11 @@ class DataSource:
     self.compressed = compressed
     self.batch_counter = 0
 
+    def build_observation_filter():
+      if observation_config is None:
+        return None
+      return observations.build_observation_filter(observation_config)
+
     self.replay_counter = 0
     replays = self.iter_replays()
     self.managers = [
@@ -349,13 +362,16 @@ class DataSource:
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             compressed=compressed,
-            game_filter=self.is_allowed)
-        for _ in range(batch_size)]
+            game_filter=self.is_allowed,
+            observation_filter=build_observation_filter(),
+        ) for _ in range(batch_size)
+    ]
 
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
     self.name_map = name_map or {}
     self.encode_name = nametags.name_encoder(self.name_map)
+    self.observation_config = observation_config
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
     for replay in itertools.cycle(self.replays):
