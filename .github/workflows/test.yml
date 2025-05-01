@@ -34,6 +34,7 @@ jobs:
         python tests/rl_lib_test.py
         python tests/unit_tests.py
         python tests/slippi_db_test.py
+        python tests/observations_test.py
 
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
@@ -83,7 +84,7 @@ jobs:
         gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
 
     - name: Test RL with Dolphin
-      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False
+      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
 
     - name: Test train_two with Dolphin
-      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False
+      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
