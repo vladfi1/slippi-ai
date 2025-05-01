@@ -268,6 +268,7 @@ def train(config: Config):
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
   test_data = data_lib.make_source(replays=test_replays, **data_config)
+  del train_replays, test_replays  # free up memory
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))

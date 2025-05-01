@@ -412,10 +412,17 @@ def produce_batches(data_source_kwargs, batch_queue):
 class DataSourceMP:
   def __init__(self, buffer=4, **kwargs):
     for k, v in kwargs.items():
+      if k == 'replays':
+        continue
       setattr(self, k, v)
-    self.batch_queue = mp.Queue(buffer)
-    self.process = mp.Process(
-        target=produce_batches, args=(kwargs, self.batch_queue))
+
+    # 'spawn' uses much less memory than 'fork'
+    context = mp.get_context('spawn')
+
+    self.batch_queue = context.Queue(buffer)
+    self.process = context.Process(
+        target=produce_batches, args=(kwargs, self.batch_queue),
+        name='DataSourceMP')
     self.process.start()
 
     atexit.register(self.batch_queue.close)
