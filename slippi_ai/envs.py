@@ -190,6 +190,7 @@ class BatchedEnvironment:
       slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
       swap_ports: bool = True,  # Swap ports on half of the environments.
+      **env_kwargs,
   ):
     self._dolphin_kwargs = dolphin_kwargs
     slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
@@ -203,7 +204,8 @@ class BatchedEnvironment:
       dolphin_kwargs_i.update(slippi_port=slippi_ports[i])
       env = SafeEnvironment(
           dolphin_kwargs_i, num_retries=num_retries,
-          swap_ports=swap_ports and i >= num_envs // 2)
+          swap_ports=swap_ports and i >= num_envs // 2,
+          **env_kwargs)
       envs.append(env)
 
     self._envs = envs
@@ -434,6 +436,7 @@ class AsyncBatchedEnvironmentMP:
       inner_batch_size: int = 1,
       num_retries: int = 2,
       swap_ports: bool = True,
+      **env_kwargs,
   ):
     if num_envs % inner_batch_size != 0:
       raise ValueError(
@@ -460,6 +463,7 @@ class AsyncBatchedEnvironmentMP:
           slippi_ports=self._slice(i, slippi_ports),
           num_retries=num_retries,
           swap_ports=swap_ports,
+          **env_kwargs,
       )
       self._envs.append(env)
 
