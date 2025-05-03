@@ -150,13 +150,15 @@ class AnimationFilter(ObservationFilter):
 
     return utils.replace_nt(game, ['p1', 'action'], masked_actions)
 
+field = lambda x: dataclasses.field(default_factory=x)
+
 @dataclasses.dataclass
 class AnimationConfig:
   mask: bool = True
 
 @dataclasses.dataclass
 class ObservationConfig:
-  animation: AnimationConfig = AnimationConfig()
+  animation: AnimationConfig = field(AnimationConfig)
 
 # Mimics behavior pre-observation filtering
 NULL_OBSERVATION_CONFIG = ObservationConfig(
