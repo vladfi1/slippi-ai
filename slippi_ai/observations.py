@@ -97,6 +97,21 @@ INDISTINGUISHABLE_ACTIONS: dict[int, list[ActionSet]] = {
     melee.Character.YOSHI.value: [
         ((N_TECH, F_TECH, B_TECH), 8),
     ],
+    # https://www.fightcore.gg/characters/212/samus/moves/1898/neutraltech/
+    # The one could be 7 or 8.
+    melee.Character.SAMUS.value: [
+        ((N_TECH, F_TECH, B_TECH), 7),
+    ],
+    # https://www.fightcore.gg/characters/237/pikachu/moves/1895/neutraltech/
+    melee.Character.DK.value: [
+        ((N_TECH, F_TECH, B_TECH), 7),
+        ((N_TECH, F_TECH), 9),
+    ],
+    # https://www.fightcore.gg/characters/215/drmario/moves/1891/neutraltech/
+    melee.Character.DOC.value: [
+        ((N_TECH, F_TECH, B_TECH), 7),
+        ((N_TECH, F_TECH), 8),
+    ],
 }
 
 # TODO: fill in data for all characters
