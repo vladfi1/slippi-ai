@@ -80,6 +80,9 @@ NAME_GROUPS = [
   ('Inky', 'INKY#398'),  # Sheik Player from Nova Scotia
   ('JChu', 'JCHU#536'),
   ('Axe', 'AXE#845'),
+  ('M2K', 'KOTU#737', 'CHU#352'),
+  ('Siddward', 'SIDD#539'),  # Luigi main, 14K replays
+  ('Kandayo', 'KAND#898'),  # Marth main, 4K replays
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),
@@ -112,7 +115,7 @@ def name_encoder(name_map: dict[str, int]):
 
 BANNED_NAMES = {
     # Have asked not to be included in AI training
-    'Mang0', 'Zain', 'Wizzrobe', 'Hungrybox',
+    'Mang0', 'Wizzrobe', 'Hungrybox',
 
     # Haven't asked yet, so don't train on for now.
     'Ossify', 'Zamu',
