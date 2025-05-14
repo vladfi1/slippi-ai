@@ -188,13 +188,19 @@ def train(config: Config):
   else:
     logging.info('not restoring any params')
 
+  # Initialize the best eval loss to infinity
+  best_eval_loss = float('inf')
+
   if restored:
+    best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
+
     restore_config = flag_utils.dataclass_from_dict(
         Config, saving.upgrade_config(combined_state['config']))
 
     # We can update the delay as it doesn't affect the network architecture.
     if restore_config.policy.delay != config.policy.delay:
       logging.warning(f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
+      best_eval_loss = float('inf')  # Old losses don't apply to new delay.
 
     # These we can't change after the fact.
     for key in ['network', 'controller_head', 'embed']:
@@ -299,9 +305,6 @@ def train(config: Config):
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  # Initialize the best eval loss to infinity
-  best_eval_loss = float('inf')
-
   def save(eval_loss=None):
     # Local Save
     tf_state = get_tf_state()
@@ -322,7 +325,6 @@ def train(config: Config):
 
   if restored:
     set_tf_state(combined_state['state'])
-    best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
