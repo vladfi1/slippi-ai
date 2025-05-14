@@ -386,21 +386,37 @@ def train(config: Config):
       return
 
     eval_stats = []
-    batches = []
+    metas: list[data_lib.ChunkMeta] = []
+
+    def time_mean(x):
+      # Stats are either scalars or (time, batch)-shaped.
+      x = tf_utils.to_numpy(x)
+      if isinstance(x, float) or len(x.shape) == 0:
+        return x
+
+      return np.mean(x, axis=0)
 
     for _ in range(runtime.num_eval_steps):
       stats, batch = test_manager.step()
-      # Convert to numpy to free up GPU memory.
-      eval_stats.append(utils.map_nt(tf_utils.to_numpy, stats))
-      batches.append(batch)
+
+      # Convert to numpy and take time-mean to free up memory.
+      stats = utils.map_single_structure(time_mean, stats)
+
+      eval_stats.append(stats)
+      metas.append(batch.meta)
 
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
+
+    data_time = test_manager.data_profiler.mean_time()
+    step_time = test_manager.step_profiler.mean_time()
 
     total_frames = total_steps * FRAMES_PER_STEP
     train_epoch = epoch_tracker.last
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,
+        data_time=data_time,
+        step_time=step_time,
     )
 
     to_log = dict(eval=eval_stats, **counters)
@@ -408,7 +424,7 @@ def train(config: Config):
 
     # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
-    logging.info('eval loss: %f', eval_loss)
+    logging.info('eval loss: %.4f data: %.3f step: %.3f', eval_loss, data_time, step_time)
 
     # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:
@@ -418,13 +434,10 @@ def train(config: Config):
 
     # Log losses aggregated by name.
 
-    # Stats have shape [num_eval_steps, unroll_length, batch_size]
-    time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['policy']['loss'])
+    # Stats have shape [num_eval_steps, batch_size]
+    loss = eval_stats['policy']['loss']
     assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
 
-    # Metadata only has a batch dimension.
-    metas: list[data_lib.ChunkMeta] = [batch.meta for batch in batches]
     meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
 
     # Name of the player we're imitating.
