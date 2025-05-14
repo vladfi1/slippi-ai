@@ -434,19 +434,57 @@ class DataSourceMP:
   def __del__(self):
     self.process.terminate()
 
+class MultiDataSourceMP:
+
+  def __init__(
+      self,
+      replays: List[ReplayInfo],
+      num_workers: int,
+      batch_size: int,
+      **kwargs,
+  ):
+    if num_workers > len(replays):
+      raise ValueError(
+          f"num_workers ({num_workers}) must be less than the number of "
+          f"replays ({len(replays)})")
+
+    if batch_size % num_workers != 0:
+      raise ValueError(
+          f"batch_size ({batch_size}) must be divisible by num_workers "
+          f"({num_workers})")
+
+    self.sources: list[DataSourceMP] = []
+    for i in range(num_workers):
+      self.sources.append(DataSourceMP(
+          replays=replays[i::num_workers],
+          batch_size=batch_size // num_workers,
+          **kwargs
+      ))
+
+    self.batch_size = batch_size
+    for k in kwargs:
+      setattr(self, k, kwargs[k])
+
+  def __next__(self) -> Tuple[Batch, float]:
+    results = [next(source) for source in self.sources]
+    batches, epochs = zip(*results)
+    return utils.concat_nest_nt(batches), np.mean(epochs)
+
 @dataclasses.dataclass
 class DataConfig:
   batch_size: int = 32
   unroll_length: int = 64
   damage_ratio: float = 0.01
   compressed: bool = True
-  in_parallel: bool = True
+  num_workers: int = 0
 
 def make_source(
-    in_parallel: bool,
+    num_workers: int,
     **kwargs):
-  constructor = DataSourceMP if in_parallel else DataSource
-  return constructor(**kwargs)
+  if num_workers == 0:
+    return DataSource(**kwargs)
+
+  return MultiDataSourceMP(num_workers=num_workers, **kwargs)
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(
