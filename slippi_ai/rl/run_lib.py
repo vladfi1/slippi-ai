@@ -503,7 +503,9 @@ def run(config: Config):
         lambda *xs: np.stack(xs, axis=1),
         *[t.states for t in trajectories])
 
-    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
+    p0_stats = reward.player_stats(
+        states.p0, states.p1, states.stage,
+        stalling_threshold=config.learner.reward.stalling_threshold)
 
     if config.opponent.type is OpponentType.SELF:
       # The second half of the batch just has the players reversed.

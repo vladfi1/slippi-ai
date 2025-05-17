@@ -441,8 +441,12 @@ def run(config: Config):
         lambda *xs: np.stack(xs, axis=1),
         *[t.states for t in trajectories])
 
-    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
-    p1_stats = reward.player_stats(states.p1, states.p0, states.stage)
+    p0_stats = reward.player_stats_from_game(
+        states, swap=False,
+        stalling_threshold=config.learner1.reward.stalling_threshold)
+    p1_stats = reward.player_stats_from_game(
+        states, swap=True,
+        stalling_threshold=config.learner2.reward.stalling_threshold)
     ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
     log_data = dict(

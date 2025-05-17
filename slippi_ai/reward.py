@@ -82,8 +82,15 @@ def amount_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
 
   return np.sqrt(np.square(dx) + np.square(dy))
 
-def is_stalling_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
-  return amount_offstage(player, stage) > 20  # arbitrary
+
+DEFAULT_STALLING_THRESHOLD = 20
+
+def is_stalling_offstage(
+    player: Player,
+    stage: np.ndarray,
+    threshold: float = DEFAULT_STALLING_THRESHOLD,
+) -> np.ndarray:
+  return amount_offstage(player, stage) > threshold
 
 def is_aerial_shine(player: Player):
   is_fox = player.character == melee.Character.FOX.value
@@ -106,13 +113,15 @@ class RewardConfig:
   ledge_grab_penalty: float = 0
   approaching_factor: float = 0
   stalling_penalty: float = 0  # per second
+  stalling_threshold: float = DEFAULT_STALLING_THRESHOLD
 
 def compute_rewards(
     game: Game,
     damage_ratio: float = 0.01,
     ledge_grab_penalty: float = 0,
     approaching_factor: float = 0,
-    stalling_penalty: float = 0  # per second
+    stalling_penalty: float = 0,  # per second
+    stalling_threshold: float = DEFAULT_STALLING_THRESHOLD,
 ) -> np.ndarray:
   '''
     Args:
@@ -129,7 +138,7 @@ def compute_rewards(
     bad_ledge_grabs = get_bad_ledge_grabs(player, opponent).astype(np.float32)
     ledge_grab_penalties = ledge_grab_penalty * bad_ledge_grabs
 
-    stalling = is_stalling_offstage(player, game.stage)[1:]
+    stalling = is_stalling_offstage(player, game.stage, stalling_threshold)[1:]
     stalling_penalties = (stalling_penalty / 60) * stalling.astype(np.float32)
 
     reward = approaching_factor * compute_approaching_factor(player, opponent)
@@ -147,19 +156,24 @@ def compute_rewards(
 
   return rewards
 
-def player_stats(player: Player, opponent: Player, stage: np.ndarray) -> dict:
+def player_stats(
+    player: Player,
+    opponent: Player,
+    stage: np.ndarray,
+    stalling_threshold: float,
+) -> dict:
   FPM = 60 * 60
   return dict(
       deaths=process_deaths(player.action).mean() * FPM,
       damages=process_damages(player.percent).mean() * FPM,
       ledge_grabs=get_bad_ledge_grabs(player, opponent).mean() * FPM,
       approaching_factor=compute_approaching_factor(player, opponent).mean(),
-      stalling=is_stalling_offstage(player, stage).mean(),
+      stalling=is_stalling_offstage(player, stage, stalling_threshold).mean(),
   )
 
-def player_stats_from_game(game: Game, swap: bool = False) -> dict:
+def player_stats_from_game(game: Game, swap: bool = False, **kwargs) -> dict:
   p0, p1 = (game.p1, game.p0) if swap else (game.p0, game.p1)
-  return player_stats(p0, p1, game.stage)
+  return player_stats(p0, p1, game.stage, **kwargs)
 
 # TODO: test that the two ways of getting reward yield the same results
 def get_reward(
