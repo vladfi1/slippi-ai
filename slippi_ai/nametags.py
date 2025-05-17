@@ -118,7 +118,7 @@ BANNED_NAMES = {
     'Mang0', 'Wizzrobe', 'Hungrybox',
 
     # Haven't asked yet, so don't train on for now.
-    'Ossify', 'Zamu',
+    'Ossify',
 
     'Phillip AI',  # This is us!
 }
