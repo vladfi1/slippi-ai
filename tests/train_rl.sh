@@ -8,7 +8,7 @@ python slippi_ai/rl/run.py \
   --config.actor.rollout_length=64 \
   --config.opponent.type=self \
   --config.runtime.burnin_steps_after_reset=1 \
-  --config.runtime.reset_every_n_steps=3 \
+  --config.runtime.reset_every_n_steps=6 \
   --config.optimizer_burnin_steps=2 \
   --config.value_burnin_steps=2 \
   --config.learner.ppo.num_batches=2 \

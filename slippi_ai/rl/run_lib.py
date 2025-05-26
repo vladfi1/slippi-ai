@@ -8,7 +8,6 @@ import typing as tp
 
 import numpy as np
 import tensorflow as tf
-import wandb
 
 from slippi_ai import (
     dolphin as dolphin_lib,
@@ -61,8 +60,7 @@ class ActorConfig:
 @dataclasses.dataclass
 class AgentConfig:
   # TODO: merge with ActorConfig?
-  path: tp.Optional[str] = None
-  tag: tp.Optional[str] = None
+  path: tp.Optional[str] = None  # Only used for static opponents
   compile: bool = True
   jit_compile: bool = False
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
@@ -78,8 +76,8 @@ class AgentConfig:
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
     )
-    if self.path or self.tag:
-      kwargs['state'] = eval_lib.load_state(path=self.path, tag=self.tag)
+    if self.path:
+      kwargs['state'] = saving.load_state_from_disk(self.path)
     return kwargs
 
 class OpponentType(enum.Enum):
@@ -332,7 +330,7 @@ def run(config: Config):
   policy = saving.load_policy_from_state(rl_state)
 
   pretraining_config = flag_utils.dataclass_from_dict(
-      train_lib.Config, teacher_state['config'])
+      train_lib.Config, saving.upgrade_config(teacher_state['config']))
 
   # TODO: put this code into saving.py or train_lib.py
   vf_config = pretraining_config.value_function
@@ -371,6 +369,8 @@ def run(config: Config):
       **config.dolphin.to_kwargs(),
   )
 
+  if config.agent.path is not None:
+    raise ValueError('Main agent path is not used, use `restore` instead')
   main_agent_kwargs = config.agent.get_kwargs()
   main_agent_kwargs['state'] = rl_state
   agent_kwargs = {PORT: main_agent_kwargs}
@@ -508,7 +508,9 @@ def run(config: Config):
         lambda *xs: np.stack(xs, axis=1),
         *[t.states for t in trajectories])
 
-    p0_stats = reward.player_stats(states.p0, states.p1, states.stage)
+    p0_stats = reward.player_stats(
+        states.p0, states.p1, states.stage,
+        stalling_threshold=config.learner.reward.stalling_threshold)
 
     if config.opponent.type is OpponentType.SELF:
       # The second half of the batch just has the players reversed.
@@ -575,7 +577,6 @@ def run(config: Config):
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
 
-    # TODO: save to s3?
 
   maybe_save = utils.Periodically(save, config.runtime.save_interval)
 

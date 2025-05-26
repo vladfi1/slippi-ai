@@ -27,6 +27,10 @@ def concat(*vals):
 def batch_nest(nests: tp.Sequence[T]) -> T:
   return tree.map_structure(stack, *nests)
 
+def unstack_nest(nest: T, axis: int = 0) -> list[T]:
+  leaves = tree.flatten(nest)
+  unstacked = [np.unstack(leaf, axis=axis) for leaf in leaves]
+  return [tree.unflatten_as(nest, flat_slice) for flat_slice in zip(*unstacked)]
 
 class Profiler:
   def __init__(self, burnin: int = 1):
@@ -55,8 +59,6 @@ class Profiler:
 
   def mean_time(self):
     return self.cumtime / self.num_calls
-
-T = tp.TypeVar('T')
 
 class Periodically:
   def __init__(self, f: tp.Callable[..., T], interval: float):
@@ -143,6 +145,14 @@ def unbatch_nest(nest: T) -> list[T]:
       tree.unflatten_as(nest, flat_slice)
       for flat_slice in zip(*tree.flatten(nest))
   ]
+
+def replace_nt(nt: T, path: list[str], value: tp.Any) -> T:
+  """Replace a value in a nested namedtuple."""
+
+  if not path:
+    return value
+
+  return nt._replace(**{path[0]: replace_nt(getattr(nt, path[0]), path[1:], value)})
 
 def reify_tuple_type(t: type[T]) -> T:
   """Takes a tuple type and returns a structure with types at the leaves."""
@@ -290,7 +300,7 @@ def find_open_udp_ports(num: int):
 
   system = platform.system()
   if system == 'Linux':
-    netstat_command = ['netstat', '-an', '--udp']
+    netstat_command = ['ss', '-an', '--udp']
     port_delimiter = ':'
   elif system == 'Darwin':
     netstat_command = ['netstat', '-an', '-p', 'udp']
@@ -320,7 +330,7 @@ def find_open_udp_ports(num: int):
   if len(available_ports) < num:
     raise RuntimeError('Not enough available ports.')
 
-  return random.sample(available_ports, num)
+  return random.sample(list(available_ports), num)
 
 
 def ref_path_exists(

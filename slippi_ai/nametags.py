@@ -49,7 +49,7 @@ def name_from_metadata(player_meta: dict, raw: Optional[str] = None) -> str:
 # TODO: we could scrape code -> ELO from the slippi website?
 
 # TODO: put this in a json?
-name_groups = [
+NAME_GROUPS = [
   ('Mang0', 'mang', 'mang0', 'MANG#0'),
   ('Zain', 'zain', 'DontTestMe', 'ZAIN#0', 'DTM#664'),
   ('Cody', 'iBDW', 'cody', 'IBDW#0', 'IBDW#734', 'JBDW#120'),
@@ -63,21 +63,44 @@ name_groups = [
   ('BBB', 'BBB#960'),
   ('Kodorin', 'KOD#0', '8#9'),
   ('SFAT', 'SFAT#9', 'OHMA#175', 'SFAT#99', 'SFAT#783'),
-  ('Solobattle', '666#666', 'SOLO#735'),  # TODO: many Solobattle games have no name
+  ('Solobattle', '666#666', 'SOLO#735'),  # NOTE: many Solobattle games have no name
   ('Frenzy', 'FRNZ#141'),
   ('Gosu', 'WIZZ#310'),
-  # Most Franz games are local with no name; for those we assume any Doctor Mario is Franz.
+  # Most Franz games are local with no name; for those we assume any Dr. Mario is Franz.
   ('Franz', 'XELA#158', 'PLATO#0'),
   ('Isdsar', 'ISDS#767'),
+  ('Wizzrobe', 'WIZY#0'),
+  ('Hungrybox', 'HBOX#305', 'hbox'),
+  ('Ginger', 'GING#345'),
+  ('DruggedFox', 'SAMI#669'),
+  ('KJH', 'KJH#23'),
+  ('BillyBoPeep', 'BILLY#0'),
+  ('Spark', 'ZAID#0'),
+  ('Trif', 'TRIF#0', 'TRIF#268'),
+  ('Inky', 'INKY#398'),  # Sheik Player from Nova Scotia
+  ('JChu', 'JCHU#536'),
+  ('Axe', 'AXE#845'),
+  ('M2K', 'KOTU#737', 'CHU#352'),
+  ('Siddward', 'SIDD#539'),  # Luigi main, 14K replays
+  ('Kandayo', 'KAND#898'),  # Marth main, 4K replays
+
+  # Don't have permission from these players yet.
+  ('Ossify', 'OSSIFY#0'),
+  ('Zamu', 'A#9'),
 ]
 
-name_map = {}
-for first, *rest in name_groups:
+NAME_MAP: dict[str, str] = {}
+for first, *rest in NAME_GROUPS:
   for name in rest:
-    name_map[name] = first
+    NAME_MAP[name] = first
 
 def normalize_name(name):
-  return name_map.get(name, name)
+  return NAME_MAP.get(name, name)
+
+KNOWN_PLAYERS = {group[0] for group in NAME_GROUPS}
+
+def is_known_player(name):
+  return normalize_name(name) in KNOWN_PLAYERS
 
 def max_name_code(name_map: dict[str, int]) -> int:
   return (max(name_map.values()) + 1) if name_map else 0
@@ -91,14 +114,19 @@ def name_encoder(name_map: dict[str, int]):
 
 
 BANNED_NAMES = {
-    'Mang0',  # Has asked not to be included in AI training
+    # Have asked not to be included in AI training
+    'Mang0', 'Wizzrobe', 'Hungrybox',
+
+    # Haven't asked yet, so don't train on for now.
+    'Ossify',
+
     'Phillip AI',  # This is us!
 }
 for name in BANNED_NAMES:
-  assert name in name_map.values(), name
+  assert name in KNOWN_PLAYERS, name
 
 def is_banned_name(name: str) -> bool:
   return normalize_name(name) in BANNED_NAMES
 
 for name, _ in PLAYER_MAINS:
-  assert name in name_map.values(), name
+  assert name in KNOWN_PLAYERS, name

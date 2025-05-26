@@ -48,6 +48,8 @@ dolphin_config = dolphin_lib.DolphinConfig(
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
 
+NUM_GAMES = flags.DEFINE_integer('num_games', None, 'Number of games to play')
+
 FLAGS = flags.FLAGS
 
 def main(_):
@@ -84,14 +86,19 @@ def main(_):
 
   step_timer = utils.Profiler()
 
+  num_games = 0
+
   # Main loop
   try:
-    while True:
-      # "step" to the next frame
-      gamestate = dolphin.step()
+    for gamestate in dolphin.iter_gamestates(skip_menu_frames=False):
+      if dolphin_lib.is_menu_state(gamestate):
+        if num_games == NUM_GAMES.value:
+          break
+        continue
 
-      # if gamestate.frame == -123: # initial frame
-      #   controller.release_all()
+      if gamestate.frame == -123: # initial frame
+        num_games += 1
+        logging.info(f'Game {num_games}')
 
       with step_timer:
         for agent in agents:

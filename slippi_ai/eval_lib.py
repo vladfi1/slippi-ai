@@ -16,7 +16,8 @@ import tensorflow as tf
 import melee
 
 from slippi_ai import (
-  embed, policies, dolphin, saving, data, utils, tf_utils, nametags
+  embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
+  observations, flag_utils, train_lib
 )
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
@@ -214,11 +215,13 @@ class DelayedAgent:
   def __init__(
       self,
       policy: policies.Policy,
+      observation_config: observations.ObservationConfig,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    self.observation_config = observation_config
     self._batch_steps = batch_steps
     self._input_queue = []
 
@@ -256,11 +259,11 @@ class DelayedAgent:
     return self._batch_steps or 1
 
   @property
-  def hidden_state(self):
+  def hidden_state(self) -> policies.RecurrentState:
     return self._agent.hidden_state
 
   @property
-  def name_code(self):
+  def name_code(self) -> np.ndarray:
     return self._agent._name_code
 
   def step(
@@ -346,11 +349,13 @@ class AsyncDelayedAgent:
   def __init__(
       self,
       policy: policies.Policy,
+      observation_config: observations.ObservationConfig,
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
       **agent_kwargs,
   ):
+    self.observation_config = observation_config
     self._batch_size = batch_size
     self._batch_steps = batch_steps
     self._agent = build_basic_agent(
@@ -434,32 +439,27 @@ class AsyncDelayedAgent:
     delayed_controller = self._output_queue.get()
     return delayed_controller
 
-def load_state(path: Optional[str] = None, tag: Optional[str] = None) -> dict:
-  if path:
-    return saving.load_state_from_disk(path)
-  elif tag:
-    return saving.load_state_from_s3(tag)
-  else:
-    raise ValueError('Must specify one of "tag" or "path".')
-
 def get_name_code(state: dict, name: str) -> int:
   name_map: dict[str, int] = state['name_map']
   if name not in name_map:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
-  # For RL, we know the name that was used during training.
+def get_agent_config(state: dict) -> Optional[dict]:
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
-    name = state['rl_config']['agent']['name']
+    return state['rl_config']['agent']
   elif 'agent_config' in state:  # rl/train_two.py
-    name = state['agent_config']['name']
-  else:
+    return state['agent_config']
+  return None
+
+def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
+  # For RL, we know the name that was used during training.
+  agent_config = get_agent_config(state)
+  if agent_config is None:
     return None
-
+  name = agent_config['name']
   return [name] if isinstance(name, str) else name
-
 
 def build_delayed_agent(
     state: dict,
@@ -469,6 +469,13 @@ def build_delayed_agent(
     sample_temperature: float = 1.0,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
+  """Build an [Async]DelayedAgent given a state dict.
+
+  Note: various agent parameters may be stored in the state dict. This function
+  does the slightly tricky task of figuring out whether to use the parameters
+  from the state dict or the function arguments.
+  """
+  imitation_config = saving.upgrade_config(state['config'])
   policy = saving.load_policy_from_state(state)
 
   rl_name = get_name_from_rl_state(state)
@@ -500,9 +507,14 @@ def build_delayed_agent(
   else:
     name_code = [get_name_code(state, n) for n in name]
 
+  # Stick the observation_config into the agent for future use.
+  observation_config = flag_utils.dataclass_from_dict(
+          observations.ObservationConfig, imitation_config['observation'])
+
   agent_class = AsyncDelayedAgent if async_inference else DelayedAgent
   return agent_class(
       policy=policy,
+      observation_config=observation_config,
       name_code=name_code,
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
@@ -554,6 +566,9 @@ class Agent:
     self.start = self._agent.start
     self.stop = self._agent.stop
 
+    self._observation_filter = observations.build_observation_filter(
+        self._agent.observation_config)
+
   def set_ports(self, port: int, opponent_port: int):
     self.players = (port, opponent_port)
 
@@ -575,9 +590,11 @@ class Agent:
     new_game = gamestate.frame == -123
     if new_game:
       self.update_name()
+      self._observation_filter.reset()
 
     needs_reset = np.array([new_game])
     game = get_game(gamestate, ports=self.players)
+    game = self._observation_filter.filter(game)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
 
     sample_outputs = self._agent.step(game, needs_reset)
@@ -595,11 +612,10 @@ def build_agent(
     controller: tp.Optional[melee.Controller] = None,
     state: Optional[dict] = None,
     path: Optional[str] = None,
-    tag: Optional[str] = None,
     **agent_kwargs,
 ) -> Agent:
   if state is None:
-    state = load_state(path, tag)
+    state = saving.load_state_from_disk(path)
 
   return Agent(
       controller=controller,
@@ -614,7 +630,6 @@ def build_agent(
 
 BATCH_AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
-    tag=ff.String(None, 'Tag used to save state in s3.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
@@ -647,6 +662,12 @@ BATCH_PLAYER_FLAGS = dict(
     ai=BATCH_AGENT_FLAGS,
 )
 
+def load_state(agent_kwargs: dict) -> dict:
+  path = agent_kwargs.pop('path')
+  if 'tag' in agent_kwargs:
+    logging.warning('`tag` is no longer used, deleting from agent config')
+    del agent_kwargs['tag']
+  return saving.load_state_from_disk(path)
 
 def get_player(
     type: str,
@@ -660,7 +681,7 @@ def get_player(
     return dolphin.Human()
   elif type == 'cpu':
     return dolphin.CPU(character, level)
-
+  raise ValueError(f'Unknown player type: {type}')
 
 def get_single_character(config: dict) -> tp.Optional[melee.Character]:
   allowed_characters = config['dataset']['allowed_characters']
@@ -684,7 +705,7 @@ class AgentSummary:
 
   @classmethod
   def from_checkpoint(cls, path: str) -> 'AgentSummary':
-    combined_state = load_state(path)
+    combined_state = saving.load_state_from_disk(path)
     config = combined_state['config']
     character = get_single_character(config)
 

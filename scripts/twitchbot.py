@@ -18,6 +18,7 @@ import ray
 import melee
 
 from slippi_ai import train_lib
+from slippi_ai import saving
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib
 
@@ -166,8 +167,7 @@ class Session:
     if auto_character:
       agent_delay = auto_delay
     else:
-      agent_path = self.agent_kwargs['path']
-      agent_state = eval_lib.load_state(path=agent_path)
+      agent_state = saving.load_state_from_disk(self.agent_kwargs['path'])
       agent_config = flag_utils.dataclass_from_dict(
           train_lib.Config, agent_state['config'])
       agent_delay = agent_config.policy.delay
@@ -426,7 +426,7 @@ class Bot(commands.Bot):
 
     for agent in agents:
       path = os.path.join(self._models_path, agent)
-      state = eval_lib.load_state(path=path)
+      state = saving.load_state_from_disk(path)
       state = {k: state[k] for k in keys if k in state}
       self._models[agent] = state
 

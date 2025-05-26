@@ -54,6 +54,8 @@ class PlayerMeta(typing.NamedTuple):
   type: int
   # netplay info
   netplay: dict
+  # amount of damage taken during the game
+  damage_taken: Optional[int] = None
 
 class Metadata(typing.NamedTuple):
   lastFrame: int
@@ -73,6 +75,8 @@ class Metadata(typing.NamedTuple):
 
   # Game hash
   key: Optional[str] = None
+
+  match: Optional[dict] = None
 
   @staticmethod
   def from_dict(d: dict) -> 'Metadata':
@@ -123,6 +127,9 @@ def get_metadata(game: peppi_py.Game) -> dict:
   start = game.start
   result['slippi_version'] = start['slippi']['version']
 
+  if result['slippi_version'] >= [3, 14, 0]:
+    result['match'] = start['match']
+
   players = start['players']
   player_metas = []
 
@@ -134,9 +141,12 @@ def get_metadata(game: peppi_py.Game) -> dict:
       leader = game.frames.field('ports').field(port).field('leader')
       cs = leader.field('post').field('character').to_numpy()
       character = int(mode(cs))
+      percent = leader.field('post').field('percent').to_numpy()
+      damage = float(np.maximum(percent[1:] - percent[:-1], 0).sum())
     else: # Non-1v1 games will have nulls when players are eliminated
       leader = game.frames[0]['ports'][port]['leader']
       character = leader['post']['character'].as_py()
+      damage = None
 
     player_metas.append(dict(
         port=port_to_int(port),
@@ -144,6 +154,7 @@ def get_metadata(game: peppi_py.Game) -> dict:
         type=0 if player['type'] == 'Human' else 1,
         name_tag=player['name_tag'],
         netplay=player.get('netplay'),
+        damage_taken=damage,
     ))
   result.update(
       num_players=len(player_metas),

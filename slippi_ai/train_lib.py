@@ -1,4 +1,3 @@
-
 """Train (and test) a network via imitation learning."""
 
 import collections
@@ -21,11 +20,11 @@ import wandb
 
 from slippi_ai import (
     controller_heads,
+    flag_utils,
     nametags,
     networks,
     policies,
     saving,
-    s3_lib,
     tf_utils,
     train_lib,
     utils,
@@ -34,7 +33,7 @@ from slippi_ai import learner as learner_lib
 from slippi_ai import data as data_lib
 from slippi_ai import value_function as vf_lib
 from slippi_ai import embed as embed_lib
-
+from slippi_ai import observations as obs_lib
 
 def get_experiment_tag():
   today = datetime.date.today()
@@ -106,6 +105,7 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
@@ -125,8 +125,6 @@ class Config:
   tag: tp.Optional[str] = None
 
   # TODO: group these into their own subconfig
-  save_to_s3: bool = False
-  restore_tag: tp.Optional[str] = None
   restore_pickle: tp.Optional[str] = None
 
   is_test: bool = False  # for db management
@@ -151,7 +149,7 @@ def create_name_map(
     name_map[name] = i
 
   # Bake in name groups from nametags.py
-  for first, *rest in nametags.name_groups:
+  for first, *rest in nametags.NAME_GROUPS:
     if first not in name_map:
       continue
     for name in rest:
@@ -174,35 +172,9 @@ def train(config: Config):
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
-  save_to_s3 = config.save_to_s3
-  if save_to_s3 or config.restore_tag:
-    if 'S3_CREDS' not in os.environ:
-      raise ValueError('must set the S3_CREDS environment variable')
-
-    s3_store = s3_lib.get_store()
-    s3_keys = s3_lib.get_keys(tag)
-
-  if config.restore_tag:
-    restore_s3_keys = s3_lib.get_keys(config.restore_tag)
-  elif save_to_s3:
-    restore_s3_keys = s3_keys
-  else:
-    restore_s3_keys = None
-
   # attempt to restore parameters
   restored = False
-  if restore_s3_keys is not None:
-    try:
-      restore_key = restore_s3_keys.combined
-      obj = s3_store.get(restore_key)
-      logging.info('restoring from %s', restore_key)
-      combined_state = pickle.loads(obj)
-      restored = True
-      # TODO: do some config compatibility validation
-    except KeyError:
-      # TODO: re-raise if user specified restore_tag
-      logging.info('no params found at %s', restore_key)
-  elif config.restore_pickle:
+  if config.restore_pickle:
     logging.info('restoring from %s', config.restore_pickle)
     with open(config.restore_pickle, 'rb') as f:
       combined_state = pickle.load(f)
@@ -215,16 +187,27 @@ def train(config: Config):
   else:
     logging.info('not restoring any params')
 
+  # Initialize the best eval loss to infinity
+  best_eval_loss = float('inf')
+
   if restored:
-    restore_config = combined_state['config']
+    best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
+
+    restore_config = flag_utils.dataclass_from_dict(
+        Config, saving.upgrade_config(combined_state['config']))
 
     # We can update the delay as it doesn't affect the network architecture.
-    restore_delay = restore_config['policy']['delay']
-    if restore_delay != config.policy.delay:
-      logging.warning(f'WARNING: Changing delay from {restore_delay} to {config.policy.delay}.')
+    if restore_config.policy.delay != config.policy.delay:
+      logging.warning(f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
+      best_eval_loss = float('inf')  # Old losses don't apply to new delay.
 
-    for key in ['network', 'controller_head']:
-      setattr(config, key, restore_config[key])
+    # These we can't change after the fact.
+    for key in ['network', 'controller_head', 'embed']:
+      current = getattr(config, key)
+      previous = getattr(restore_config, key)
+      if current != previous:
+        logging.warning(f'Requested {key} config doesn\'t match, overriding from checkpoint.')
+        setattr(config, key, previous)
 
   policy = saving.policy_from_config(dataclasses.asdict(config))
 
@@ -286,10 +269,12 @@ def train(config: Config):
       dataclasses.asdict(config.data),
       extra_frames=1 + policy.delay,
       name_map=name_map,
+      observation_config=config.observation,
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
   test_data = data_lib.make_source(replays=test_replays, **data_config)
+  del train_replays, test_replays  # free up memory
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
@@ -320,7 +305,7 @@ def train(config: Config):
       lambda var, val: var.assign(val),
       tf_state, state)
 
-  def save():
+  def save(eval_loss=None):
     # Local Save
     tf_state = get_tf_state()
 
@@ -329,6 +314,7 @@ def train(config: Config):
         state=tf_state,
         config=dataclasses.asdict(config),
         name_map=name_map,
+        best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
     )
     pickled_state = pickle.dumps(combined_state)
 
@@ -336,11 +322,6 @@ def train(config: Config):
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
 
-    if save_to_s3:
-      logging.info('saving state to S3: %s', s3_keys.combined)
-      s3_store.put(s3_keys.combined, pickled_state)
-
-  maybe_save = utils.Periodically(save, runtime.save_interval)
 
   if restored:
     set_tf_state(combined_state['state'])
@@ -401,35 +382,64 @@ def train(config: Config):
     print()
 
   def maybe_eval():
+    nonlocal best_eval_loss  # Allow modification of the best_eval_loss variable
     total_steps = int(step.numpy())
     if total_steps % runtime.eval_every_n != 0:
       return
 
-    eval_results = [test_manager.step() for _ in range(runtime.num_eval_steps)]
+    eval_stats = []
+    metas: list[data_lib.ChunkMeta] = []
 
-    eval_stats, batches = zip(*eval_results)
-    eval_stats = tf.nest.map_structure(tf_utils.to_numpy, eval_stats)
+    def time_mean(x):
+      # Stats are either scalars or (time, batch)-shaped.
+      x = tf_utils.to_numpy(x)
+      if isinstance(x, float) or len(x.shape) == 0:
+        return x
+
+      return np.mean(x, axis=0)
+
+    for _ in range(runtime.num_eval_steps):
+      stats, batch = test_manager.step()
+
+      # Convert to numpy and take time-mean to free up memory.
+      stats = utils.map_single_structure(time_mean, stats)
+
+      eval_stats.append(stats)
+      metas.append(batch.meta)
+
     eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
+
+    data_time = test_manager.data_profiler.mean_time()
+    step_time = test_manager.step_profiler.mean_time()
 
     total_frames = total_steps * FRAMES_PER_STEP
     train_epoch = epoch_tracker.last
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,
+        data_time=data_time,
+        step_time=step_time,
     )
 
     to_log = dict(eval=eval_stats, **counters)
     train_lib.log_stats(to_log, total_steps)
 
+    # Calculate the mean eval loss
+    eval_loss = eval_stats['policy']['loss'].mean()
+    logging.info('eval loss: %.4f data: %.3f step: %.3f', eval_loss, data_time, step_time)
+
+    # Save if the eval loss is the best so far
+    if eval_loss < best_eval_loss:
+      logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
+      best_eval_loss = eval_loss
+      save(eval_loss=best_eval_loss)
+
     # Log losses aggregated by name.
 
-    # Stats have shape [num_eval_steps, unroll_length, batch_size]
-    time_mean = lambda x: np.mean(x, axis=1)
-    loss = time_mean(eval_stats['policy']['loss'])
+    # Stats have shape [num_eval_steps, batch_size]
+    loss = eval_stats['policy']['loss']
     assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
 
-    # Metadata only has a batch dimension.
-    metas: list[data_lib.ChunkMeta] = [batch.meta for batch in batches]
     meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
 
     # Name of the player we're imitating.
@@ -460,5 +470,3 @@ def train(config: Config):
     step.assign_add(1)
     maybe_log(train_stats)
     maybe_eval()
-
-    maybe_save()

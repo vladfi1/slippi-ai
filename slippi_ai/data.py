@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 
 import melee
 
-from slippi_ai import reward, utils, nametags, paths
+from slippi_ai import reward, utils, nametags, paths, observations
 from slippi_ai.types import Game, game_array_to_nt, Controller
 
 class PlayerMeta(NamedTuple):
@@ -96,6 +96,8 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
     chars = list(melee.Character)
   return set(c.value for c in chars)
 
+ALL = 'all'
+NONE = 'none'
 
 @dataclasses.dataclass
 class DatasetConfig:
@@ -103,11 +105,37 @@ class DatasetConfig:
   meta_path: Optional[str] = None
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
-  allowed_characters: str = 'all'
-  allowed_opponents: str = 'all'
+  allowed_characters: str = ALL
+  allowed_opponents: str = ALL
+  # Filter by player
+  allowed_names: str = ALL
+  banned_names: str = NONE
+
   swap: bool = True  # yield swapped versions of each replay
   seed: int = 0
 
+def create_name_filter(
+    allowed_names: str,
+    banned_names: str = NONE,
+) -> Callable[[str], bool]:
+  """Creates a function that filters names based on the allowed names."""
+  if allowed_names != ALL:
+    allowed_names_set = set(allowed_names.split(','))
+
+  if banned_names == NONE:
+    banned_names_set = set()
+  else:
+    banned_names_set = set(banned_names.split(','))
+
+  def is_allowed(name: str) -> bool:
+    name = nametags.normalize_name(name)
+    if name in banned_names_set:
+      return False
+    if allowed_names == ALL:
+      return True
+    return name in allowed_names_set
+
+  return is_allowed
 
 def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
   replays = []
@@ -117,6 +145,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   allowed_characters = _charset(chars_from_string(config.allowed_characters))
   allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
+  name_filter = create_name_filter(config.allowed_names, config.banned_names)
 
   banned_counts = collections.Counter()
 
@@ -156,6 +185,10 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
         banned_counts[p0.name] += 1
         continue
 
+      if not name_filter(p0.name):
+        banned_counts[p0.name] += 1
+        continue
+
       replays.append(ReplayInfo(replay_path, swap, replay_meta))
 
   print('Banned names:', banned_counts)
@@ -177,8 +210,8 @@ def train_test_split(
     filenames_set = set(filenames)
     assert all(info.meta.slp_md5 in filenames_set for info in replays)
   else:
-    if not (config.allowed_characters == 'all'
-            and config.allowed_opponents == 'all'):
+    if not (config.allowed_characters == ALL
+            and config.allowed_opponents == ALL):
       raise ValueError(
           "Can't filter by character without metadata. "
           "Please provide a metadata file.")
@@ -201,7 +234,7 @@ def train_test_split(
 name_to_character = {c.name.lower(): c for c in melee.Character}
 
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
-  if chars == 'all':
+  if chars == ALL:
     return None
   chars = chars.split(',')
   return [name_to_character[c] for c in chars]
@@ -220,12 +253,14 @@ class TrajectoryManager:
       overlap: int = 1,
       compressed: bool = True,
       game_filter: Optional[Callable[[Game], bool]] = None,
+      observation_filter: Optional[observations.ObservationFilter] = None,
   ):
     self.source = source
     self.compressed = compressed
     self.unroll_length = unroll_length
     self.overlap = overlap
     self.game_filter = game_filter or (lambda _: True)
+    self.observation_filter = observation_filter
 
     self.game: Game = None
     self.frame: int = None
@@ -246,6 +281,11 @@ class TrajectoryManager:
       if not self.game_filter(game):
         continue
       break
+
+    if self.observation_filter is not None:
+      self.observation_filter.reset()
+      game = self.observation_filter.filter_time(game)
+
     self.game = game
     self.frame = 0
     self.info = info
@@ -299,6 +339,7 @@ class DataSource:
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
       name_map: Optional[dict[str, int]] = None,
+      observation_config: Optional[observations.ObservationConfig] = None,
   ):
     self.replays = replays
     self.batch_size = batch_size
@@ -308,6 +349,11 @@ class DataSource:
     self.compressed = compressed
     self.batch_counter = 0
 
+    def build_observation_filter():
+      if observation_config is None:
+        return None
+      return observations.build_observation_filter(observation_config)
+
     self.replay_counter = 0
     replays = self.iter_replays()
     self.managers = [
@@ -316,13 +362,16 @@ class DataSource:
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             compressed=compressed,
-            game_filter=self.is_allowed)
-        for _ in range(batch_size)]
+            game_filter=self.is_allowed,
+            observation_filter=build_observation_filter(),
+        ) for _ in range(batch_size)
+    ]
 
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
     self.name_map = name_map or {}
     self.encode_name = nametags.name_encoder(self.name_map)
+    self.observation_config = observation_config
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
     for replay in itertools.cycle(self.replays):
@@ -379,10 +428,17 @@ def produce_batches(data_source_kwargs, batch_queue):
 class DataSourceMP:
   def __init__(self, buffer=4, **kwargs):
     for k, v in kwargs.items():
+      if k == 'replays':
+        continue
       setattr(self, k, v)
-    self.batch_queue = mp.Queue(buffer)
-    self.process = mp.Process(
-        target=produce_batches, args=(kwargs, self.batch_queue))
+
+    # 'spawn' uses much less memory than 'fork'
+    context = mp.get_context('spawn')
+
+    self.batch_queue = context.Queue(buffer)
+    self.process = context.Process(
+        target=produce_batches, args=(kwargs, self.batch_queue),
+        name='DataSourceMP')
     self.process.start()
 
     atexit.register(self.batch_queue.close)
@@ -394,19 +450,57 @@ class DataSourceMP:
   def __del__(self):
     self.process.terminate()
 
+class MultiDataSourceMP:
+
+  def __init__(
+      self,
+      replays: List[ReplayInfo],
+      num_workers: int,
+      batch_size: int,
+      **kwargs,
+  ):
+    if num_workers > len(replays):
+      raise ValueError(
+          f"num_workers ({num_workers}) must be less than the number of "
+          f"replays ({len(replays)})")
+
+    if batch_size % num_workers != 0:
+      raise ValueError(
+          f"batch_size ({batch_size}) must be divisible by num_workers "
+          f"({num_workers})")
+
+    self.sources: list[DataSourceMP] = []
+    for i in range(num_workers):
+      self.sources.append(DataSourceMP(
+          replays=replays[i::num_workers],
+          batch_size=batch_size // num_workers,
+          **kwargs
+      ))
+
+    self.batch_size = batch_size
+    for k in kwargs:
+      setattr(self, k, kwargs[k])
+
+  def __next__(self) -> Tuple[Batch, float]:
+    results = [next(source) for source in self.sources]
+    batches, epochs = zip(*results)
+    return utils.concat_nest_nt(batches), np.mean(epochs)
+
 @dataclasses.dataclass
 class DataConfig:
   batch_size: int = 32
   unroll_length: int = 64
   damage_ratio: float = 0.01
   compressed: bool = True
-  in_parallel: bool = True
+  num_workers: int = 0
 
 def make_source(
-    in_parallel: bool,
+    num_workers: int,
     **kwargs):
-  constructor = DataSourceMP if in_parallel else DataSource
-  return constructor(**kwargs)
+  if num_workers == 0:
+    return DataSource(**kwargs)
+
+  return MultiDataSourceMP(num_workers=num_workers, **kwargs)
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(

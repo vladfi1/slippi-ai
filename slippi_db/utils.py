@@ -4,17 +4,19 @@ from contextlib import contextmanager
 import functools
 import gzip
 import hashlib
-import numpy as np
 import os
 from typing import Generator
-import py7zr
+
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import typing as tp
 import zipfile
+
+import numpy as np
+import py7zr
+
 
 T = tp.TypeVar('T')
 
@@ -97,9 +99,9 @@ def get_tmp_dir(in_memory: bool) -> tp.Optional[str]:
     subprocess.check_call(['diskutil', 'eraseVolume', 'APFS', _MACOS_SHM_DISK, disk_name])
     print(f'Created ramdisk {disk_name} at {shm_dir}')
 
-    def cleanup():
-      subprocess.check_call(['umount', shm_dir])
-      subprocess.check_call(['hdiutil', 'detach', disk_name])
+    # def cleanup():
+    #   subprocess.check_call(['umount', shm_dir])
+    #   subprocess.check_call(['hdiutil', 'detach', disk_name])
     # atexit.register(cleanup)
 
     return shm_dir
@@ -201,20 +203,20 @@ class SevenZipFile(LocalFile):
     return self.path
 
   def read(self) -> bytes:
-    result = subprocess.run(
+    result = subprocess.check_call(
         ['7z', 'e', '-so', self.root, self.path],
         stdout=subprocess.PIPE)
     return result.stdout
 
   @contextmanager
   def extract(self, tmpdir: str) -> Generator[str, None, None]:
-    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_dir:
       subprocess.check_call(
-        ['7z', 'x', '-o' + tmpdir, self.root, self.path],
+        ['7z', 'x', '-o' + tmp_dir, self.root, self.path],
         stdout=subprocess.DEVNULL)
       # with py7zr.SevenZipFile(self.root) as archive:
       #   archive.extract(path=tmpdir, targets=[self.path])
-      yield os.path.join(tmpdir, self.path)
+      yield os.path.join(tmp_dir, self.path)
 
 class ZipFile(LocalFile):
   """File inside a zip archive."""
@@ -270,17 +272,6 @@ def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
     if path.endswith('.slp'):
       files.append(SevenZipFile(root, path))
   return files
-
-class SevenZipChunk:
-
-  def __init__(self, path: str, files: list[str]) -> None:
-    self.path = path
-    self.files = files
-
-  def __enter__(self):
-    self.tmpdir = tempfile.TemporaryDirectory(dir=get_tmp_dir(in_memory=True))
-    self.extract()
-    return self
 
 class SevenZipChunk:
 
@@ -379,3 +370,87 @@ def traverse_slp_files_zip(root: str) -> list[LocalFile]:
     if any(path.endswith(s) for s in VALID_SUFFIXES):
       files.append(ZipFile(root, path))
   return files
+
+def extract_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+  """Extracts specified files without recompressing."""
+
+  if os.path.exists(dest_zip):
+    raise FileExistsError(f'Destination zip file {dest_zip} already exists')
+
+  with subprocess.Popen(
+      ['zip',  '-U', source_zip, '-@', '--out', dest_zip],
+      stdin=subprocess.PIPE) as zip_proc:
+    for file_name in file_names:
+      zip_proc.stdin.write(file_name.encode('utf-8'))
+      zip_proc.stdin.write(b'\n')
+    zip_proc.stdin.close()
+    zip_proc.wait()
+
+def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+  """Copies specified files from source zip archive to destination zip archive.
+
+  Extracts specified files from the source archive and adds them to the destination
+  archive. If the destination archive doesn't exist, it will be created.
+
+  Args:
+    source_zip: Path to the source zip archive.
+    file_names: List of file names within the source archive to copy.
+    dest_zip: Path to the destination zip archive.
+  """
+
+  if os.path.exists(dest_zip):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      tmp_zip = os.path.join(tmpdir, 'tmp.zip')
+      extract_zip_files(source_zip, file_names, tmp_zip)
+      subprocess.check_call(['zipmerge', dest_zip, tmp_zip])
+
+  else:
+    extract_zip_files(source_zip, file_names, dest_zip)
+
+def copy_multi_zip_files(
+    sources_and_files: list[tuple[str, list[str]]],
+    dest_zip: str) -> None:
+  """Copies specified files from multiple source zip archives to destination zip archive.
+
+  Extracts specified files from the source archives and adds them to the destination
+  archive. If the destination archive doesn't exist, it will be created.
+
+  Args:
+    sources_and_files: List of tuples, where each tuple contains a source zip archive path
+      and a list of file names within the source archive to copy.
+    dest_zip: Path to the destination zip archive.
+  """
+
+  with tempfile.TemporaryDirectory() as tmpdir:
+    tmp_zips = []
+    for i, (source_zip, file_names) in enumerate(sources_and_files):
+      tmp_zip = os.path.join(tmpdir, f'tmp_{i}.zip')
+      extract_zip_files(source_zip, file_names, tmp_zip)
+      tmp_zips.append(tmp_zip)
+
+    subprocess.check_call(['zipmerge', dest_zip, *tmp_zips])
+
+def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
+  """Renames files within a zip archive.
+
+  Args:
+    zip_path: Path to the zip archive.
+    to_rename: List of (old, new) file names.
+  """
+
+  # Note: zipnote is very picky about the input format.
+  with subprocess.Popen(['zipnote', zip_path], stdout=subprocess.PIPE) as proc:
+    lines = proc.stdout.readlines()
+    proc.wait()
+
+  rename_mapping = {}
+  for src, dst in to_rename:
+    rename_mapping[f'@ {src}\n'.encode('utf-8')] = f'@={dst}\n'.encode('utf-8')
+
+  with subprocess.Popen(['zipnote', '-w', zip_path], stdin=subprocess.PIPE) as proc:
+    for line in lines:
+      proc.stdin.write(line)
+      if line in rename_mapping:
+        proc.stdin.write(rename_mapping.pop(line))
+    proc.stdin.close()
+    proc.wait()

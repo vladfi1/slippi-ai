@@ -13,7 +13,7 @@ import portpicker
 from melee.slippstream import EnetDisconnected
 from melee import GameState, Stage
 
-from slippi_ai import dolphin, utils
+from slippi_ai import dolphin, utils, observations
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
 from slippi_ai import data
@@ -36,6 +36,7 @@ class Environment:
       self,
       dolphin_kwargs: dict,
       swap_ports: bool = False,
+      observation_configs: Optional[dict[Port, observations.ObservationConfig]] = None,
       check_controller_outputs: bool = False,
   ):
     players: dict[Port, dolphin.Player] = dolphin_kwargs['players']
@@ -55,11 +56,16 @@ class Environment:
     actual_dolphin_kwargs = dict(dolphin_kwargs, players=actual_players)
     self._dolphin = dolphin.Dolphin(**actual_dolphin_kwargs)
 
-    self._opponents: Mapping[int, int] = {}
+    self._opponents: Mapping[Port, Port] = {}
 
     for port, opponent_port in zip(actual_ports, reversed(actual_ports)):
       if isinstance(actual_players[port], dolphin.AI):
         self._opponents[port] = opponent_port
+
+    self._observation_filters: dict[Port, observations.ObservationFilter] = {}
+    if observation_configs:
+      for port, config in observation_configs.items():
+        self._observation_filters[port] = observations.build_observation_filter(config)
 
     self._prev_state: Optional[GameState] = None
 
@@ -76,6 +82,12 @@ class Environment:
     for actual_port, opponent in self._opponents.items():
       port = self.port_from_actual[actual_port]
       games[port] = get_game(self._prev_state, (actual_port, opponent))
+
+      if port in self._observation_filters:
+        obs_filter = self._observation_filters[port]
+        if needs_reset:
+          obs_filter.reset()
+        games[port] = obs_filter.filter(games[port])
 
     return EnvOutput(games, needs_reset)
 
@@ -178,6 +190,7 @@ class BatchedEnvironment:
       slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
       swap_ports: bool = True,  # Swap ports on half of the environments.
+      **env_kwargs,
   ):
     self._dolphin_kwargs = dolphin_kwargs
     slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
@@ -191,7 +204,8 @@ class BatchedEnvironment:
       dolphin_kwargs_i.update(slippi_port=slippi_ports[i])
       env = SafeEnvironment(
           dolphin_kwargs_i, num_retries=num_retries,
-          swap_ports=swap_ports and i >= num_envs // 2)
+          swap_ports=swap_ports and i >= num_envs // 2,
+          **env_kwargs)
       envs.append(env)
 
     self._envs = envs
@@ -422,6 +436,7 @@ class AsyncBatchedEnvironmentMP:
       inner_batch_size: int = 1,
       num_retries: int = 2,
       swap_ports: bool = True,
+      **env_kwargs,
   ):
     if num_envs % inner_batch_size != 0:
       raise ValueError(
@@ -448,6 +463,7 @@ class AsyncBatchedEnvironmentMP:
           slippi_ports=self._slice(i, slippi_ports),
           num_retries=num_retries,
           swap_ports=swap_ports,
+          **env_kwargs,
       )
       self._envs.append(env)
 
