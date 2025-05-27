@@ -188,12 +188,13 @@ class Session:
         players={port: player},
         **dolphin_kwargs,
     )
+    controller = dolphin.controllers[port]
 
     if auto_character:
       player.character = auto_character
     else:
       agent = eval_lib.build_agent(
-          controller=dolphin.controllers[port],
+          controller=controller,
           opponent_port=None,  # will be set later
           console_delay=console_delay,
           run_on_cpu=True,
@@ -239,7 +240,7 @@ class Session:
             models_path=models_path,
             port=actual_port,
             opponent_port=opponent_port,
-            controller=dolphin.controllers[port],
+            controller=controller,
             console_delay=console_delay,
             run_on_cpu=True,
             **agent_kwargs,
@@ -261,7 +262,7 @@ class Session:
             agent.step(gamestate)
             self._num_menu_frames = 0
           else:
-            agent._controller.release_all()
+            controller.release_all()
             self._num_menu_frames += 1
       finally:
         agent.stop()
