@@ -311,6 +311,13 @@ def run(config: Config):
     config.teacher = previous_teacher  # For saving
     teacher_state = saving.load_state_from_disk(previous_teacher)
 
+    rl_delay = rl_state['config']['policy']['delay']
+    teacher_delay = teacher_state['config']['policy']['delay']
+    if rl_delay != teacher_delay:
+      raise ValueError(
+          'Teacher delay does not match RL state delay: '
+          f'{teacher_delay} != {rl_delay}. Using teacher delay.')
+
     step = rl_state['step']
   elif config.teacher:
     logging.info(f'Initializing from teacher: {config.teacher}')
