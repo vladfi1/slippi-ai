@@ -36,7 +36,8 @@ def get_controller(cs: melee.ControllerState) -> Controller:
 
 def get_player(player: melee.PlayerState) -> Player:
   if player.action == melee.Action.UNKNOWN_ANIMATION:
-    raise InvalidGameError('UNKNOWN_ANIMATION')
+    player.action = melee.Action.KIRBY_YOSHI_EGG
+    # raise InvalidGameError('UNKNOWN_ANIMATION')
 
   return Player(
       percent=player.percent,
