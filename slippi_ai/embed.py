@@ -196,6 +196,10 @@ class OneHotEmbedding(Embedding[int, np.int32]):
   def distribution(self, embedded: tf.Tensor):
     return tfp.distributions.Categorical(logits=embedded, dtype=self.tf_dtype)
 
+  def from_state(self, state: int):
+    state = np.clip(state, 0, self.size - 1)
+    return super().from_state(state)
+
 NT = TypeVar("NT")
 
 class StructEmbedding(Embedding[NT, NT]):
