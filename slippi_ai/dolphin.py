@@ -77,7 +77,7 @@ class Dolphin:
       **console_kwargs,
   ) -> None:
     self._players = players
-    self._stage = stage
+    self.stage = stage
 
     platform = None
     version = get_dolphin_version(path)
@@ -188,7 +188,7 @@ class Dolphin:
 
         self.menu_helper.menu_helper_simple(
             gamestate, controller,
-            stage_selected=self._stage,
+            stage_selected=self.stage,
             connect_code=self._connect_code,
             autostart=self._autostart and i == 0 and menu_frames > 180,
             swag=False,
@@ -213,7 +213,7 @@ class Dolphin:
 
           self.menu_helper.menu_helper_simple(
               gamestate, controller,
-              stage_selected=self._stage,
+              stage_selected=self.stage,
               connect_code=self._connect_code,
               autostart=self._autostart and i == 0 and menu_frames > 180,
               swag=False,

@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import time
 import threading
 from typing import Optional
@@ -21,6 +22,16 @@ from slippi_ai import train_lib
 from slippi_ai import saving
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib
+
+NAME_TO_STAGE = {
+    'fd': melee.Stage.FINAL_DESTINATION,
+    'fod': melee.Stage.FOUNTAIN_OF_DREAMS,
+    'dl': melee.Stage.DREAMLAND,
+    'ys': melee.Stage.YOSHIS_STORY,
+    'ps': melee.Stage.POKEMON_STADIUM,
+    'bf': melee.Stage.BATTLEFIELD,
+    'all': melee.Stage.RANDOM_STAGE,
+}
 
 # Twitch settings
 default_access_token = os.environ.get('TWITCHBOT_ACCESS_TOKEN')
@@ -42,6 +53,8 @@ _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     replay_dir='Replays/Twitchbot',
     console_timeout=120,  # allow opponent to pause
 )
+# STAGES = flags.DEFINE_multi_enum(
+#     'stage', ['all'], stages.keys(), 'Stages to play on.')
 DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
 
@@ -158,11 +171,13 @@ class Session:
       auto_character: Optional[melee.Character] = None,
       auto_delay: int = 18,
       models_path: Optional[str] = None,
+      stages: Optional[list[melee.Stage]] = None,
   ):
     eval_lib.disable_gpus()
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
     self.stop_requested = threading.Event()
+    stages = stages or [dolphin_config.stage]
 
     if auto_character:
       agent_delay = auto_delay
@@ -228,6 +243,10 @@ class Session:
           self._num_menu_frames = 0
           break
 
+        if self._num_menu_frames == 0:
+          dolphin.stage = random.choice(stages)
+          logging.info(f'Setting stage to {dolphin.stage.name}')
+
         self._num_menu_frames += 1
 
       # Now we have access to the display names to set the correct ports.
@@ -263,6 +282,11 @@ class Session:
             self._num_menu_frames = 0
           else:
             controller.release_all()
+
+            if self._num_menu_frames == 0:
+              dolphin.stage = random.choice(stages)
+              logging.info(f'Setting stage to {dolphin.stage.name}')
+
             self._num_menu_frames += 1
       finally:
         agent.stop()
@@ -293,12 +317,13 @@ HELP_MESSAGE = """
 !agent <name>: Select an agent to play against.
 !more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
-NOTE: the experimental lagless feature has been merged into regular slippi dolphin; a custom build is no longer needed.
 """.strip()
 
 EXTRA_HELP_MESSAGE = """
 !status: Displays selected agent and current sessions.
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
+!reset: Stop the bot and start a new game with the same agent.
+!stages: Specify a space-separated list of stages to play on.
 !bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream.
 !about: Print some info about the this AI.
 """
@@ -400,8 +425,11 @@ class Bot(commands.Bot):
     self._reload_models()
 
     self._default_agent_name = 'auto-fox'
+
+    # User-specific state.
     self._requested_agents = {}
     self._play_codes = {}
+    self._stages: dict[str, list[melee.Stage]] = {}
 
     self._do_chores.start()
 
@@ -473,10 +501,11 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
-    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
-    for c in self._imitation_agents:
-      agents.append(imitation_prefix + c.name.lower())
-    agents.extend(self._models)
+    # agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
+    # for c in self._imitation_agents:
+    #   agents.append(imitation_prefix + c.name.lower())
+    # agents.extend(self._models)
+    agents = self._models.keys()
 
     max_chars = 500
     chunks = [[]]
@@ -553,6 +582,36 @@ class Bot(commands.Bot):
     print(f'User id is | {self.user_id}')
 
   @commands.command()
+  async def stages(self, ctx: commands.Context):
+    name = ctx.author.name
+    words = ctx.message.content.split(' ')
+
+    stage_names = words[1:]
+    if len(stage_names) == 0:
+      stages = self._stages.get(name)
+      if stages is None:
+        stages_string = 'all'
+      else:
+        stages_string = ", ".join([s.name.lower() for s in stages])
+      await ctx.send(
+          f'{name} has selected {stages_string}.'
+          f' Available stages: {", ".join(NAME_TO_STAGE)}')
+      return
+
+    stages: list[melee.Stage] = []
+    for stage_name in stage_names:
+      stage_name = stage_name.lower()
+      if stage_name not in NAME_TO_STAGE:
+          await ctx.send(
+              f'{name}, {stage_name} is not a valid stage.'
+              f' Available stages: {", ".join(NAME_TO_STAGE)}')
+          return
+      stages.append(NAME_TO_STAGE[stage_name])
+
+    self._stages[name] = stages
+    await ctx.send(f'{name} has set the stages to {", ".join(stage_names)}')
+
+  @commands.command()
   async def stop(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
@@ -593,6 +652,7 @@ class Bot(commands.Bot):
           connect_code,
           render=is_stream,
           agent=agent,
+          stages=self._stages.get(name, None),
       )
       self._sessions[name] = SessionInfo(
           session=session,
@@ -641,6 +701,7 @@ class Bot(commands.Bot):
       self,
       connect_code: str,
       agent: str,
+      stages: Optional[list[melee.Stage]],
       auto_character: Optional[melee.Character] = None,
       render: bool = False,
   ) -> Session:
@@ -663,6 +724,7 @@ class Bot(commands.Bot):
     if imitation_character:
       agent_kwargs['path'] = os.path.join(
           self._models_path, self._imitation_agents[imitation_character])
+      config.save_replays = False
     elif auto_character is None:
       agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
@@ -671,6 +733,7 @@ class Bot(commands.Bot):
         extra_dolphin_kwargs=extra_dolphin_kwargs,
         auto_character=auto_character,
         models_path=self._models_path,
+        stages=stages,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
