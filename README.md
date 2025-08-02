@@ -49,8 +49,6 @@ Phillip is trained in two stages. In the first stage, it learns to imitate human
 
 The first step is preprocess your slippi replays using [`slippi_db/parse_local.py`](https://github.com/vladfi1/slippi-ai/blob/main/slippi_db/parse_local.py). See the documentation in that file for more details.
 
-Note: local parsing currently depends on [peppi-py](https://github.com/hohav/peppi-py) version [0.6.0](https://github.com/hohav/peppi-py/commit/8c02a4659c3302321dfbfcf2093c62f634e335f7) which you may need to build manually.
-
 The output of this step will be a `Parsed` directory of preprocessed games and a `meta.json` metadata file.
 
 ## Imitation Learning
