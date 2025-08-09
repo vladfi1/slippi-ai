@@ -32,8 +32,7 @@ flags.DEFINE_string('failed_output', None, 'Optional zip file to store failed .s
 
 
 def convert_slp_to_slpp_gz(
-    zip_path: str,
-    slp_filename: str,
+    zip_file: utils.ZipFile,
     output_path: str,
 ) -> Optional[str]:
   """Convert a single .slp file from zip archive to .slpp.gz format.
@@ -54,17 +53,13 @@ def convert_slp_to_slpp_gz(
     with tempfile.TemporaryDirectory(dir=shm_tmpdir) as temp_dir:
       slp_path = os.path.join(temp_dir, 'slp')
 
-      result = subprocess.run(
-          ['unzip', '-p', zip_path, slp_filename],
-          check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
       # TODO: unzip to shared memory directly
       with open(slp_path, 'wb') as temp_slp:
-        temp_slp.write(result.stdout)
+        temp_slp.write(zip_file.read())
 
       # Convert .slp to .slpp using the slp tool (also in shared memory)
       slpp_path = os.path.join(temp_dir, 'slpp')
-      result = subprocess.run([
+      subprocess.run([
           'slp',
           '-o', slpp_path,
           '-f', 'peppi',
@@ -91,7 +86,7 @@ def convert_slp_to_slpp_gz(
     return str(e)
 
 
-def process_file(args: Tuple[str, str, str]) -> Tuple[str, Optional[str]]:
+def process_file(args: Tuple[utils.ZipFile, str]) -> Tuple[str, Optional[str]]:
   """Process a single file for multithreading.
 
   Args:
@@ -100,10 +95,9 @@ def process_file(args: Tuple[str, str, str]) -> Tuple[str, Optional[str]]:
   Returns:
     Tuple of (slp_filename, error_message)
   """
-  zip_path, slp_filename, output_path = args
-  error = convert_slp_to_slpp_gz(zip_path, slp_filename, output_path)
-  return slp_filename, error
-
+  zip_file, output_path = args
+  error = convert_slp_to_slpp_gz(zip_file, output_path)
+  return zip_file.name, error
 
 def convert_zip_archive(
     input_zip_path: str,
@@ -126,47 +120,44 @@ def convert_zip_archive(
 
   # Create temporary directory for output files (not in shared memory)
   with tempfile.TemporaryDirectory() as temp_output_dir:
-
-    # Find all .slp files in the zip archive
-    slp_files = []
+    todo = []
     output_dirs = set()  # Track output directories to create
-    with zipfile.ZipFile(input_zip_path, 'r') as zf:
-      for file_info in zf.filelist:
-        if file_info.filename.lower().endswith('.slp'):
-          # Generate output filename
-          output_name = Path(file_info.filename).stem + '.slpp.gz'
-          output_path = os.path.join(temp_output_dir, output_name)
-          output_dirs.add(os.path.dirname(output_path))
-          slp_files.append((input_zip_path, file_info.filename, output_path))
+    files = utils.traverse_slp_files_zip(input_zip_path)
+    for f in files:
+      assert f.name.endswith('.slp'), f"Expected .slp file, got {f.name}"
+      output_name = Path(f.name).stem + '.slpp.gz'
+      output_path = os.path.join(temp_output_dir, output_name)
+      output_dirs.add(os.path.dirname(output_path))
+      todo.append((f, output_path))
 
     # Create output directories
     for output_dir in output_dirs:
       os.makedirs(output_dir, exist_ok=True)
 
-    print(f"Found {len(slp_files)} .slp files in archive")
+    if not todo:
+      print("No .slp files found in input archive")
+      return
+
+    print(f"Found {len(files)} .slp files in archive")
 
     # Apply limit if specified
     if limit is not None and limit > 0:
-      slp_files = slp_files[:limit]
-      print(f"Limited to first {len(slp_files)} files")
-
-    if not slp_files:
-      print("No .slp files found in input archive")
-      return
+      todo = todo[:limit]
+      print(f"Limited to first {len(todo)} files")
 
     results: list[tuple[str, Optional[str]]] = []
 
     # Process files
     if num_threads == 1:
       # Single-threaded processing
-      for args in tqdm.tqdm(slp_files, desc="Converting", unit="file"):
+      for args in tqdm.tqdm(todo, desc="Converting", unit="file"):
         result = process_file(args)
         results.append(result)
     else:
       # Multi-threaded processing
       with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
         try:
-          futures = [executor.submit(process_file, file_args) for file_args in slp_files]
+          futures = [executor.submit(process_file, args) for args in todo]
 
           for future in tqdm.tqdm(
             concurrent.futures.as_completed(futures),
@@ -194,8 +185,9 @@ def convert_zip_archive(
 
     # Create output zip using command line zip (uncompressed)
     print("Creating output archive...")
+    # Note: Using -m flag to move files into the zip, saving space
     result = subprocess.run([
-      'zip', '-r', '-0', output_zip_path, '.'
+      'zip', '-r', '-m', '-0', output_zip_path, '.'
     ], cwd=temp_output_dir, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -231,7 +223,13 @@ def main(_):
     return 1
 
   try:
-    convert_zip_archive(FLAGS.input, FLAGS.output, FLAGS.threads, FLAGS.limit, FLAGS.failed_output)
+    convert_zip_archive(
+        input_zip_path=FLAGS.input,
+        output_zip_path=FLAGS.output,
+        num_threads=FLAGS.threads,
+        limit=FLAGS.limit,
+        failed_output_path=FLAGS.failed_output,
+    )
     return 0
   except Exception as e:
     print(f"Error: {e}")
