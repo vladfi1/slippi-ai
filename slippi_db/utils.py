@@ -295,6 +295,8 @@ def traverse_7z_fast(
   archive = py7zr.SevenZipFile(path, 'r')
 
   # calculate optimal chunks
+  assert archive.header.main_streams is not None
+  assert archive.header.main_streams.unpackinfo is not None
   folders = archive.header.main_streams.unpackinfo.folders
 
   max_chunk_size = chunk_size_gb * 1024**3
@@ -365,7 +367,7 @@ VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + _GZ_SUFFIX]
 
 def traverse_slp_files_zip(root: str) -> list[LocalFile]:
   files = []
-  relpaths = zipfile.PyZipFile(root).namelist()
+  relpaths = zipfile.ZipFile(root).namelist()
   for path in relpaths:
     if any(path.endswith(s) for s in VALID_SUFFIXES):
       files.append(ZipFile(root, path))
@@ -380,6 +382,7 @@ def extract_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> 
   with subprocess.Popen(
       ['zip',  '-U', source_zip, '-@', '--out', dest_zip],
       stdin=subprocess.PIPE) as zip_proc:
+    assert zip_proc.stdin is not None
     for file_name in file_names:
       zip_proc.stdin.write(file_name.encode('utf-8'))
       zip_proc.stdin.write(b'\n')
@@ -440,6 +443,7 @@ def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
 
   # Note: zipnote is very picky about the input format.
   with subprocess.Popen(['zipnote', zip_path], stdout=subprocess.PIPE) as proc:
+    assert proc.stdout is not None
     lines = proc.stdout.readlines()
     proc.wait()
 
@@ -448,6 +452,7 @@ def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
     rename_mapping[f'@ {src}\n'.encode('utf-8')] = f'@={dst}\n'.encode('utf-8')
 
   with subprocess.Popen(['zipnote', '-w', zip_path], stdin=subprocess.PIPE) as proc:
+    assert proc.stdin is not None
     for line in lines:
       proc.stdin.write(line)
       if line in rename_mapping:
