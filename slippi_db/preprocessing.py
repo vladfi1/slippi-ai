@@ -150,12 +150,16 @@ def get_metadata(game: peppi_py.Game) -> dict:
       character = leader.post.character[0].as_py()
       damage = None
 
+    netplay = None
+    if player.netplay is not None:
+      netplay = get_dict(player.netplay, 'name', 'code', 'suid')
+
     player_metas.append(dict(
         port=player.port.value,
         character=character,
         type=player.type.value,  # 0 is human
         name_tag=player.name_tag,
-        netplay=get_dict(player.netplay, 'name', 'code', 'suid'),
+        netplay=netplay,
         damage_taken=damage,
     ))
   result.update(

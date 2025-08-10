@@ -16,7 +16,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 
 from slippi_ai import utils
-from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick
+from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick, Randall
 from slippi_ai.controller_lib import LEGAL_BUTTONS
 from slippi_ai.data import Action, StateAction
 
@@ -242,10 +242,13 @@ class StructEmbedding(Embedding[NT, NT]):
     embed = []
 
     for field, op in self.embedding:
+      if op.size == 0:
+        continue
+
       t = op(self.getter(struct, field), **kwargs)
       embed.append(t)
 
-    assert embed
+    assert embed, "Embedding must not be empty"
     return tf.concat(axis=-1, values=embed)
 
   # def split(self, embedded: tf.Tensor) -> Mapping[str, tf.Tensor]:
@@ -400,6 +403,8 @@ class PlayerConfig:
   # our own will be embedded separately
   with_controller: bool = False
 
+default_player_config = PlayerConfig()
+
 # future proof in case we want to play on wacky stages
 # embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
 embed_stage = OneHotEmbedding('Stage', size=64, dtype=np.uint8)
@@ -408,21 +413,30 @@ _PORTS = (0, 1)
 # _PLAYERS = tuple(f'p{p}' for p in _PORTS)
 # _SWAP_MAP = dict(zip(_PLAYERS, reversed(_PLAYERS)))
 
-def make_game_embedding(player_config={}):
+def make_game_embedding(
+    with_randall: bool = False,
+    player_config: dict = dataclasses.asdict(default_player_config),
+):
   embed_player = make_player_embedding(**player_config)
+
+  if with_randall:
+    embed_xy = FloatEmbedding("randall_xy", scale=player_config['xy_scale'])
+    embed_randall = struct_embedding_from_nt(
+        "randall", Randall(x=embed_xy, y=embed_xy))
+  else:
+    # Older agents don't use Randall
+    embed_randall = ordered_struct_embedding(
+        "randall", [], Randall)
+    assert embed_randall.size == 0
 
   embedding = Game(
       p0=embed_player,
       p1=embed_player,
       stage=embed_stage,
+      randall=embed_randall,
   )
 
   return struct_embedding_from_nt("game", embedding)
-
-# don't use opponent's controller
-# our own will be exposed in the input
-default_embed_game = make_game_embedding(
-    player_config=dict(with_controller=False))
 
 # Embeddings for controllers
 embed_buttons = ordered_struct_embedding(
@@ -491,6 +505,7 @@ class ControllerConfig:
 class EmbedConfig:
   player: PlayerConfig = utils.field(PlayerConfig)
   controller: ControllerConfig = utils.field(ControllerConfig)
+  with_randall: bool = False
 
 NAME_DTYPE = np.int32
 

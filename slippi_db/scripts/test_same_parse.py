@@ -17,7 +17,7 @@ THREADS = flags.DEFINE_integer('threads', 1, 'number of threads')
 LOG_INTERVAL = flags.DEFINE_integer('log_interval', 20, 'log interval')
 
 def test(file: utils.LocalFile) -> dict:
-  with file.extract() as path:
+  with file.extract(utils.get_tmp_dir(in_memory=True)) as path:
     meta = preprocessing.get_metadata_safe(path)
     valid, reason = preprocessing.is_training_replay(meta)
     if not valid:
@@ -37,6 +37,8 @@ def main(_):
     files = utils.traverse_slp_files(root)
   elif root.endswith('.7z'):
     files = utils.traverse_slp_files_7z(root)
+  elif root.endswith('.zip'):
+    files = utils.traverse_slp_files_zip(root)
   else:
     raise ValueError(f'Unknown file type: {root}')
 

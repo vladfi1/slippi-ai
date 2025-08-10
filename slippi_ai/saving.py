@@ -13,7 +13,12 @@ from slippi_ai import (
     embed,
 )
 
-VERSION = 4
+# v2: Added value function config
+# v3: Added embed config
+# v4: Added observation config
+# v5: Added with_randall to embed config
+
+VERSION = 5
 
 def upgrade_config(config: dict):
   """Upgrades a config to the latest version."""
@@ -48,7 +53,7 @@ def upgrade_config(config: dict):
         controller=embed.ControllerConfig(
             axis_spacing=16,
             shoulder_spacing=4,
-        )
+        ),
     )
     config['embed'] = dataclasses.asdict(old_embed_config)
     config['version'] = 3
@@ -60,6 +65,11 @@ def upgrade_config(config: dict):
         observations.NULL_OBSERVATION_CONFIG)
     config['version'] = 4
     logging.warning('Upgraded config version 3 -> 4')
+
+  if config['version'] == 4:
+    config['embed']['with_randall'] = False
+    config['version'] = 5
+    logging.warning('Upgraded config version 4 -> 5')
 
   assert config['version'] == VERSION
   return config
@@ -96,7 +106,9 @@ def policy_from_config(config: dict) -> policies.Policy:
       embed_controller=embed.get_controller_embedding(
           **config['embed']['controller']),
       embed_game=embed.make_game_embedding(
-          player_config=config['embed']['player']),
+          player_config=config['embed']['player'],
+          with_randall=config['embed']['with_randall'],
+      ),
       **config['policy'],
   )
 
