@@ -45,10 +45,17 @@ class Player(NamedTuple):
   on_ground: np.bool_
   controller: Controller
 
+class Randall(NamedTuple):
+  x: np.float32
+  y: np.float32
+
 class Game(NamedTuple):
   p0: Player
   p1: Player
+
   stage: np.uint8
+  randall: Randall
+
 
 # maps pyarrow types back to NamedTuples
 PA_TO_NT = {}
