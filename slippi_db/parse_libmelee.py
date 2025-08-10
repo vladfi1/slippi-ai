@@ -14,6 +14,7 @@ from slippi_ai.types import (
   InvalidGameError,
   Player,
   Stick,
+  Randall,
   nt_to_nest,
 )
 
@@ -68,8 +69,19 @@ def get_game(
   players = {
       f'p{i}': get_player(game.players[p])
       for i, p in enumerate(ports)}
+
+  if game.stage is melee.Stage.YOSHIS_STORY:
+    randall_y, randall_x_left, randall_x_right = melee.randall_position(game.frame)
+    randall_x = (randall_x_left + randall_x_right) / 2
+  else:
+    randall_y = randall_x = 0.0
+
   return Game(
-      stage=game.stage.value,
+      stage=np.uint8(game.stage.value),
+      randall=Randall(
+          x=randall_x,
+          y=randall_y,
+      ),
       **players,
   )
 

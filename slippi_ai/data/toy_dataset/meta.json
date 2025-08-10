@@ -17,7 +17,7 @@
     "num_players": 2,
     "players": [
       {
-        "port": 1,
+        "port": 0,
         "character": 7,
         "type": 0,
         "name_tag": "",
@@ -29,7 +29,7 @@
         "damage_taken": 262.4547424316406
       },
       {
-        "port": 2,
+        "port": 1,
         "character": 16,
         "type": 0,
         "name_tag": "",
@@ -44,11 +44,11 @@
     "stage": 31,
     "timer": 480,
     "is_teams": false,
-    "winner": 2,
+    "winner": 1,
     "valid": true,
     "is_training": true,
     "not_training_reason": "",
-    "pq_size": 75274,
+    "pq_size": 74463,
     "compression": "zlib",
     "raw": "single_game.zip"
   }

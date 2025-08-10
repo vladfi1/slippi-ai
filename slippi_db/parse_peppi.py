@@ -67,17 +67,39 @@ def get_player(player: peppi_py.frame.PortData) -> types.Player:
       on_ground=np.logical_not(post.airborne),
   )
 
-def from_peppi(game: peppi_py.Game) -> types.GAME_TYPE:
-  frames = game.frames
+RANDALL_INTERVAL = 1200
+RANDALL_HLR = np.array([
+    melee.stages.randall_position(frame)
+    for frame in range(RANDALL_INTERVAL)
+])
+
+def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
+  frames = peppi_game.frames
+  assert frames is not None, 'Game has no frames'
 
   players = {}
   for i, player in enumerate(frames.ports):
     players[f'p{i}'] = get_player(player)
 
-  stage = melee.enums.to_internal_stage(game.start.stage)
-  stage = np.full([len(frames.id)], stage.value, dtype=np.uint8)
+  stage = melee.enums.to_internal_stage(peppi_game.start.stage)
 
-  game = types.Game(stage=stage, **players)
+  if stage is melee.Stage.YOSHIS_STORY:
+    randall_idx = (frames.id.to_numpy() + RANDALL_INTERVAL) % RANDALL_INTERVAL
+    randall_hlr = RANDALL_HLR[randall_idx]
+    randall_x = (randall_hlr[:, 1] + randall_hlr[:, 2]) / 2
+    randall_y = randall_hlr[:, 0]
+  else:
+    randall_x = np.zeros(len(frames.id), dtype=np.float32)
+    randall_y = np.zeros(len(frames.id), dtype=np.float32)
+
+  game = types.Game(
+      stage=np.full([len(frames.id)], stage.value, dtype=np.uint8),
+      randall=types.Randall(
+          x=randall_x.astype(np.float32),
+          y=randall_y.astype(np.float32),
+      ),
+      **players,
+  )
   game_array = types.array_from_nt(game)
 
   index = frames.id.to_numpy()
