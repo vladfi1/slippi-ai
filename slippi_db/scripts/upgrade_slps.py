@@ -13,6 +13,8 @@ CHECK_SAME_PARSE = flags.DEFINE_bool('check_same_parse', True, 'Check if the rep
 GZIP_OUTPUT = flags.DEFINE_bool('gzip_output', True, 'Compress the output archive with gzip.')
 WORK_DIR = flags.DEFINE_string('work_dir', None, 'Optional working directory for temporary files.')
 IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'Use in-memory temporary files for conversion.')
+LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to log progress during conversion.')
+CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file needs conversion before processing.')
 
 def main(_):
   dolphin_config = upgrade_slp.DolphinConfig(
@@ -29,11 +31,17 @@ def main(_):
       check_same_parse=CHECK_SAME_PARSE.value,
       gzip_output=GZIP_OUTPUT.value,
       work_dir=WORK_DIR.value,
-      log_interval=30,
+      log_interval=LOG_INTERVAL.value,
+      check_if_needed=CHECK_IF_NEEDED.value,
   )
 
-  with open('results.json', 'w') as f:
-    json.dump(results, f, indent=2)
+  json_results = [
+      (result.local_file.name, result.error, result.skipped)
+      for result in results
+  ]
+
+  with open('upgrade_results.json', 'w') as f:
+    json.dump(json_results, f, indent=2)
 
 if __name__ == '__main__':
   app.run(main)
