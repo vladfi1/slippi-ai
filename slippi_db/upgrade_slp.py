@@ -305,7 +305,7 @@ def upgrade_archive(
       for info in output_zip.infolist():
         if info.is_dir():
           continue
-        existing_outputs.add(info.filename.removesuffix('.gz'))
+        existing_outputs.add(info.filename.removesuffix(utils.GZ_SUFFIX))
     logging.info(f'Found {len(existing_outputs)} existing files in output archive')
 
   zf = zipfile.ZipFile(input_path, 'r')
@@ -368,6 +368,8 @@ def upgrade_archive(
       def results_iter1():
         for f in files:
           output_file_path = os.path.join(output_dir, f.name)
+          if gzip_output:
+            output_file_path += utils.GZ_SUFFIX
           yield _upgrade_slp_in_archive(
               local_file=f,
               output_path=output_file_path,
@@ -390,6 +392,8 @@ def upgrade_archive(
           futures: list[concurrent.futures.Future] = []
           for f in files:
             output_file_path = os.path.join(output_dir, f.name)
+            if gzip_output:
+              output_file_path += utils.GZ_SUFFIX
             futures.append(executor.submit(
                 _upgrade_slp_in_archive,
                 local_file=f,
