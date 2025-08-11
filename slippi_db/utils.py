@@ -365,11 +365,15 @@ def traverse_7z_fast(
 _SLP_SUFFIX = '.slp'
 VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + _GZ_SUFFIX]
 
+def is_slp_file(path: str) -> bool:
+  """Check if the file is a valid Slippi replay file."""
+  return any(path.endswith(s) for s in VALID_SUFFIXES)
+
 def traverse_slp_files_zip(root: str) -> list[ZipFile]:
   files = []
   relpaths = zipfile.ZipFile(root).namelist()
   for path in relpaths:
-    if any(path.endswith(s) for s in VALID_SUFFIXES):
+    if is_slp_file(path):
       files.append(ZipFile(root, path))
   return files
 
