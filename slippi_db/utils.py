@@ -162,7 +162,7 @@ class SimplePath(LocalFile):
     with open(os.path.join(self.root, self.path), 'rb') as f:
       return f.read()
 
-_GZ_SUFFIX = '.gz'
+GZ_SUFFIX = '.gz'
 
 class GZipFile(LocalFile):
   """A gzipped file."""
@@ -170,12 +170,12 @@ class GZipFile(LocalFile):
   def __init__(self, root: str, path: str):
     self.root = root
     self.path = path
-    if not path.endswith(_GZ_SUFFIX):
+    if not path.endswith(GZ_SUFFIX):
       raise ValueError(f'{root}/{path} is not a gz file?')
 
   @property
   def name(self) -> str:
-    return self.path.removesuffix(_GZ_SUFFIX)
+    return self.path.removesuffix(GZ_SUFFIX)
 
   def read(self) -> bytes:
     with gzip.open(os.path.join(self.root, self.path)) as f:
@@ -224,11 +224,11 @@ class ZipFile(LocalFile):
   def __init__(self, root: str, path: str):
     self.root = root
     self.path = path
-    self.is_gzipped = path.endswith(_GZ_SUFFIX)
+    self.is_gzipped = path.endswith(GZ_SUFFIX)
 
   @property
   def name(self) -> str:
-    return self.path.removesuffix(_GZ_SUFFIX)
+    return self.path.removesuffix(GZ_SUFFIX)
 
   def read(self) -> bytes:
     try:
@@ -363,7 +363,7 @@ def traverse_7z_fast(
   return [SevenZipChunk(path, chunk) for chunk in chunks]
 
 _SLP_SUFFIX = '.slp'
-VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + _GZ_SUFFIX]
+VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + GZ_SUFFIX]
 
 def is_slp_file(path: str) -> bool:
   """Check if the file is a valid Slippi replay file."""
