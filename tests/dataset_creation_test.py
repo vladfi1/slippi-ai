@@ -3,14 +3,11 @@
 import os
 import pickle
 import tempfile
-import concurrent.futures
-from pathlib import Path
 
 from absl import app
 from absl import flags
 
 from slippi_db import parse_local
-from slippi_db import utils
 from replay_parser_test import TEST_DATASET_URL, download_file, extract_zip
 
 FLAGS = flags.FLAGS

@@ -76,7 +76,7 @@ def main(_):
       continue
 
     match = row.get('match')
-    if match is not None:
+    if match is not None and match['id']:
       match_id = (match['id'], match['game'], match['tiebreaker'])
 
       if match_id in match_ids:
