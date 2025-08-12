@@ -163,6 +163,15 @@ class Dolphin:
     gamestate = self.console.step()
     if gamestate is None:
       raise TimeoutError('Console timed out.')
+
+    if (
+      gamestate.frame == -123
+      and self.console.slp_version_tuple >= (3, 19, 0)
+      and gamestate.stage is melee.Stage.POKEMON_STADIUM
+    ):
+      if not self.console.is_frozen_ps:
+        logging.warning('Playing on unfrozen stadium')
+
     return gamestate
 
   def step(self) -> melee.GameState:
