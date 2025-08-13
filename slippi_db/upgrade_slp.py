@@ -36,12 +36,16 @@ class DolphinExecutionError(RuntimeError):
   """Custom exception for Dolphin command execution errors."""
   pass
 
+class MetadataUpdateError(RuntimeError):
+  pass
+
 def upgrade_slp(
     input_path: str,
     output_path: str,
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
     time_limit: Optional[int] = None,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
     headless: bool = True,
     fast_forward: bool = True,
 ):
@@ -113,6 +117,15 @@ def upgrade_slp(
       raise ValueError(f'Expected exactly one replay in {replay_dir}, found {len(replays)}')
 
     replay_path = os.path.join(replay_dir, replays[0])
+
+    # Upgrading loses some of the original metadata
+    try:
+      subprocess.run(
+          [copy_slp_metadata_binary, input_path, replay_path],
+          check=True, text=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+      raise MetadataUpdateError(e.stderr)
+
     os.rename(replay_path, output_path)
 
 def test_upgrade_slp(
@@ -141,22 +154,22 @@ def test_upgrade_slp(
     else:
       print('Upgrade successful, no errors found.')
 
-def is_online(start: dict) -> bool:
+def is_online(start: peppi_py.game.Start) -> bool:
   """Check if a game is an online game based on the start dictionary."""
-  return start['scene']['major'] == 8
+  return start.scene.major == 8
 
-def is_unfrozen_ps(start: dict) -> bool:
+def is_unfrozen_ps(start: peppi_py.game.Start) -> bool:
   """Check if a game on Pokemon Stadium is frozen based on the start dictionary."""
   # TODO: really we should be looking at the gecko codes like playback does
 
-  stage = melee.enums.to_internal_stage(start['stage'])
+  stage = melee.enums.to_internal_stage(start.stage)
   if stage is not melee.Stage.POKEMON_STADIUM:
     return False
 
-  # NOTE: the is_frozen_ps flag was deprecated at some point
-
-  # TODO: This will no longer be true in Slippi 3.19.0
-  if is_online(start):
+  # NOTE: is_frozen_ps was deprecated at some point, and re-enabled in 3.19.0
+  if start.slippi.version >= (3, 19, 0):
+    return not start.is_frozen_ps
+  elif is_online(start):
     return False
 
   return True
@@ -166,16 +179,12 @@ def needs_upgrade(input_path: str):
   if not os.path.exists(input_path):
     raise FileNotFoundError(f'Input path does not exist: {input_path}')
 
-  peppi_py_version = importlib.metadata.version('peppi-py')
-  if peppi_py_version != '0.6.0':
-    raise ImportError(f'peppi-py version {peppi_py_version} is not supported, please use version 0.6.0')
-
   game = peppi_py.read_slippi(input_path)  # skip_frames=True crashes :(
-  start: dict = game.start
-  stage = melee.enums.to_internal_stage(start['stage'])
+  start = game.start
+  stage = melee.enums.to_internal_stage(start.stage)
 
   # Stage events were added in Slippi 3.18.0
-  if start['slippi']['version'] < [3, 18, 0]:
+  if start.slippi.version < (3, 18, 0):
     # platform heights
     if stage is melee.Stage.FOUNTAIN_OF_DREAMS:
       return True
@@ -195,6 +204,26 @@ class UpgradeResult:
   local_file: utils.LocalFile
   error: Optional[str] = None
   skipped: bool = False
+
+def check_same_metadata(
+    old_game: peppi_py.Game,
+    new_game: peppi_py.Game,
+) -> Optional[str]:
+  """Check if two games have the same metadata."""
+  if old_game.start.match is not None:  # old game might have no metadata
+    if old_game.start.match != new_game.start.match:
+      return 'different match'
+
+  for p1, p2 in zip(old_game.start.players, new_game.start.players):
+    if p1.name_tag != p2.name_tag:
+      return 'different name_tag'
+
+    if p1.netplay is not None:
+      for key in ['name', 'code']:
+        if getattr(p1.netplay, key) != getattr(p2.netplay, key):
+          return f'different netplay.{key}'
+
+  return None
 
 def _upgrade_slp_in_archive(
     local_file: utils.LocalFile,
@@ -228,10 +257,16 @@ def _upgrade_slp_in_archive(
                     time_limit=dolphin_timeout)
 
         if check_same_parse:
-          game = game_array_to_nt(parse_peppi.get_slp(slp_path))
-          upgraded_game = game_array_to_nt(parse_peppi.get_slp(upgraded_path))
+          game = peppi_py.read_slippi(slp_path)
+          upgraded_game = peppi_py.read_slippi(upgraded_path)
 
-          errors = check_same_structure(game, upgraded_game)
+          error = check_same_metadata(game, upgraded_game)
+          if error is not None:
+            return UpgradeResult(local_file, 'metadata: ' + error)
+
+          errors = check_same_structure(
+              game_array_to_nt(parse_peppi.from_peppi(game)),
+              game_array_to_nt(parse_peppi.from_peppi(upgraded_game)))
           if errors:
             return UpgradeResult(local_file, 'different parse')
 
@@ -246,7 +281,7 @@ def _upgrade_slp_in_archive(
         f.write(upgraded_data)
 
   except Exception as e:
-    return UpgradeResult(local_file, str(e), skipped=skipped)
+    return UpgradeResult(local_file, type(e).__name__ + ": " + str(e), skipped=skipped)
 
   return UpgradeResult(local_file, None, skipped=skipped)
 
