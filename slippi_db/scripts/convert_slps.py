@@ -9,11 +9,11 @@ Usage: python slippi_db/scripts/convert_slpp.py --input input.zip --output outpu
 """
 
 import concurrent.futures
+import enum
 import gzip
 import os
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -22,6 +22,9 @@ import tqdm
 
 from slippi_db import utils
 
+class OutputType(enum.Enum):
+    SLPP_GZ = "slpp.gz"
+    SLPZ = "slpz"
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('input', None, 'Input zip file containing .slp files', required=True)
@@ -29,7 +32,7 @@ flags.DEFINE_string('output', None, 'Output zip file for .slpp.gz files', requir
 flags.DEFINE_integer('threads', 1, 'Number of threads to use')
 flags.DEFINE_integer('limit', None, 'Limit number of files to process (for testing)')
 flags.DEFINE_string('failed_output', None, 'Optional zip file to store failed .slp files')
-
+flags.DEFINE_enum_class('output_type', OutputType.SLPZ, OutputType, 'Output type for conversion')
 
 def convert_slp_to_slpp_gz(
     zip_file: utils.ZipFile,
@@ -80,28 +83,44 @@ def convert_slp_to_slpp_gz(
 
   except subprocess.CalledProcessError as e:
     # print(f"Failed to convert {slp_filename}: {e.stderr}")
-    return e.stderr
+    return e.stderr.decode().strip()
   except Exception as e:
     # print(f"Error converting {slp_filename}: {e}")
     return str(e)
 
 
-def process_file(args: Tuple[utils.ZipFile, str]) -> Tuple[str, Optional[str]]:
-  """Process a single file for multithreading.
+def convert_slp_to_slpz(
+    zip_file: utils.ZipFile,
+    output_path: str,
+) -> Optional[str]:
+  try:
+    subprocess.run(
+        ['slpz', '-x', '-', '-o', output_path],
+        input=zip_file.read(),
+        check=True,
+        capture_output=True,
+    )
+  except subprocess.CalledProcessError as e:
+    return e.stderr.decode().strip()
 
-  Args:
-    args: Tuple of (zip_path, slp_filename, output_path)
+conversion_functions = {
+    OutputType.SLPP_GZ: convert_slp_to_slpp_gz,
+    OutputType.SLPZ: convert_slp_to_slpz,
+}
 
-  Returns:
-    Tuple of (slp_filename, error_message)
-  """
-  zip_file, output_path = args
-  error = convert_slp_to_slpp_gz(zip_file, output_path)
-  return zip_file.name, error
+def process_file(
+    zip_file: utils.ZipFile,
+    output_path: str,
+    output_type: OutputType,
+) -> Tuple[str, Optional[str]]:
+  """Process a single file for multithreading."""
+  error = conversion_functions[output_type](zip_file, output_path)
+  return zip_file.path, error
 
 def convert_zip_archive(
     input_zip_path: str,
     output_zip_path: str,
+    output_type: OutputType,
     num_threads: int = 1,
     limit: Optional[int] = None,
     failed_output_path: Optional[str] = None,
@@ -120,12 +139,12 @@ def convert_zip_archive(
 
   # Create temporary directory for output files (not in shared memory)
   with tempfile.TemporaryDirectory() as temp_output_dir:
-    todo = []
+    todo: list[tuple[utils.ZipFile, str]] = []
     output_dirs = set()  # Track output directories to create
     files = utils.traverse_slp_files_zip(input_zip_path)
     for f in files:
       assert f.name.endswith('.slp'), f"Expected .slp file, got {f.name}"
-      output_name = Path(f.name).stem + '.slpp.gz'
+      output_name = Path(f.name).stem + '.' + output_type.value
       output_path = os.path.join(temp_output_dir, output_name)
       output_dirs.add(os.path.dirname(output_path))
       todo.append((f, output_path))
@@ -150,14 +169,17 @@ def convert_zip_archive(
     # Process files
     if num_threads == 1:
       # Single-threaded processing
-      for args in tqdm.tqdm(todo, desc="Converting", unit="file"):
-        result = process_file(args)
+      for zip_file, output_path in tqdm.tqdm(todo, desc="Converting", unit="file"):
+        result = process_file(zip_file, output_path, output_type)
         results.append(result)
     else:
       # Multi-threaded processing
       with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
         try:
-          futures = [executor.submit(process_file, args) for args in todo]
+          futures = [
+              executor.submit(process_file, zip_file, output_path, output_type)
+              for zip_file, output_path in todo
+          ]
 
           for future in tqdm.tqdm(
             concurrent.futures.as_completed(futures),
@@ -185,9 +207,8 @@ def convert_zip_archive(
 
     # Create output zip using command line zip (uncompressed)
     print("Creating output archive...")
-    # Note: Using -m flag to move files into the zip, saving space
     result = subprocess.run([
-      'zip', '-r', '-m', '-0', output_zip_path, '.'
+      'zip', '-r', '-0', output_zip_path, '.'
     ], cwd=temp_output_dir, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -226,6 +247,7 @@ def main(_):
     convert_zip_archive(
         input_zip_path=FLAGS.input,
         output_zip_path=FLAGS.output,
+        output_type=FLAGS.output_type,
         num_threads=FLAGS.threads,
         limit=FLAGS.limit,
         failed_output_path=FLAGS.failed_output,
