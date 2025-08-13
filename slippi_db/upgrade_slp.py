@@ -1,7 +1,6 @@
 import concurrent.futures
 import configparser
 import dataclasses
-import gzip
 import importlib
 import json
 import os
@@ -231,7 +230,6 @@ def _upgrade_slp_in_archive(
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
     check_same_parse: bool = True,
-    gzip_output: bool = True,
     dolphin_timeout: Optional[int] = None,
     check_if_needed: bool = False,
 ) -> UpgradeResult:
@@ -242,16 +240,13 @@ def _upgrade_slp_in_archive(
 
     with tempfile.TemporaryDirectory(dir=tmp_parent_dir) as tmp_dir:
       slp_path = os.path.join(tmp_dir, 'game.slp')
-      slp_data = local_file.read()
       with open(slp_path, 'wb') as f:
-        f.write(slp_data)
+        f.write(local_file.read())  # TODO: extract directly
 
       if check_if_needed and not needs_upgrade(slp_path):
-        upgraded_data = slp_data
-        del slp_data  # Free memory
+        upgraded_path = slp_path
         skipped = True
       else:
-        del slp_data  # Free memory
         upgraded_path = os.path.join(tmp_dir, 'upgraded.slp')
         upgrade_slp(slp_path, upgraded_path, dolphin_config, in_memory=in_memory,
                     time_limit=dolphin_timeout)
@@ -270,15 +265,12 @@ def _upgrade_slp_in_archive(
           if errors:
             return UpgradeResult(local_file, 'different parse')
 
-        with open(upgraded_path, 'rb') as f:
-          upgraded_data = f.read()
-
-      # TODO: don't re-gzip if already gzipped
-      if gzip_output:
-        upgraded_data = gzip.compress(upgraded_data)
-
-      with open(output_path, 'wb') as f:
-        f.write(upgraded_data)
+      try:
+        subprocess.run(
+            ['slpz', '-x', upgraded_path, '-o', output_path],
+            check=True, capture_output=True, text=True)
+      except subprocess.CalledProcessError as e:
+        return UpgradeResult(local_file, 'slpz: ' + e.stderr)
 
   except Exception as e:
     return UpgradeResult(local_file, type(e).__name__ + ": " + str(e), skipped=skipped)
@@ -328,7 +320,6 @@ def upgrade_archive(
     work_dir: Optional[str] = None,
     num_threads: int = 1,
     check_same_parse: bool = True,
-    gzip_output: bool = True,
     log_interval: int = 30,  # seconds between logs
     dolphin_timeout: Optional[int] = 60,
     check_if_needed: bool = False,
@@ -349,7 +340,7 @@ def upgrade_archive(
       for info in output_zip.infolist():
         if info.is_dir():
           continue
-        existing_outputs.add(info.filename.removesuffix(utils.GZ_SUFFIX))
+        existing_outputs.add(info.filename)
     logging.info(f'Found {len(existing_outputs)} existing files in output archive')
 
   zf = zipfile.ZipFile(input_path, 'r')
@@ -364,11 +355,16 @@ def upgrade_archive(
     if not utils.is_slp_file(zip_info.filename):
       raise ValueError(f'Invalid file in archive: {zip_info.filename}')
 
-    if zip_info.filename in existing_outputs:
+    # TODO: do this better
+    output_filename = zip_info.filename.removesuffix(utils.GZ_SUFFIX) + 'z'  # .slpz
+
+    if output_filename in existing_outputs:
       skipped_files += 1
       continue
 
-    total_size += zip_info.compress_size if gzip_output else zip_info.file_size
+    # True compression rate may be up to ~2x better thanks to slpz, if the
+    # input is just a [g]zipped .slp file.
+    total_size += zip_info.compress_size
     files.append(utils.ZipFile(input_path, zip_info.filename))
 
   zf.close()
@@ -385,9 +381,6 @@ def upgrade_archive(
   else:
     raise ValueError('Either in_memory must be True or work_dir must be specified')
 
-  # We use the compressed size of the files in the zip archive to estimate
-  # the required space on disk. This is conservative because we will gzip each
-  # output file which has better compression than plain zip.
   if total_size > free_space:
     raise MemoryError(f'Not enough free space to process archive: {total_size / (2 ** 30):.2f} GB required, {free_space / (2 ** 30):.2f} GB available')
 
@@ -411,16 +404,14 @@ def upgrade_archive(
     if num_threads == 1:
       def results_iter1():
         for f in files:
-          output_file_path = os.path.join(output_dir, f.name)
-          if gzip_output:
-            output_file_path += utils.GZ_SUFFIX
+          assert f.name.endswith('.slp')
+          output_file_path = os.path.join(output_dir, f.name + 'z')  # .slpz
           yield _upgrade_slp_in_archive(
               local_file=f,
               output_path=output_file_path,
               dolphin_config=dolphin_config,
               in_memory=True,
               check_same_parse=check_same_parse,
-              gzip_output=gzip_output,
               dolphin_timeout=dolphin_timeout,
               check_if_needed=check_if_needed,
           )
@@ -435,9 +426,8 @@ def upgrade_archive(
         try:
           futures: list[concurrent.futures.Future] = []
           for f in files:
-            output_file_path = os.path.join(output_dir, f.name)
-            if gzip_output:
-              output_file_path += utils.GZ_SUFFIX
+            assert f.name.endswith('.slp')
+            output_file_path = os.path.join(output_dir, f.name + 'z')  # .slpz
             futures.append(executor.submit(
                 _upgrade_slp_in_archive,
                 local_file=f,
@@ -445,7 +435,6 @@ def upgrade_archive(
                 dolphin_config=dolphin_config,
                 in_memory=True,
                 check_same_parse=check_same_parse,
-                gzip_output=gzip_output,
                 dolphin_timeout=dolphin_timeout,
                 check_if_needed=check_if_needed,
             ))
@@ -476,9 +465,8 @@ def upgrade_archive(
       return results
 
     # Write results to output zip
-    command = ['zip', '-r', '-q']
-    if gzip_output:
-      command.append('-0')  # Files are individually compressed with gzip
+    # Files are individually compressed with slpz
+    command = ['zip', '-r', '-q', '-0']
     command.extend([output_path, '.'])
 
     subprocess.check_call(command, cwd=output_dir)
