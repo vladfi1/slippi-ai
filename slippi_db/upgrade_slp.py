@@ -42,6 +42,7 @@ def upgrade_slp(
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
     time_limit: Optional[int] = None,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
     headless: bool = True,
     fast_forward: bool = True,
 ):
@@ -113,6 +114,10 @@ def upgrade_slp(
       raise ValueError(f'Expected exactly one replay in {replay_dir}, found {len(replays)}')
 
     replay_path = os.path.join(replay_dir, replays[0])
+
+    # Upgrading loses some of the original metadata
+    subprocess.check_call([copy_slp_metadata_binary, input_path, replay_path])
+
     os.rename(replay_path, output_path)
 
 def test_upgrade_slp(
