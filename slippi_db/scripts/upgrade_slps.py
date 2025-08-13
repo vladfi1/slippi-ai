@@ -10,7 +10,6 @@ INPUT = flags.DEFINE_string('input', None, 'Input archive to convert.', required
 OUTPUT = flags.DEFINE_string('output', None, 'Output archive to write.', required=True)
 NUM_THREADS = flags.DEFINE_integer('threads', 1, 'Number of threads to use for conversion.')
 CHECK_SAME_PARSE = flags.DEFINE_bool('check_same_parse', True, 'Check if the replay has the same parse as the original.')
-GZIP_OUTPUT = flags.DEFINE_bool('gzip_output', True, 'Compress the output archive with gzip.')
 WORK_DIR = flags.DEFINE_string('work_dir', None, 'Optional working directory for temporary files.')
 IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'Use in-memory temporary files for conversion.')
 LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to log progress during conversion.')
@@ -29,7 +28,6 @@ def main(_):
       in_memory=IN_MEMORY.value,
       num_threads=NUM_THREADS.value,
       check_same_parse=CHECK_SAME_PARSE.value,
-      gzip_output=GZIP_OUTPUT.value,
       work_dir=WORK_DIR.value,
       log_interval=LOG_INTERVAL.value,
       check_if_needed=CHECK_IF_NEEDED.value,
