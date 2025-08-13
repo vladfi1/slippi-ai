@@ -365,7 +365,7 @@ def traverse_7z_fast(
 _SLP_SUFFIX = '.slp'
 VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + _GZ_SUFFIX]
 
-def traverse_slp_files_zip(root: str) -> list[LocalFile]:
+def traverse_slp_files_zip(root: str) -> list[ZipFile]:
   files = []
   relpaths = zipfile.ZipFile(root).namelist()
   for path in relpaths:
