@@ -42,6 +42,8 @@ def upgrade_slp(
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
     time_limit: Optional[int] = None,
+    headless: bool = True,
+    fast_forward: bool = True,
 ):
   """Upgrade a Slippi replay file to the latest version."""
 
@@ -64,8 +66,9 @@ def upgrade_slp(
         'replay': os.path.abspath(input_path),
         'shouldResync': True,
         # 'rollbackDisplayMethod': 'normal',
-        'startFrame': 1000000,  # FFW to end of game
     }
+    if fast_forward:
+      replay_json['startFrame'] = 1000000
     with open(replay_json_path, 'w') as f:
       json.dump(replay_json, f)
 
@@ -77,12 +80,14 @@ def upgrade_slp(
     for section in ['Slippi', 'Core', 'DSP']:
       config.add_section(section)
 
+    # Assumes Mainline playback dolphin
     config.set('Slippi', 'SaveReplays', 'True')
     config.set('Slippi', 'ReplayMonthlyFolders', 'False')
     config.set('Slippi', 'ReplayDir', replay_dir)
-    config.set('Core', 'GFXBackend', 'Null')
     config.set('DSP', 'Backend', 'No Audio Output')
-    config.set('Core', 'EmulationSpeed', '0')
+    if headless:
+      config.set('Core', 'GFXBackend', 'Null')
+      config.set('Core', 'EmulationSpeed', '0')
 
     with open(dolphin_ini_path, 'w') as dolphin_ini_file:
       config.write(dolphin_ini_file)
@@ -91,9 +96,10 @@ def upgrade_slp(
         dolphin_config.dolphin_path,
         '--exec', dolphin_config.ssbm_iso_path,
         '--user', user_dir,
-        '--platform', 'headless',
         '-i', replay_json_path,
     ]
+    if headless:
+      command.extend(['--platform', 'headless'])
 
     try:
       subprocess.run(command, capture_output=True, check=True, timeout=time_limit)
@@ -112,14 +118,17 @@ def upgrade_slp(
 def test_upgrade_slp(
     input_path: str,
     dolphin_config: DolphinConfig,
-    in_memory: bool = True):
+    in_memory: bool = True,
+    time_limit: Optional[int] = 30,
+):
   """Test the upgrade_slp function."""
   if not os.path.exists(input_path):
     raise FileNotFoundError(f'Input path does not exist: {input_path}')
 
   with tempfile.TemporaryDirectory(dir=utils.get_tmp_dir(in_memory=in_memory)) as tmp_dir:
     output_path = os.path.join(tmp_dir, 'upgraded.slp')
-    upgrade_slp(input_path, output_path, dolphin_config, in_memory=in_memory)
+    upgrade_slp(input_path, output_path, dolphin_config,
+                in_memory=in_memory, time_limit=time_limit)
 
     game = game_array_to_nt(parse_peppi.get_slp(input_path))
     upgraded_game = game_array_to_nt(parse_peppi.get_slp(output_path))
