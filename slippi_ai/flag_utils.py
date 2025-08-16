@@ -5,11 +5,14 @@ import typing as tp
 from absl import flags
 from absl import logging
 import fancyflags as ff
+from fancyflags._definitions import MultiItem
 import tree
 
 T = tp.TypeVar('T')
+Item = tp.Union[ff.Item, MultiItem]
+ItemConstructor = tp.Callable[[tp.Any], Item]
 
-TYPE_TO_ITEM = {
+TYPE_TO_ITEM: dict[type, ItemConstructor] = {
     bool: ff.Boolean,
     int: ff.Integer,
     str: ff.String,
@@ -27,7 +30,31 @@ def maybe_undo_optional(t: type) -> type:
     return t.__args__[0]
   return t
 
-def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
+def undo_list(t: type) -> tp.Optional[type]:
+  if (
+      hasattr(t, '__origin__') and
+      t.__origin__ is list
+  ):
+    return t.__args__[0]
+  return None
+
+def handle_list(field_type: type, default: tp.Any) -> tp.Optional[Item]:
+  base_type = undo_list(field_type)
+  if base_type is None:
+    return None
+
+  if issubclass(base_type, enum.Enum):
+    return ff.MultiEnumClass(
+        default=default,
+        enum_class=base_type,
+    )
+
+  if issubclass(base_type, (int, float, str)):
+    return ff.Sequence(default=default)
+
+  return None
+
+def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[Item]:
   field_type = maybe_undo_optional(field_type)
   item_constructor = TYPE_TO_ITEM.get(field_type)
   if item_constructor is not None:
@@ -37,6 +64,10 @@ def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[ff.Item]:
         default=default,
         enum_class=field_type,
     )
+
+  item = handle_list(field_type, default)
+  if item is not None:
+    return item
 
   # TODO: also log path to unsupported field
   logging.warn(f'Unsupported field of type {field_type}')
