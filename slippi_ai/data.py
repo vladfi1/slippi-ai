@@ -236,8 +236,7 @@ name_to_character = {c.name.lower(): c for c in melee.Character}
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   if chars == ALL:
     return None
-  chars = chars.split(',')
-  return [name_to_character[c] for c in chars]
+  return [name_to_character[c] for c in chars.split(',')]
 
 
 def game_len(game: Game):

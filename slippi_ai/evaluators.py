@@ -11,7 +11,6 @@ from slippi_ai import envs as env_lib
 from slippi_ai import (
     embed,
     eval_lib,
-    observations,
     policies,
     reward,
     utils,
@@ -56,7 +55,7 @@ class RolloutWorker:
   def __init__(
       self,
       agent_kwargs: tp.Mapping[Port, dict],
-      dolphin_kwargs: dict,
+      dolphin_kwargs: tp.Union[dict, list[dict]],
       num_envs: int,
       async_envs: bool = False,
       env_kwargs: dict = {},
@@ -64,20 +63,34 @@ class RolloutWorker:
       damage_ratio: float = 0,  # For rewards.
       use_fake_envs: bool = False,
   ):
+    if isinstance(dolphin_kwargs, dict):
+      dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
+    else:
+      assert num_envs == len(dolphin_kwargs)
+    self._dolphin_kwargs = dolphin_kwargs
+
+    dolphin_kwargs_0 = dolphin_kwargs[0]
+    delay = dolphin_kwargs_0['online_delay']
+    for kwargs in dolphin_kwargs:
+      if kwargs['online_delay'] != delay:
+        raise ValueError('All environments must have the same online_delay.')
+
     self._agents = {
         port: eval_lib.build_delayed_agent(
-            console_delay=dolphin_kwargs['online_delay'],
+            console_delay=delay,
             batch_size=num_envs,
             run_on_cpu=not use_gpu,
             **kwargs,
         )
         for port, kwargs in agent_kwargs.items()
     }
-    self._dolphin_kwargs = dolphin_kwargs.copy()
-    for port, kwargs in agent_kwargs.items():
-      eval_lib.update_character(
-          self._dolphin_kwargs['players'][port],
-          kwargs['state']['config'])
+
+    # TODO: this should probably just be a check rather than an update
+    for port, akwargs in agent_kwargs.items():
+      for dkwargs in dolphin_kwargs:
+        eval_lib.update_character(
+            dkwargs['players'][port],
+            akwargs['state']['config'])
 
     env_kwargs['observation_configs'] = {
         port: agent.observation_config

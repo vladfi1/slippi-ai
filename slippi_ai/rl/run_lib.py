@@ -9,6 +9,8 @@ import typing as tp
 import numpy as np
 import tensorflow as tf
 
+import melee
+
 from slippi_ai import (
     dolphin as dolphin_lib,
     eval_lib,
@@ -64,21 +66,42 @@ class AgentConfig:
   compile: bool = True
   jit_compile: bool = False
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
+  char: tp.Optional[list[melee.Character]] = None
   batch_steps: int = 0
   async_inference: bool = False
+
+  def __post_init__(self):
+    if self.char is not None and len(self.char) != len(self.name):
+      raise ValueError(
+          f'Number of characters {len(self.char)} does not match '
+          f'number of names {len(self.name)}')
 
   def get_kwargs(self) -> dict:
     if self.jit_compile:
       logging.warning('jit_compile may lead to instability')
-    kwargs = dict(
+    kwargs: dict[str, tp.Any] = dict(
         compile=self.compile,
         jit_compile=self.jit_compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
     )
     if self.path:
-      kwargs['state'] = saving.load_state_from_disk(self.path)
+      state = saving.load_state_from_disk(self.path)
+      self.check_allowed_chars(state)
+      kwargs['state'] = state
     return kwargs
+
+  def check_allowed_chars(self, state: dict):
+    if not self.char:
+      return
+
+    allowed_chars = eval_lib.allowed_characters(state['config'])
+    if allowed_chars is None:  # None means all are allowed
+      return
+
+    for char in self.char:
+      if char not in allowed_chars:
+        raise ValueError(f'Character {char} not in {allowed_chars}')
 
 class OpponentType(enum.Enum):
   CPU = 'cpu'
@@ -262,7 +285,6 @@ def dummy_trajectory(
       ] * policy.delay,
   )
 
-
 def run(config: Config):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
@@ -366,35 +388,43 @@ def run(config: Config):
   PORT = 1
   ENEMY_PORT = 2
 
-  dolphin_kwargs = dict(
-      players={
-          PORT: dolphin_lib.AI(),
-          ENEMY_PORT: (
-              dolphin_lib.CPU() if config.opponent.type is OpponentType.CPU
-              else dolphin_lib.AI()),
-      },
-      **config.dolphin.to_kwargs(),
-  )
+  batch_size = config.actor.num_envs
+
+  main_players = [dolphin_lib.AI() for _ in range(batch_size)]
+  if config.opponent.type is OpponentType.CPU:
+    opponent_players = [dolphin_lib.CPU() for _ in range(batch_size)]
+  else:
+    opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
 
   if config.agent.path is not None:
     raise ValueError('Main agent path is not used, use `restore` instead')
+
   main_agent_kwargs = config.agent.get_kwargs()
+  config.agent.check_allowed_chars(rl_state)
   main_agent_kwargs['state'] = rl_state
   agent_kwargs = {PORT: main_agent_kwargs}
-
-  batch_size = config.actor.num_envs
 
   if config.opponent.type is OpponentType.CPU:
     names = itertools.islice(itertools.cycle(config.agent.name), batch_size)
     main_agent_kwargs['name'] = list(names)
+    if config.agent.char is not None:
+      chars = itertools.islice(itertools.cycle(config.agent.char), batch_size)
+      for char, player in zip(chars, main_players):
+        player.character = char
+    # TODO: set list of CPU characters
   else:
     if config.opponent.type is OpponentType.SELF:
       opponent_kwargs = main_agent_kwargs.copy()
       opponent_names = config.agent.name
+      opponent_chars = config.agent.char
     elif config.opponent.type is OpponentType.OTHER:
       opponent_kwargs = config.opponent.other.get_kwargs()
       opponent_names = config.opponent.other.name
+      opponent_chars = config.opponent.other.char
+    else:
+      raise ValueError(f'Unknown opponent type: {config.opponent.type}')
 
+    # Set name combinations
     name_combinations = list(itertools.product(
         config.agent.name, opponent_names))
     name_combination_batch = list(itertools.islice(
@@ -406,7 +436,33 @@ def run(config: Config):
 
     agent_kwargs[ENEMY_PORT] = opponent_kwargs
 
-  env_kwargs = dict(swap_ports=False)
+    # Set character combinations
+    main_chars = [None] if config.agent.char is None else config.agent.char
+    opponent_chars = [None] if opponent_chars is None else opponent_chars
+
+    char_combinations = list(itertools.product(main_chars, opponent_chars))
+    char_combination_batch = list(itertools.islice(
+        itertools.cycle(char_combinations), batch_size))
+
+    main_agent_chars, opponent_chars = zip(*char_combination_batch)
+    for player, main_char, opponent_char in zip(
+        opponent_players, main_agent_chars, opponent_chars):
+      if main_char is not None:
+        player.character = main_char
+      if opponent_char is not None:
+        player.character = opponent_char
+
+  dolphin_kwargs = [
+      dict(
+          players={
+              PORT: main_players[i],
+              ENEMY_PORT: opponent_players[i],
+          },
+          **config.dolphin.to_kwargs(),
+      ) for i in range(batch_size)
+  ]
+
+  env_kwargs: dict[str, tp.Any] = dict(swap_ports=False)
   if config.actor.async_envs:
     env_kwargs.update(
         num_steps=config.actor.num_env_steps,
@@ -460,7 +516,7 @@ def run(config: Config):
         reversed_name_combination_indices[rev(name_combination)].append(i)
       # We don't log mirror matches as the ko_diff will be 0.
 
-    def get_matchup_stats(states: Game) -> dict:
+    def get_name_matchup_stats(states: Game) -> dict:
       tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
       bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
 
@@ -470,6 +526,45 @@ def run(config: Config):
         ko_diff = np.concatenate([
             bm_kos[indices],
             -bm_kos[reversed_name_combination_indices[name_combination]],
+        ], axis=0).mean() * MINUTES_PER_FRAME
+        stats[key] = dict(ko_diff=ko_diff)
+
+      # TODO: log reward hacking stats
+
+      return stats
+
+  if config.opponent.type is OpponentType.SELF and config.agent.char:
+    ordered_char_combinations: list[tuple[melee.Character, melee.Character]] = []
+    for i, c1 in enumerate(config.agent.char):
+      for j, c2 in enumerate(config.agent.char):
+        if i < j:
+          ordered_char_combinations.append((c1, c2))
+
+    ordered_char_combination_indices: dict[tuple[melee.Character, melee.Character], list[int]] = {
+        char_combination: [] for char_combination in ordered_char_combinations
+    }
+    # TODO: would be easier to disallow unordered char combinations
+    reversed_char_combination_indices: dict[tuple[melee.Character, melee.Character], list[int]] = {
+        char_combination: [] for char_combination in ordered_char_combinations
+    }
+
+    for i, char_combination in enumerate(char_combination_batch):
+      if char_combination in ordered_char_combination_indices:
+        ordered_char_combination_indices[char_combination].append(i)
+      elif rev(char_combination) in reversed_char_combination_indices:
+        reversed_char_combination_indices[rev(char_combination)].append(i)
+      # We don't log mirror matches as the ko_diff will be 0.
+
+    def get_char_matchup_stats(states: Game) -> dict:
+      tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+      bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
+
+      stats = {}
+      for char_combination, indices in ordered_char_combination_indices.items():
+        key = '_'.join([c.name.lower() for c in char_combination])
+        ko_diff = np.concatenate([
+            bm_kos[indices],
+            -bm_kos[reversed_char_combination_indices[char_combination]],
         ], axis=0).mean() * MINUTES_PER_FRAME
         stats[key] = dict(ko_diff=ko_diff)
 
@@ -523,8 +618,9 @@ def run(config: Config):
       # The second half of the batch just has the players reversed.
       deduplicated_states = utils.map_single_structure(
           lambda x: x[:, :, :batch_size], states)
-      matchup_stats = get_matchup_stats(deduplicated_states)
-      metrics.update(by_name=matchup_stats)
+      metrics['by_name'] = get_name_matchup_stats(deduplicated_states)
+      if config.agent.char:
+        metrics['by_char'] = get_char_matchup_stats(deduplicated_states)
 
     metrics.update(
         timings=timings,

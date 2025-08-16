@@ -185,25 +185,37 @@ class BatchedEnvironment:
 
   def __init__(
       self,
-      num_envs: int,
-      dolphin_kwargs: dict,
+      num_envs: Optional[int],
+      dolphin_kwargs: tp.Union[dict, list[dict]],
       slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
       swap_ports: bool = True,  # Swap ports on half of the environments.
       **env_kwargs,
   ):
+    if isinstance(dolphin_kwargs, dict):
+      assert num_envs is not None
+      dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
+      if slippi_ports is None:
+        slippi_ports = utils.find_open_udp_ports(num_envs)
+    elif num_envs is None:
+      num_envs = len(dolphin_kwargs)
+    else:
+      assert num_envs == len(dolphin_kwargs)
+
+    if slippi_ports:
+      for port, kwargs in zip(slippi_ports, dolphin_kwargs):
+        kwargs['slippi_port'] = port
+
     self._dolphin_kwargs = dolphin_kwargs
-    slippi_ports = slippi_ports or utils.find_open_udp_ports(num_envs)
 
     if swap_ports and num_envs % 2 != 0:
       raise ValueError('swap_ports=True requires an even number of environments.')
 
     envs: list[SafeEnvironment] = []
     for i in range(num_envs):
-      dolphin_kwargs_i = dolphin_kwargs.copy()
-      dolphin_kwargs_i.update(slippi_port=slippi_ports[i])
       env = SafeEnvironment(
-          dolphin_kwargs_i, num_retries=num_retries,
+          dolphin_kwargs[i],
+          num_retries=num_retries,
           swap_ports=swap_ports and i >= num_envs // 2,
           **env_kwargs)
       envs.append(env)
@@ -266,22 +278,18 @@ class BatchedEnvironment:
     return self._output_queue[-1]
 
 def build_environment(
-    num_envs: int,  # zero means unbatched env
-    dolphin_kwargs: dict,
-    slippi_ports: Optional[list[int]] = None,
+    num_envs: Optional[int],  # zero means unbatched env
+    dolphin_kwargs: tp.Union[dict, list[dict]],
     num_retries: int = 2,
     **env_kwargs,
 ) -> tp.Union[SafeEnvironment, BatchedEnvironment]:
   if num_envs == 0:
-    if slippi_ports:
-      assert len(slippi_ports) == 1
-      dolphin_kwargs = dolphin_kwargs.copy()
-      dolphin_kwargs['slippi_port'] = slippi_ports[0]
+    assert isinstance(dolphin_kwargs, dict)
     return SafeEnvironment(dolphin_kwargs, num_retries=num_retries, **env_kwargs)
 
   # BatchedEnvironment uses SafeEnvironment internally
   return BatchedEnvironment(
-      num_envs, dolphin_kwargs, slippi_ports, num_retries, **env_kwargs)
+      num_envs, dolphin_kwargs, num_retries=num_retries, **env_kwargs)
 
 def _run_env(
     build_env_kwargs: dict,
@@ -334,9 +342,8 @@ class AsyncEnvMP:
 
   def __init__(
       self,
-      dolphin_kwargs: dict,
+      dolphin_kwargs: tp.Union[dict, list[dict]],
       num_envs: int = 0,  # zero means non-batched env
-      slippi_ports: Optional[list[int]] = None,
       num_retries: int = 2,
       batch_time: bool = False,
       **env_kwargs,
@@ -348,13 +355,12 @@ class AsyncEnvMP:
     builder_kwargs = dict(
         num_envs=num_envs,
         dolphin_kwargs=dolphin_kwargs,
-        slippi_ports=slippi_ports,
         num_retries=num_retries,
         **env_kwargs,
     )
     # self._stop = mp.Event()
     self._process = context.Process(
-        name=f'_run_env({slippi_ports})',
+        name=f'_run_env',
         target=_run_env,
         args=(builder_kwargs, child_conn),
         kwargs=dict(batch_time=batch_time))
@@ -430,14 +436,31 @@ class AsyncBatchedEnvironmentMP:
 
   def __init__(
       self,
-      num_envs: int,
-      dolphin_kwargs: dict,
+      num_envs: Optional[int],
+      dolphin_kwargs: tp.Union[dict, list[dict]],
+      slippi_ports: Optional[list[int]] = None,
       num_steps: int = 0,
       inner_batch_size: int = 1,
       num_retries: int = 2,
       swap_ports: bool = True,
       **env_kwargs,
   ):
+    if isinstance(dolphin_kwargs, dict):
+      assert num_envs is not None
+      dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
+      if slippi_ports is None:
+        slippi_ports = utils.find_open_udp_ports(num_envs)
+    elif num_envs is None:
+      num_envs = len(dolphin_kwargs)
+    else:
+      assert num_envs == len(dolphin_kwargs)
+
+    if slippi_ports:
+      for port, kwargs in zip(slippi_ports, dolphin_kwargs):
+        kwargs['slippi_port'] = port
+
+    self._dolphin_kwargs = dolphin_kwargs
+
     if num_envs % inner_batch_size != 0:
       raise ValueError(
           f'num_envs={num_envs} must be divisible by '
@@ -451,16 +474,16 @@ class AsyncBatchedEnvironmentMP:
     self._inner_batch_size = inner_batch_size
     self._slice = lambda i, x: x[i * inner_batch_size:(i + 1) * inner_batch_size]
 
-    self._dolphin_kwargs = dolphin_kwargs
+    slippi_ports = utils.find_open_udp_ports(num_envs)
+    for port, kwargs in zip(slippi_ports, dolphin_kwargs):
+      kwargs['slippi_port'] = port
 
     self._envs: list[AsyncEnvMP] = []
-    slippi_ports = utils.find_open_udp_ports(num_envs)
     for i in range(self._outer_batch_size):
       env = AsyncEnvMP(
-          dolphin_kwargs=dolphin_kwargs,
+          dolphin_kwargs=self._slice(i, dolphin_kwargs),
           num_envs=inner_batch_size,
           batch_time=(num_steps > 0),
-          slippi_ports=self._slice(i, slippi_ports),
           num_retries=num_retries,
           swap_ports=swap_ports,
           **env_kwargs,

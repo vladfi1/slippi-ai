@@ -857,16 +857,18 @@ class EnsembleAgent:
     if self._agent:
       self._agent.stop()
 
+def allowed_characters(config: dict) -> tp.Optional[list[melee.Character]]:
+  return data.chars_from_string(config['dataset']['allowed_characters'])
+
 def update_character(player: dolphin.AI, config: dict):
-  allowed_characters = config['dataset']['allowed_characters']
-  character_list = data.chars_from_string(allowed_characters)
+  character_list = allowed_characters(config)
   if character_list is None or player.character in character_list:
     return
 
   if len(character_list) == 1:
     # If there's only one option, then go with that.
     player.character = character_list[0]
-    print('Setting character to', player.character)
+    print('Setting character to:', player.character.name)
   else:
     # Could use character_list[0] here, but that might lead to silently never
     # picking the other options.
