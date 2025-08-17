@@ -534,6 +534,7 @@ class Agent:
       state: dict,
       opponent_port: int,
       config: dict,  # use train.Config instead
+      # Actual (netplay) port may different from Controller's (local) port
       port: tp.Optional[int] = None,
       controller: tp.Optional[melee.Controller] = None,
       name_change_mode: NameChangeMode = NameChangeMode.FIXED,
@@ -701,7 +702,7 @@ class AgentSummary:
   delay: int
   character: melee.Character
   opponent: Optional[melee.Character]
-  version: tuple[int]
+  version: tuple[int, ...]
 
   @classmethod
   def from_checkpoint(cls, path: str) -> 'AgentSummary':
@@ -717,6 +718,7 @@ class AgentSummary:
       opponent = data.name_to_character[combined_state['opponent']]
     else:
       agent_type = AgentType.IMITATION
+      # TODO: read opponents from config, but by default it is all chars
       opponent = None
 
     version_component = path.split('_')[-1]

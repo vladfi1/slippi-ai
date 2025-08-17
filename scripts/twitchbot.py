@@ -1,14 +1,17 @@
 """Bot that runs on twitch and lets people play against phillip 2."""
 
+import abc
 import dataclasses
 import datetime
+import functools
 import json
 import logging
 import os
 import random
 import time
 import threading
-from typing import Optional
+import typing as tp
+from typing import Optional, Union
 
 from absl import app, flags
 import fancyflags as ff
@@ -161,62 +164,153 @@ def get_ports(gamestate: melee.GameState, display_name: str):
 # Depends on gecko code. TODO: configure
 MAX_DOLPHIN_DELAY = 24
 
+class AgentConfig(abc.ABC):
+
+  @property
+  @abc.abstractmethod
+  def delay(self) -> int:
+    """The agent's delay."""
+
+  @property
+  def console_delay(self) -> int:
+    # Leave a local delay of 1 for async inference.
+    target_delay = max(self.delay - 1, 0)
+    return min(target_delay, MAX_DOLPHIN_DELAY)
+
+  @abc.abstractmethod
+  def build(
+      self,
+      controller: melee.Controller,
+      # Actual (netplay) port may different from Controller's (local) port
+      port: int,
+      opponent_port: int,
+  ) -> Union[eval_lib.Agent, eval_lib.EnsembleAgent]:
+    """Builds an agent for the given port and opponent port."""
+
+  @property
+  @abc.abstractmethod
+  def character(self) -> melee.Character:
+    """The character associated with this agent."""
+
+class SingleAgent(AgentConfig):
+
+  def __init__(self, agent_kwargs: dict[str, tp.Any]):
+    self.agent_kwargs = agent_kwargs
+    self._loaded = False
+
+  def _load(self):
+    # can't use functools.cache because it isn't serializable
+    if self._loaded:
+      return
+    self.state = saving.load_state_from_disk(self.agent_kwargs['path'])
+    self.config = flag_utils.dataclass_from_dict(
+        train_lib.Config, self.state['config'])
+    self._loaded = True
+
+  @property
+  def delay(self) -> int:
+    self._load()
+    return self.config.policy.delay
+
+  def build(
+      self,
+      controller: melee.Controller,
+      port: int,
+      opponent_port: int,
+  ) -> eval_lib.Agent:
+    self._load()
+    return eval_lib.build_agent(
+        controller=controller,
+        port=port,
+        opponent_port=opponent_port,
+        console_delay=self.console_delay,
+        run_on_cpu=True,
+        state=self.state,
+        **self.agent_kwargs,
+    )
+
+  @property
+  def character(self) -> melee.Character:
+    self._load()
+    chars = eval_lib.allowed_characters(self.state['config'])
+    if chars is None:
+      return melee.Character.FOX
+    return chars[0]  # Default to the first character in the list.
+
+class AutoAgent(AgentConfig):
+
+  def __init__(
+      self,
+      character: melee.Character,
+      models_path: str,
+      delay: int = 18,
+      agent_kwargs: dict = {},
+  ):
+    self._character = character
+    self._delay = delay
+    self.models_path = models_path
+    self.agent_kwargs = agent_kwargs
+
+  @property
+  def character(self) -> melee.Character:
+    return self._character
+
+  @property
+  def delay(self) -> int:
+    return self._delay
+
+  def build(
+      self,
+      controller: melee.Controller,
+      port: int,
+      opponent_port: int,
+  ) -> eval_lib.EnsembleAgent:
+    return eval_lib.EnsembleAgent(
+        character=self.character,
+        delay=self.delay,
+        models_path=self.models_path,
+        port=port,
+        opponent_port=opponent_port,
+        controller=controller,
+        console_delay=self.console_delay,
+        run_on_cpu=True,
+        **self.agent_kwargs,
+    )
+
 class Session:
 
   def __init__(
       self,
       dolphin_config: dolphin_lib.DolphinConfig,
-      agent_kwargs: dict,
+      agent_config: AgentConfig,
       extra_dolphin_kwargs: dict = {},
-      auto_character: Optional[melee.Character] = None,
-      auto_delay: int = 18,
-      models_path: Optional[str] = None,
       stages: Optional[list[melee.Stage]] = None,
   ):
     eval_lib.disable_gpus()
     self.dolphin_config = dolphin_config
-    self.agent_kwargs = agent_kwargs
+    self.agent_config = agent_config
     self.stop_requested = threading.Event()
     stages = stages or [dolphin_config.stage]
 
-    if auto_character:
-      agent_delay = auto_delay
-    else:
-      agent_state = saving.load_state_from_disk(self.agent_kwargs['path'])
-      agent_config = flag_utils.dataclass_from_dict(
-          train_lib.Config, agent_state['config'])
-      agent_delay = agent_config.policy.delay
-
-    # Leave a local delay of 1 for async inference.
-    target_delay = max(agent_delay - 1, 0)
-    console_delay = min(target_delay, MAX_DOLPHIN_DELAY)
-
-    dolphin_config.online_delay = console_delay
-    logging.info(f'Setting console delay to {console_delay}')
+    dolphin_config.online_delay = agent_config.console_delay
+    logging.info(f'Setting console delay to {agent_config.console_delay}')
 
     port = 1
     dolphin_kwargs = dolphin_config.to_kwargs()
     dolphin_kwargs.update(extra_dolphin_kwargs)
 
-    player = dolphin_lib.AI()
+    player = dolphin_lib.AI(character=agent_config.character)
     dolphin = dolphin_lib.Dolphin(
         players={port: player},
         **dolphin_kwargs,
     )
     controller = dolphin.controllers[port]
 
-    if auto_character:
-      player.character = auto_character
-    else:
-      agent = eval_lib.build_agent(
-          controller=controller,
-          opponent_port=None,  # will be set later
-          console_delay=console_delay,
-          run_on_cpu=True,
-          state=agent_state,
-          **agent_kwargs,
-      )
-      eval_lib.update_character(player, agent.config)
+    agent = agent_config.build(
+        controller=controller,
+        # Ports will be set once we're in game.
+        port=0, opponent_port=0,
+    )
 
     # In netplay the ports are going to be randomized. We use the displayName
     # to figure out which port we actually are. The connect code would be better
@@ -228,53 +322,17 @@ class Session:
     self._num_menu_frames = 0
 
     def run():
-      nonlocal agent
-
       # Don't block in the menu so that we can stop if asked to.
       gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
-
-      # This gets us through the menus and into the first frame of the actual game
-      for gamestate in gamestates:
-        if self.stop_requested.is_set():
-          dolphin.stop()
-          return
-
-        if not dolphin_lib.is_menu_state(gamestate):
-          self._num_menu_frames = 0
-          break
-
-        if self._num_menu_frames == 0:
-          dolphin.stage = random.choice(stages)
-          logging.info(f'Setting stage to {dolphin.stage.name}')
-
-        self._num_menu_frames += 1
-
-      # Now we have access to the display names to set the correct ports.
-      actual_port, opponent_port = get_ports(gamestate, display_name)
-
-      if auto_character:
-        agent = eval_lib.EnsembleAgent(
-            character=auto_character,
-            delay=auto_delay,
-            models_path=models_path,
-            port=actual_port,
-            opponent_port=opponent_port,
-            controller=controller,
-            console_delay=console_delay,
-            run_on_cpu=True,
-            **agent_kwargs,
-        )
-      else:
-        agent.set_ports(actual_port, opponent_port)
 
       # Main loop
       agent.start()
       try:
-        agent.step(gamestate)
-
         while not self.stop_requested.is_set():
           gamestate = next(gamestates)
+
           if not dolphin_lib.is_menu_state(gamestate):
+            # Ports may change if opponent disconnects and reconnects.
             if gamestate.frame == -123:
               agent.set_ports(*get_ports(gamestate, display_name))
 
@@ -425,13 +483,23 @@ class Bot(commands.Bot):
     self._reload_models()
 
     self._default_agent_name = 'auto-fox'
+    self._default_agent_config = self._auto_agent(melee.Character.FOX)
 
     # User-specific state.
-    self._requested_agents = {}
-    self._play_codes = {}
+    self._requested_agents: dict[str, str] = {}
+    self._requested_agent_configs: dict[str, AgentConfig] = {}
+    self._play_codes: dict[str, str] = {}
     self._stages: dict[str, list[melee.Stage]] = {}
 
     self._do_chores.start()
+
+  def _auto_agent(self, char: melee.Character) -> AgentConfig:
+    return AutoAgent(
+        character=char,
+        models_path=self._models_path,
+        delay=self._auto_delay,
+        agent_kwargs=self.agent_kwargs,
+    )
 
   @commands.command()
   async def help(self, ctx: commands.Context):
@@ -535,7 +603,7 @@ class Bot(commands.Bot):
       return
 
     agent: str = words[1]
-    validated = False
+    agent_config = None
 
     auto_char = parse_auto_char(agent)
     if auto_char:
@@ -545,7 +613,8 @@ class Bot(commands.Bot):
             f'No agents trained to play as {auto_char.name.lower()}.'
             f' Available characters are {valid_chars}.')
         return
-      validated = True
+
+      agent_config = self._auto_agent(auto_char)
 
     imitation_char = parse_imitation_char(agent)
     if imitation_char:
@@ -555,17 +624,30 @@ class Bot(commands.Bot):
             f'No basic agents trained to play as {imitation_char.name.lower()}.'
             f' Available basic characters are {valid_chars}.')
         return
-      validated = True
 
-    if not validated and agent not in self._models:
+      model = self._imitation_agents[imitation_char]
+      agent_config = SingleAgent(dict(
+          self.agent_kwargs,
+          path=os.path.join(self._models_path, model)
+      ))
+
+    if not agent_config and agent not in self._models:
       await ctx.send(f'{agent} is not a valid agent')
       # models_str might be too big for Twitch :(
       # models_str = ", ".join(self._models)
       # await ctx.send(f'Available agents: {models_str}')
       return
 
+    if agent_config is None:
+      agent_config = SingleAgent(dict(
+          self.agent_kwargs,
+          path=os.path.join(self._models_path, agent),
+      ))
+
     name = ctx.author.name
+    assert isinstance(name, str)
     self._requested_agents[name] = agent
+    self._requested_agent_configs[name] = agent_config
     await ctx.send(f'{name} has selected {agent}')
 
     # Auto-restart if the person is already playing
@@ -584,6 +666,7 @@ class Bot(commands.Bot):
   @commands.command()
   async def stages(self, ctx: commands.Context):
     name = ctx.author.name
+    assert isinstance(name, str)
     words = ctx.message.content.split(' ')
 
     stage_names = words[1:]
@@ -625,6 +708,7 @@ class Bot(commands.Bot):
   async def _play(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
+      assert isinstance(name, str)
       connect_code = self._play_codes[name]
       assert connect_code
 
@@ -650,8 +734,9 @@ class Bot(commands.Bot):
       agent = self._get_opponent(name)
       session = self._start_session(
           connect_code,
+          agent_name=agent,
+          agent_config=self._get_opponent_config(name),
           render=is_stream,
-          agent=agent,
           stages=self._stages.get(name, None),
       )
       self._sessions[name] = SessionInfo(
@@ -667,6 +752,7 @@ class Bot(commands.Bot):
   @commands.command()
   async def play(self, ctx: commands.Context):
     name = ctx.author.name
+    assert isinstance(name, str)
     words = ctx.message.content.split(' ')
 
     if len(words) == 1:
@@ -700,9 +786,9 @@ class Bot(commands.Bot):
   def _start_session(
       self,
       connect_code: str,
-      agent: str,
+      agent_name: str,
+      agent_config: AgentConfig,
       stages: Optional[list[melee.Stage]],
-      auto_character: Optional[melee.Character] = None,
       render: bool = False,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
@@ -710,29 +796,22 @@ class Bot(commands.Bot):
     config.connect_code = connect_code
     config.render = render
     config.headless = not render
-    config.replay_dir = os.path.join(config.replay_dir, agent)
+    config.replay_dir = os.path.join(config.replay_dir, agent_name)
     os.makedirs(config.replay_dir, exist_ok=True)
     extra_dolphin_kwargs = {}
     if render:
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    auto_character = parse_auto_char(agent)
-    imitation_character = parse_imitation_char(agent)
+    imitation_character = parse_imitation_char(agent_name)
 
-    agent_kwargs = self.agent_kwargs.copy()
     if imitation_character:
-      agent_kwargs['path'] = os.path.join(
-          self._models_path, self._imitation_agents[imitation_character])
       config.save_replays = False
-    elif auto_character is None:
-      agent_kwargs['path'] = os.path.join(self._models_path, agent)
 
     return RemoteSession.remote(
-        config, agent_kwargs,
+        config,
+        agent_config,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
-        auto_character=auto_character,
-        models_path=self._models_path,
         stages=stages,
     )
 
@@ -816,6 +895,9 @@ class Bot(commands.Bot):
 
   def _get_opponent(self, name: str) -> str:
     return self._requested_agents.get(name, self._default_agent_name)
+
+  def _get_opponent_config(self, name: str) -> AgentConfig:
+    return self._requested_agent_configs.get(name, self._default_agent_config)
 
   @commands.command()
   async def status(self, ctx: commands.Context):
