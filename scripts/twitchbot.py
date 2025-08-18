@@ -886,9 +886,12 @@ class Bot(commands.Bot):
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    imitation_character = parse_imitation_char(agent_config.name)
+    is_weak_agent = (
+        parse_imitation_char(agent_config.name)
+        or parse_medium_char(agent_config.name)
+    )
 
-    if imitation_character:
+    if is_weak_agent:
       config.save_replays = False
 
     return RemoteSession.remote(
