@@ -405,7 +405,7 @@ RemoteSession = ray.remote(Session)
 
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
-!agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker.
+!agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker, and the medium-* agents are in the middle.
 !agent <name>: Select an agent to play against.
 !more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
