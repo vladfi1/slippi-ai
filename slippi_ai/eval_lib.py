@@ -367,6 +367,15 @@ class AsyncDelayedAgent:
     self.embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
+    if self.delay < 0:
+      raise ValueError(
+          f'console delay ({console_delay}) must be <='
+          f' policy delay ({policy.delay})')
+    elif self.delay == 0:
+      logging.warning(
+          f'Console delay ({console_delay}) equals policy delay ({policy.delay}),'
+          ' agent will effectively run synchronously.')
+
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
       = utils.PeekableQueue()
 

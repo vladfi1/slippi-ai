@@ -3,7 +3,6 @@
 import abc
 import dataclasses
 import datetime
-import functools
 import json
 import logging
 import os
@@ -73,8 +72,8 @@ agent_flags.update(
 )
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
-BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
-BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
+BOT = flags.DEFINE_string('bot', None, 'Path to first bot agent.')
+BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
 
 MEDIUM_AGENT = flags.DEFINE_string('medium_agent', None, 'Path to medium agent.')
 
@@ -83,90 +82,14 @@ class SessionStatus:
   num_menu_frames: int
   is_alive: bool
 
-class BotSession:
-  """Session between two bots playing locally."""
-
-  def __init__(
-      self,
-      dolphin_config: dolphin_lib.DolphinConfig,
-      agent_kwargs: dict[int, dict],
-      extra_dolphin_kwargs: dict = {},
-  ):
-    eval_lib.disable_gpus()
-    logging.basicConfig(level=logging.INFO)
-    self.dolphin_config = dolphin_config
-    self.stop_requested = threading.Event()
-
-    ports = agent_kwargs.keys()
-    dolphin_kwargs = dolphin_config.to_kwargs()
-    dolphin_kwargs.update(extra_dolphin_kwargs)
-
-    players = {p: dolphin_lib.AI() for p in ports}
-    dolphin = dolphin_lib.Dolphin(
-        players=players,
-        **dolphin_kwargs,
-    )
-
-    agents: dict[int, eval_lib.Agent] = {}
-    for port, opponent_port in zip(ports, reversed(ports)):
-      agents[port] = eval_lib.build_agent(
-          controller=dolphin.controllers[port],
-          opponent_port=opponent_port,
-          run_on_cpu=True,
-          console_delay=dolphin.console.online_delay,
-          **agent_kwargs[port],
-      )
-
-      eval_lib.update_character(players[port], agents[port].config)
-
-    def run():
-      # Don't block in the menu so that we can stop if asked to.
-      gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
-
-      # Main loop
-      for agent in agents.values():
-        agent.start()
-      try:
-        while not self.stop_requested.is_set():
-          gamestate = next(gamestates)
-          if not dolphin_lib.is_menu_state(gamestate):
-            for agent in agents.values():
-              agent.step(gamestate)
-      finally:
-        for agent in agents.values():
-          agent.stop()
-        dolphin.stop()
-
-    self._thread = threading.Thread(target=run)
-    self._thread.start()
-
-  def stop(self):
-    self.stop_requested.set()
-    self._thread.join()
-
-  def status(self) -> SessionStatus:
-    return SessionStatus(
-        num_menu_frames=0,
-        is_alive=self._thread.is_alive(),
-    )
-
-
-RemoteBotSession = ray.remote(BotSession)
-
-def get_ports(gamestate: melee.GameState, display_name: str):
-  name_to_port = {
-      player.displayName: port for port, player in gamestate.players.items()
-  }
-  actual_port = name_to_port[display_name]
-  ports = list(gamestate.players)
-  ports.remove(actual_port)
-  opponent_port = ports[0]
-  return actual_port, opponent_port
-
-# Depends on gecko code. TODO: configure
-MAX_DOLPHIN_DELAY = 24
+Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
 
 class AgentConfig(abc.ABC):
+
+  @property
+  @abc.abstractmethod
+  def name(self) -> str:
+    """This agent's name."""
 
   @property
   @abc.abstractmethod
@@ -174,7 +97,7 @@ class AgentConfig(abc.ABC):
     """The agent's delay."""
 
   @property
-  def console_delay(self) -> int:
+  def target_console_delay(self) -> int:
     # Leave a local delay of 1 for async inference.
     target_delay = max(self.delay - 1, 0)
     return min(target_delay, MAX_DOLPHIN_DELAY)
@@ -186,7 +109,8 @@ class AgentConfig(abc.ABC):
       # Actual (netplay) port may different from Controller's (local) port
       port: int,
       opponent_port: int,
-  ) -> Union[eval_lib.Agent, eval_lib.EnsembleAgent]:
+      console_delay: int,
+  ) -> Agent:
     """Builds an agent for the given port and opponent port."""
 
   @property
@@ -194,16 +118,27 @@ class AgentConfig(abc.ABC):
   def character(self) -> melee.Character:
     """The character associated with this agent."""
 
+# Depends on gecko code. TODO: configure
+MAX_DOLPHIN_DELAY = 24
+
 class SingleAgent(AgentConfig):
 
   def __init__(
       self,
       agent_kwargs: dict[str, tp.Any],
+      # For models trained to play multiple characters, specify
+      # the preferred one for this session.
       character: Optional[melee.Character] = None,
+      name: Optional[str] = None,
   ):
     self.agent_kwargs = agent_kwargs
     self._loaded = False
     self._character = character
+    self._name = name or os.path.basename(agent_kwargs['path'])
+
+  @property
+  def name(self) -> str:
+    return self._name
 
   def _load(self):
     # can't use functools.cache because it isn't serializable
@@ -224,13 +159,14 @@ class SingleAgent(AgentConfig):
       controller: melee.Controller,
       port: int,
       opponent_port: int,
+      console_delay: int,
   ) -> eval_lib.Agent:
     self._load()
     return eval_lib.build_agent(
         controller=controller,
         port=port,
         opponent_port=opponent_port,
-        console_delay=self.console_delay,
+        console_delay=console_delay,
         run_on_cpu=True,
         state=self.state,
         **self.agent_kwargs,
@@ -264,6 +200,10 @@ class AutoAgent(AgentConfig):
     self.agent_kwargs = agent_kwargs
 
   @property
+  def name(self) -> str:
+    return auto_prefix + self.character.name.lower()
+
+  @property
   def character(self) -> melee.Character:
     return self._character
 
@@ -276,6 +216,7 @@ class AutoAgent(AgentConfig):
       controller: melee.Controller,
       port: int,
       opponent_port: int,
+      console_delay: int,
   ) -> eval_lib.EnsembleAgent:
     return eval_lib.EnsembleAgent(
         character=self.character,
@@ -284,10 +225,90 @@ class AutoAgent(AgentConfig):
         port=port,
         opponent_port=opponent_port,
         controller=controller,
-        console_delay=self.console_delay,
+        console_delay=console_delay,
         run_on_cpu=True,
         **self.agent_kwargs,
     )
+
+class BotSession:
+  """Session between two bots playing locally."""
+
+  def __init__(
+      self,
+      dolphin_config: dolphin_lib.DolphinConfig,
+      agent_configs: dict[int, AgentConfig],
+      extra_dolphin_kwargs: dict = {},
+  ):
+    eval_lib.disable_gpus()
+    logging.basicConfig(level=logging.INFO)
+    self.dolphin_config = dolphin_config
+    self.stop_requested = threading.Event()
+
+    ports = agent_configs.keys()
+    dolphin_kwargs = dolphin_config.to_kwargs()
+    dolphin_kwargs.update(extra_dolphin_kwargs)
+
+    players = {
+        port: dolphin_lib.AI(character=config.character)
+        for port, config in agent_configs.items()
+    }
+    dolphin = dolphin_lib.Dolphin(
+        players=players,
+        **dolphin_kwargs,
+    )
+
+    agents: dict[int, Agent] = {}
+    for port, opponent_port in zip(ports, reversed(ports)):
+      agents[port] = agent_configs[port].build(
+          controller=dolphin.controllers[port],
+          port=port,
+          opponent_port=opponent_port,
+          console_delay=dolphin.console.online_delay,
+      )
+
+    def run():
+      # Don't block in the menu so that we can stop if asked to.
+      gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
+
+      # Main loop
+      for agent in agents.values():
+        agent.start()
+      try:
+        while not self.stop_requested.is_set():
+          gamestate = next(gamestates)
+          if not dolphin_lib.is_menu_state(gamestate):
+            for agent in agents.values():
+              agent.step(gamestate)
+      finally:
+        for agent in agents.values():
+          agent.stop()
+        dolphin.stop()
+
+    self._thread = threading.Thread(target=run)
+    self._thread.start()
+
+  def stop(self):
+    self.stop_requested.set()
+    self._thread.join()
+
+  def status(self) -> SessionStatus:
+    return SessionStatus(
+        num_menu_frames=0,
+        is_alive=self._thread.is_alive(),
+    )
+
+RemoteBotSession = ray.remote(BotSession)
+
+def get_ports(gamestate: melee.GameState, display_name: str):
+  name_to_port = {
+      player.displayName: port for port, player in gamestate.players.items()
+  }
+  actual_port = name_to_port[display_name]
+  ports = list(gamestate.players)
+  ports.remove(actual_port)
+  opponent_port = ports[0]
+  return actual_port, opponent_port
+
 
 class Session:
 
@@ -304,8 +325,8 @@ class Session:
     self.stop_requested = threading.Event()
     stages = stages or [dolphin_config.stage]
 
-    dolphin_config.online_delay = agent_config.console_delay
-    logging.info(f'Setting console delay to {agent_config.console_delay}')
+    dolphin_config.online_delay = agent_config.target_console_delay
+    logging.info(f'Setting console delay to {agent_config.target_console_delay}')
 
     port = 1
     dolphin_kwargs = dolphin_config.to_kwargs()
@@ -320,6 +341,7 @@ class Session:
 
     agent = agent_config.build(
         controller=controller,
+        console_delay=agent_config.target_console_delay,
         # Ports will be set once we're in game.
         port=0, opponent_port=0,
     )
@@ -473,15 +495,6 @@ class Bot(commands.Bot):
     self._stream = stream
     self._bot_session_interval = bot_session_interval
 
-    bot1 = bot or agent_kwargs['path']
-    bot2 = bot2 or bot1
-    self._bot_agent_kwargs = {
-        1: dict(agent_kwargs, path=bot1),
-        2: dict(agent_kwargs, path=bot2),
-    }
-    self._bot1 = bot1
-    self._bot2 = bot2
-
     self._auto_delay = auto_delay
 
     self._sessions: dict[str, SessionInfo] = {}
@@ -503,8 +516,20 @@ class Bot(commands.Bot):
     self._medium_agent_path = medium_agent
     self._reload_models()
 
-    self._default_agent_name = 'auto-fox'
-    self._default_agent_config = self._auto_agent(melee.Character.FOX)
+    if bot is None:
+      bot1_config = self._default_agent_config
+    else:
+      bot1_config = self._single_agent(path=bot)
+
+    if bot2 is None:
+      bot2_config = bot1_config
+    else:
+      bot2_config = self._single_agent(path=bot2)
+
+    self._bot_configs: dict[int, AgentConfig] = {
+        1: bot1_config,
+        2: bot2_config,
+    }
 
     # User-specific state.
     self._requested_agents: dict[str, str] = {}
@@ -514,7 +539,27 @@ class Bot(commands.Bot):
 
     self._do_chores.start()
 
-  def _auto_agent(self, char: melee.Character) -> AgentConfig:
+  def _single_agent(
+      self,
+      model: Optional[str] = None,
+      path: Optional[str] = None,
+      char: Optional[melee.Character] = None,
+      name: Optional[str] = None,
+  ) -> SingleAgent:
+    if model is not None:
+      if path is not None:
+        raise ValueError('Cannot specify both name and path for SingleAgent')
+      path = os.path.join(self._models_path, model)
+    elif path is None:
+      raise ValueError('Must specify either name or path for SingleAgent')
+
+    return SingleAgent(
+        agent_kwargs=dict(self.agent_kwargs, path=path),
+        character=char,
+        name=name or model,
+    )
+
+  def _auto_agent(self, char: melee.Character) -> AutoAgent:
     return AutoAgent(
         character=char,
         models_path=self._models_path,
@@ -537,36 +582,78 @@ class Bot(commands.Bot):
     await ctx.send(ABOUT_MESSAGE)
 
   def _reload_models(self):
-    self._models: dict[str, dict] = {}
-    agents = os.listdir(self._models_path)
+    self._special_agents: list[AgentConfig] = []
+    self._agents: dict[str, AgentConfig] = {}
 
+    # For inspection by the !config command
+    self._model_configs: dict[str, dict] = {}
     keys = ['step', 'config', 'rl_config', 'agent_config']
 
-    for agent in agents:
-      path = os.path.join(self._models_path, agent)
+    def add_agent(agent_config: AgentConfig):
+      if agent_config.name in self._agents:
+        logging.warning(f'Duplicate agents named {agent_config.name}')
+      self._agents[agent_config.name] = agent_config
+
+    # Regular agents
+    for model in os.listdir(self._models_path):
+      path = os.path.join(self._models_path, model)
       state = saving.load_state_from_disk(path)
       state = {k: state[k] for k in keys if k in state}
-      self._models[agent] = state
+      self._model_configs[model] = state
 
-    self._imitation_agents = eval_lib.get_imitation_agents(
+      add_agent(self._single_agent(model=model))
+
+    # imitation agents
+    imitation_models = eval_lib.get_imitation_agents(
         self._models_path, delay=self._auto_delay)
 
-    self._matchup_table = eval_lib.build_matchup_table(
-        self._models_path, delay=self._auto_delay)
+    for char, model in imitation_models.items():
+      agent_config = self._single_agent(
+          model=model,
+          char=char,
+          name=imitation_prefix + char.name.lower(),
+      )
+      self._special_agents.append(agent_config)
+      add_agent(agent_config)
 
+    # auto agents
+    self._auto_agents: dict[melee.Character, AutoAgent] = {}
+    matchup_table = eval_lib.build_matchup_table(
+        self._models_path, delay=self._auto_delay)
+    for character in matchup_table:
+      agent_config = self._auto_agent(character)
+      self._special_agents.append(agent_config)
+      self._auto_agents[character] = agent_config
+      add_agent(agent_config)
+
+    # medium agents
+    self._medium_agents: list[AgentConfig] = []
     if self._medium_agent_path is not None:
-      self._medium_agent_summary = eval_lib.AgentSummary.from_checkpoint(
+      medium_agent_summary = eval_lib.AgentSummary.from_checkpoint(
           self._medium_agent_path)
       # TODO: handle None = all agents
-      self._medium_characters = self._medium_agent_summary.characters or []
+      medium_characters = medium_agent_summary.characters or []
+
+      for char in medium_characters:
+        agent_config = self._single_agent(
+            path=self._medium_agent_path,
+            char=char,
+            name=medium_prefix + char.name.lower(),
+        )
+        self._special_agents.append(agent_config)
+        self._medium_agents.append(agent_config)
+        add_agent(agent_config)
 
       # Make medium the default agent if it exists.
-      char = self._medium_characters[0]
-      self._default_agent_name = medium_prefix + char.name.lower()
-      self._default_agent_config = SingleAgent(
-          dict(self.agent_kwargs, path=self._medium_agent_path),
-          character=char,
-      )
+      self._default_agent_config = self._medium_agents[0]
+
+    else:
+      if melee.Character.FOX in self._auto_agents:
+        default_char = melee.Character.FOX
+      else:
+        default_char = next(iter(self._auto_agents))
+
+      self._default_agent_config = self._auto_agents[default_char]
 
   @commands.command()
   async def reload(self, ctx: commands.Context):
@@ -582,13 +669,13 @@ class Bot(commands.Bot):
       return
 
     agent = words[1]
-    if agent not in self._models:
+    if agent not in self._model_configs:
       await ctx.send(f'{agent} is not a valid agent')
-      models_str = ", ".join(self._models)
+      models_str = ", ".join(self._model_configs)
       await ctx.send(f'Available agents: {models_str}')
       return
 
-    message = json.dumps(self._models[agent])
+    message = json.dumps(self._model_configs[agent])
     chunk_size = 500
 
     for i in range(0, len(message), chunk_size):
@@ -596,15 +683,8 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
-    agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
-    for c in self._imitation_agents:
-      agents.append(imitation_prefix + c.name.lower())
-
-    if self._medium_agent_path is not None:
-      for char in self._medium_characters:
-        agents.append(medium_prefix + char.name.lower())
-
-    await ctx.send(' '.join(agents))
+    names = [agent_config.name for agent_config in self._special_agents]
+    await ctx.send(' '.join(names))
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
@@ -612,7 +692,7 @@ class Bot(commands.Bot):
     # for c in self._imitation_agents:
     #   agents.append(imitation_prefix + c.name.lower())
     # agents.extend(self._models)
-    agents = self._models.keys()
+    agents = self._model_configs.keys()
 
     max_chars = 500
     chunks = [[]]
@@ -641,73 +721,19 @@ class Bot(commands.Bot):
       await ctx.send('You must specify a single agent.')
       return
 
-    agent: str = words[1]
-    agent_config = None
+    agent_name: str = words[1]
 
-    auto_char = parse_auto_char(agent)
-    if auto_char:
-      if auto_char not in self._matchup_table:
-        valid_chars = ', '.join(c.name.lower() for c in self._matchup_table)
-        await ctx.send(
-            f'No agents trained to play as {auto_char.name.lower()}.'
-            f' Available characters are {valid_chars}.')
-        return
+    agent_config = self._agents.get(agent_name)
 
-      agent_config = self._auto_agent(auto_char)
-
-    imitation_char = parse_imitation_char(agent)
-    if imitation_char:
-      if imitation_char not in self._imitation_agents:
-        valid_chars = ', '.join(c.name.lower() for c in self._imitation_agents)
-        await ctx.send(
-            f'No basic agents trained to play as {imitation_char.name.lower()}.'
-            f' Available basic characters are {valid_chars}.')
-        return
-
-      model = self._imitation_agents[imitation_char]
-      agent_config = SingleAgent(dict(
-          self.agent_kwargs,
-          path=os.path.join(self._models_path, model)
-      ))
-
-    medium_char = parse_medium_char(agent)
-    if medium_char:
-      if self._medium_agent_path is None:
-        await ctx.send('No medium agent set.')
-        return
-
-      if medium_char not in self._medium_characters:
-        valid_chars = ', '.join(
-            c.name.lower() for c in self._medium_characters)
-        await ctx.send(
-            f'No medium agents trained to play as {medium_char.name.lower()}.'
-            f' Available medium characters are {valid_chars}.')
-        return
-
-      agent_config = SingleAgent(
-          agent_kwargs=dict(self.agent_kwargs, path=self._medium_agent_path),
-          character=medium_char,
-      )
-
-    # Interpret agent a model in the models dir
     if agent_config is None:
-      if agent not in self._models:
-        await ctx.send(f'{agent} is not a valid agent')
-        # models_str might be too big for Twitch :(
-        # models_str = ", ".join(self._models)
-        # await ctx.send(f'Available agents: {models_str}')
-        return
-
-      agent_config = SingleAgent(dict(
-          self.agent_kwargs,
-          path=os.path.join(self._models_path, agent),
-      ))
+      await ctx.send(f'{agent_name} is not a valid agent')
+      return
 
     name = ctx.author.name
     assert isinstance(name, str)
-    self._requested_agents[name] = agent
+    self._requested_agents[name] = agent_name
     self._requested_agent_configs[name] = agent_config
-    await ctx.send(f'{name} has selected {agent}')
+    await ctx.send(f'{name} has selected {agent_name}')
 
     # Auto-restart if the person is already playing
     if name in self._sessions:
@@ -790,11 +816,10 @@ class Bot(commands.Bot):
       logging.info(message)
       await ctx.send(message)
 
-      agent = self._get_opponent(name)
+      agent_config = self._get_opponent_config(name)
       session = self._start_session(
           connect_code,
-          agent_name=agent,
-          agent_config=self._get_opponent_config(name),
+          agent_config=agent_config,
           render=is_stream,
           stages=self._stages.get(name, None),
       )
@@ -803,7 +828,7 @@ class Bot(commands.Bot):
           start_time=datetime.datetime.now(),
           twitch_name=name,
           connect_code=connect_code,
-          agent=agent,
+          agent=agent_config.name,
       )
       if is_stream:
         self._streaming_against = name
@@ -845,7 +870,6 @@ class Bot(commands.Bot):
   def _start_session(
       self,
       connect_code: str,
-      agent_name: str,
       agent_config: AgentConfig,
       stages: Optional[list[melee.Stage]],
       render: bool = False,
@@ -855,14 +879,14 @@ class Bot(commands.Bot):
     config.connect_code = connect_code
     config.render = render
     config.headless = not render
-    config.replay_dir = os.path.join(config.replay_dir, agent_name)
+    config.replay_dir = os.path.join(config.replay_dir, agent_config.name)
     os.makedirs(config.replay_dir, exist_ok=True)
     extra_dolphin_kwargs = {}
     if render:
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    imitation_character = parse_imitation_char(agent_name)
+    imitation_character = parse_imitation_char(agent_config.name)
 
     if imitation_character:
       config.save_replays = False
@@ -883,12 +907,12 @@ class Bot(commands.Bot):
     config.save_replays = False
     extra_dolphin_kwargs = {}
     if render:
-      extra_dolphin_kwargs['emulation_speed'] = 1
+      config.emulation_speed = 1
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
     return RemoteBotSession.remote(
-        config, self._bot_agent_kwargs,
+        config, self._bot_configs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
     )
 
@@ -913,8 +937,8 @@ class Bot(commands.Bot):
       chan = self.get_channel(self.owner)
       # Might be None if we haven't logged in yet
       if chan:
-        bot1 = os.path.basename(self._bot1)
-        bot2 = os.path.basename(self._bot2)
+        bot1 = self._bot_configs[1].name
+        bot2 = self._bot_configs[2].name
         await chan.send(f'Started {bot1} vs. {bot2} on stream.')
       return True
 
@@ -938,22 +962,24 @@ class Bot(commands.Bot):
       await ctx.send('Must specify one or two agent names')
       return
 
-    for agent in (bot1, bot2):
-      if agent not in self._models:
-        await ctx.send(f'{agent} is not a valid agent')
-        return
+    bot_names = {
+        1: bot1,
+        2: bot2,
+    }
 
     with self.lock:
-      self._bot1 = os.path.join(self._models_path, bot1)
-      self._bot2 = os.path.join(self._models_path, bot2)
-      self._bot_agent_kwargs[1]['path'] = self._bot1
-      self._bot_agent_kwargs[2]['path'] = self._bot2
+      bot_configs: dict[int, AgentConfig] = {}
+      for port, name in bot_names.items():
+        agent_config = self._agents.get(name)
+        if agent_config is None:
+          await ctx.send(f'Unknown agent: {name}')
+          return
+        bot_configs[port] = agent_config
+
+      self._bot_configs = bot_configs
 
       self._stop_bot_session()
       await self._maybe_start_bot_session()
-
-  def _get_opponent(self, name: str) -> str:
-    return self._requested_agents.get(name, self._default_agent_name)
 
   def _get_opponent_config(self, name: str) -> AgentConfig:
     return self._requested_agent_configs.get(name, self._default_agent_config)
@@ -962,12 +988,12 @@ class Bot(commands.Bot):
   async def status(self, ctx: commands.Context):
     with self.lock:
 
-      agent_name = self._get_opponent(ctx.author.name)
-      await ctx.send(f'Selected agent: {agent_name}')
+      agent_config = self._get_opponent_config(ctx.author.name)
+      await ctx.send(f'Selected agent: {agent_config.name}')
 
       if self._bot_session:
-        bot1 = os.path.basename(self._bot1)
-        bot2 = os.path.basename(self._bot2)
+        bot1 = self._bot_configs[1].name
+        bot2 = self._bot_configs[2].name
         await ctx.send(f'{bot1} vs. {bot2} on stream.')
 
       if not self._sessions:
