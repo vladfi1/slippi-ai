@@ -76,6 +76,8 @@ AGENT = ff.DEFINE_dict('agent', **agent_flags)
 BOT = flags.DEFINE_string('bot', None, 'Screensaver agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Second screensaver agent.')
 
+MEDIUM_AGENT = flags.DEFINE_string('medium_agent', None, 'Path to medium agent.')
+
 @dataclasses.dataclass
 class SessionStatus:
   num_menu_frames: int
@@ -194,9 +196,14 @@ class AgentConfig(abc.ABC):
 
 class SingleAgent(AgentConfig):
 
-  def __init__(self, agent_kwargs: dict[str, tp.Any]):
+  def __init__(
+      self,
+      agent_kwargs: dict[str, tp.Any],
+      character: Optional[melee.Character] = None,
+  ):
     self.agent_kwargs = agent_kwargs
     self._loaded = False
+    self._character = character
 
   def _load(self):
     # can't use functools.cache because it isn't serializable
@@ -234,7 +241,12 @@ class SingleAgent(AgentConfig):
     self._load()
     chars = eval_lib.allowed_characters(self.state['config'])
     if chars is None:
-      return melee.Character.FOX
+      return self._character or melee.Character.FOX
+
+    if self._character is not None:
+      assert self._character in chars
+      return self._character
+
     return chars[0]  # Default to the first character in the list.
 
 class AutoAgent(AgentConfig):
@@ -409,6 +421,7 @@ def format_td(td: datetime.timedelta) -> str:
 
 auto_prefix = 'auto-'
 imitation_prefix = 'basic-'
+medium_prefix = 'medium-'
 
 def parse_auto_char(agent: str) -> Optional[melee.Character]:
   if not agent.startswith(auto_prefix):
@@ -424,6 +437,12 @@ def parse_imitation_char(agent: str) -> Optional[melee.Character]:
   char_str = agent.removeprefix(imitation_prefix)
   return eval_lib.data.name_to_character.get(char_str)
 
+def parse_medium_char(agent: str) -> Optional[melee.Character]:
+  if not agent.startswith(medium_prefix):
+    return None
+
+  char_str = agent.removeprefix(medium_prefix)
+  return eval_lib.data.name_to_character.get(char_str)
 
 def tokens(message: str) -> list[str]:
   return [x for x in message.split(' ') if x != '']
@@ -442,6 +461,7 @@ class Bot(commands.Bot):
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
       auto_delay: int = 18,
+      medium_agent: Optional[str] = None,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -480,6 +500,7 @@ class Bot(commands.Bot):
     )
 
     self._models_path = models_path
+    self._medium_agent_path = medium_agent
     self._reload_models()
 
     self._default_agent_name = 'auto-fox'
@@ -533,6 +554,20 @@ class Bot(commands.Bot):
     self._matchup_table = eval_lib.build_matchup_table(
         self._models_path, delay=self._auto_delay)
 
+    if self._medium_agent_path is not None:
+      self._medium_agent_summary = eval_lib.AgentSummary.from_checkpoint(
+          self._medium_agent_path)
+      # TODO: handle None = all agents
+      self._medium_characters = self._medium_agent_summary.characters or []
+
+      # Make medium the default agent if it exists.
+      char = self._medium_characters[0]
+      self._default_agent_name = medium_prefix + char.name.lower()
+      self._default_agent_config = SingleAgent(
+          dict(self.agent_kwargs, path=self._medium_agent_path),
+          character=char,
+      )
+
   @commands.command()
   async def reload(self, ctx: commands.Context):
     with self.lock:
@@ -564,6 +599,10 @@ class Bot(commands.Bot):
     agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
     for c in self._imitation_agents:
       agents.append(imitation_prefix + c.name.lower())
+
+    if self._medium_agent_path is not None:
+      for char in self._medium_characters:
+        agents.append(medium_prefix + char.name.lower())
 
     await ctx.send(' '.join(agents))
 
@@ -631,14 +670,34 @@ class Bot(commands.Bot):
           path=os.path.join(self._models_path, model)
       ))
 
-    if not agent_config and agent not in self._models:
-      await ctx.send(f'{agent} is not a valid agent')
-      # models_str might be too big for Twitch :(
-      # models_str = ", ".join(self._models)
-      # await ctx.send(f'Available agents: {models_str}')
-      return
+    medium_char = parse_medium_char(agent)
+    if medium_char:
+      if self._medium_agent_path is None:
+        await ctx.send('No medium agent set.')
+        return
 
+      if medium_char not in self._medium_characters:
+        valid_chars = ', '.join(
+            c.name.lower() for c in self._medium_characters)
+        await ctx.send(
+            f'No medium agents trained to play as {medium_char.name.lower()}.'
+            f' Available medium characters are {valid_chars}.')
+        return
+
+      agent_config = SingleAgent(
+          agent_kwargs=dict(self.agent_kwargs, path=self._medium_agent_path),
+          character=medium_char,
+      )
+
+    # Interpret agent a model in the models dir
     if agent_config is None:
+      if agent not in self._models:
+        await ctx.send(f'{agent} is not a valid agent')
+        # models_str might be too big for Twitch :(
+        # models_str = ", ".join(self._models)
+        # await ctx.send(f'Available agents: {models_str}')
+        return
+
       agent_config = SingleAgent(dict(
           self.agent_kwargs,
           path=os.path.join(self._models_path, agent),
@@ -1041,6 +1100,7 @@ def main(_):
       bot_session_interval=BOT_SESSION_INTERVAL.value,
       bot=BOT.value,
       bot2=BOT2.value,
+      medium_agent=MEDIUM_AGENT.value,
   )
 
   try:

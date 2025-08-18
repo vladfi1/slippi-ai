@@ -700,26 +700,33 @@ class AgentType(enum.Enum):
 class AgentSummary:
   type: AgentType
   delay: int
-  character: melee.Character
-  opponent: Optional[melee.Character]
+  characters: list[melee.Character] | None
+  opponents: list[melee.Character] | None
   version: tuple[int, ...]
 
   @classmethod
   def from_checkpoint(cls, path: str) -> 'AgentSummary':
     combined_state = saving.load_state_from_disk(path)
     config = combined_state['config']
-    character = get_single_character(config)
+    characters = allowed_characters(config)
 
     if 'rl_config' in combined_state:
       agent_type = AgentType.RL
-      opponent = character
+      agent_config = combined_state['rl_config']['agent']
+
+      # Self-play RL can be multi-character
+      rl_chars = agent_config.get('char')  # field was added more recently
+      if rl_chars is not None:
+        characters = [melee.Character(c) for c in rl_chars]
+      opponents = characters
     elif 'agent_config' in combined_state:
+      # train_two is always one character
       agent_type = AgentType.RL
-      opponent = data.name_to_character[combined_state['opponent']]
+      opponents = [data.name_to_character[combined_state['opponent']]]
     else:
       agent_type = AgentType.IMITATION
       # TODO: read opponents from config, but by default it is all chars
-      opponent = None
+      opponents = None
 
     version_component = path.split('_')[-1]
     if version_component.startswith('v'):
@@ -730,27 +737,37 @@ class AgentSummary:
     return cls(
         type=agent_type,
         delay=config['policy']['delay'],
-        character=character,
-        opponent=opponent,
+        characters=characters,
+        opponents=opponents,
         version=version,
     )
 
 def get_imitation_agents(
     models_path: str,
-    delay: int,
+    delay: Optional[int],
 ) -> dict[melee.Character, str]:
   models = os.listdir(models_path)
 
-  agent_summaries = {
-      model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
-      for model in models
-  }
+  imitation_agents = {}
+  for model in models:
+    summary = AgentSummary.from_checkpoint(os.path.join(models_path, model))
+    if not summary.type is AgentType.IMITATION:
+      continue
 
-  return {
-      summary.character: model
-      for model, summary in agent_summaries.items()
-      if summary.delay == delay and summary.type is AgentType.IMITATION
-  }
+    if summary.delay != delay:
+      continue
+
+    characters = summary.characters
+    if characters is None:
+      # TODO: add all legal characters?
+      continue
+
+    for character in characters:
+      if character in imitation_agents:
+        logging.warning(f'Got multiple imitation agents for {character}: {model}')
+      imitation_agents[character] = model
+
+  return imitation_agents
 
 def build_matchup_table(
       models_path: str,
@@ -773,18 +790,24 @@ def build_matchup_table(
 
   for model, summary in agent_summaries.items():
     if summary.type is AgentType.IMITATION:
-      imitation_agents[summary.character] = model
+      for char in summary.characters or []:
+        imitation_agents[char] = model
     else:
-      opponent_table = table.setdefault(summary.character, {})
+      if summary.characters is None:
+        # TODO: use all legal characters
+        continue
 
-      opponents: list[melee.Character] = [summary.opponent]
-      if summary.opponent is melee.Character.SHEIK:
-        opponents.append(melee.Character.ZELDA)
+      for char in summary.characters:
+        opponent_table = table.setdefault(char, {})
+        if summary.opponents is None:
+          # TODO: use all legal characters
+          continue
 
-      for opponent in opponents:
-        if opponent in opponent_table:
-          logging.warning(f'Got multiple agents for {summary.character} vs {opponent}')
-        opponent_table[opponent] = model
+        for opponent in summary.opponents:
+          if opponent in opponent_table:
+            existing_model = opponent_table[opponent]
+            logging.warning(f'Got multiple agents for {char} vs {opponent}: {existing_model}, {model}')
+          opponent_table[opponent] = model
 
   # Default to RL, then imitation.
   default_agents = imitation_agents.copy()
