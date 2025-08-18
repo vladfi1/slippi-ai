@@ -75,7 +75,7 @@ AGENT = ff.DEFINE_dict('agent', **agent_flags)
 BOT = flags.DEFINE_string('bot', None, 'Path to first bot agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
 
-MEDIUM_AGENT = flags.DEFINE_string('medium_agent', None, 'Path to medium agent.')
+DEFAULT_AGENT = flags.DEFINE_string('default_agent', None, 'Name of default agent.')
 
 @dataclasses.dataclass
 class SessionStatus:
@@ -176,8 +176,6 @@ class SingleAgent(AgentConfig):
   def character(self) -> melee.Character:
     self._load()
     chars = eval_lib.allowed_characters(self.state['config'])
-    if chars is None:
-      return self._character or melee.Character.FOX
 
     if self._character is not None:
       assert self._character in chars
@@ -443,7 +441,6 @@ def format_td(td: datetime.timedelta) -> str:
 
 auto_prefix = 'auto-'
 imitation_prefix = 'basic-'
-medium_prefix = 'medium-'
 
 def parse_auto_char(agent: str) -> Optional[melee.Character]:
   if not agent.startswith(auto_prefix):
@@ -457,13 +454,6 @@ def parse_imitation_char(agent: str) -> Optional[melee.Character]:
     return None
 
   char_str = agent.removeprefix(imitation_prefix)
-  return eval_lib.data.name_to_character.get(char_str)
-
-def parse_medium_char(agent: str) -> Optional[melee.Character]:
-  if not agent.startswith(medium_prefix):
-    return None
-
-  char_str = agent.removeprefix(medium_prefix)
   return eval_lib.data.name_to_character.get(char_str)
 
 def tokens(message: str) -> list[str]:
@@ -483,7 +473,7 @@ class Bot(commands.Bot):
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
       auto_delay: int = 18,
-      medium_agent: Optional[str] = None,
+      default_agent: Optional[str] = None,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -513,7 +503,7 @@ class Bot(commands.Bot):
     )
 
     self._models_path = models_path
-    self._medium_agent_path = medium_agent
+    self._default_agent = default_agent
     self._reload_models()
 
     if bot is None:
@@ -532,7 +522,6 @@ class Bot(commands.Bot):
     }
 
     # User-specific state.
-    self._requested_agents: dict[str, str] = {}
     self._requested_agent_configs: dict[str, AgentConfig] = {}
     self._play_codes: dict[str, str] = {}
     self._stages: dict[str, list[melee.Stage]] = {}
@@ -637,27 +626,11 @@ class Bot(commands.Bot):
       self._auto_agents[character] = agent_config
       add_agent(agent_config)
 
-    # medium agents
-    self._medium_agents: list[AgentConfig] = []
-    if self._medium_agent_path is not None:
-      medium_agent_summary = eval_lib.AgentSummary.from_checkpoint(
-          self._medium_agent_path)
-      # TODO: handle None = all agents
-      medium_characters = medium_agent_summary.characters
-
-      for char in medium_characters:
-        agent_config = self._single_agent(
-            path=self._medium_agent_path,
-            char=char,
-            name=medium_prefix + char.name.lower(),
-        )
-        self._special_agents.append(agent_config)
-        self._medium_agents.append(agent_config)
-        add_agent(agent_config)
-
-      # Make medium the default agent if it exists.
-      self._default_agent_config = self._medium_agents[0]
-
+    # Set default agent
+    if self._default_agent is not None:
+      if self._default_agent not in self._agents:
+        raise ValueError(f'Invalid default agent {self._default_agent}')
+      self._default_agent_config = self._agents[self._default_agent]
     else:
       if melee.Character.FOX in self._auto_agents:
         default_char = melee.Character.FOX
@@ -736,7 +709,6 @@ class Bot(commands.Bot):
 
     name = ctx.author.name
     assert isinstance(name, str)
-    self._requested_agents[name] = agent_name
     self._requested_agent_configs[name] = agent_config
     await ctx.send(f'{name} has selected {agent_name}')
 
@@ -891,10 +863,7 @@ class Bot(commands.Bot):
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    is_weak_agent = (
-        parse_imitation_char(agent_config.name)
-        or parse_medium_char(agent_config.name)
-    )
+    is_weak_agent = parse_imitation_char(agent_config.name)
 
     if is_weak_agent:
       config.save_replays = False
@@ -1134,7 +1103,7 @@ def main(_):
       bot_session_interval=BOT_SESSION_INTERVAL.value,
       bot=BOT.value,
       bot2=BOT2.value,
-      medium_agent=MEDIUM_AGENT.value,
+      default_agent=DEFAULT_AGENT.value,
   )
 
   try:
