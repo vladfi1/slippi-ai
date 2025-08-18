@@ -94,17 +94,14 @@ class AgentConfig:
   def check_allowed_chars(self, state: dict):
     allowed_chars = eval_lib.allowed_characters(state['config'])
 
-    if allowed_chars is None:  # None means all are allowed
-      return
-
     # Default to all characters used during imitation
     if not self.char:
       self.char = allowed_chars
       logging.info(f'Training on {[c.name for c in self.char]}')
-
-    for char in self.char:
-      if char not in allowed_chars:
-        raise ValueError(f'Character {char} not in {allowed_chars}')
+    else:
+      for char in self.char:
+        if char not in allowed_chars:
+          raise ValueError(f'Character {char} not in {allowed_chars}')
 
 class OpponentType(enum.Enum):
   CPU = 'cpu'
