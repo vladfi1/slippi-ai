@@ -95,9 +95,7 @@ class AgentConfig:
     if not self.char:
       return
 
-    allowed_chars = eval_lib.allowed_characters(state['config'])
-    if allowed_chars is None:  # None means all are allowed
-      return
+    allowed_chars = set(eval_lib.allowed_characters(state['config']))
 
     for char in self.char:
       if char not in allowed_chars:
