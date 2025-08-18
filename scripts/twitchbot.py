@@ -548,10 +548,10 @@ class Bot(commands.Bot):
   ) -> SingleAgent:
     if model is not None:
       if path is not None:
-        raise ValueError('Cannot specify both name and path for SingleAgent')
+        raise ValueError('Cannot specify both model and path for SingleAgent')
       path = os.path.join(self._models_path, model)
     elif path is None:
-      raise ValueError('Must specify either name or path for SingleAgent')
+      raise ValueError('Must specify either model or path for SingleAgent')
 
     return SingleAgent(
         agent_kwargs=dict(self.agent_kwargs, path=path),
@@ -587,7 +587,7 @@ class Bot(commands.Bot):
 
     # For inspection by the !config command
     self._model_configs: dict[str, dict] = {}
-    keys = ['step', 'config', 'rl_config', 'agent_config']
+    keys = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
 
     def add_agent(agent_config: AgentConfig):
       if agent_config.name in self._agents:
@@ -601,7 +601,18 @@ class Bot(commands.Bot):
       state = {k: state[k] for k in keys if k in state}
       self._model_configs[model] = state
 
-      add_agent(self._single_agent(model=model))
+      summary = eval_lib.AgentSummary.from_state(state)
+      if len(summary.characters) == 1:
+        add_agent(self._single_agent(model=model))
+      else:
+        for char in summary.characters:
+          agent_config = self._single_agent(
+              model=model, char=char,
+              name=model + '-' + char.name.lower())
+          add_agent(agent_config)
+
+          # Make these special for now, e.g. medium-fox, gm-falco, etc.
+          self._special_agents.append(agent_config)
 
     # imitation agents
     imitation_models = eval_lib.get_imitation_agents(
@@ -632,7 +643,7 @@ class Bot(commands.Bot):
       medium_agent_summary = eval_lib.AgentSummary.from_checkpoint(
           self._medium_agent_path)
       # TODO: handle None = all agents
-      medium_characters = medium_agent_summary.characters or []
+      medium_characters = medium_agent_summary.characters
 
       for char in medium_characters:
         agent_config = self._single_agent(
@@ -688,25 +699,19 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
-    # agents = [auto_prefix + c.name.lower() for c in self._matchup_table]
-    # for c in self._imitation_agents:
-    #   agents.append(imitation_prefix + c.name.lower())
-    # agents.extend(self._models)
-    agents = self._model_configs.keys()
-
     max_chars = 500
     chunks = [[]]
     chunk_size = 0
-    for model in sorted(agents):
+    for name in sorted(self._agents):
       chunk = chunks[-1]
-      new_chunk_size = chunk_size + len(model) + 1
+      new_chunk_size = chunk_size + len(name) + 1
       if new_chunk_size > max_chars:
         chunk = []
         chunks.append(chunk)
-        chunk_size = len(model)
+        chunk_size = len(name)
       else:
         chunk_size = new_chunk_size
-      chunk.append(model)
+      chunk.append(name)
 
     for chunk in chunks:
       message = " ".join(chunk)
