@@ -705,6 +705,8 @@ def build_agent(
     **agent_kwargs,
 ) -> Agent:
   if state is None:
+    if path is None:
+      raise ValueError('Must provide either state or path.')
     state = saving.load_state_from_disk(path)
 
   return Agent(
@@ -775,14 +777,6 @@ def get_player(
     return dolphin.CPU(character, level)
   raise ValueError(f'Unknown player type: {type}')
 
-def get_single_character(config: dict) -> tp.Optional[melee.Character]:
-  allowed_characters = config['dataset']['allowed_characters']
-  character_list = data.chars_from_string(allowed_characters)
-  if character_list is None or len(character_list) != 1:
-    return
-  return character_list[0]
-
-
 class AgentType(enum.Enum):
   IMITATION = enum.auto()
   RL = enum.auto()
@@ -791,13 +785,16 @@ class AgentType(enum.Enum):
 class AgentSummary:
   type: AgentType
   delay: int
-  characters: list[melee.Character] | None
-  opponents: list[melee.Character] | None
-  version: tuple[int, ...]
+  characters: list[melee.Character]
+  opponents: list[melee.Character]
 
   @classmethod
   def from_checkpoint(cls, path: str) -> 'AgentSummary':
     combined_state = saving.load_state_from_disk(path)
+    return cls.from_state(combined_state)
+
+  @classmethod
+  def from_state(cls, combined_state: dict[str, tp.Any]) -> 'AgentSummary':
     config = combined_state['config']
     characters = allowed_characters(config)
 
@@ -808,6 +805,7 @@ class AgentSummary:
       # Self-play RL can be multi-character
       rl_chars = agent_config.get('char')  # field was added more recently
       if rl_chars is not None:
+        # TODO: do actual deserialization of the json config
         characters = [melee.Character(c) for c in rl_chars]
       opponents = characters
     elif 'agent_config' in combined_state:
@@ -816,21 +814,13 @@ class AgentSummary:
       opponents = [data.name_to_character[combined_state['opponent']]]
     else:
       agent_type = AgentType.IMITATION
-      # TODO: read opponents from config, but by default it is all chars
-      opponents = None
-
-    version_component = path.split('_')[-1]
-    if version_component.startswith('v'):
-      version = tuple(map(int, version_component[1:].split('.')))
-    else:
-      version = (0,)
+      opponents = chars_from_string(config['dataset']['allowed_opponents'])
 
     return cls(
         type=agent_type,
         delay=config['policy']['delay'],
         characters=characters,
         opponents=opponents,
-        version=version,
     )
 
 def get_imitation_agents(
@@ -848,12 +838,7 @@ def get_imitation_agents(
     if summary.delay != delay:
       continue
 
-    characters = summary.characters
-    if characters is None:
-      # TODO: add all legal characters?
-      continue
-
-    for character in characters:
+    for character in summary.characters:
       if character in imitation_agents:
         logging.warning(f'Got multiple imitation agents for {character}: {model}')
       imitation_agents[character] = model
@@ -884,15 +869,8 @@ def build_matchup_table(
       for char in summary.characters or []:
         imitation_agents[char] = model
     else:
-      if summary.characters is None:
-        # TODO: use all legal characters
-        continue
-
       for char in summary.characters:
         opponent_table = table.setdefault(char, {})
-        if summary.opponents is None:
-          # TODO: use all legal characters
-          continue
 
         for opponent in summary.opponents:
           if opponent in opponent_table:
@@ -973,12 +951,46 @@ class EnsembleAgent:
     if self._agent:
       self._agent.stop()
 
-def allowed_characters(config: dict) -> tp.Optional[list[melee.Character]]:
-  return data.chars_from_string(config['dataset']['allowed_characters'])
+LEGAL_CHARACTERS = [
+    melee.Character.MARIO,
+    melee.Character.FOX,
+    melee.Character.CPTFALCON,
+    melee.Character.DK,
+    melee.Character.KIRBY,
+    melee.Character.BOWSER,
+    melee.Character.LINK,
+    melee.Character.SHEIK,
+    melee.Character.NESS,
+    melee.Character.PEACH,
+    melee.Character.POPO,
+    melee.Character.PIKACHU,
+    melee.Character.SAMUS,
+    melee.Character.YOSHI,
+    melee.Character.JIGGLYPUFF,
+    melee.Character.MEWTWO,
+    melee.Character.LUIGI,
+    melee.Character.MARTH,
+    melee.Character.ZELDA,
+    melee.Character.YLINK,
+    melee.Character.DOC,
+    melee.Character.FALCO,
+    melee.Character.PICHU,
+    melee.Character.GAMEANDWATCH,
+    melee.Character.GANONDORF,
+    melee.Character.ROY,
+]
+assert len(LEGAL_CHARACTERS) == 26
+
+def chars_from_string(chars_string: str) -> list[melee.Character]:
+  chars = data.chars_from_string(chars_string)
+  return LEGAL_CHARACTERS if chars is None else chars
+
+def allowed_characters(config: dict) -> list[melee.Character]:
+  return chars_from_string(config['dataset']['allowed_characters'])
 
 def update_character(player: dolphin.AI, config: dict):
   character_list = allowed_characters(config)
-  if character_list is None or player.character in character_list:
+  if player.character in character_list:
     return
 
   if len(character_list) == 1:
