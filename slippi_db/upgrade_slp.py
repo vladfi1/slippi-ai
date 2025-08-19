@@ -225,13 +225,14 @@ def check_same_metadata(
   return None
 
 def _upgrade_slp_in_archive(
-    local_file: utils.LocalFile,
+    local_file: utils.ZipFile,
     output_path: str,
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
     check_same_parse: bool = True,
     dolphin_timeout: Optional[int] = None,
     check_if_needed: bool = False,
+    expected_version: tuple[int, int, int] = (3, 18, 0),
 ) -> UpgradeResult:
   skipped = False
 
@@ -239,9 +240,11 @@ def _upgrade_slp_in_archive(
     tmp_parent_dir = utils.get_tmp_dir(in_memory=in_memory)
 
     with tempfile.TemporaryDirectory(dir=tmp_parent_dir) as tmp_dir:
+      raw_data = local_file.read_raw()
+
       slp_path = os.path.join(tmp_dir, 'game.slp')
       with open(slp_path, 'wb') as f:
-        f.write(local_file.read())  # TODO: extract directly
+        f.write(local_file.from_raw(raw_data))
 
       if check_if_needed and not needs_upgrade(slp_path):
         upgraded_path = slp_path
@@ -255,6 +258,9 @@ def _upgrade_slp_in_archive(
           game = peppi_py.read_slippi(slp_path)
           upgraded_game = peppi_py.read_slippi(upgraded_path)
 
+          if upgraded_game.start.slippi.version != expected_version:
+            return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
+
           error = check_same_metadata(game, upgraded_game)
           if error is not None:
             return UpgradeResult(local_file, 'metadata: ' + error)
@@ -265,14 +271,18 @@ def _upgrade_slp_in_archive(
           if errors:
             return UpgradeResult(local_file, 'different parse')
 
-      try:
-        subprocess.run(
-            ['slpz', '-x', upgraded_path, '-o', output_path],
-            check=True, capture_output=True, text=True)
-      except subprocess.CalledProcessError as e:
-        return UpgradeResult(local_file, 'slpz: ' + e.stderr)
+      if skipped and local_file.is_slpz:
+        with open(output_path, 'wb') as f:
+          f.write(raw_data)
+      else:
+        try:
+          subprocess.run(
+              ['slpz', '-x', upgraded_path, '-o', output_path],
+              check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+          return UpgradeResult(local_file, 'slpz: ' + e.stderr)
 
-  except Exception as e:
+  except BaseException as e:
     return UpgradeResult(local_file, type(e).__name__ + ": " + str(e), skipped=skipped)
 
   return UpgradeResult(local_file, None, skipped=skipped)
@@ -340,13 +350,15 @@ def upgrade_archive(
       for info in output_zip.infolist():
         if info.is_dir():
           continue
+        if not info.filename.endswith(utils.SLPZ_SUFFIX):
+          raise ValueError(f'Output archive {output_path} contains non-slpz file: {info.filename}')
         existing_outputs.add(info.filename)
     logging.info(f'Found {len(existing_outputs)} existing files in output archive')
 
   zf = zipfile.ZipFile(input_path, 'r')
   total_size = 0
   skipped_files = 0
-  files: list[utils.ZipFile] = []
+  todo: list[tuple[utils.ZipFile, str]] = []
 
   for zip_info in zf.infolist():
     if zip_info.is_dir():
@@ -355,8 +367,8 @@ def upgrade_archive(
     if not utils.is_slp_file(zip_info.filename):
       raise ValueError(f'Invalid file in archive: {zip_info.filename}')
 
-    # TODO: do this better
-    output_filename = zip_info.filename.removesuffix(utils.GZ_SUFFIX) + 'z'  # .slpz
+    local_file = utils.ZipFile(input_path, zip_info.filename)
+    output_filename = local_file.base_name + utils.SLPZ_SUFFIX
 
     if output_filename in existing_outputs:
       skipped_files += 1
@@ -364,12 +376,16 @@ def upgrade_archive(
 
     # True compression rate may be up to ~2x better thanks to slpz, if the
     # input is just a [g]zipped .slp file.
-    total_size += zip_info.compress_size
-    files.append(utils.ZipFile(input_path, zip_info.filename))
+    if local_file.is_slpz:
+      total_size += zip_info.file_size
+    else:
+      total_size += zip_info.compress_size * 0.6
+
+    todo.append((local_file, output_filename))
 
   zf.close()
 
-  logging.info(f'Found {len(files)} .slp files in archive, total size: {total_size / (2 ** 30):.2f} GB')
+  logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
 
   if skipped_files > 0:
     logging.info(f'Skipped {skipped_files} files that already exist in output archive')
@@ -394,8 +410,8 @@ def upgrade_archive(
 
     # Create output directories
     output_dirs = set()
-    for f in files:
-      output_dirs.add(os.path.join(output_dir, os.path.dirname(f.name)))
+    for _, output_file_path in todo:
+      output_dirs.add(os.path.join(output_dir, os.path.dirname(output_file_path)))
     for d in output_dirs:
       os.makedirs(d, exist_ok=True)
 
@@ -403,12 +419,10 @@ def upgrade_archive(
 
     if num_threads == 1:
       def results_iter1():
-        for f in files:
-          assert f.name.endswith('.slp')
-          output_file_path = os.path.join(output_dir, f.name + 'z')  # .slpz
+        for f, output_file_path in todo:
           yield _upgrade_slp_in_archive(
               local_file=f,
-              output_path=output_file_path,
+              output_path=os.path.join(output_dir, output_file_path),
               dolphin_config=dolphin_config,
               in_memory=True,
               check_same_parse=check_same_parse,
@@ -418,20 +432,18 @@ def upgrade_archive(
 
       results = _monitor_results(
           results_iter1(),
-          total_files=len(files),
+          total_files=len(todo),
           log_interval=log_interval,
       )
     else:
       with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
         try:
           futures: list[concurrent.futures.Future] = []
-          for f in files:
-            assert f.name.endswith('.slp')
-            output_file_path = os.path.join(output_dir, f.name + 'z')  # .slpz
+          for f, output_file_path in todo:
             futures.append(executor.submit(
                 _upgrade_slp_in_archive,
                 local_file=f,
-                output_path=output_file_path,
+                output_path=os.path.join(output_dir, output_file_path),
                 dolphin_config=dolphin_config,
                 in_memory=True,
                 check_same_parse=check_same_parse,
@@ -466,9 +478,8 @@ def upgrade_archive(
 
     # Write results to output zip
     # Files are individually compressed with slpz
-    command = ['zip', '-r', '-q', '-0']
-    command.extend([output_path, '.'])
-
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    command = ['zip', '-r', '-q', '-0', os.path.abspath(output_path), '.']
     subprocess.check_call(command, cwd=output_dir)
 
   print(f"Output saved to: {output_path}")
