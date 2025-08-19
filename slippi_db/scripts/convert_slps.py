@@ -143,8 +143,7 @@ def convert_zip_archive(
     output_dirs = set()  # Track output directories to create
     files = utils.traverse_slp_files_zip(input_zip_path)
     for f in files:
-      assert f.name.endswith('.slp'), f"Expected .slp file, got {f.name}"
-      output_name = Path(f.name).stem + '.' + output_type.value
+      output_name = f.base_name + '.' + output_type.value
       output_path = os.path.join(temp_output_dir, output_name)
       output_dirs.add(os.path.dirname(output_path))
       todo.append((f, output_path))

@@ -224,23 +224,49 @@ class ZipFile(LocalFile):
   def __init__(self, root: str, path: str):
     self.root = root
     self.path = path
+
+    suffix_found = False
+    for suffix in VALID_SUFFIXES:
+      if path.endswith(suffix):
+        suffix_found = True
+        self.suffix = suffix
+        break
+
+    if not suffix_found:
+      raise ValueError(f'{root}/{path} is not a valid Slippi file?')
+
+    self.base_name = self.path.removesuffix(self.suffix)
+
     self.is_gzipped = path.endswith(GZ_SUFFIX)
+    self.is_slpz = path.endswith(SLPZ_SUFFIX)
 
   @property
   def name(self) -> str:
-    return self.path.removesuffix(GZ_SUFFIX)
+    return self.base_name + _SLP_SUFFIX
 
-  def read(self) -> bytes:
+  def read_raw(self) -> bytes:
     try:
       result = subprocess.run(
           ['unzip', '-p', self.root, self.path],
-          check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
       raise FileReadException(e.stderr.decode()) from e
-    data = result.stdout
+    return result.stdout
+
+  def from_raw(self, data: bytes) -> bytes:
     if self.is_gzipped:
       data = gzip.decompress(data)
+
+    if self.is_slpz:
+      result = subprocess.run(
+          ['slpz', '-d', '-', '-o', '-'],
+          capture_output=True, input=data, check=True)
+      data = result.stdout
+
     return data
+
+  def read(self) -> bytes:
+    return self.from_raw(self.read_raw())
 
   @contextmanager
   def extract(self, tmpdir: str) -> Generator[str, None, None]:
@@ -363,7 +389,12 @@ def traverse_7z_fast(
   return [SevenZipChunk(path, chunk) for chunk in chunks]
 
 _SLP_SUFFIX = '.slp'
-VALID_SUFFIXES = [_SLP_SUFFIX, _SLP_SUFFIX + GZ_SUFFIX]
+SLPZ_SUFFIX = '.slpz'
+VALID_SUFFIXES = [
+    _SLP_SUFFIX,
+    _SLP_SUFFIX + GZ_SUFFIX,
+    SLPZ_SUFFIX,
+]
 
 def is_slp_file(path: str) -> bool:
   """Check if the file is a valid Slippi replay file."""
