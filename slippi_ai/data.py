@@ -381,6 +381,7 @@ class DataSource:
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
     if self.balance_characters:
+      # TODO: balance by opponent (i.e. matchup) too?
       by_character = collections.defaultdict(list)
       for replay in self.replays:
         by_character[replay.main_player.character].append(replay)
@@ -431,6 +432,7 @@ class DataSource:
   def __next__(self) -> Tuple[Batch, float]:
     batch: Batch = self.process_batch(
         [m.grab_chunk() for m in self.managers])
+    # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)
     self.batch_counter += 1
     assert batch.frames.state_action.state.stage.shape[-1] == self.chunk_size

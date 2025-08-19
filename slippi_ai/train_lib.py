@@ -249,6 +249,13 @@ def train(config: Config):
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
+  character_quantities = collections.Counter()
+  for replay in train_replays:
+    character_quantities[melee.Character(replay.main_player.character)] += 1
+  dataset_metrics = {
+      'characters': dict(character_quantities),
+  }
+
   if restored:
     name_map: dict[str, int] = combined_state['name_map']
   else:
@@ -318,6 +325,7 @@ def train(config: Config):
         config=dataclasses.asdict(config),
         name_map=name_map,
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
+        dataset_metrics=dataset_metrics,
     )
     pickled_state = pickle.dumps(combined_state)
 
