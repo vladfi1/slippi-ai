@@ -329,6 +329,7 @@ def read_table(path: str, compressed: bool) -> Game:
   game_struct = table['root'].combine_chunks()
   return game_array_to_nt(game_struct)
 
+
 class DataSource:
   def __init__(
       self,
@@ -341,6 +342,7 @@ class DataSource:
       # None means all allowed.
       allowed_characters: Optional[list[melee.Character]] = None,
       allowed_opponents: Optional[list[melee.Character]] = None,
+      balance_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
   ):
@@ -351,6 +353,7 @@ class DataSource:
     self.damage_ratio = damage_ratio
     self.compressed = compressed
     self.batch_counter = 0
+    self.balance_characters = balance_characters
 
     def build_observation_filter():
       if observation_config is None:
@@ -358,10 +361,10 @@ class DataSource:
       return observations.build_observation_filter(observation_config)
 
     self.replay_counter = 0
-    replays = self.iter_replays()
+    replays_iter = self.iter_replays()
     self.managers = [
         TrajectoryManager(
-            replays,
+            replays_iter,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             compressed=compressed,
@@ -377,6 +380,17 @@ class DataSource:
     self.observation_config = observation_config
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
+    if self.balance_characters:
+      by_character = collections.defaultdict(list)
+      for replay in self.replays:
+        by_character[replay.main_player.character].append(replay)
+
+      iterators = [itertools.cycle(replays) for replays in by_character.values()]
+      while True:
+        for it in iterators:
+          self.replay_counter += 1
+          yield next(it)
+
     for replay in itertools.cycle(self.replays):
       self.replay_counter += 1
       yield replay
@@ -496,6 +510,7 @@ class DataConfig:
   damage_ratio: float = 0.01
   compressed: bool = True
   num_workers: int = 0
+  balance_characters: bool = False
 
 def make_source(
     num_workers: int,
