@@ -49,12 +49,17 @@ class Randall(NamedTuple):
   x: np.float32
   y: np.float32
 
+class FoDPlatforms(NamedTuple):
+  left: np.float32
+  right: np.float32
+
 class Game(NamedTuple):
   p0: Player
   p1: Player
 
   stage: np.uint8
   randall: Randall
+  fod_platforms: FoDPlatforms
 
 
 # maps pyarrow types back to NamedTuples
