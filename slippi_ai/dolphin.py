@@ -9,7 +9,7 @@ import fancyflags as ff
 import portpicker
 
 import melee
-from melee.console import get_dolphin_version, DumpConfig, DolphinBuild
+from melee.console import get_dolphin_version, DumpConfig, DolphinBuild, default_dolphin_install_path
 
 class Player(abc.ABC):
 
@@ -80,6 +80,7 @@ class Dolphin:
     self.stage = stage
 
     platform = None
+    path = path or default_dolphin_install_path()
     version = get_dolphin_version(path)
 
     if render is None:
