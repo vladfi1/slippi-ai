@@ -67,7 +67,10 @@ def upgrade_config(config: dict):
     logging.warning('Upgraded config version 3 -> 4')
 
   if config['version'] == 4:
-    config['embed']['with_randall'] = False
+    config['embed'].update(
+        with_randall=False,
+        with_fod=False,
+    )
     config['version'] = 5
     logging.warning('Upgraded config version 4 -> 5')
 
@@ -108,6 +111,7 @@ def policy_from_config(config: dict) -> policies.Policy:
       embed_game=embed.make_game_embedding(
           player_config=config['embed']['player'],
           with_randall=config['embed']['with_randall'],
+          with_fod=config['embed']['with_fod'],
       ),
       **config['policy'],
   )

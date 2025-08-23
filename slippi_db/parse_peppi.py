@@ -4,6 +4,7 @@ import pyarrow as pa
 import melee
 from melee import Button
 import peppi_py
+import peppi_py.frame
 
 from slippi_ai import types
 
@@ -77,6 +78,8 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
   frames = peppi_game.frames
   assert frames is not None, 'Game has no frames'
 
+  game_length = len(frames.id)
+
   players = {}
   for i, player in enumerate(frames.ports):
     players[f'p{i}'] = get_player(player)
@@ -92,11 +95,38 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
     randall_x = np.zeros(len(frames.id), dtype=np.float32)
     randall_y = np.zeros(len(frames.id), dtype=np.float32)
 
+  # FoD Platforms
+  fod_platform_heights = [
+      np.zeros(game_length, dtype=np.float32),
+      np.zeros(game_length, dtype=np.float32),
+  ]
+
+  RIGHT = peppi_py.frame.FodPlatform.RIGHT
+  assert RIGHT.value == 0
+  LEFT = peppi_py.frame.FodPlatform.LEFT
+  assert LEFT.value == 1
+
+  if stage is melee.Stage.FOUNTAIN_OF_DREAMS:
+    assert frames.fod_platforms
+
+    # Initial heights are always 20 and 28
+    current_heights = [28., 20.]
+
+    for i, moves in enumerate(frames.fod_platforms):
+      for move in moves:
+        current_heights[move.platform.value] = move.height
+      for platform in (LEFT, RIGHT):
+        fod_platform_heights[platform.value][i] = current_heights[platform.value]
+
   game = types.Game(
-      stage=np.full([len(frames.id)], stage.value, dtype=np.uint8),
+      stage=np.full([game_length], stage.value, dtype=np.uint8),
       randall=types.Randall(
           x=randall_x.astype(np.float32),
           y=randall_y.astype(np.float32),
+      ),
+      fod_platforms=types.FoDPlatforms(
+          left=fod_platform_heights[LEFT.value],
+          right=fod_platform_heights[RIGHT.value],
       ),
       **players,
   )

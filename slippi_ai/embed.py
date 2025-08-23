@@ -16,7 +16,9 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 
 from slippi_ai import utils
-from slippi_ai.types import Buttons, Controller, Game, Nest, Player, Stick, Randall
+from slippi_ai.types import (
+  Buttons, Controller, Game, Nest, Player, Stick, Randall, FoDPlatforms,
+)
 from slippi_ai.controller_lib import LEGAL_BUTTONS
 from slippi_ai.data import Action, StateAction
 
@@ -414,7 +416,8 @@ _PORTS = (0, 1)
 # _SWAP_MAP = dict(zip(_PLAYERS, reversed(_PLAYERS)))
 
 def make_game_embedding(
-    with_randall: bool = False,
+    with_randall: bool = True,
+    with_fod: bool = True,
     player_config: dict = dataclasses.asdict(default_player_config),
 ):
   embed_player = make_player_embedding(**player_config)
@@ -429,11 +432,22 @@ def make_game_embedding(
         "randall", [], Randall)
     assert embed_randall.size == 0
 
+  if with_fod:
+    embed_height = FloatEmbedding("fod_height", scale=player_config['xy_scale'])
+    embed_fod = struct_embedding_from_nt(
+        "fod", FoDPlatforms(left=embed_height, right=embed_height))
+  else:
+    # Older agents don't use FoD
+    embed_fod = ordered_struct_embedding(
+        "fod", [], FoDPlatforms)
+    assert embed_fod.size == 0
+
   embedding = Game(
       p0=embed_player,
       p1=embed_player,
       stage=embed_stage,
       randall=embed_randall,
+      fod_platforms=embed_fod,
   )
 
   return struct_embedding_from_nt("game", embedding)
@@ -505,7 +519,8 @@ class ControllerConfig:
 class EmbedConfig:
   player: PlayerConfig = utils.field(PlayerConfig)
   controller: ControllerConfig = utils.field(ControllerConfig)
-  with_randall: bool = False
+  with_randall: bool = True
+  with_fod: bool = True
 
 NAME_DTYPE = np.int32
 

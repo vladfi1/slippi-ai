@@ -15,6 +15,7 @@ from slippi_ai.types import (
   Player,
   Stick,
   Randall,
+  FoDPlatforms,
   nt_to_nest,
 )
 
@@ -76,12 +77,21 @@ def get_game(
   else:
     randall_y = randall_x = 0.0
 
+  if game.fod_platforms:
+    fod_platforms = FoDPlatforms(
+        left=game.fod_platforms.left,
+        right=game.fod_platforms.right,
+    )
+  else:
+    fod_platforms = FoDPlatforms(np.float32(0), np.float32(0))
+
   return Game(
       stage=np.uint8(game.stage.value),
       randall=Randall(
-          x=randall_x,
-          y=randall_y,
+          x=np.float32(randall_x),
+          y=np.float32(randall_y),
       ),
+      fod_platforms=fod_platforms,
       **players,
   )
 
@@ -100,7 +110,7 @@ def get_slp(path: str) -> pa.StructArray:
   frames = []
 
   while gamestate:
-    if sorted(gamestate.player) != ports:
+    if sorted(gamestate.players) != ports:
       raise InvalidGameError(f'Ports changed on frame {len(frames)}')
     game = get_game(gamestate)
     frames.append(nt_to_nest(game))
