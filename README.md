@@ -6,7 +6,20 @@ This project is the successor to [Phillip](https://github.com/vladfi1/phillip). 
 
 The bot is available to play via netplay on my [twitch channel](https://twitch.tv/x_pilot).
 
-I am hesitant to release any trained agents as I don't want people using them on ranked/unranked, so at the moment the bot isn't available to play against locally.
+### Local Play
+
+Download or `git clone` this repository. From the repository root:
+
+```
+pip install -r requirements.txt
+pip install .
+
+python scripts/eval_two.py --dolphin.iso <path/to/ssbm.iso> --p1.type human --p2.ai.path <path/to/trained/model>
+```
+
+Tested with python 3.10 and 3.11.
+
+Note: on Windows you may need to [enable long paths](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell#registry-setting-to-enable-long-paths).
 
 ## Recordings
 
