@@ -59,6 +59,8 @@ class ItemStats:
     self.unknown_item_examples = {}  # Maps unknown item type to first occurrence info
     self.current_game_file = None  # Track current game file being processed
     self.archive_path = None  # Track source archive path
+    # Add misc field tracking
+    self.misc_counts = [defaultdict(int) for _ in range(4)]
 
   def add_game(self, peppi_game: peppi_py.Game, game_file: str = None):
     """Process a single game and update statistics."""
@@ -87,8 +89,11 @@ class ItemStats:
       items_in_frame = len(item_types)
       game_max_items_per_frame = max(game_max_items_per_frame, items_in_frame)
 
+      # Get misc fields if available
+      misc_fields = frame_items.misc
+
       # Process each item slot
-      for item_type, item_state in zip(item_types, item_states):
+      for i, (item_type, item_state) in enumerate(zip(item_types, item_states)):
         game_has_items = True
         items_in_game += 1
 
@@ -114,6 +119,11 @@ class ItemStats:
         self.item_state_counts[int(item_state)] += 1
         self.item_type_state_counts[item_name][int(item_state)] += 1
 
+        # Update misc field counts if available
+        if misc_fields is not None:
+          for misc_counts, misc_field in zip(self.misc_counts, misc_fields):
+            misc_counts[int(misc_field[i])] += 1
+
     if game_has_items:
       self.games_with_items += 1
       self.items_per_game.append(items_in_game)
@@ -136,6 +146,11 @@ class ItemStats:
     for item_type, states in other.item_type_state_counts.items():
       for state, count in states.items():
         self.item_type_state_counts[item_type][state] += count
+
+    # Merge misc field counts
+    for our_counts, other_counts in zip(self.misc_counts, other.misc_counts):
+      for k, v in other_counts.items():
+        our_counts[k] += v
 
     self.items_per_game.extend(other.items_per_game)
     self.max_items_per_frame = max(self.max_items_per_frame, other.max_items_per_frame)
@@ -160,6 +175,10 @@ class ItemStats:
       'item_type_state_counts': {
         item_type: {str(state): count for state, count in states.items()}
         for item_type, states in self.item_type_state_counts.items()
+      },
+      'misc_field_counts': {
+        f'misc{i}': list(counts.items())
+        for i, counts in enumerate(self.misc_counts)
       },
       'items_per_game_stats': {
         'mean': np.mean(self.items_per_game) if self.items_per_game else 0,
