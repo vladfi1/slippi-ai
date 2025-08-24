@@ -74,6 +74,7 @@ class Dolphin:
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
       connect_code: Optional[str] = None,
+      copy_home_directory: bool = False,
       **console_kwargs,
   ) -> None:
     self._players = players
@@ -118,7 +119,7 @@ class Dolphin:
         polling_mode=console_timeout is not None,
         polling_timeout=console_timeout,
         slippi_port=slippi_port,
-        copy_home_directory=False,
+        copy_home_directory=copy_home_directory,
         setup_gecko_codes=True,
         save_replays=save_replays,
         **console_kwargs,
@@ -245,6 +246,7 @@ class DolphinConfig:
   """Configure dolphin for evaluation."""
   path: Optional[str] = None  # Path to folder containing the dolphin executable
   iso: Optional[str] = None  # Path to melee 1.02 iso.
+  copy_home_directory: bool = False  # Copy the dolphin home directory to a temp location.
   stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
   online_delay: int = 0  # Simulate online delay.
   blocking_input: bool = True  # Have game wait for AIs to send inputs.
