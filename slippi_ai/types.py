@@ -1,3 +1,13 @@
+"""Parsed games are stored as Arrow `GAME_TYPE` StructArrays.
+
+For each Struct[Array] type, we define a corresponding NamedTuple for easier
+manipulation and type checking in Python. The type annotations in these
+are scalars, but in practice they are often arrays of the given type with a
+time and/or batch dimension.
+TODO: use the "returns" library + mypy to get higher-kinded types working.
+"""
+
+
 import functools
 from typing import Mapping, NamedTuple, TypeVar, Union
 import numpy as np
@@ -7,6 +17,8 @@ from melee.enums import Button
 
 T = TypeVar('T')
 Nest = Union[Mapping[str, 'Nest'], T]
+
+
 
 # we define NamedTuples for python typechecking and IDE integration
 
@@ -53,6 +65,21 @@ class FoDPlatforms(NamedTuple):
   left: np.float32
   right: np.float32
 
+MAX_ITEMS = 15  # Maximum number of items per frame
+
+class Item(NamedTuple):
+  type: np.uint16
+  state: np.uint8
+  # owner?
+  # facing: np.float32
+  x: np.float32
+  y: np.float32
+
+
+Items = NamedTuple('Items', [
+    (f'item_{i}', Item) for i in range(MAX_ITEMS)
+])
+
 class Game(NamedTuple):
   p0: Player
   p1: Player
@@ -60,6 +87,8 @@ class Game(NamedTuple):
   stage: np.uint8
   randall: Randall
   fod_platforms: FoDPlatforms
+
+  items: Items
 
 
 # maps pyarrow types back to NamedTuples
@@ -116,7 +145,7 @@ def array_to_nest(val: pa.Array) -> Nest[np.ndarray]:
     assert val.type.num_fields == 0
     return val.to_numpy(zero_copy_only=False)
 
-def array_to_nt(nt: type, val: pa.Array) -> Union[tuple, np.ndarray]:
+def array_to_nt(nt: type[T], val: pa.Array) -> T:
   if issubclass(nt, tuple):
     assert isinstance(val.type, pa.StructType)
     result = {}

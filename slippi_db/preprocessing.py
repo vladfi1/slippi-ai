@@ -16,10 +16,10 @@ from slippi_ai import types
 def assert_same_parse(game_path: str):
   peppi_game_raw = peppi_py.read_slippi(game_path)
   peppi_game = parse_peppi.from_peppi(peppi_game_raw)
-  peppi_game = types.array_to_nest(peppi_game)
+  peppi_game = types.array_to_nt(types.Game, peppi_game)
 
   libmelee_game = parse_libmelee.get_slp(game_path)
-  libmelee_game = types.array_to_nest(libmelee_game)
+  libmelee_game = types.array_to_nt(types.Game, libmelee_game)
 
   # def assert_equal(path, pv):
   #   lv = libmelee_game
@@ -37,10 +37,9 @@ def assert_same_parse(game_path: str):
   # tree.map_structure_with_path(assert_equal, peppi_game)
 
   def assert_equal(path, x, y):
-    try:
-      np.testing.assert_equal(x, y)
-    except AssertionError as e:
-      raise AssertionError(path) from e
+    diff_indices = np.arange(len(x))[x != y]
+    if diff_indices.size > 0:
+      raise AssertionError(f'{path} differs at indices {diff_indices[:5].tolist()}')
 
   tree.map_structure_with_path(assert_equal, peppi_game, libmelee_game)
 
