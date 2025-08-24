@@ -133,12 +133,22 @@ class Dolphin:
     self._connect_code = connect_code
 
     for port, player in players.items():
+      skip_controller = False
+
+      if isinstance(player, Human):
+        self._autostart = False
+        # Don't overwrite user's controller config
+        if copy_home_directory:
+          skip_controller = True
+
+      if skip_controller:
+        continue
+
       controller = melee.Controller(
           console, port, player.controller_type())
       self.controllers[port] = controller
-      if isinstance(player, Human):
-        self._autostart = False
-      else:
+
+      if not isinstance(player, Human):
         self._menuing_controllers.append((controller, player))
 
     console.run(
