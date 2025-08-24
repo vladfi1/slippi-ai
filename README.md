@@ -4,7 +4,7 @@ This project is the successor to [Phillip](https://github.com/vladfi1/phillip). 
 
 ## Playing the Bot
 
-The bot is available to play via netplay on my [twitch channel](https://twitch.tv/x_pilot).
+The bot is available to play via netplay on my [twitch channel](https://twitch.tv/x_pilot). Due to phillip's high delay (18+ frames) and buffer donation, it should feel like playing locally at up to 300ms ping.
 
 ### Local Play
 
@@ -12,14 +12,17 @@ Download or `git clone` this repository. From the repository root:
 
 ```
 pip install -r requirements.txt
-pip install .
+pip install -e .
 
-python scripts/eval_two.py --dolphin.iso <path/to/ssbm.iso> --p1.type human --p2.ai.path <path/to/trained/model>
+python scripts/eval_two.py --dolphin.iso <path/to/ssbm.iso> --p1.type human --p2.ai.path <path/to/trained/model> [--dolphin.copy_home_directory]
+
+python scripts/eval_two.py --help  # to get a full list of options
 ```
 
-Tested with python 3.10 and 3.11.
-
-Note: on Windows you may need to [enable long paths](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell#registry-setting-to-enable-long-paths).
+#### Notes
+* Tested with python 3.10 and 3.11.
+* By default phillip sets up human players as using Wii-U controller adapters. If you want to use your own dolphin configuration (including controller config) pass `--dolphin.copy_home_directory`. You still need to specify which player (p1 or p2) is human.
+* On Windows you may need to [enable long paths](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell#registry-setting-to-enable-long-paths) in order for the pip installs to work.
 
 ## Recordings
 
