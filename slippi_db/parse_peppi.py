@@ -6,7 +6,7 @@ from melee import Button
 import peppi_py
 import peppi_py.frame
 
-from slippi_ai import types
+from slippi_ai import types, utils
 
 BUTTON_MASKS = {
     Button.BUTTON_A: 0x0100,
@@ -53,7 +53,6 @@ def get_player(player: peppi_py.frame.PortData) -> types.Player:
       x=position.x,
       y=position.y,
       action=post.state,
-      # libmelee does extra processing to determine invulnerability
       invulnerable=post.hurtbox_state.to_numpy() != 0,
       character=post.character,  # uint8
       jumps_left=post.jumps,  # uint8
@@ -73,6 +72,36 @@ RANDALL_HLR = np.array([
     melee.stages.randall_position(frame)
     for frame in range(RANDALL_INTERVAL)
 ])
+
+_ITEM_TYPE_STRUCT = utils.reify_tuple_type(types.Item)
+
+def _copy_pa_into_np(pa_array: pa.Array, np_array: np.ndarray):
+  np_array[:len(pa_array)] = pa_array.to_numpy()
+
+def parse_items(
+    game_length: int,
+    peppi_items: list[peppi_py.frame.Item] | None,
+) -> types.Items:
+  transposed_items = utils.map_nt(
+      lambda t: np.zeros([game_length, types.MAX_ITEMS], dtype=t),
+      _ITEM_TYPE_STRUCT,
+  )
+
+  if peppi_items is not None:
+    assert len(peppi_items) == game_length
+
+    for frame, peppi_item in enumerate(peppi_items):
+      _copy_pa_into_np(peppi_item.type, transposed_items.type[frame])
+      _copy_pa_into_np(peppi_item.state, transposed_items.state[frame])
+      _copy_pa_into_np(peppi_item.position.x, transposed_items.x[frame])
+      _copy_pa_into_np(peppi_item.position.y, transposed_items.y[frame])
+
+  items = utils.map_nt(np.transpose, transposed_items)
+
+  return types.Items(**{
+      f'item_{i}': utils.map_nt(lambda x: x[i], items)
+      for i in range(types.MAX_ITEMS)
+  })
 
 def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
   frames = peppi_game.frames
@@ -106,9 +135,7 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
   LEFT = peppi_py.frame.FodPlatform.LEFT
   assert LEFT.value == 1
 
-  if stage is melee.Stage.FOUNTAIN_OF_DREAMS:
-    assert frames.fod_platforms
-
+  if stage is melee.Stage.FOUNTAIN_OF_DREAMS and frames.fod_platforms:
     # Initial heights are always 20 and 28
     current_heights = [28., 20.]
 
@@ -128,6 +155,7 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
           left=fod_platform_heights[LEFT.value],
           right=fod_platform_heights[RIGHT.value],
       ),
+      items=parse_items(game_length, frames.items),
       **players,
   )
   game_array = types.array_from_nt(game)

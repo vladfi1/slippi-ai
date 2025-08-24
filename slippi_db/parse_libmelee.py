@@ -5,6 +5,8 @@ import pyarrow as pa
 
 import melee
 
+from slippi_ai import utils
+
 from slippi_ai.types import (
   GAME_TYPE,
   LIBMELEE_BUTTONS,
@@ -16,6 +18,7 @@ from slippi_ai.types import (
   Stick,
   Randall,
   FoDPlatforms,
+  Item, Items,
   nt_to_nest,
 )
 
@@ -61,6 +64,20 @@ def get_player(player: melee.PlayerState) -> Player:
       # player.speed_y_self,
   )
 
+# TODO: have an actual flag for unused items?
+_EMPTY_ITEMS = utils.map_nt(
+    lambda t: t(0),
+    utils.reify_tuple_type(Items)
+)
+
+def get_item(projectile: melee.Projectile) -> Item:
+  return Item(
+      type=np.uint16(projectile.type.value),
+      state=np.uint8(projectile.subtype),
+      x=projectile.position.x,
+      y=projectile.position.y,
+  )
+
 def get_game(
     game: melee.GameState,
     ports: Optional[Sequence[int]] = None,
@@ -85,6 +102,10 @@ def get_game(
   else:
     fod_platforms = FoDPlatforms(np.float32(0), np.float32(0))
 
+  items = _EMPTY_ITEMS._replace(
+      **{f'item_{i}': get_item(item) for i, item in enumerate(game.projectiles)}
+  )
+
   return Game(
       stage=np.uint8(game.stage.value),
       randall=Randall(
@@ -92,6 +113,7 @@ def get_game(
           y=np.float32(randall_y),
       ),
       fod_platforms=fod_platforms,
+      items=items,
       **players,
   )
 
