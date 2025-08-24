@@ -3,6 +3,7 @@ import io
 from typing import Optional
 import zlib
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -51,3 +52,34 @@ def convert_game(
     level = -1 if compression_level is None else compression_level
     pq_bytes = zlib.compress(pq_bytes, level=level)
   return pq_bytes
+
+
+ItemId = np.uint32
+
+class ItemAssigner:
+  """Make sure that items stay in the same slot across frames."""
+
+  def __init__(self, num_slots: int = types.MAX_ITEMS):
+    self.item_assignments: dict[ItemId, int] = {}
+    self.free_slots = list(range(num_slots))
+    self.free_slots.reverse()
+
+  def assign(self, item_ids: list[ItemId]) -> list[int]:
+    # First free item slots for items that have disappeared
+    ids_set = set(item_ids)
+    for item_id in list(self.item_assignments):
+      if item_id not in ids_set:
+        self.free_slots.append(self.item_assignments.pop(item_id))
+
+    slots = []
+
+    # Now assign new item IDs to free slots
+    for item_id in item_ids:
+      if item_id not in self.item_assignments:
+        slot = self.free_slots.pop()
+        self.item_assignments[item_id] = slot
+        slots.append(slot)
+      else:
+        slots.append(self.item_assignments[item_id])
+
+    return slots

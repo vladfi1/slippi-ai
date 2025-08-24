@@ -7,6 +7,7 @@ import peppi_py
 import peppi_py.frame
 
 from slippi_ai import types, utils
+from slippi_db import parsing_utils
 
 BUTTON_MASKS = {
     Button.BUTTON_A: 0x0100,
@@ -75,9 +76,6 @@ RANDALL_HLR = np.array([
 
 _ITEM_TYPE_STRUCT = utils.reify_tuple_type(types.Item)
 
-def _copy_pa_into_np(pa_array: pa.Array, np_array: np.ndarray):
-  np_array[:len(pa_array)] = pa_array.to_numpy()
-
 def parse_items(
     game_length: int,
     peppi_items: list[peppi_py.frame.Item] | None,
@@ -90,11 +88,23 @@ def parse_items(
   if peppi_items is not None:
     assert len(peppi_items) == game_length
 
+    assigner = parsing_utils.ItemAssigner()
+
     for frame, peppi_item in enumerate(peppi_items):
-      _copy_pa_into_np(peppi_item.type, transposed_items.type[frame])
-      _copy_pa_into_np(peppi_item.state, transposed_items.state[frame])
-      _copy_pa_into_np(peppi_item.position.x, transposed_items.x[frame])
-      _copy_pa_into_np(peppi_item.position.y, transposed_items.y[frame])
+      slots = assigner.assign(peppi_item.id.to_numpy())
+
+      to_copy = [
+          (peppi_item.type, transposed_items.type),
+          (peppi_item.state, transposed_items.state),
+          (peppi_item.position.x, transposed_items.x),
+          (peppi_item.position.y, transposed_items.y),
+      ]
+
+      for pa, dst in to_copy:
+        assert len(pa) == len(slots)
+        dst[frame][slots] = pa.to_numpy()
+
+      transposed_items.exists[frame][slots] = True
 
   items = utils.map_nt(np.transpose, transposed_items)
 
@@ -102,6 +112,9 @@ def parse_items(
       f'item_{i}': utils.map_nt(lambda x: x[i], items)
       for i in range(types.MAX_ITEMS)
   })
+
+def read_slippi(path: str) -> peppi_py.Game:
+  return peppi_py.read_slippi(path, rollback_mode=peppi_py.RollbackMode.FIRST)
 
 def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
   frames = peppi_game.frames
@@ -158,18 +171,7 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
       items=parse_items(game_length, frames.items),
       **players,
   )
-  game_array = types.array_from_nt(game)
-
-  index = frames.id.to_numpy()
-  first_indices = []
-  next_idx = index[0]
-  assert next_idx == -123
-  for i, idx in enumerate(index):
-    if idx == next_idx:
-      first_indices.append(i)
-      next_idx += 1
-  return game_array.take(first_indices)
+  return types.array_from_nt(game)
 
 def get_slp(path: str) -> types.GAME_TYPE:
-  game = peppi_py.read_slippi(path)
-  return from_peppi(game)
+  return from_peppi(read_slippi(path))

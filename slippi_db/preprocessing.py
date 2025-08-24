@@ -14,7 +14,7 @@ from slippi_db import parse_peppi
 from slippi_ai import types
 
 def assert_same_parse(game_path: str):
-  peppi_game_raw = peppi_py.read_slippi(game_path)
+  peppi_game_raw = parse_peppi.read_slippi(game_path)
   peppi_game = parse_peppi.from_peppi(peppi_game_raw)
   peppi_game = types.array_to_nt(types.Game, peppi_game)
 
@@ -176,6 +176,7 @@ def get_metadata(game: peppi_py.Game) -> dict:
 
 def get_metadata_safe(path: str) -> dict:
   try:
+    # Sadly skip_frames=True crashed on some replays
     game = peppi_py.read_slippi(path)
     return get_metadata(game)
   except BaseException as e:

@@ -6,7 +6,6 @@ import pyarrow as pa
 import melee
 
 from slippi_ai import utils
-
 from slippi_ai.types import (
   GAME_TYPE,
   LIBMELEE_BUTTONS,
@@ -18,9 +17,10 @@ from slippi_ai.types import (
   Stick,
   Randall,
   FoDPlatforms,
-  Item, Items,
+  Item, Items, MAX_ITEMS,
   nt_to_nest,
 )
+from slippi_db import parsing_utils
 
 def get_stick(stick: Tuple[float]) -> Stick:
   return Stick(*map(np.float32, stick))
@@ -64,6 +64,12 @@ def get_player(player: melee.PlayerState) -> Player:
       # player.speed_y_self,
   )
 
+_EMPTY_ITEM = utils.map_nt(
+  lambda t: t(0),
+  utils.reify_tuple_type(Item)
+)
+assert not _EMPTY_ITEM.exists
+
 # TODO: have an actual flag for unused items?
 _EMPTY_ITEMS = utils.map_nt(
     lambda t: t(0),
@@ -72,70 +78,88 @@ _EMPTY_ITEMS = utils.map_nt(
 
 def get_item(projectile: melee.Projectile) -> Item:
   return Item(
+      exists=True,
       type=np.uint16(projectile.type.value),
       state=np.uint8(projectile.subtype),
       x=projectile.position.x,
       y=projectile.position.y,
   )
 
-def get_game(
-    game: melee.GameState,
-    ports: Optional[Sequence[int]] = None,
-) -> Game:
-  ports = ports or sorted(game.players)
-  assert len(ports) == 2
-  players = {
-      f'p{i}': get_player(game.players[p])
-      for i, p in enumerate(ports)}
+class Parser:
 
-  if game.stage is melee.Stage.YOSHIS_STORY:
-    randall_y, randall_x_left, randall_x_right = melee.randall_position(game.frame)
-    randall_x = (randall_x_left + randall_x_right) / 2
-  else:
-    randall_y = randall_x = 0.0
+  def __init__(self, path: str):
+    self.console = melee.Console(
+      is_dolphin=False,
+      allow_old_version=True,
+      path=path)
+    self.console.connect()
 
-  if game.fod_platforms:
-    fod_platforms = FoDPlatforms(
-        left=game.fod_platforms.left,
-        right=game.fod_platforms.right,
+    self.item_assigner = parsing_utils.ItemAssigner()
+
+  def get_game(
+      self,
+      game: melee.GameState,
+      ports: Optional[Sequence[int]] = None,
+  ) -> Game:
+    ports = ports or sorted(game.players)
+    assert len(ports) == 2
+    players = {
+        f'p{i}': get_player(game.players[p])
+        for i, p in enumerate(ports)}
+
+    if game.stage is melee.Stage.YOSHIS_STORY:
+      randall_y, randall_x_left, randall_x_right = melee.randall_position(game.frame)
+      randall_x = (randall_x_left + randall_x_right) / 2
+    else:
+      randall_y = randall_x = 0.0
+
+    if game.fod_platforms:
+      fod_platforms = FoDPlatforms(
+          left=game.fod_platforms.left,
+          right=game.fod_platforms.right,
+      )
+    else:
+      fod_platforms = FoDPlatforms(np.float32(0), np.float32(0))
+
+    # Items
+    slots = self.item_assigner.assign(
+        [item.spawn_id for item in game.projectiles]
     )
-  else:
-    fod_platforms = FoDPlatforms(np.float32(0), np.float32(0))
 
-  items = _EMPTY_ITEMS._replace(
-      **{f'item_{i}': get_item(item) for i, item in enumerate(game.projectiles)}
-  )
+    items_dict = {}
+    for slot, item in zip(slots, game.projectiles):
+      items_dict[f'item_{slot}'] = get_item(item)
 
-  return Game(
-      stage=np.uint8(game.stage.value),
-      randall=Randall(
-          x=np.float32(randall_x),
-          y=np.float32(randall_y),
-      ),
-      fod_platforms=fod_platforms,
-      items=items,
-      **players,
-  )
+    items = _EMPTY_ITEMS._replace(**items_dict)
+
+    return Game(
+        stage=np.uint8(game.stage.value),
+        randall=Randall(
+            x=np.float32(randall_x),
+            y=np.float32(randall_y),
+        ),
+        fod_platforms=fod_platforms,
+        items=items,
+        **players,
+    )
+
+  def get_slp(self) -> pa.StructArray:
+    """Processes a slippi replay file."""
+    gamestate = self.console.step()
+    ports = sorted(gamestate.players)
+    if len(ports) != 2:
+      raise InvalidGameError(f'Not a 2-player game.')
+
+    frames = []
+
+    while gamestate:
+      if sorted(gamestate.players) != ports:
+        raise InvalidGameError(f'Ports changed on frame {len(frames)}')
+      game = self.get_game(gamestate, ports=ports)
+      frames.append(nt_to_nest(game))
+      gamestate = self.console.step()
+
+    return pa.array(frames, type=GAME_TYPE)
 
 def get_slp(path: str) -> pa.StructArray:
-  """Processes a slippi replay file."""
-  console = melee.Console(is_dolphin=False,
-                          allow_old_version=True,
-                          path=path)
-  console.connect()
-
-  gamestate = console.step()
-  ports = sorted(gamestate.players)
-  if len(ports) != 2:
-    raise InvalidGameError(f'Not a 2-player game.')
-
-  frames = []
-
-  while gamestate:
-    if sorted(gamestate.players) != ports:
-      raise InvalidGameError(f'Ports changed on frame {len(frames)}')
-    game = get_game(gamestate)
-    frames.append(nt_to_nest(game))
-    gamestate = console.step()
-
-  return pa.array(frames, type=GAME_TYPE)
+    return Parser(path).get_slp()

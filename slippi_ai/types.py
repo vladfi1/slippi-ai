@@ -68,6 +68,7 @@ class FoDPlatforms(NamedTuple):
 MAX_ITEMS = 15  # Maximum number of items per frame
 
 class Item(NamedTuple):
+  exists: bool  # Is the Item slot used
   type: np.uint16
   state: np.uint8
   # owner?
