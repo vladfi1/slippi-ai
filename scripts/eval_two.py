@@ -42,6 +42,7 @@ PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **player_flags) for p in PORTS}
 dolphin_config = dolphin_lib.DolphinConfig(
     headless=False,
     infinite_time=False,
+    online_delay=2,
     path=os.environ.get('DOLPHIN_PATH'),
     iso=os.environ.get('ISO_PATH'),
 )
