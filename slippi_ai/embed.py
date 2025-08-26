@@ -434,13 +434,12 @@ embed_char = OneHotEmbedding('Character', size=0x21, dtype=np.uint8)
 # puff and kirby have 6 jumps
 embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
 
-def make_player_embedding(
+def _base_player_embedding(
     xy_scale: float = 0.05,
     shield_scale: float = 0.01,
     speed_scale: float = 0.5,
     with_speeds: bool = False,
-    with_controller: bool = True,
-) -> StructEmbedding[Player]:
+) -> list[tuple[str, Embedding]]:
   embed_xy = FloatEmbedding("xy", scale=xy_scale)
 
   embedding = [
@@ -460,11 +459,6 @@ def make_player_embedding(
       ("on_ground", embed_bool),
   ]
 
-  if with_controller:
-    # TODO: make this configurable
-    embed_controller_default = get_controller_embedding()  # continuous sticks
-    embedding.append(('controller', embed_controller_default))
-
   if with_speeds:
     embed_speed = FloatEmbedding("speed", scale=speed_scale)
     embedding.extend([
@@ -474,6 +468,35 @@ def make_player_embedding(
         ('speed_x_attack', embed_speed),
         ('speed_y_attack', embed_speed),
     ])
+
+  return embedding
+
+def make_player_embedding(
+    xy_scale: float = 0.05,
+    shield_scale: float = 0.01,
+    speed_scale: float = 0.5,
+    with_speeds: bool = False,
+    with_controller: bool = False,
+    with_nana: bool = True,
+) -> StructEmbedding[Player]:
+  embedding = _base_player_embedding(
+      xy_scale=xy_scale,
+      shield_scale=shield_scale,
+      speed_scale=speed_scale,
+      with_speeds=with_speeds,
+  )
+
+  if with_nana:
+    nana_embedding = embedding.copy()
+    nana_embedding.append(('exists', embed_bool))
+    embed_nana = ordered_struct_embedding(
+        "nana", nana_embedding, types.Nana)
+    embedding.append(('nana', embed_nana))
+
+  if with_controller:
+    # TODO: make this configurable
+    embed_controller_default = get_controller_embedding()  # continuous sticks
+    embedding.append(('controller', embed_controller_default))
 
   return ordered_struct_embedding("player", embedding, Player)
 
@@ -486,6 +509,7 @@ class PlayerConfig:
   # don't use opponent's controller
   # our own will be embedded separately
   with_controller: bool = False
+  with_nana: bool = True
 
 default_player_config = PlayerConfig()
 
