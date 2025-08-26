@@ -17,11 +17,11 @@ import melee
 
 from slippi_ai import (
   embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
-  observations, flag_utils, train_lib
+  observations, flag_utils
 )
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
-from slippi_db.parse_libmelee import get_game
+from slippi_db.parse_libmelee import Parser
 
 def disable_gpus():
   tf.config.set_visible_devices([], 'GPU')
@@ -601,9 +601,10 @@ class Agent:
     if new_game:
       self.update_name()
       self._observation_filter.reset()
+      self._parser = Parser(ports=self.players)
 
     needs_reset = np.array([new_game])
-    game = get_game(gamestate, ports=self.players)
+    game = self._parser.get_game(gamestate)
     game = self._observation_filter.filter(game)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
 

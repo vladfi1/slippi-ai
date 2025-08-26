@@ -1,10 +1,9 @@
 import abc
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 import tree
 import sonnet as snt
 import tensorflow as tf
-from tensorflow import Tensor
 
 from slippi_ai import tf_utils
 
