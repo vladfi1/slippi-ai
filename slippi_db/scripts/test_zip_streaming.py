@@ -149,7 +149,7 @@ def producer_function(
           remaining = total_files - files_processed
           eta = remaining / rate if rate > 0 else 0
           print(f"\rStreamed {files_processed}/{total_files} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
-    
+
     if total_files > 0:  # Ensure we end the progress line
       print()
 
@@ -231,7 +231,7 @@ def streaming_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple]
   producer_proc.start()
 
   # Start workers using multiprocessing.Process directly
-  worker_processes = []
+  worker_processes: list[mp.Process] = []
   for _ in range(num_processes):
     worker_proc = mp.Process(
         target=worker_function,
@@ -239,10 +239,16 @@ def streaming_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple]
     worker_proc.start()
     worker_processes.append(worker_proc)
 
-  results = []
-  for _ in range(total_files):
-    result = results_queue.get()
-    results.append(result)
+  try:
+    results = []
+    for _ in range(total_files):
+      result = results_queue.get()
+      results.append(result)
+  except KeyboardInterrupt:
+    producer_proc.terminate()
+    for worker_proc in worker_processes:
+      worker_proc.terminate()
+    raise
 
   # Wait for all workers to finish
   for worker_proc in worker_processes:
@@ -301,39 +307,44 @@ def standard_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple],
         remaining = len(files) - processed
         eta = remaining / rate if rate > 0 else 0
         print(f"\rProcessed {processed}/{len(files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
-    
+
     if len(files) > 0:
       print()  # End the progress line
   else:
     # Multi-process processing
     start_time = time.perf_counter()
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
-      # Submit all tasks
-      futures = {executor.submit(process_single_file, file_obj): file_obj
-            for file_obj in files}
+      try:
+        # Submit all tasks
+        futures = {executor.submit(process_single_file, file_obj): file_obj
+              for file_obj in files}
 
-      # Process completed futures
-      completed_count = 0
-      for future in concurrent.futures.as_completed(futures):
-        try:
-          result = future.result()
-          results.append(result)
-          completed_count += 1
+        # Process completed futures
+        completed_count = 0
+        for future in concurrent.futures.as_completed(futures):
+          try:
+            result = future.result()
+            results.append(result)
+            completed_count += 1
 
-          if completed_count % 10 == 0 or completed_count == len(files):
-            elapsed = time.perf_counter() - start_time
-            rate = completed_count / elapsed if elapsed > 0 else 0
-            remaining = len(files) - completed_count
-            eta = remaining / rate if rate > 0 else 0
-            print(f"\rProcessed {completed_count}/{len(files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
+            if completed_count % 10 == 0 or completed_count == len(files):
+              elapsed = time.perf_counter() - start_time
+              rate = completed_count / elapsed if elapsed > 0 else 0
+              remaining = len(files) - completed_count
+              eta = remaining / rate if rate > 0 else 0
+              print(f"\rProcessed {completed_count}/{len(files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
 
-        except Exception as e:
-          file_obj = futures[future]
-          print(f"Error processing {file_obj.path}: {e}")
-          results.append((file_obj.path, "ERROR", 0))
-    
-    if len(files) > 0:
-      print()  # End the progress line
+          except Exception as e:
+            file_obj = futures[future]
+            print(f"Error processing {file_obj.path}: {e}")
+            results.append((file_obj.path, "ERROR", 0))
+
+        if len(files) > 0:
+          print()  # End the progress line
+
+      except KeyboardInterrupt:
+        executor.shutdown(cancel_futures=True)
+        raise
 
   elapsed = time.perf_counter() - start_time
 
