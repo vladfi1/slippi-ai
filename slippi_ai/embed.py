@@ -16,6 +16,7 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow_probability as tfp
+import sonnet as snt
 
 from slippi_ai import utils, types
 from slippi_ai.types import (
@@ -29,7 +30,7 @@ float_type = tf.float32
 In = TypeVar('In')
 Out = TypeVar('Out')
 
-class Embedding(Generic[In, Out], abc.ABC):
+class Embedding(Generic[In, Out], abc.ABC, snt.Module):
   """Embeds game type (In) into tf-ready type Out."""
 
   def from_state(self, state: In) -> Out:
@@ -80,7 +81,7 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
   dtype = np.bool_
 
   def __init__(self, name='bool', on=1., off=0.):
-    self.name = name
+    super().__init__(name=name)
     self.on = on
     self.off = off
 
@@ -117,6 +118,7 @@ class BitwiseEmbedding(Embedding[int, tuple[bool, ...]]):
       self,
       num_bits: int
   ):
+    super().__init__(name=f'bitwise_{num_bits}')
     self.size = num_bits
 
   def from_state(self, state: np.ndarray):
@@ -135,7 +137,7 @@ class FloatEmbedding(Embedding[float, np.float32]):
   size = 1
 
   def __init__(self, name, scale=None, bias=None, lower=-10., upper=10.):
-    self.name = name
+    super().__init__(name=name)
     self.scale = scale
     self.bias = bias
     self.lower = lower
@@ -192,7 +194,7 @@ class OneHotEmbedding(Embedding[int, T]):
       dtype: type[T] = np.int32,
       one_hot_policy: OneHotPolicy = OneHotPolicy.ERROR,
   ):
-    self.name = name
+    super().__init__(name=name)
     self.one_hot_policy = one_hot_policy
     self.size = size
     if one_hot_policy is OneHotPolicy.EXTRA:
@@ -269,7 +271,7 @@ class StructEmbedding(Embedding[NT, NT]):
       builder: Callable[[Mapping[str, Any]], NT],
       getter: Callable[[NT, str], Any],
   ):
-    self.name = name
+    super().__init__(name=name)
     self.embedding = embedding
     self.builder = builder
     self.getter = getter
@@ -396,6 +398,30 @@ def dict_embedding(
       getter=get_dict,
   )
 
+class MLPWrapper(Embedding[In, Out]):
+
+  def __init__(
+      self,
+      output_sizes: Sequence[int],
+      embed: Embedding[In, Out],
+  ):
+    super().__init__(name=f'MLP_{embed.name}')
+    self._output_sizes = output_sizes
+    self.size = output_sizes[-1]
+    self._embed = embed
+
+    self._mlp = snt.nets.MLP(
+        output_sizes, activate_final=True,
+        activation=tf.nn.relu,
+    )
+
+  def from_state(self, state: In) -> Out:
+    return self._embed.from_state(state)
+
+  def __call__(self, inputs: Out) -> tf.Tensor:
+    embedded = self._embed(inputs)
+    return self._mlp(embedded)
+
 # Note: some Kirby ability-copy actions states go beyond this.
 embed_action = OneHotEmbedding(
     'Action', size=0x18F, dtype=np.int32,
@@ -487,9 +513,36 @@ def make_item_embedding(xy_scale: float) -> StructEmbedding[Item]:
       x=embed_xy, y=embed_xy,
   ))
 
-def make_items_embedding(xy_scale: float) -> StructEmbedding[Items]:
-  embed_item = make_item_embedding(xy_scale)
+class ItemsType(enum.Enum):
+  SKIP = 'skip'
+  FLAT = 'flat'
+  MLP = 'mlp'
 
+@dataclasses.dataclass
+class ItemsConfig:
+  type: ItemsType = ItemsType.MLP
+  mlp_sizes: tuple[int, ...] = (128, 32)
+
+def make_items_embedding(
+    items_config: ItemsConfig,
+    xy_scale: float,
+) -> Embedding[Items, tp.Any]:
+  if items_config.type is ItemsType.SKIP:
+    return ordered_struct_embedding("items", [], Items)
+
+  embed_item_flat = make_item_embedding(xy_scale)
+
+  if items_config.type is ItemsType.FLAT:
+    embed_item = embed_item_flat
+  elif items_config.type is ItemsType.MLP:
+    embed_item = MLPWrapper(
+        output_sizes=items_config.mlp_sizes,
+        embed=embed_item_flat,
+    )
+  else:
+    raise ValueError(f"Unsupported items config type: {items_config.type}")
+
+  # TODO: Can bulk-embed these more efficiently
   return ordered_struct_embedding("items", [
       (field, embed_item) for field in Items._fields
   ], Items)
@@ -497,7 +550,7 @@ def make_items_embedding(xy_scale: float) -> StructEmbedding[Items]:
 def make_game_embedding(
     with_randall: bool = True,
     with_fod: bool = True,
-    with_items: bool = True,
+    items_config: ItemsConfig = ItemsConfig(),
     player_config: dict = dataclasses.asdict(default_player_config),
 ):
   embed_player = make_player_embedding(**player_config)
@@ -522,11 +575,9 @@ def make_game_embedding(
         "fod", [], FoDPlatforms)
     assert embed_fod.size == 0
 
-  if with_items:
-    embed_items = make_items_embedding(player_config['xy_scale'])
-  else:
-    embed_items = ordered_struct_embedding(
-        "items", [], Items)
+  embed_items = make_items_embedding(
+      items_config=items_config,
+      xy_scale=player_config['xy_scale'])
 
   embedding = Game(
       p0=embed_player,
@@ -608,7 +659,7 @@ class EmbedConfig:
   controller: ControllerConfig = utils.field(ControllerConfig)
   with_randall: bool = True
   with_fod: bool = True
-  with_items: bool = True
+  items: ItemsConfig = utils.field(ItemsConfig)
 
 NAME_DTYPE = np.int32
 
