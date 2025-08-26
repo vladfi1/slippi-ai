@@ -13,7 +13,7 @@ from slippi_ai.types import (
   Controller,
   Game,
   InvalidGameError,
-  Player,
+  Player, Nana,
   Stick,
   Randall,
   FoDPlatforms,
@@ -39,11 +39,11 @@ def get_controller(cs: melee.ControllerState) -> Controller:
       buttons=get_buttons(cs.button),
   )
 
-def get_player(player: melee.PlayerState) -> Player:
+def get_base_player(player: melee.PlayerState) -> dict:
   if player.action == melee.Action.UNKNOWN_ANIMATION:
     raise InvalidGameError('UNKNOWN_ANIMATION')
 
-  return Player(
+  return dict(
       percent=player.percent,
       facing=player.facing,
       x=player.position.x,
@@ -53,7 +53,6 @@ def get_player(player: melee.PlayerState) -> Player:
       jumps_left=player.jumps_left,
       shield_strength=player.shield_strength,
       on_ground=player.on_ground,
-      controller=get_controller(player.controller_state),
       # v2.1.0
       invulnerable=player.invulnerable,
       # v3.5.0
@@ -63,6 +62,25 @@ def get_player(player: melee.PlayerState) -> Player:
       # player.speed_y_attack,
       # player.speed_y_self,
   )
+
+_EMPTY_NANA = utils.map_nt(
+    lambda t: t(0),
+    utils.reify_tuple_type(Nana)
+)
+assert not _EMPTY_NANA.exists
+
+def get_player(player: melee.PlayerState) -> Player:
+
+  if player.nana is not None:
+    nana_dict = get_base_player(player.nana)
+    nana = Nana(exists=True, **nana_dict)
+  else:
+    nana = _EMPTY_NANA
+
+  return Player(
+      nana=nana,
+      controller=get_controller(player.controller_state),
+      **get_base_player(player))
 
 _EMPTY_ITEM = utils.map_nt(
   lambda t: t(0),

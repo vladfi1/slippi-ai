@@ -24,7 +24,9 @@ BUTTON_MASKS = {
     Button.BUTTON_D_UP: 0x0008,
 }
 
-def get_buttons(button_bits: np.ndarray) -> types.Buttons:
+def get_buttons(button_bits: pa.UInt16Array) -> types.Buttons:
+  button_bits = button_bits.to_numpy()
+
   return types.Buttons(**{
       name: np.asarray(
           np.bitwise_and(button_bits, BUTTON_MASKS[button]),
@@ -41,32 +43,73 @@ def get_stick(stick: peppi_py.frame.Position) -> types.Stick:
       y=to_libmelee_stick(stick.y),
   )
 
-def get_player(player: peppi_py.frame.PortData) -> types.Player:
-  leader = player.leader
-
-  post = leader.post
+def get_base_player_data(data: peppi_py.frame.Data, handle_nulls: bool = False) -> dict:
+  post = data.post
   position = post.position
-  pre = leader.pre
+
+  # Helper to convert arrays with potential nulls and replace NaN with 0
+  def to_numpy_safe(arr):
+    if handle_nulls:
+      result = arr.to_numpy(zero_copy_only=False)
+      return np.nan_to_num(result, nan=0.0)
+
+    return arr.to_numpy()
+
+  return dict(
+      percent=np.asarray(to_numpy_safe(post.percent), dtype=np.uint16),
+      facing=to_numpy_safe(post.direction) > 0,
+      x=to_numpy_safe(position.x),
+      y=to_numpy_safe(position.y),
+      action=to_numpy_safe(post.state),
+      invulnerable=to_numpy_safe(post.hurtbox_state) != 0,
+      character=to_numpy_safe(post.character),  # uint8
+      jumps_left=to_numpy_safe(post.jumps),  # uint8
+      shield_strength=to_numpy_safe(post.shield),  # float
+      on_ground=np.logical_not(to_numpy_safe(post.airborne)),
+  )
+
+_NANA_TYPE = utils.reify_tuple_type(types.Nana)
+
+def get_player(player: peppi_py.frame.PortData, game_length: int) -> types.Player:
+  # Get the base player data for Popo/main player
+  leader_data = get_base_player_data(player.leader)
+
+  # Handle Nana (follower)
+  if player.follower is not None:
+    # Get nana data, allowing nulls to be copied
+    follower_data = player.follower
+
+    # Check which frames have valid nana data (not NaN)
+    # Use position.x as indicator since it should always be present when nana exists
+    x_array = follower_data.post.position.x.to_numpy(zero_copy_only=False)
+    exists = ~np.isnan(x_array)
+
+    # Get the base nana data (no controller), allowing nulls to be copied
+    nana_data = get_base_player_data(follower_data, handle_nulls=True)
+
+    # Set all fields to 0 where nana doesn't exist, matching libmelee behavior
+    nana_data = utils.map_nt(lambda arr: np.where(exists, arr, 0), nana_data)
+
+    nana = types.Nana(exists=exists, **nana_data)
+  else:
+    # Create empty nana with arrays of zeros for the entire game
+    nana = utils.map_nt(
+        lambda t: np.zeros(game_length, dtype=t),
+        _NANA_TYPE
+    )
+
+  pre = player.leader.pre
 
   return types.Player(
-      percent=np.asarray(post.percent, dtype=np.uint16),
-      facing=post.direction.to_numpy() > 0,
-      x=position.x,
-      y=position.y,
-      action=post.state,
-      invulnerable=post.hurtbox_state.to_numpy() != 0,
-      character=post.character,  # uint8
-      jumps_left=post.jumps,  # uint8
-      shield_strength=post.shield,  # float
+      nana=nana,
       controller=types.Controller(
           main_stick=get_stick(pre.joystick),
           c_stick=get_stick(pre.cstick),
           # libmelee reads the logical value and assigns it to both l/r
-          shoulder=pre.triggers,
+          shoulder=pre.triggers.to_numpy(),
           buttons=get_buttons(pre.buttons_physical),
       ),
-      on_ground=np.logical_not(post.airborne),
-  )
+      **leader_data)
 
 RANDALL_INTERVAL = 1200
 RANDALL_HLR = np.array([
@@ -124,7 +167,7 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
 
   players = {}
   for i, player in enumerate(frames.ports):
-    players[f'p{i}'] = get_player(player)
+    players[f'p{i}'] = get_player(player, game_length)
 
   stage = melee.enums.to_internal_stage(peppi_game.start.stage)
 
