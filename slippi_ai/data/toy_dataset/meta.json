@@ -50,7 +50,7 @@
     "valid": true,
     "is_training": true,
     "not_training_reason": "",
-    "pq_size": 163181,
+    "pq_size": 187510,
     "compression": "zlib",
     "raw": "UpgradedTestDataset-32.zip"
   }

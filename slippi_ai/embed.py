@@ -4,9 +4,11 @@ Converts SSBM types to Tensorflow types.
 
 import abc
 import dataclasses
+import enum
 import math
+import typing as tp
 from typing import (
-    Any, Callable, Dict, Generic, Iterator, Mapping, NamedTuple, Optional, Sequence,
+    Any, Callable, Dict, Generic, Iterator, Mapping, Sequence,
     Tuple, Type, TypeVar, Union
 )
 
@@ -15,9 +17,10 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from slippi_ai import utils
+from slippi_ai import utils, types
 from slippi_ai.types import (
-  Buttons, Controller, Game, Nest, Player, Stick, Randall, FoDPlatforms,
+  Buttons, Controller, Game, Player, Stick,
+  Randall, FoDPlatforms, Item, Items,
 )
 from slippi_ai.controller_lib import LEGAL_BUTTONS
 from slippi_ai.data import Action, StateAction
@@ -108,6 +111,25 @@ class BoolEmbedding(Embedding[bool, np.bool_]):
 
 embed_bool = BoolEmbedding()
 
+class BitwiseEmbedding(Embedding[int, tuple[bool, ...]]):
+
+  def __init__(
+      self,
+      num_bits: int
+  ):
+    self.size = num_bits
+
+  def from_state(self, state: np.ndarray):
+    return np.stack([
+        np.bitwise_and(np.bitwise_right_shift(state, i), 1).astype(np.bool_)
+        for i in range(self.size)
+    ], axis=-1)
+
+  def __call__(self, x: tf.Tensor) -> tf.Tensor:
+    return tf.cast(x, tf.float32)
+
+embed_byte = BitwiseEmbedding(8)
+
 class FloatEmbedding(Embedding[float, np.float32]):
   dtype = np.float32
   size = 1
@@ -155,14 +177,47 @@ class FloatEmbedding(Embedding[float, np.float32]):
 
 embed_float = FloatEmbedding("float")
 
-class OneHotEmbedding(Embedding[int, np.int32]):
+class OneHotPolicy(enum.Enum):
+  CLAMP = 0
+  ERROR = 1
+  EXTRA = 2
 
-  def __init__(self, name, size, dtype=np.int32):
+T = tp.TypeVar("T")
+
+class OneHotEmbedding(Embedding[int, T]):
+  """Embeds integers in the range [0, size) as one-hot vectors."""
+
+  def __init__(
+      self, name: str, size: int,
+      dtype: type[T] = np.int32,
+      one_hot_policy: OneHotPolicy = OneHotPolicy.ERROR,
+  ):
     self.name = name
+    self.one_hot_policy = one_hot_policy
     self.size = size
+    if one_hot_policy is OneHotPolicy.EXTRA:
+      self.size += 1
     self.input_size = size
     self.dtype = dtype
     self.tf_dtype = tf.dtypes.as_dtype(dtype)
+
+  def from_state(self, state: np.ndarray):
+    if self.one_hot_policy is OneHotPolicy.CLAMP:
+      state = np.clip(state, 0, self.input_size - 1)
+    elif self.one_hot_policy is OneHotPolicy.ERROR:
+      if np.any(state < 0):
+        raise ValueError(f"Got negative input in {self.name}")
+      if np.any(state >= self.input_size):
+        x = np.max(state)
+        raise ValueError(f"Got invalid input {x} >= {self.input_size} in {self.name}")
+    elif self.one_hot_policy is OneHotPolicy.EXTRA:
+      invalid = (state < 0) | (state >= self.input_size)
+      if np.any(invalid):
+        state = state.copy()
+        state[invalid] = self.input_size
+
+    return state.astype(self.dtype)
+
 
   def __call__(self, t: tf.Tensor, residual=False, **_):
     if t.dtype != self.tf_dtype:
@@ -341,9 +396,10 @@ def dict_embedding(
       getter=get_dict,
   )
 
-# one larger than KIRBY_STONE_UNFORMING
-# embed_action = EnumEmbedding(enums.Action, size=0x18F, dtype=np.int16)
-embed_action = OneHotEmbedding('Action', size=0x18F, dtype=np.int32)
+# Note: some Kirby ability-copy actions states go beyond this.
+embed_action = OneHotEmbedding(
+    'Action', size=0x18F, dtype=np.int32,
+    one_hot_policy=OneHotPolicy.CLAMP)
 
 # one larger than SANDBAG
 # embed_char = EnumEmbedding(enums.Character, size=0x21, dtype=np.uint8)
@@ -411,13 +467,37 @@ default_player_config = PlayerConfig()
 # embed_stage = EnumEmbedding(enums.Stage, size=64, dtype=np.uint8)
 embed_stage = OneHotEmbedding('Stage', size=64, dtype=np.uint8)
 
-_PORTS = (0, 1)
-# _PLAYERS = tuple(f'p{p}' for p in _PORTS)
-# _SWAP_MAP = dict(zip(_PLAYERS, reversed(_PLAYERS)))
+# https://docs.google.com/spreadsheets/d/1JX2w-r2fuvWuNgGb6D3Cs4wHQKLFegZe2jhbBuIhCG8/edit?gid=20#gid=20
+MAX_ITEM_TYPE = 0xEC
+embed_item_type = OneHotEmbedding(
+    'ItemType', size=MAX_ITEM_TYPE + 1, dtype=np.int32,
+    one_hot_policy=OneHotPolicy.EXTRA)
+
+MAX_ITEM_STATE = 11  # empirically determined from a ~1K sample
+embed_item_state = OneHotEmbedding(
+    'ItemState', size=MAX_ITEM_STATE + 1, dtype=np.uint8,
+    one_hot_policy=OneHotPolicy.EXTRA)
+
+def make_item_embedding(xy_scale: float) -> StructEmbedding[Item]:
+  embed_xy = FloatEmbedding("xy", scale=xy_scale)
+  return struct_embedding_from_nt("Item", Item(
+      exists=embed_bool,
+      type=embed_item_type,
+      state=embed_item_state,
+      x=embed_xy, y=embed_xy,
+  ))
+
+def make_items_embedding(xy_scale: float) -> StructEmbedding[Items]:
+  embed_item = make_item_embedding(xy_scale)
+
+  return ordered_struct_embedding("items", [
+      (field, embed_item) for field in Items._fields
+  ], Items)
 
 def make_game_embedding(
     with_randall: bool = True,
     with_fod: bool = True,
+    with_items: bool = True,
     player_config: dict = dataclasses.asdict(default_player_config),
 ):
   embed_player = make_player_embedding(**player_config)
@@ -442,12 +522,19 @@ def make_game_embedding(
         "fod", [], FoDPlatforms)
     assert embed_fod.size == 0
 
+  if with_items:
+    embed_items = make_items_embedding(player_config['xy_scale'])
+  else:
+    embed_items = ordered_struct_embedding(
+        "items", [], Items)
+
   embedding = Game(
       p0=embed_player,
       p1=embed_player,
       stage=embed_stage,
       randall=embed_randall,
       fod_platforms=embed_fod,
+      items=embed_items,
   )
 
   return struct_embedding_from_nt("game", embedding)
@@ -521,6 +608,7 @@ class EmbedConfig:
   controller: ControllerConfig = utils.field(ControllerConfig)
   with_randall: bool = True
   with_fod: bool = True
+  with_items: bool = True
 
 NAME_DTYPE = np.int32
 

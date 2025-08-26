@@ -87,25 +87,25 @@ def get_item(projectile: melee.Projectile) -> Item:
 
 class Parser:
 
-  def __init__(self, path: str):
-    self.console = melee.Console(
-      is_dolphin=False,
-      allow_old_version=True,
-      path=path)
-    self.console.connect()
-
+  def __init__(self, ports: Optional[Sequence[int]] = None):
     self.item_assigner = parsing_utils.ItemAssigner()
+    self.ports = ports
 
   def get_game(
       self,
       game: melee.GameState,
-      ports: Optional[Sequence[int]] = None,
   ) -> Game:
-    ports = ports or sorted(game.players)
-    assert len(ports) == 2
+    ports_this_frame = sorted(game.players)
+    assert len(ports_this_frame) == 2
+    if self.ports is None:
+      self.ports = ports_this_frame
+    elif sorted(self.ports) != ports_this_frame:
+      raise InvalidGameError(
+          f'Ports changed from {self.ports} to {ports_this_frame} on frame {game.frame}')
+
     players = {
         f'p{i}': get_player(game.players[p])
-        for i, p in enumerate(ports)}
+        for i, p in enumerate(self.ports)}
 
     if game.stage is melee.Stage.YOSHIS_STORY:
       randall_y, randall_x_left, randall_x_right = melee.randall_position(game.frame)
@@ -143,23 +143,26 @@ class Parser:
         **players,
     )
 
-  def get_slp(self) -> pa.StructArray:
-    """Processes a slippi replay file."""
-    gamestate = self.console.step()
+
+def get_slp(path: str) -> pa.StructArray:
+    console = melee.Console(
+      is_dolphin=False,
+      allow_old_version=True,
+      path=path)
+    console.connect()
+
+    gamestate = console.step()
+    assert gamestate is not None
     ports = sorted(gamestate.players)
     if len(ports) != 2:
       raise InvalidGameError(f'Not a 2-player game.')
 
+    parser = Parser(ports=ports)
     frames = []
 
     while gamestate:
-      if sorted(gamestate.players) != ports:
-        raise InvalidGameError(f'Ports changed on frame {len(frames)}')
-      game = self.get_game(gamestate, ports=ports)
+      game = parser.get_game(gamestate)
       frames.append(nt_to_nest(game))
-      gamestate = self.console.step()
+      gamestate = console.step()
 
     return pa.array(frames, type=GAME_TYPE)
-
-def get_slp(path: str) -> pa.StructArray:
-    return Parser(path).get_slp()

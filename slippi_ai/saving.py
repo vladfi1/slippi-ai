@@ -16,7 +16,7 @@ from slippi_ai import (
 # v2: Added value function config
 # v3: Added embed config
 # v4: Added observation config
-# v5: Added with_randall to embed config
+# v5: Added randall, fod, items to embed config
 
 VERSION = 5
 
@@ -70,6 +70,7 @@ def upgrade_config(config: dict):
     config['embed'].update(
         with_randall=False,
         with_fod=False,
+        with_items=False,
     )
     config['version'] = 5
     logging.warning('Upgraded config version 4 -> 5')
@@ -112,6 +113,7 @@ def policy_from_config(config: dict) -> policies.Policy:
           player_config=config['embed']['player'],
           with_randall=config['embed']['with_randall'],
           with_fod=config['embed']['with_fod'],
+          with_items=config['embed']['with_items'],
       ),
       **config['policy'],
   )
