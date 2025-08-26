@@ -12,6 +12,7 @@ from slippi_ai import (
     controller_heads,
     embed,
 )
+from slippi_ai.flag_utils import dataclass_from_dict
 
 # v2: Added value function config
 # v3: Added embed config
@@ -67,10 +68,11 @@ def upgrade_config(config: dict):
     logging.warning('Upgraded config version 3 -> 4')
 
   if config['version'] == 4:
+    old_items_config = embed.ItemsConfig(type=embed.ItemsType.SKIP)
     config['embed'].update(
         with_randall=False,
         with_fod=False,
-        with_items=False,
+        items=dataclasses.asdict(old_items_config),
     )
     config['version'] = 5
     logging.warning('Upgraded config version 4 -> 5')
@@ -113,7 +115,8 @@ def policy_from_config(config: dict) -> policies.Policy:
           player_config=config['embed']['player'],
           with_randall=config['embed']['with_randall'],
           with_fod=config['embed']['with_fod'],
-          with_items=config['embed']['with_items'],
+          items_config=dataclass_from_dict(
+              embed.ItemsConfig, config['embed']['items']),
       ),
       **config['policy'],
   )
@@ -129,7 +132,6 @@ def load_policy_from_state(state: dict) -> policies.Policy:
       policy.variables, params)
 
   return policy
-
 
 
 def load_state_from_disk(path: str) -> dict:

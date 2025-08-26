@@ -281,6 +281,7 @@ def train(config: Config):
 
   # initialize variables
   train_stats, _ = train_manager.step()
+  logging.info('Initialized policy with %d variables', len(policy.variables))
   logging.info('loss initial: %f', _get_loss(train_stats))
 
   with tf.device('/cpu:0'):
