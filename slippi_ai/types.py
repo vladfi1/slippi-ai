@@ -18,8 +18,6 @@ from melee.enums import Button
 T = TypeVar('T')
 Nest = Union[Mapping[str, 'Nest'], T]
 
-
-
 # we define NamedTuples for python typechecking and IDE integration
 
 class Buttons(NamedTuple):
@@ -44,6 +42,19 @@ class Controller(NamedTuple):
   shoulder: np.float32
   buttons: Buttons
 
+class Nana(NamedTuple):
+  exists: np.bool_
+  percent: np.uint16
+  facing: np.bool_
+  x: np.float32
+  y: np.float32
+  action: np.uint16
+  invulnerable: np.bool_
+  character: np.uint8
+  jumps_left: np.uint8
+  shield_strength: np.float32
+  on_ground: np.bool_
+
 class Player(NamedTuple):
   percent: np.uint16
   facing: np.bool_
@@ -56,6 +67,7 @@ class Player(NamedTuple):
   shield_strength: np.float32
   on_ground: np.bool_
   controller: Controller
+  nana: Nana
 
 class Randall(NamedTuple):
   x: np.float32
@@ -113,6 +125,7 @@ def nt_to_pa(nt: type) -> pa.StructType:
 BUTTONS_TYPE = nt_to_pa(Buttons)
 STICK_TYPE = nt_to_pa(Stick)
 CONTROLLER_TYPE = nt_to_pa(Controller)
+NANA_TYPE = nt_to_pa(Nana)
 PLAYER_TYPE = nt_to_pa(Player)
 GAME_TYPE = nt_to_pa(Game)
 
