@@ -17,7 +17,7 @@ from slippi_ai import dolphin, utils, observations
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.types import Controller, Game
 from slippi_ai import data
-from slippi_db.parse_libmelee import get_game
+from slippi_db.parse_libmelee import Parser
 
 Port = int
 Controllers = Mapping[Port, Controller]
@@ -77,11 +77,16 @@ class Environment:
       self._prev_state = self._dolphin.step()
 
     needs_reset = is_initial_frame(self._prev_state)
+    if needs_reset:
+      self._parsers = {
+          ports[0]: Parser(ports)
+          for ports in self._opponents.items()
+      }
 
     games = {}
-    for actual_port, opponent in self._opponents.items():
-      port = self.port_from_actual[actual_port]
-      games[port] = get_game(self._prev_state, (actual_port, opponent))
+    for actual_port, port in self.port_from_actual.items():
+      parser = self._parsers[actual_port]
+      games[port] = parser.get_game(self._prev_state)
 
       if port in self._observation_filters:
         obs_filter = self._observation_filters[port]
