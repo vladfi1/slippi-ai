@@ -155,6 +155,7 @@ def test_upgrade_slp(
 
 def is_online(start: peppi_py.game.Start) -> bool:
   """Check if a game is an online game based on the start dictionary."""
+  # NOTE: This probably won't work properly for upgraded replays
   return start.scene.major == 8
 
 def is_unfrozen_ps(start: peppi_py.game.Start) -> bool:
@@ -173,7 +174,10 @@ def is_unfrozen_ps(start: peppi_py.game.Start) -> bool:
 
   return True
 
-def needs_upgrade(input_path: str):
+def needs_upgrade(
+    input_path: str,
+    min_version: tuple[int, int, int],
+):
   """Check if a Slippi replay needs to be upgraded."""
   if not os.path.exists(input_path):
     raise FileNotFoundError(f'Input path does not exist: {input_path}')
@@ -181,6 +185,9 @@ def needs_upgrade(input_path: str):
   game = peppi_py.read_slippi(input_path)  # skip_frames=True crashes :(
   start = game.start
   stage = melee.enums.to_internal_stage(start.stage)
+
+  if start.slippi.version < min_version:
+    return True
 
   # Stage events were added in Slippi 3.18.0
   if start.slippi.version < (3, 18, 0):
@@ -232,6 +239,7 @@ def _upgrade_slp_in_archive(
     check_same_parse: bool = True,
     dolphin_timeout: Optional[int] = None,
     check_if_needed: bool = False,
+    min_version: tuple[int, int, int] = (3, 2, 0),
     expected_version: tuple[int, int, int] = (3, 18, 0),
 ) -> UpgradeResult:
   skipped = False
@@ -246,7 +254,7 @@ def _upgrade_slp_in_archive(
       with open(slp_path, 'wb') as f:
         f.write(local_file.from_raw(raw_data))
 
-      if check_if_needed and not needs_upgrade(slp_path):
+      if check_if_needed and not needs_upgrade(slp_path, min_version):
         upgraded_path = slp_path
         skipped = True
       else:
@@ -333,6 +341,9 @@ def upgrade_archive(
     log_interval: int = 30,  # seconds between logs
     dolphin_timeout: Optional[int] = 60,
     check_if_needed: bool = False,
+    expected_version: tuple[int, int, int] = (3, 18, 0),
+    remove_input: bool = False,
+    min_success_ratio: float = 0.99,
 ) -> list[UpgradeResult]:
   """Upgrade a Slippi replay archive to the latest version."""
   if not os.path.exists(input_path):
@@ -345,6 +356,7 @@ def upgrade_archive(
     raise ValueError(f'Output path must be a .zip file: {output_path}')
 
   existing_outputs = set()
+
   if os.path.exists(output_path):
     with zipfile.ZipFile(output_path, 'r') as output_zip:
       for info in output_zip.infolist():
@@ -365,7 +377,7 @@ def upgrade_archive(
       continue
 
     if not utils.is_slp_file(zip_info.filename):
-      raise ValueError(f'Invalid file in archive: {zip_info.filename}')
+      continue
 
     local_file = utils.ZipFile(input_path, zip_info.filename)
     output_filename = local_file.base_name + utils.SLPZ_SUFFIX
@@ -385,26 +397,37 @@ def upgrade_archive(
 
   zf.close()
 
-  logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
-
   if skipped_files > 0:
     logging.info(f'Skipped {skipped_files} files that already exist in output archive')
 
+  if not todo:
+    logging.info('No files to process')
+    return []
+
+  logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
+
   if in_memory:
-    free_space = psutil.virtual_memory().available
+    work_dir_space = psutil.virtual_memory().available
   elif work_dir:
-    free_space = psutil.disk_usage(work_dir).free
+    work_dir_space = psutil.disk_usage(work_dir).free
   else:
     raise ValueError('Either in_memory must be True or work_dir must be specified')
 
-  if total_size > free_space:
-    raise MemoryError(f'Not enough free space to process archive: {total_size / (2 ** 30):.2f} GB required, {free_space / (2 ** 30):.2f} GB available')
+  if total_size > work_dir_space:
+    raise MemoryError(f'Not enough free space to process archive: {total_size / (2 ** 30):.2f} GB required, {work_dir_space / (2 ** 30):.2f} GB available')
+
+  output_parent = os.path.dirname(output_path)
+  os.makedirs(output_parent, exist_ok=True)
+  output_space = psutil.disk_usage(output_parent).free
+  if total_size > output_space:
+    raise MemoryError(f'Not enough free space to write output archive: {total_size / (2 ** 30):.2f} GB required, {output_space / (2 ** 30):.2f} GB available')
 
   if in_memory:
     tmp_parent_dir = utils.get_tmp_dir(in_memory=True)
   else:
     tmp_parent_dir = work_dir
 
+  # TODO: optionally keep around work dir?
   with tempfile.TemporaryDirectory(dir=tmp_parent_dir) as output_dir:
     print(f'Using temporary output directory: {output_dir}')
 
@@ -428,6 +451,7 @@ def upgrade_archive(
               check_same_parse=check_same_parse,
               dolphin_timeout=dolphin_timeout,
               check_if_needed=check_if_needed,
+              expected_version=expected_version,
           )
 
       results = _monitor_results(
@@ -449,6 +473,7 @@ def upgrade_archive(
                 check_same_parse=check_same_parse,
                 dolphin_timeout=dolphin_timeout,
                 check_if_needed=check_if_needed,
+                expected_version=expected_version,
             ))
 
           def results_iter() -> Iterator[UpgradeResult]:
@@ -466,9 +491,11 @@ def upgrade_archive(
           raise
 
     # Count successful conversions
-    successful_conversions = sum(1 for result in results if result.error is None)
-    failed_conversions = len(results) - successful_conversions
-    skipped_conversions = sum(1 for result in results if result.skipped)
+    non_skipped_results = [result for result in results if not result.skipped]
+    skipped_conversions = len(results) - len(non_skipped_results)
+
+    successful_conversions = sum(1 for result in non_skipped_results if result.error is None)
+    failed_conversions = len(non_skipped_results) - successful_conversions
 
     print(f"Conversion complete: {successful_conversions} successful, {failed_conversions} failed, {skipped_conversions} skipped")
 
@@ -481,6 +508,17 @@ def upgrade_archive(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     command = ['zip', '-r', '-q', '-0', os.path.abspath(output_path), '.']
     subprocess.check_call(command, cwd=output_dir)
+
+    if remove_input:
+      # Can assume at least some were not skipped, else we'd have returned above
+      success_ratio = successful_conversions / len(non_skipped_results)
+      if success_ratio < min_success_ratio:
+        print(
+            f"Success ratio {success_ratio:.2f} is below minimum "
+            f"{min_success_ratio:.2f}, not removing {input_path}.")
+      else:
+        print(f"Removing input archive: {input_path}")
+        os.remove(input_path)
 
   print(f"Output saved to: {output_path}")
   return results
