@@ -74,5 +74,78 @@ class CopyZipFilesTest(unittest.TestCase):
 
             self.assertEqual(zf.read('subdir/file4.txt').decode('utf-8'), 'This is file 4 in a subdirectory')
 
+
+class DeleteFromZipTest(unittest.TestCase):
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+        self.test_zip = os.path.join(self.test_dir, 'test.zip')
+        with zipfile.ZipFile(self.test_zip, 'w') as zf:
+            zf.writestr('file1.txt', 'This is file 1')
+            zf.writestr('file2.txt', 'This is file 2')
+            zf.writestr('file3.txt', 'This is file 3')
+            zf.writestr('subdir/file4.txt', 'This is file 4 in a subdirectory')
+            zf.writestr('subdir/file5.txt', 'This is file 5 in a subdirectory')
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_delete_single_file(self):
+        """Test deleting a single file from zip archive."""
+        utils.delete_from_zip(self.test_zip, ['file2.txt'])
+
+        with zipfile.ZipFile(self.test_zip, 'r') as zf:
+            file_list = zf.namelist()
+            self.assertEqual(len(file_list), 4)
+            self.assertNotIn('file2.txt', file_list)
+            self.assertIn('file1.txt', file_list)
+            self.assertIn('file3.txt', file_list)
+            self.assertIn('subdir/file4.txt', file_list)
+            self.assertIn('subdir/file5.txt', file_list)
+
+    def test_delete_multiple_files(self):
+        """Test deleting multiple files from zip archive."""
+        utils.delete_from_zip(self.test_zip, ['file1.txt', 'file3.txt'])
+
+        with zipfile.ZipFile(self.test_zip, 'r') as zf:
+            file_list = zf.namelist()
+            self.assertEqual(len(file_list), 3)
+            self.assertNotIn('file1.txt', file_list)
+            self.assertNotIn('file3.txt', file_list)
+            self.assertIn('file2.txt', file_list)
+            self.assertIn('subdir/file4.txt', file_list)
+            self.assertIn('subdir/file5.txt', file_list)
+
+    def test_delete_subdirectory_file(self):
+        """Test deleting a file from a subdirectory."""
+        utils.delete_from_zip(self.test_zip, ['subdir/file4.txt'])
+
+        with zipfile.ZipFile(self.test_zip, 'r') as zf:
+            file_list = zf.namelist()
+            self.assertEqual(len(file_list), 4)
+            self.assertNotIn('subdir/file4.txt', file_list)
+            self.assertIn('subdir/file5.txt', file_list)
+
+    def test_delete_empty_list(self):
+        """Test deleting with an empty file list."""
+        # Get original contents
+        with zipfile.ZipFile(self.test_zip, 'r') as zf:
+            original_files = zf.namelist()
+
+        utils.delete_from_zip(self.test_zip, [])
+
+        with zipfile.ZipFile(self.test_zip, 'r') as zf:
+            file_list = zf.namelist()
+            self.assertEqual(file_list, original_files)
+
+    def test_delete_from_nonexistent_zip(self):
+        """Test deleting from a non-existent zip file."""
+        nonexistent_zip = os.path.join(self.test_dir, 'nonexistent.zip')
+
+        with self.assertRaises(FileNotFoundError):
+            utils.delete_from_zip(nonexistent_zip, ['file1.txt'])
+
+
 if __name__ == '__main__':
     unittest.main()
