@@ -9,25 +9,13 @@ import tempfile
 import tqdm
 import typing as tp
 import zipfile
+from pathlib import Path
 
-from absl import app, flags
+from absl import app, flags, logging
 
 from slippi_db import utils
 
 T = tp.TypeVar('T')
-
-def chunked(iterable: tp.Iterable[T], n: int) -> tp.Iterator[tp.Iterator[T]]:
-  """Maximally lazy chunking."""
-  it = iter(iterable)
-  while True:
-    chunk = itertools.islice(it, n)
-
-    try:
-      first = next(chunk)
-    except StopIteration:
-      break
-
-    yield itertools.chain([first], chunk)
 
 def extract_file_list(
     path: str,
@@ -52,48 +40,21 @@ def convert(
     input_path: str,
     output_path: str,
     max_chunk_size_gb: float = 16,  # uncompressed
-    in_memory: bool = False,
+    in_memory: bool = True,
+    work_dir: tp.Optional[str] = None,
 ) -> None:
   cwd = os.getcwd()
   input_path = os.path.abspath(input_path)
   output_path = os.path.abspath(output_path)
-  archive = py7zr.SevenZipFile(input_path, 'r')
 
-  # calculate optimal chunks
-  folders = archive.header.main_streams.unpackinfo.folders
+  chunks = utils.traverse_7z_fast(input_path, chunk_size_gb=max_chunk_size_gb)
 
-  max_chunk_size = max_chunk_size_gb * 1024**3
-  chunks: list[list[str]] = []
-  chunk_size = 0
-  chunk: list[str] = []
-
-  for folder in folders:
-    for file in folder.files:
-      if chunk_size + file.uncompressed > max_chunk_size:
-        chunks.append(chunk)
-        chunk = []
-        chunk_size = 0
-
-      chunk_size += file.uncompressed
-      chunk.append(file.filename)
-
-  # commit last chunk
-  if chunk:
-    chunks.append(chunk)
-
-  print('Chunks:', len(chunks))
-
-  # relpaths = [p for p in archive.getnames() if p.endswith('.slp')]
-  # relpaths = reversed(relpaths)
-  # chunks = chunked(tqdm.tqdm(relpaths), chunk_size)
-
-  with tempfile.TemporaryDirectory() as zipdir:
+  with tempfile.TemporaryDirectory(dir=work_dir) as zipdir:
     zip_paths = []
     for i, chunk in enumerate(tqdm.tqdm(chunks, smoothing=0)):
 
-      # with tempfile.TemporaryDirectory() as tmpdir:
       with tempfile.TemporaryDirectory(dir=utils.get_tmp_dir(in_memory=in_memory)) as tmpdir:
-        extract_file_list(input_path, chunk, tmpdir)
+        extract_file_list(input_path, chunk.files, tmpdir)
 
         # zip all from tmpdir
         zip_path = os.path.join(zipdir, f'{i}.zip')
@@ -101,8 +62,12 @@ def convert(
         subprocess.check_call(['7z', '-tzip', 'a', zip_path, '*'], cwd=tmpdir)
 
     # combine all zip files
-    subprocess.check_call(['zipmerge', output_path, *zip_paths])
+    if len(zip_paths) == 1:
+      os.rename(zip_paths[0], output_path)
+    else:
+      subprocess.check_call(['zipmerge', output_path, *zip_paths])
 
+  archive = py7zr.SevenZipFile(input_path, 'r')
   zip_archive = zipfile.ZipFile(output_path)
   for sf in archive.files:
     if sf.is_directory:
@@ -112,19 +77,83 @@ def convert(
 
   os.chdir(cwd)  # for line_profiler
 
-INPUT = flags.DEFINE_string('input', None, 'Input path.', required=True)
-OUTPUT_DIR = flags.DEFINE_string('output_dir', None, 'Output directory.')
+INPUT = flags.DEFINE_string('input', None, 'Input file or directory.', required=True)
+OUTPUT_DIR = flags.DEFINE_string('output_dir', None, 'Output directory. If not specified, converts in-place.')
 CHUNK_SIZE = flags.DEFINE_float('chunk_size', 1, 'Max chunk size in GB.')
+IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'Use in-memory temporary files for conversion.')
+WORK_DIR = flags.DEFINE_string('work_dir', None, 'Optional working directory for temporary zip files.')
+REMOVE_ORIGINAL = flags.DEFINE_bool('remove_original', False, 'Remove original 7z files after successful conversion.')
 
-# TODO: recurse directories and remove old 7z files
+def process_single_7z(input_path: Path, output_dir: Path):
+  """Process a single 7z file."""
+  output_name = input_path.stem + '.zip'
+  output_path = output_dir / output_name
+  print(f'Converting {input_path} to {output_path}')
+  try:
+    convert(
+        str(input_path),
+        str(output_path),
+        max_chunk_size_gb=CHUNK_SIZE.value,
+        in_memory=IN_MEMORY.value,
+        work_dir=WORK_DIR.value,
+    )
+    if REMOVE_ORIGINAL.value:
+      input_path.unlink()
+      logging.info(f'Removed original file: {input_path}')
+    return True
+  except Exception as e:
+    logging.error(f'Failed to convert {input_path}: {e}')
+    return False
+
 
 def main(_):
-  output_dir = OUTPUT_DIR.value or os.path.dirname(INPUT.value)
-  os.makedirs(output_dir, exist_ok=True)
-  output_name = os.path.basename(INPUT.value).removesuffix('.7z') + '.zip'
-  output_path = os.path.join(output_dir, output_name)
-  print('Converting', INPUT.value, 'to', output_path)
-  convert(INPUT.value, output_path, max_chunk_size_gb=CHUNK_SIZE.value)
+  input_path = Path(INPUT.value)
+
+  if input_path.is_file():
+    # Process single file
+    if not input_path.suffix == '.7z':
+      raise ValueError(f'Input file must be a .7z file: {input_path}')
+
+    # Determine output directory
+    if OUTPUT_DIR.value:
+      output_dir = Path(OUTPUT_DIR.value)
+      output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+      # In-place conversion - use parent directory of input file
+      output_dir = input_path.parent
+
+    process_single_7z(input_path, output_dir)
+  elif input_path.is_dir():
+    # Process directory recursively
+    output_dir = None
+    if OUTPUT_DIR.value:
+      output_dir = Path(OUTPUT_DIR.value)
+      if output_dir.exists() and not output_dir.is_dir():
+        raise FileExistsError(f'Output path must be a directory: {output_dir}')
+
+    # Find all 7z files recursively
+    seven_z_files = list(input_path.rglob('*.7z'))
+    logging.info(f'Found {len(seven_z_files)} 7z files to process')
+
+    successful_conversions = 0
+    for seven_z_file in tqdm.tqdm(seven_z_files, desc='Converting files'):
+      if output_dir:
+        # Calculate relative path from input directory
+        rel_path = seven_z_file.relative_to(input_path)
+
+        # Create output subdirectory maintaining structure
+        output_subdir = output_dir / rel_path.parent
+        output_subdir.mkdir(parents=True, exist_ok=True)
+      else:
+        # In-place conversion - use parent directory of each 7z file
+        output_subdir = seven_z_file.parent
+
+      if process_single_7z(seven_z_file, output_subdir):
+        successful_conversions += 1
+
+    logging.info(f'Successfully converted {successful_conversions}/{len(seven_z_files)} files')
+  else:
+    raise ValueError(f'Input path does not exist: {input_path}')
 
 if __name__ == '__main__':
   app.run(main)
