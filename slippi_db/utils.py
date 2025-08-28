@@ -494,3 +494,28 @@ def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
         proc.stdin.write(rename_mapping.pop(line))
     proc.stdin.close()
     proc.wait()
+
+def delete_from_zip(zip_path: str, file_names: list[str]) -> None:
+  """Deletes specified files from a zip archive.
+
+  Args:
+    zip_path: Path to the zip archive.
+    file_names: List of file names within the archive to delete.
+  """
+  if not os.path.exists(zip_path):
+    raise FileNotFoundError(f'Zip file {zip_path} does not exist')
+
+  if not file_names:
+    return
+
+  with subprocess.Popen(
+      ['zip', '-d', zip_path, '-@'],
+      stdin=subprocess.PIPE) as zip_proc:
+    assert zip_proc.stdin is not None
+    for file_name in file_names:
+      zip_proc.stdin.write(file_name.encode('utf-8'))
+      zip_proc.stdin.write(b'\n')
+    zip_proc.stdin.close()
+    zip_proc.wait()
+    if zip_proc.returncode != 0:
+      raise subprocess.CalledProcessError(zip_proc.returncode, ['zip', '-d', zip_path, '-@'])
