@@ -88,11 +88,35 @@ def mode(xs: np.ndarray):
   i = np.argmax(counts)
   return unique[i]
 
+_OPPONENT_IDX = {0: 1, 1: 0}
+
+def winner_from_lras(game: peppi_py.Game) -> Optional[int]:
+  """Assume that the LRAS player lost."""
+  end = game.end
+  if end is None or end.lras_initiator is None:
+    return None
+
+  port_to_index = {
+      player.port: idx for idx, player
+      in enumerate(game.start.players)
+  }
+
+  loser_idx = port_to_index[end.lras_initiator]
+  return _OPPONENT_IDX[loser_idx]
+
 def compute_winner(game: peppi_py.Game) -> Optional[int]:
   if len(game.start.players) > 2:
     # TODO: handle more than 2 players
     return None
 
+  end = game.end
+  if end is not None and end.players is not None:
+    for i, player_end in enumerate(end.players):
+      if player_end.placement == 0:
+        return i
+    raise ValueError('No player with placement = 0')
+
+  # Try to see who had nonzero stocks left on the last frame.
   stock_counts = {}
   for i, port in enumerate(game.frames.ports):
     stock_counts[i] = port.leader.post.stocks[-1].as_py()
@@ -103,6 +127,10 @@ def compute_winner(game: peppi_py.Game) -> Optional[int]:
     winners = [p for p, s in stock_counts.items() if s]
     if len(winners) == 1:
       return winners[0]
+
+  lras_winner = winner_from_lras(game)
+  if lras_winner is not None:
+    return lras_winner
 
   return None
 
