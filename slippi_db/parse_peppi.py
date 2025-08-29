@@ -165,6 +165,9 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
   frames = peppi_game.frames
   assert frames is not None, 'Game has no frames'
 
+  if len(frames.ports) != 2:
+    raise ValueError(f"Expected 2 players, got {len(frames.ports)}")
+
   game_length = len(frames.id)
 
   players = {}
