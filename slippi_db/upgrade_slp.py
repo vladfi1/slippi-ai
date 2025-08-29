@@ -153,36 +153,44 @@ def test_upgrade_slp(
     else:
       print('Upgrade successful, no errors found.')
 
-def is_online(start: peppi_py.game.Start) -> bool:
+def is_online(game: peppi_py.game.Game) -> bool:
   """Check if a game is an online game based on the start dictionary."""
-  # NOTE: This probably won't work properly for upgraded replays
-  return start.scene.major == 8
+  # NOTE: This probably won't work properly for upgraded replays,
+  # but that's ok because upgrade PS games will already have stage events.
 
-def is_unfrozen_ps(start: peppi_py.game.Start) -> bool:
+  if game.metadata is not None:
+    players = game.metadata['players'].values()
+    player = next(iter(players))
+    return 'netplay' in player['names']
+
+  if game.start.scene is not None:
+    return game.start.scene.major == 8
+
+  # Guess that it was not online so that we do upgrade it.
+  return False
+
+def is_unfrozen_ps(game: peppi_py.game.Game) -> bool:
   """Check if a game on Pokemon Stadium is frozen based on the start dictionary."""
   # TODO: really we should be looking at the gecko codes like playback does
 
-  stage = melee.enums.to_internal_stage(start.stage)
+  stage = melee.enums.to_internal_stage(game.start.stage)
   if stage is not melee.Stage.POKEMON_STADIUM:
     return False
 
   # NOTE: is_frozen_ps was deprecated at some point, and re-enabled in 3.19.0
-  if start.slippi.version >= (3, 19, 0):
-    return not start.is_frozen_ps
-  elif is_online(start):
+  if game.start.slippi.version >= (3, 19, 0):
+    return not game.start.is_frozen_ps
+  elif is_online(game):
     return False
 
   return True
 
 def needs_upgrade(
-    input_path: str,
+    # input_path: str,
+    game: peppi_py.Game,
     min_version: tuple[int, int, int],
 ):
   """Check if a Slippi replay needs to be upgraded."""
-  if not os.path.exists(input_path):
-    raise FileNotFoundError(f'Input path does not exist: {input_path}')
-
-  game = peppi_py.read_slippi(input_path)  # skip_frames=True crashes :(
   start = game.start
   stage = melee.enums.to_internal_stage(start.stage)
 
@@ -196,7 +204,7 @@ def needs_upgrade(
       return True
 
     # transformations
-    if is_unfrozen_ps(start):
+    if is_unfrozen_ps(game):
       return True
 
   # TODO: Dreamland whispy blow direction?
@@ -231,6 +239,15 @@ def check_same_metadata(
 
   return None
 
+def _known_game_read_exception(e: BaseException) -> str | None:
+  message = str(e)
+
+  game_end_prefix = 'invalid data: invalid game end method: '
+  if isinstance(e, OSError) and message.startswith(game_end_prefix):
+    return 'invalid game end method'
+
+  return None
+
 def _upgrade_slp_in_archive(
     local_file: utils.ZipFile,
     output_path: str,
@@ -254,7 +271,9 @@ def _upgrade_slp_in_archive(
       with open(slp_path, 'wb') as f:
         f.write(local_file.from_raw(raw_data))
 
-      if check_if_needed and not needs_upgrade(slp_path, min_version):
+      game = peppi_py.read_slippi(slp_path)
+
+      if check_if_needed and not needs_upgrade(game, min_version):
         upgraded_path = slp_path
         skipped = True
       else:
@@ -263,7 +282,6 @@ def _upgrade_slp_in_archive(
                     time_limit=dolphin_timeout)
 
         if check_same_parse:
-          game = peppi_py.read_slippi(slp_path)
           upgraded_game = peppi_py.read_slippi(upgraded_path)
 
           if upgraded_game.start.slippi.version != expected_version:
@@ -292,6 +310,10 @@ def _upgrade_slp_in_archive(
           return UpgradeResult(local_file, 'slpz: ' + e.stderr)
 
   except BaseException as e:
+    known_error = _known_game_read_exception(e)
+    if known_error:
+      return UpgradeResult(local_file, known_error, skipped=True)
+
     return UpgradeResult(local_file, type(e).__name__ + ": " + str(e), skipped=skipped)
 
   return UpgradeResult(local_file, None, skipped=skipped)
