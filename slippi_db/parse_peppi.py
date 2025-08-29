@@ -55,13 +55,19 @@ def get_base_player_data(data: peppi_py.frame.Data, handle_nulls: bool = False) 
 
     return arr.to_numpy()
 
+  hurtbox_state = post.hurtbox_state
+  if hurtbox_state is None:
+    hurtbox_state_np = np.zeros(len(position.x), dtype=np.uint8)
+  else:
+    hurtbox_state_np = to_numpy_safe(hurtbox_state)
+
   return dict(
       percent=np.asarray(to_numpy_safe(post.percent), dtype=np.uint16),
       facing=to_numpy_safe(post.direction) > 0,
       x=to_numpy_safe(position.x),
       y=to_numpy_safe(position.y),
       action=to_numpy_safe(post.state),
-      invulnerable=to_numpy_safe(post.hurtbox_state) != 0,
+      invulnerable=hurtbox_state_np != 0,
       character=to_numpy_safe(post.character),  # uint8
       jumps_left=to_numpy_safe(post.jumps),  # uint8
       shield_strength=to_numpy_safe(post.shield),  # float
