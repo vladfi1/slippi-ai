@@ -121,7 +121,7 @@ _ITEM_TYPE_STRUCT = utils.reify_tuple_type(types.Item)
 
 def parse_items(
     game_length: int,
-    peppi_items: list[peppi_py.frame.Item] | None,
+    peppi_items: peppi_py.frame.Item | None,
 ) -> types.Items:
   transposed_items = utils.map_nt(
       lambda t: np.zeros([game_length, types.MAX_ITEMS], dtype=t),
@@ -129,25 +129,27 @@ def parse_items(
   )
 
   if peppi_items is not None:
-    assert len(peppi_items) == game_length
-
     assigner = parsing_utils.ItemAssigner()
+    slots_by_frame: list[list[int]] = []
 
-    for frame, peppi_item in enumerate(peppi_items):
-      slots = assigner.assign(peppi_item.id.to_numpy())
-
-      to_copy = [
-          (peppi_item.type, transposed_items.type),
-          (peppi_item.state, transposed_items.state),
-          (peppi_item.position.x, transposed_items.x),
-          (peppi_item.position.y, transposed_items.y),
-      ]
-
-      for pa, dst in to_copy:
-        assert len(pa) == len(slots)
-        dst[frame][slots] = pa.to_numpy()
-
+    for frame, ids in enumerate(peppi_items.id):
+      # Converting slots to numpy saves a lot of time
+      slots = assigner.assign(ids.values)
+      slots_by_frame.append(slots)
       transposed_items.exists[frame][slots] = True
+
+    to_copy = [
+        (peppi_items.type, transposed_items.type),
+        (peppi_items.state, transposed_items.state),
+        (peppi_items.position.x, transposed_items.x),
+        (peppi_items.position.y, transposed_items.y),
+    ]
+
+    for list_array, np_array in to_copy:
+      assert len(list_array) == game_length
+      for frame, (slots, array) in enumerate(zip(slots_by_frame, list_array)):
+        # assert len(slots) == len(array)
+        np_array[frame][slots] = array.values.to_numpy()
 
   items = utils.map_nt(np.transpose, transposed_items)
 

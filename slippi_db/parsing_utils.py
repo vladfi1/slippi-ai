@@ -1,5 +1,6 @@
 import enum
 import io
+import typing as tp
 from typing import Optional
 import zlib
 
@@ -64,7 +65,7 @@ class ItemAssigner:
     self.free_slots = list(range(num_slots))
     self.free_slots.reverse()
 
-  def assign(self, item_ids: list[ItemId]) -> list[int]:
+  def assign(self, item_ids: tp.Sequence[ItemId]) -> list[int]:
     # First free item slots for items that have disappeared
     ids_set = set(item_ids)
     for item_id in list(self.item_assignments):
