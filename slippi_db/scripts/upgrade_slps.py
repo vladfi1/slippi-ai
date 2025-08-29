@@ -20,7 +20,6 @@ LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to 
 CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file needs conversion before processing.')
 
 REMOVE_INPUT = flags.DEFINE_boolean('remove_input', False, 'Whether to remove the input file after conversion.')
-SUCCESS_RATIO = flags.DEFINE_float('success_ratio', 0.99, 'Minimum success ratio for in-place conversion')
 
 
 def process_single_archive(input_path, output_path, dolphin_config):
@@ -37,7 +36,6 @@ def process_single_archive(input_path, output_path, dolphin_config):
       log_interval=LOG_INTERVAL.value,
       check_if_needed=CHECK_IF_NEEDED.value,
       remove_input=REMOVE_INPUT.value,
-      min_success_ratio=SUCCESS_RATIO.value,
   )
 
 

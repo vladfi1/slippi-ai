@@ -207,7 +207,7 @@ def needs_upgrade(
 @dataclasses.dataclass(slots=True)
 class UpgradeResult:
   """Result of upgrading a Slippi replay."""
-  local_file: utils.LocalFile
+  local_file: utils.ZipFile
   error: Optional[str] = None
   skipped: bool = False
 
@@ -273,11 +273,12 @@ def _upgrade_slp_in_archive(
           if error is not None:
             return UpgradeResult(local_file, 'metadata: ' + error)
 
-          errors = check_same_structure(
-              game_array_to_nt(parse_peppi.from_peppi(game)),
-              game_array_to_nt(parse_peppi.from_peppi(upgraded_game)))
-          if errors:
-            return UpgradeResult(local_file, 'different parse')
+          if len(game.start.players) == 2:
+            errors = check_same_structure(
+                game_array_to_nt(parse_peppi.from_peppi(game)),
+                game_array_to_nt(parse_peppi.from_peppi(upgraded_game)))
+            if errors:
+              return UpgradeResult(local_file, 'different parse')
 
       if skipped and local_file.is_slpz:
         with open(output_path, 'wb') as f:
@@ -343,7 +344,6 @@ def upgrade_archive(
     check_if_needed: bool = False,
     expected_version: tuple[int, int, int] = (3, 18, 0),
     remove_input: bool = False,
-    min_success_ratio: float = 0.99,
 ) -> list[UpgradeResult]:
   """Upgrade a Slippi replay archive to the latest version."""
   if not os.path.exists(input_path):
@@ -503,22 +503,23 @@ def upgrade_archive(
       print("No files were successfully converted")
       return results
 
-    # Write results to output zip
-    # Files are individually compressed with slpz
+    # Write results to output zip. Files are individually compressed with slpz,
+    # so we don't use compression at the zip level (-0).
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     command = ['zip', '-r', '-q', '-0', os.path.abspath(output_path), '.']
     subprocess.check_call(command, cwd=output_dir)
 
     if remove_input:
-      # Can assume at least some were not skipped, else we'd have returned above
-      success_ratio = successful_conversions / len(non_skipped_results)
-      if success_ratio < min_success_ratio:
-        print(
-            f"Success ratio {success_ratio:.2f} is below minimum "
-            f"{min_success_ratio:.2f}, not removing {input_path}.")
-      else:
+      if failed_conversions == 0:
         print(f"Removing input archive: {input_path}")
         os.remove(input_path)
+      else:
+        to_remove = [
+            result.local_file.path for result in results
+            if result.error is None
+        ]
+        print(f"Removing {len(to_remove)} files from input archive at {input_path}")
+        utils.delete_from_zip(input_path, to_remove)
 
   print(f"Output saved to: {output_path}")
   return results
