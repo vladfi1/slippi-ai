@@ -1,18 +1,20 @@
 import concurrent.futures
 import configparser
 import dataclasses
-import importlib
 import json
 import os
 import psutil
 import subprocess
 import tempfile
 import time
-from typing import Optional, Iterator, TypeVar
+from typing import Optional, Iterator, Any
 import zipfile
 
 from absl import logging
+import numpy as np
+import pyarrow as pa
 import tqdm
+import tree
 
 import melee
 import peppi_py
@@ -185,10 +187,12 @@ def is_unfrozen_ps(game: peppi_py.game.Game) -> bool:
 
   return True
 
+DEFAULT_MIN_VERSION = (3, 2, 0)
+
 def needs_upgrade(
     # input_path: str,
     game: peppi_py.Game,
-    min_version: tuple[int, int, int],
+    min_version: tuple[int, int, int] = DEFAULT_MIN_VERSION,
 ):
   """Check if a Slippi replay needs to be upgraded."""
   start = game.start
@@ -219,6 +223,8 @@ class UpgradeResult:
   error: Optional[str] = None
   skipped: bool = False
 
+
+
 def check_same_metadata(
     old_game: peppi_py.Game,
     new_game: peppi_py.Game,
@@ -248,6 +254,96 @@ def _known_game_read_exception(e: BaseException) -> str | None:
 
   return None
 
+
+def check_leaf(path: tuple, original_array, upgraded_array) -> Optional[str]:
+  if original_array is None:
+    return None
+
+  if upgraded_array is None:
+    return 'field missing in upgraded'
+
+  if path[-1] == 'buttons_physical':
+    return None
+
+  if path[-2:-1] == ('triggers_physical',):
+    return None
+
+  if path[:2] == ('items', 'misc'):
+    return None
+
+  if path[-4:] == ('leader', 'post', 'state_flags', 4):
+    return None
+
+  if isinstance(original_array, pa.ListArray):
+    assert isinstance(upgraded_array, pa.ListArray)
+
+    if not np.array_equal(
+        original_array.offsets.to_numpy(),
+        upgraded_array.offsets.to_numpy()):
+      return 'offsets different'
+
+    original_array = original_array.values
+    upgraded_array = upgraded_array.values
+
+  original_np = original_array.to_numpy(zero_copy_only=False)
+  upgraded_np = upgraded_array.to_numpy(zero_copy_only=False)
+
+  if original_np.shape != upgraded_np.shape:
+      return f'shape mismatch {original_np.shape} != {upgraded_np.shape}'
+
+  if np.issubdtype(original_np.dtype, np.floating):
+    is_different = ~np.isclose(
+        upgraded_np, original_np,
+        rtol=1e-5, atol=1e-5, equal_nan=True)
+  else:
+    is_different = original_np != upgraded_np
+
+  if np.any(is_different):
+    game_len = len(is_different)
+    diff_indices = np.arange(game_len)[is_different]
+    return f'difference at {len(diff_indices)}/{game_len} frames, example index {diff_indices[0]}'
+
+  return None
+
+def check_games(
+    original: peppi_py.Game,
+    upgraded: peppi_py.Game,
+    debug: bool = False,
+) -> list[tuple[Any, str]]:
+
+  # fod_platforms_added = (
+  #     original.start.slippi.version < (3, 18, 0) and
+  #     upgraded.start.slippi.version >= (3, 18, 0) and
+  #     melee.enums.to_internal_stage(original.start.stage) is melee.Stage.FOUNTAIN_OF_DREAMS)
+
+  error = check_same_metadata(original, upgraded)
+  if error is not None:
+    if debug:
+      print(error)
+      import ipdb; ipdb.set_trace()
+
+    return [('metadata', error)]
+
+  original_frames = dataclasses.asdict(original.frames)
+  upgraded_frames = dataclasses.asdict(upgraded.frames)
+  errors = tree.flatten_with_path(
+      tree.map_structure_with_path(
+          check_leaf, original_frames, upgraded_frames))
+
+  errors = [(path, msg) for path, msg in errors if msg is not None]
+
+  if errors:
+    if debug:
+      for path, message in errors:
+        print(path, message)
+      import ipdb; ipdb.set_trace()
+
+  return errors
+
+def errors_to_str(errors: list[tuple[Any, str]]) -> str:
+  path, msg = errors[0]
+  return f'{len(errors)} errors, first at {path}: {msg}'
+
 def _upgrade_slp_in_archive(
     local_file: utils.ZipFile,
     output_path: str,
@@ -256,7 +352,7 @@ def _upgrade_slp_in_archive(
     check_same_parse: bool = True,
     dolphin_timeout: Optional[int] = None,
     check_if_needed: bool = False,
-    min_version: tuple[int, int, int] = (3, 2, 0),
+    min_version: tuple[int, int, int] = DEFAULT_MIN_VERSION,
     expected_version: tuple[int, int, int] = (3, 18, 0),
 ) -> UpgradeResult:
   skipped = False
@@ -271,7 +367,8 @@ def _upgrade_slp_in_archive(
       with open(slp_path, 'wb') as f:
         f.write(local_file.from_raw(raw_data))
 
-      game = peppi_py.read_slippi(slp_path)
+      game = peppi_py.read_slippi(
+          slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
 
       if check_if_needed and not needs_upgrade(game, min_version):
         upgraded_path = slp_path
@@ -282,21 +379,15 @@ def _upgrade_slp_in_archive(
                     time_limit=dolphin_timeout)
 
         if check_same_parse:
-          upgraded_game = peppi_py.read_slippi(upgraded_path)
+          upgraded_game = peppi_py.read_slippi(
+              upgraded_path, rollback_mode=peppi_py.RollbackMode.LAST)
 
           if upgraded_game.start.slippi.version != expected_version:
             return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
 
-          error = check_same_metadata(game, upgraded_game)
-          if error is not None:
-            return UpgradeResult(local_file, 'metadata: ' + error)
-
-          if len(game.start.players) == 2:
-            errors = check_same_structure(
-                game_array_to_nt(parse_peppi.from_peppi(game)),
-                game_array_to_nt(parse_peppi.from_peppi(upgraded_game)))
-            if errors:
-              return UpgradeResult(local_file, 'different parse')
+          errors = check_games(game, upgraded_game)
+          if errors:
+            return UpgradeResult(local_file, errors_to_str(errors))
 
       if skipped and local_file.is_slpz:
         with open(output_path, 'wb') as f:
