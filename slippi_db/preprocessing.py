@@ -224,9 +224,6 @@ def get_metadata_safe(path: str) -> dict:
 
 
 BANNED_CHARACTERS = set([
-    # Kirby's actions aren't fully mapped out yet
-    Character.KIRBY,
-
     Character.UNKNOWN_CHARACTER,
 ])
 
