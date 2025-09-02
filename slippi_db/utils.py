@@ -509,7 +509,7 @@ def delete_from_zip(zip_path: str, file_names: list[str]) -> None:
     return
 
   with subprocess.Popen(
-      ['zip', '-d', zip_path, '-@'],
+      ['zip', '-d', '-q', zip_path, '-@'],
       stdin=subprocess.PIPE) as zip_proc:
     assert zip_proc.stdin is not None
     for file_name in file_names:
