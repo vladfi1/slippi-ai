@@ -39,7 +39,7 @@ def assert_same_parse(game_path: str):
   def assert_equal(path, x, y):
     diff_indices = np.arange(len(x))[x != y]
     if diff_indices.size > 0:
-      raise AssertionError(f'{path} differs at indices {diff_indices[:5].tolist()}')
+      raise AssertionError(f'{path} differs at {diff_indices.size} indices')
 
   tree.map_structure_with_path(assert_equal, peppi_game, libmelee_game)
 
