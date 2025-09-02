@@ -208,9 +208,12 @@ def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:
     # Initial heights are always 20 and 28
     current_heights = [28., 20.]
 
-    for i, moves in enumerate(frames.fod_platforms):
-      for move in moves:
-        current_heights[move.platform.value] = move.height
+    for i, (platforms, heights) in enumerate(
+        zip(frames.fod_platforms.platform, frames.fod_platforms.height)):
+
+      for platform, height in zip(platforms, heights):
+        current_heights[platform] = height.as_py()
+
       for platform in (LEFT, RIGHT):
         fod_platform_heights[platform.value][i] = current_heights[platform.value]
 
