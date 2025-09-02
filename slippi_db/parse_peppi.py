@@ -113,7 +113,8 @@ def get_player(player: peppi_py.frame.PortData, game_length: int) -> types.Playe
           c_stick=get_stick(pre.cstick),
           # libmelee reads the logical value and assigns it to both l/r
           shoulder=pre.triggers.to_numpy(),
-          buttons=get_buttons(pre.buttons_physical),
+          # Use processed buttons because physical buttons aren't preserved across upgrading.
+          buttons=get_buttons(pre.buttons),
       ),
       **leader_data)
 
@@ -165,6 +166,7 @@ def parse_items(
   })
 
 def read_slippi(path: str) -> peppi_py.Game:
+  # NOTE: we might want to switch to LAST as it is consistent across upgrades.
   return peppi_py.read_slippi(path, rollback_mode=peppi_py.RollbackMode.FIRST)
 
 def from_peppi(peppi_game: peppi_py.Game) -> types.GAME_TYPE:

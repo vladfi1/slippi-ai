@@ -36,7 +36,7 @@ def get_controller(cs: melee.ControllerState) -> Controller:
       main_stick=get_stick(cs.main_stick),
       c_stick=get_stick(cs.c_stick),
       shoulder=cs.l_shoulder,
-      buttons=get_buttons(cs.button),
+      buttons=get_buttons(cs.processed_button),
   )
 
 def get_base_player(player: melee.PlayerState) -> dict:
