@@ -1,6 +1,7 @@
 import concurrent.futures
 import configparser
 import dataclasses
+import enum
 import json
 import os
 import psutil
@@ -40,6 +41,12 @@ class DolphinExecutionError(RuntimeError):
 class MetadataUpdateError(RuntimeError):
   pass
 
+# https://github.com/project-slippi/slippi-wiki/blob/master/COMM_SPEC.md#top-level
+class RollbackDisplayMethod(enum.Enum):
+  OFF = 'off'
+  NORMAL = 'normal'
+  VISIBLE = 'visible'
+
 def upgrade_slp(
     input_path: str,
     output_path: str,
@@ -49,6 +56,7 @@ def upgrade_slp(
     copy_slp_metadata_binary: str = 'copy_slp_metadata',
     headless: bool = True,
     fast_forward: bool = True,
+    rollback_display_method: RollbackDisplayMethod = RollbackDisplayMethod.OFF,
 ):
   """Upgrade a Slippi replay file to the latest version."""
 
@@ -70,7 +78,7 @@ def upgrade_slp(
     replay_json = {
         'replay': os.path.abspath(input_path),
         'shouldResync': True,
-        # 'rollbackDisplayMethod': 'normal',
+        'rollbackDisplayMethod': rollback_display_method.value,
     }
     if fast_forward:
       replay_json['startFrame'] = 1000000
@@ -133,7 +141,7 @@ def test_upgrade_slp(
     input_path: str,
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
-    time_limit: Optional[int] = 30,
+    **upgrade_kwargs,
 ):
   """Test the upgrade_slp function."""
   if not os.path.exists(input_path):
@@ -142,7 +150,7 @@ def test_upgrade_slp(
   with tempfile.TemporaryDirectory(dir=utils.get_tmp_dir(in_memory=in_memory)) as tmp_dir:
     output_path = os.path.join(tmp_dir, 'upgraded.slp')
     upgrade_slp(input_path, output_path, dolphin_config,
-                in_memory=in_memory, time_limit=time_limit)
+                in_memory=in_memory, **upgrade_kwargs)
 
     game = game_array_to_nt(parse_peppi.get_slp(input_path))
     upgraded_game = game_array_to_nt(parse_peppi.get_slp(output_path))
@@ -400,6 +408,9 @@ def _upgrade_slp_in_archive(
         except subprocess.CalledProcessError as e:
           return UpgradeResult(local_file, 'slpz: ' + e.stderr)
 
+  except KeyboardInterrupt:
+    raise
+
   except BaseException as e:
     known_error = _known_game_read_exception(e)
     if known_error:
@@ -444,6 +455,16 @@ def _monitor_results(
 
   return results
 
+_ARCHIVE_SUFFIXES = ['.zip', '.7z', '.rar']
+
+def _is_archive(path: str) -> bool:
+  return any(path.endswith(suffix) for suffix in _ARCHIVE_SUFFIXES)
+
+def _safe_path(path: str) -> str:
+  components = os.path.normpath(path).split('/')
+  components = [c for c in components if c and c != '..']
+  return os.path.join(*components)
+
 def upgrade_archive(
     input_path: str,
     output_path: str,
@@ -484,19 +505,25 @@ def upgrade_archive(
   total_size = 0
   skipped_files = 0
   todo: list[tuple[utils.ZipFile, str]] = []
+  to_remove: list[str] = []
 
   for zip_info in zf.infolist():
     if zip_info.is_dir():
       continue
 
+    if _is_archive(zip_info.filename):
+      raise ValueError(f'Input archive contains nested archive: {zip_info.filename}')
+
     if not utils.is_slp_file(zip_info.filename):
       continue
 
     local_file = utils.ZipFile(input_path, zip_info.filename)
-    output_filename = local_file.base_name + utils.SLPZ_SUFFIX
+    output_filename = _safe_path(local_file.base_name) + utils.SLPZ_SUFFIX
 
     if output_filename in existing_outputs:
       skipped_files += 1
+      if remove_input:
+        to_remove.append(zip_info.filename)
       continue
 
     # True compression rate may be up to ~2x better thanks to slpz, if the
@@ -513,9 +540,9 @@ def upgrade_archive(
   if skipped_files > 0:
     logging.info(f'Skipped {skipped_files} files that already exist in output archive')
 
-  if not todo:
-    logging.info('No files to process')
-    return []
+  # if not todo:
+  #   logging.info('No files to process')
+  #   return []
 
   logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
 
@@ -607,32 +634,31 @@ def upgrade_archive(
     non_skipped_results = [result for result in results if not result.skipped]
     skipped_conversions = len(results) - len(non_skipped_results)
 
-    successful_conversions = sum(1 for result in non_skipped_results if result.error is None)
-    failed_conversions = len(non_skipped_results) - successful_conversions
+    successful_conversions = sum(1 for result in results if result.error is None)
+    failed_conversions = len(results) - successful_conversions
 
     print(f"Conversion complete: {successful_conversions} successful, {failed_conversions} failed, {skipped_conversions} skipped")
 
-    if successful_conversions == 0:
-      print("No files were successfully converted")
-      return results
-
-    # Write results to output zip. Files are individually compressed with slpz,
-    # so we don't use compression at the zip level (-0).
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    command = ['zip', '-r', '-q', '-0', os.path.abspath(output_path), '.']
-    subprocess.check_call(command, cwd=output_dir)
+    if successful_conversions > 0:
+      # Write results to output zip. Files are individually compressed with slpz,
+      # so we don't use compression at the zip level (-0).
+      os.makedirs(os.path.dirname(output_path), exist_ok=True)
+      command = ['zip', '-r', '-q', '-0', os.path.abspath(output_path), '.']
+      subprocess.check_call(command, cwd=output_dir)
 
     if remove_input:
       if failed_conversions == 0:
         print(f"Removing input archive: {input_path}")
         os.remove(input_path)
       else:
-        to_remove = [
+        # Note: some errors are "known" and marked as skipped; we remove those too
+        to_remove.extend([
             result.local_file.path for result in results
-            if result.error is None
-        ]
+            if result.error is None or result.skipped
+        ])
         print(f"Removing {len(to_remove)} files from input archive at {input_path}")
-        utils.delete_from_zip(input_path, to_remove)
+        if to_remove:
+          utils.delete_from_zip(input_path, to_remove)
 
   print(f"Output saved to: {output_path}")
   return results

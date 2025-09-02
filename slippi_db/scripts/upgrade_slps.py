@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 from absl import app, flags
@@ -18,6 +17,7 @@ WORK_DIR = flags.DEFINE_string('work_dir', None, 'Optional working directory for
 IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'Use in-memory temporary files for conversion.')
 LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to log progress during conversion.')
 CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file needs conversion before processing.')
+DOLPHIN_TIMEOUT = flags.DEFINE_integer('dolphin_timeout', 60, 'Dolphin timeout in seconds.')
 
 REMOVE_INPUT = flags.DEFINE_boolean('remove_input', False, 'Whether to remove the input file after conversion.')
 
@@ -36,6 +36,7 @@ def process_single_archive(input_path, output_path, dolphin_config):
       log_interval=LOG_INTERVAL.value,
       check_if_needed=CHECK_IF_NEEDED.value,
       remove_input=REMOVE_INPUT.value,
+      dolphin_timeout=DOLPHIN_TIMEOUT.value,
   )
 
 
