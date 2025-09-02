@@ -40,9 +40,6 @@ def get_controller(cs: melee.ControllerState) -> Controller:
   )
 
 def get_base_player(player: melee.PlayerState) -> dict:
-  if player.action == melee.Action.UNKNOWN_ANIMATION:
-    raise InvalidGameError('UNKNOWN_ANIMATION')
-
   return dict(
       percent=player.percent,
       facing=player.facing,
