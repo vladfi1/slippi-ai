@@ -166,9 +166,9 @@ def test_upgrade_slp(
 def is_online(game: peppi_py.game.Game) -> bool:
   """Check if a game is an online game based on the start dictionary."""
   # NOTE: This probably won't work properly for upgraded replays,
-  # but that's ok because upgrade PS games will already have stage events.
+  # but that's ok because upgraded PS games will already have stage events.
 
-  if game.metadata is not None:
+  if game.metadata:
     players = game.metadata['players'].values()
     player = next(iter(players))
     return 'netplay' in player['names']
@@ -232,7 +232,6 @@ class UpgradeResult:
   skipped: bool = False
 
 
-
 def check_same_metadata(
     old_game: peppi_py.Game,
     new_game: peppi_py.Game,
@@ -250,6 +249,17 @@ def check_same_metadata(
       for key in ['name', 'code']:
         if getattr(p1.netplay, key) != getattr(p2.netplay, key):
           return f'different netplay.{key}'
+
+  if old_game.end is not None:
+    if new_game.end is None:
+      return 'missing end'
+
+    # Note: lras_initiator is sometimes different
+    for key in ['method', 'players']:
+      old = getattr(old_game.end, key)
+      new = getattr(new_game.end, key)
+      if old is not None and new != old:
+        return f'different end.{key}'
 
   return None
 
@@ -279,7 +289,7 @@ def check_leaf(path: tuple, original_array, upgraded_array) -> Optional[str]:
   if path[:2] == ('items', 'misc'):
     return None
 
-  if path[-4:] == ('leader', 'post', 'state_flags', 4):
+  if path[-3:] == ('post', 'state_flags', 4):
     return None
 
   if isinstance(original_array, pa.ListArray):
