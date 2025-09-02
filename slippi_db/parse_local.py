@@ -31,8 +31,13 @@ overwriting any existing files in Parsed, and will update parsed.pkl.
 
 import concurrent.futures
 import json
+import logging
 import os
 import pickle
+import sys
+import tempfile
+import time
+import typing as tp
 from typing import Optional
 
 from absl import app, flags
@@ -49,67 +54,111 @@ from slippi_db.parsing_utils import CompressionType
 def parse_slp(
     file: utils.LocalFile,
     output_dir: str,
-    tmpdir: str,
+    tmpdir: Optional[str],
     compression: CompressionType = CompressionType.NONE,
     compression_level: Optional[int] = None,
 ) -> dict:
-  result = dict(name=file.name)
+  slp_bytes = file.read()
+  slp_size = len(slp_bytes)
+  md5 = utils.md5(slp_bytes)
 
-  try:
-    with file.extract(tmpdir) as path:
-      with open(path, 'rb') as f:
-        slp_bytes = f.read()
-        slp_size = len(slp_bytes)
-        md5 = utils.md5(slp_bytes)
-        del slp_bytes
+  result = dict(
+      name=file.name,
+      slp_md5=md5,
+      slp_size=slp_size,
+  )
 
+  with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_parent:
+    path = os.path.join(tmp_parent, 'game.slp')
+    with open(path, 'wb') as f:
+      f.write(slp_bytes)
+    del slp_bytes
+
+    game = peppi_py.read_slippi(path)
+    metadata = preprocessing.get_metadata(game)
+    is_training, reason = preprocessing.is_training_replay(metadata)
+
+    result.update(metadata)  # nest?
+    result.update(
+        valid=True,
+        is_training=is_training,
+        not_training_reason=reason,
+    )
+
+    if is_training:
+      game = parse_peppi.from_peppi(game)
+      game_bytes = parsing_utils.convert_game(
+        game, compression=compression, compression_level=compression_level)
       result.update(
-          slp_md5=md5,
-          slp_size=slp_size,
+          pq_size=len(game_bytes),
+          compression=compression.value,
       )
 
-      game = peppi_py.read_slippi(path)
-      metadata = preprocessing.get_metadata(game)
-      is_training, reason = preprocessing.is_training_replay(metadata)
-
-      result.update(metadata)  # nest?
-      result.update(
-          valid=True,
-          is_training=is_training,
-          not_training_reason=reason,
-      )
-
-      if is_training:
-        game = parse_peppi.from_peppi(game)
-        game_bytes = parsing_utils.convert_game(
-          game, compression=compression, compression_level=compression_level)
-        result.update(
-            pq_size=len(game_bytes),
-            compression=compression.value,
-        )
-
-        # TODO: consider writing to raw_name/slp_name
-        with open(os.path.join(output_dir, md5), 'wb') as f:
-          f.write(game_bytes)
-
-  except KeyboardInterrupt:
-    raise
-  except BaseException as e:
-    result.update(valid=False, reason=repr(e))
-  # except:  # should be a catch-all, but sadly prevents KeyboardInterrupt?
-  #   result.update(valid=False, reason='uncaught exception')
+      # TODO: consider writing to raw_name/slp_name
+      with open(os.path.join(output_dir, md5), 'wb') as f:
+        f.write(game_bytes)
 
   return result
 
+def parse_slp_safe(file: utils.LocalFile, *args, debug: bool = False, **kwargs):
+  if debug:
+    return parse_slp(file, *args, **kwargs)
+
+  try:
+    return parse_slp(file, *args, **kwargs)
+  except KeyboardInterrupt:
+    raise
+  except BaseException as e:
+    return dict(name=file.name, valid=False, reason=repr(e))
+  # except:  # should be a catch-all, but sadly prevents KeyboardInterrupt?
+  #   result.update(valid=False, reason='uncaught exception')
+
+
 def parse_slp_with_index(index: int, *args, **kwargs):
-  return index, parse_slp(*args, **kwargs)
+  return index, parse_slp_safe(*args, **kwargs)
+
+def _monitor_results(
+    results_iter: tp.Iterable[dict],
+    total_files: int,
+    log_interval: int = 30,
+) -> list[dict]:
+  """Monitor parsing results and log progress periodically."""
+  pbar = tqdm.tqdm(total=total_files, desc="Parsing", unit="slp", smoothing=0)
+
+  last_log_time = 0
+  successful_parses = 0
+  last_error: Optional[tuple[str, str]] = None
+
+  results: list[dict] = []
+
+  for result in results_iter:
+    if result['valid']:
+      successful_parses += 1
+    else:
+      last_error = (result['name'], result['reason'])
+
+    results.append(result)
+    pbar.update(1)
+
+    if time.time() - last_log_time > log_interval:
+      last_log_time = time.time()
+      success_rate = successful_parses / pbar.n
+      logging.info(f'Success rate: {success_rate:.2%}')
+      if last_error is not None:
+        logging.error(f'Last error: {last_error}')
+        last_error = None
+
+  pbar.close()
+
+  return results
 
 def parse_files(
     files: list[utils.LocalFile],
     output_dir: str,
-    tmpdir: str,
+    tmpdir: Optional[str],
     num_threads: int = 1,
     compression_options: dict = {},
+    log_interval: int = 30,
 ) -> list[dict]:
   parse_slp_kwargs = dict(
       output_dir=output_dir,
@@ -118,26 +167,38 @@ def parse_files(
   )
 
   if num_threads == 1:
-    return [
-        parse_slp(f, **parse_slp_kwargs)
-        for f in tqdm.tqdm(files, unit='slp')]
+    def results_iter():
+      for f in files:
+        yield parse_slp(f, **parse_slp_kwargs)
+
+    return _monitor_results(results_iter(), total_files=len(files), log_interval=log_interval)
 
   with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
     try:
-      futures = [
-          pool.submit(parse_slp_with_index, i, f, **parse_slp_kwargs)
-          for i, f in enumerate(files)]
-      as_completed = concurrent.futures.as_completed(futures)
-      as_completed = tqdm.tqdm(
-          as_completed, total=len(files), smoothing=0, unit='slp')
+      if sys.version_info < (3, 12):
+        logging.warning(
+            'Submitting large numbers of tasks to the process pool may cause '
+            'a deadlock in python < 3.12, see '
+            'https://github.com/python/cpython/issues/105829')
+
+      futures = []
+      for i, f in enumerate(tqdm.tqdm(files, desc='Submitting', unit='slp')):
+        futures.append(pool.submit(parse_slp_with_index, i, f, **parse_slp_kwargs))
+
       results = [None] * len(files)
-      for future in as_completed:
-        index, result = future.result()
-        results[index] = result
+
+      def results_iter():
+        for future in concurrent.futures.as_completed(futures):
+          index, result = future.result()
+          results[index] = result
+          yield result
+
+      _monitor_results(results_iter(), total_files=len(files), log_interval=log_interval)
+
       return results
     except KeyboardInterrupt:
       print('KeyboardInterrupt, shutting down')
-      pool.shutdown()
+      pool.shutdown(cancel_futures=True)
       raise
 
 def parse_chunk(
@@ -250,6 +311,7 @@ def run_parsing(
     in_memory: bool = True,
     reprocess: bool = False,
     dry_run: bool = False,
+    log_interval: int = 30,
 ):
   # Cache tmp dir once
   tmpdir = utils.get_tmp_dir(in_memory=in_memory)
@@ -304,7 +366,7 @@ def run_parsing(
   # TODO: handle raw .slp and .slp.gz files
 
   zip_results = parse_files(
-      slp_files, output_dir, tmpdir, num_threads, compression_options)
+      slp_files, output_dir, tmpdir, num_threads, compression_options, log_interval)
   assert len(zip_results) == len(slp_files)
 
   # Point back to raw file
@@ -352,7 +414,7 @@ if __name__ == '__main__':
   THREADS = flags.DEFINE_integer('threads', 1, 'number of threads')
   CHUNK_SIZE = flags.DEFINE_float('chunk_size', 0.5, 'max chunk size in GB')
   IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'extract in memory')
-  # LOG_INTERVAL = flags.DEFINE_integer('log_interval', 20, 'log interval')
+  LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'seconds between progress logs')
   COMPRESSION = flags.DEFINE_enum_class(
       name='compression',
       default=parsing_utils.CompressionType.ZLIB,  # best one
@@ -374,6 +436,7 @@ if __name__ == '__main__':
         ),
         reprocess=REPROCESS.value,
         dry_run=DRY_RUN.value,
+        log_interval=LOG_INTERVAL.value,
     )
 
   app.run(main)
