@@ -8,7 +8,6 @@ from melee.enums import Action
 from slippi_ai import types
 from slippi_ai import utils
 
-
 class ObservationFilter(abc.ABC):
 
   def reset(self):
@@ -51,10 +50,11 @@ N_TECH, F_TECH, B_TECH = [
     [Action.NEUTRAL_TECH, Action.FORWARD_TECH, Action.BACKWARD_TECH]
 ]
 
-# A set of actions indistinguishable for a certain number of frames.
+# A set of actions indistinguishable for the first N frames.
 ActionSet = tuple[tuple[ActionDType, ...], int]
 
 # Every character has a list of ActionSets from less to more specific.
+# Note: the frame count is 1-indexed.
 INDISTINGUISHABLE_ACTIONS: dict[int, list[ActionSet]] = {
     # https://www.fightcore.gg/characters/224/fox/moves/1901/neutraltech/
     melee.Character.FOX.value: [
@@ -117,6 +117,23 @@ INDISTINGUISHABLE_ACTIONS: dict[int, list[ActionSet]] = {
 # TODO: fill in data for all characters
 DEFAULT_ACTION_DATA = [((N_TECH, F_TECH, B_TECH), 7)]
 
+def get_masks(action_data: list[ActionSet]):
+  action_to_masked: dict[ActionDType, list[ActionDType]] = {}
+
+  for action_set, num_frames in action_data:
+    for action in action_set:
+      masked = action_to_masked.setdefault(action, [])
+      masked.extend([action_set[0]] * (num_frames - len(masked)))
+
+  return action_to_masked
+
+DEFAULT_MASKS = get_masks(DEFAULT_ACTION_DATA)
+
+ACTION_MASKS = {
+    char: get_masks(action_data) for char, action_data
+    in INDISTINGUISHABLE_ACTIONS.items()
+}
+
 def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
   """Mask actions that are indistinguishable.
 
@@ -124,13 +141,12 @@ def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
   the set (for now, this is always NEUTRAL_TECH). We could also randomize or
   create a new unique action id for each set.
   """
-  action_data = INDISTINGUISHABLE_ACTIONS.get(char, DEFAULT_ACTION_DATA)
+  masks = ACTION_MASKS.get(char, DEFAULT_MASKS).get(action, None)
 
-  for action_set, num_frames in action_data:
-    if frame <= num_frames and action in action_set:
-      return action_set[0]
+  if masks is None or frame >= len(masks):
+    return action
 
-  return action
+  return masks[frame]
 
 class AnimationFilter(ObservationFilter):
   """Obscures tech animations that look the same for the first N frames."""
@@ -146,7 +162,7 @@ class AnimationFilter(ObservationFilter):
     if action == self.prev_action:
       self.count += 1
     else:
-      self.count = 1
+      self.count = 0
       self.prev_action = action
 
     return mask_tech_action(char, action, self.count)
