@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Convert .slp files in a zip archive to .slpp.gz format using the slp tool.
+"""Convert .slp files in a zip archive or directory to .slpp.gz format using the slp tool.
 
-This script takes a .zip archive containing .slp files and outputs a new .zip
-archive with each .slp file converted to .slpp.gz format using the `slp` tool
+This script takes a .zip archive or directory containing .slp files and outputs a new .zip
+archive or directory with each .slp file converted to .slpp.gz format using the `slp` tool
 with gzip compression.
 
-Usage: python slippi_db/scripts/convert_slpp.py --input input.zip --output output.zip [--threads N]
+Usage:
+  Single archive: python slippi_db/scripts/convert_slps.py --input input.zip --output output.zip [--threads N]
+  Directory: python slippi_db/scripts/convert_slps.py --input input_dir/ --output output_dir/ [--threads N]
 """
 
 import concurrent.futures
@@ -14,6 +16,7 @@ import gzip
 import os
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -27,11 +30,11 @@ class OutputType(enum.Enum):
     SLPZ = "slpz"
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('input', None, 'Input zip file containing .slp files', required=True)
-flags.DEFINE_string('output', None, 'Output zip file for .slpp.gz files', required=True)
+flags.DEFINE_string('input', None, 'Input zip file or directory containing .slp files', required=True)
+flags.DEFINE_string('output', None, 'Output zip file or directory for converted files', required=True)
 flags.DEFINE_integer('threads', 1, 'Number of threads to use')
 flags.DEFINE_integer('limit', None, 'Limit number of files to process (for testing)')
-flags.DEFINE_string('failed_output', None, 'Optional zip file to store failed .slp files')
+flags.DEFINE_boolean('remove_input', False, 'Whether to remove successful files from input archive after conversion')
 flags.DEFINE_enum_class('output_type', OutputType.SLPZ, OutputType, 'Output type for conversion')
 
 def convert_slp_to_slpp_gz(
@@ -102,6 +105,8 @@ def convert_slp_to_slpz(
     )
   except subprocess.CalledProcessError as e:
     return e.stderr.decode().strip()
+  except utils.FileReadException as e:
+    return repr(e)
 
 conversion_functions = {
     OutputType.SLPP_GZ: convert_slp_to_slpp_gz,
@@ -123,7 +128,7 @@ def convert_zip_archive(
     output_type: OutputType,
     num_threads: int = 1,
     limit: Optional[int] = None,
-    failed_output_path: Optional[str] = None,
+    remove_input: bool = False,
 ):
   """Convert all .slp files in a zip archive to .slpp.gz format.
 
@@ -132,17 +137,35 @@ def convert_zip_archive(
     output_zip_path: Path to output zip file for .slpp.gz files
     num_threads: Number of threads to use for parallel processing
     limit: Maximum number of files to process (for testing)
-    failed_output_path: Optional path to store failed .slp files
+    remove_input: Whether to remove successful files from input archive
   """
   print(f"Converting {input_zip_path} -> {output_zip_path}")
   print(f"Using {num_threads} thread{'s' if num_threads != 1 else ''}")
 
+  # Check for existing files in output archive
+  existing_files = []
+  if os.path.exists(output_zip_path):
+    existing_files = utils.traverse_slp_files_zip(output_zip_path)
+    print(f"Found {len(existing_files)} existing files in output archive")
+
+  existing_names = set(f.name for f in existing_files)
+
+  to_remove: list[str] = []
+
   # Create temporary directory for output files (not in shared memory)
   with tempfile.TemporaryDirectory() as temp_output_dir:
     todo: list[tuple[utils.ZipFile, str]] = []
+    skipped_count = 0
     output_dirs = set()  # Track output directories to create
     files = utils.traverse_slp_files_zip(input_zip_path)
     for f in files:
+
+      # Skip if file already exists in output archive
+      if f.name in existing_names:
+        skipped_count += 1
+        to_remove.append(f.path)
+        continue
+
       output_name = f.base_name + '.' + output_type.value
       output_path = os.path.join(temp_output_dir, output_name)
       output_dirs.add(os.path.dirname(output_path))
@@ -152,11 +175,13 @@ def convert_zip_archive(
     for output_dir in output_dirs:
       os.makedirs(output_dir, exist_ok=True)
 
-    if not todo:
+    if not todo and skipped_count == 0:
       print("No .slp files found in input archive")
       return
 
     print(f"Found {len(files)} .slp files in archive")
+    if skipped_count > 0:
+      print(f"Skipping {skipped_count} files already present in output archive")
 
     # Apply limit if specified
     if limit is not None and limit > 0:
@@ -200,60 +225,113 @@ def convert_zip_archive(
 
     print(f"Conversion complete: {successful_conversions} successful, {failed_conversions} failed")
 
-    if successful_conversions == 0:
-      print("No files were successfully converted")
-      return
-
     # Create output zip using command line zip (uncompressed)
-    print("Creating output archive...")
-    result = subprocess.run([
-      'zip', '-r', '-0', output_zip_path, '.'
-    ], cwd=temp_output_dir, capture_output=True, text=True)
+    if successful_conversions > 0:
+      print("Creating output archive...")
+      result = subprocess.run([
+        'zip', '-r', '-0', output_zip_path, '.'
+      ], cwd=temp_output_dir, capture_output=True, text=True)
 
-    if result.returncode != 0:
-      raise RuntimeError(f"Failed to create output zip: {result.stderr}")
+      if result.returncode != 0:
+        raise RuntimeError(f"Failed to create output zip: {result.stderr}")
 
-    print(f"Output saved to: {output_zip_path}")
+      print(f"Output saved to: {output_zip_path}")
+
+    # Handle input removal if requested
+    if remove_input:
+      if failed_conversions == 0:
+        print(f"Removing input archive: {input_zip_path}")
+        os.remove(input_zip_path)
+      else:
+        # Remove only successful files from the archive
+        to_remove.extend(filename for filename, error in results if error is None)
+
+        if to_remove:
+          print(f"Removing {len(to_remove)} successful files from input archive at {input_zip_path}")
+          utils.delete_from_zip(input_zip_path, to_remove)
 
     if failed_conversions > 0:
       print(f"Some files failed to convert: {failed_conversions} errors")
-
-      # Create archive of failed files if requested
-      if failed_output_path:
-        print(f"Creating archive of failed files: {failed_output_path}")
-        failed_files = [filename for filename, error in results if error is not None]
-        utils.extract_zip_files(input_zip_path, failed_files, failed_output_path)
-        print(f"Failed files saved to: {failed_output_path}")
-
-      for slp_filename, error in results:
-        if error is not None:
-          print(f"Error converting {slp_filename}: {error}")
-
+      slp_filename, error = results[0]
+      print(f'Example error in {slp_filename}: {error}')
 
 def main(_):
-  # Validate input file exists
-  if not os.path.exists(FLAGS.input):
-    print(f"Error: Input file '{FLAGS.input}' does not exist")
+  input_path = Path(FLAGS.input)
+  output_path = Path(FLAGS.output)
+
+  # Validate input exists
+  if not input_path.exists():
+    print(f"Error: Input path '{input_path}' does not exist")
     return 1
 
-  # Validate output directory exists
-  output_dir = os.path.dirname(FLAGS.output)
-  if output_dir and not os.path.exists(output_dir):
-    print(f"Error: Output directory '{output_dir}' does not exist")
-    return 1
+  if input_path.is_file():
+    # Process single file
+    if not str(input_path).endswith('.zip'):
+      print(f"Error: Input file must be a .zip file: {input_path}")
+      return 1
 
-  try:
-    convert_zip_archive(
-        input_zip_path=FLAGS.input,
-        output_zip_path=FLAGS.output,
-        output_type=FLAGS.output_type,
-        num_threads=FLAGS.threads,
-        limit=FLAGS.limit,
-        failed_output_path=FLAGS.failed_output,
-    )
+    # Validate output directory exists for single file
+    output_dir = output_path.parent
+    if output_dir and not output_dir.exists():
+      print(f"Error: Output directory '{output_dir}' does not exist")
+      return 1
+
+    try:
+      convert_zip_archive(
+          input_zip_path=str(input_path),
+          output_zip_path=str(output_path),
+          output_type=FLAGS.output_type,
+          num_threads=FLAGS.threads,
+          limit=FLAGS.limit,
+          remove_input=FLAGS.remove_input,
+      )
+      return 0
+    except Exception as e:
+      print(f"Error: {e}")
+      return 1
+
+  elif input_path.is_dir():
+    # Process directory recursively
+    if not output_path.exists():
+      output_path.mkdir(parents=True, exist_ok=True)
+    elif not output_path.is_dir():
+      print(f"Error: Output must be a directory when input is a directory: {output_path}")
+      return 1
+
+    # Find all zip files recursively
+    zip_files = list(input_path.rglob('*.zip'))
+    print(f"Found {len(zip_files)} zip files to process")
+
+    if not zip_files:
+      print("No zip files found in input directory")
+      return 0
+
+    for zip_file in zip_files:
+      # Calculate relative path from input directory
+      rel_path = zip_file.relative_to(input_path)
+
+      # Create output path maintaining directory structure
+      output_file = output_path / rel_path
+      output_file.parent.mkdir(parents=True, exist_ok=True)
+
+      print(f"\nProcessing {zip_file} -> {output_file}")
+
+      try:
+        convert_zip_archive(
+            input_zip_path=str(zip_file),
+            output_zip_path=str(output_file),
+            output_type=FLAGS.output_type,
+            num_threads=FLAGS.threads,
+            limit=FLAGS.limit,
+            remove_input=FLAGS.remove_input,
+        )
+      except Exception as e:
+        print(f"Error processing {zip_file}: {e}")
+        continue
+
     return 0
-  except Exception as e:
-    print(f"Error: {e}")
+  else:
+    print(f"Error: Input path is neither a file nor a directory: {input_path}")
     return 1
 
 
