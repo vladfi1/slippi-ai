@@ -74,7 +74,10 @@ def upgrade_config(config: dict):
         with_fod=False,
         items=dataclasses.asdict(old_items_config),
     )
-    config['embed']['player']['with_nana'] = False
+    config['embed']['player'].update(
+        with_nana=False,
+        legacy_jumps_left=True,
+    )
     config['version'] = 5
     logging.warning('Upgraded config version 4 -> 5')
 
