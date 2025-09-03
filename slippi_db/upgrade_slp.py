@@ -372,51 +372,65 @@ def _upgrade_slp_in_archive(
     check_if_needed: bool = False,
     min_version: tuple[int, int, int] = DEFAULT_MIN_VERSION,
     expected_version: tuple[int, int, int] = (3, 18, 0),
+    debug: bool = False,
 ) -> UpgradeResult:
   skipped = False
 
+  tmp_parent_dir = utils.get_tmp_dir(in_memory=in_memory)
+
+  with tempfile.TemporaryDirectory(dir=tmp_parent_dir) as tmp_dir:
+    raw_data = local_file.read_raw()
+
+    slp_path = os.path.join(tmp_dir, 'game.slp')
+    with open(slp_path, 'wb') as f:
+      f.write(local_file.from_raw(raw_data))
+
+    game = peppi_py.read_slippi(
+        slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
+
+    if check_if_needed and not needs_upgrade(game, min_version):
+      upgraded_path = slp_path
+      skipped = True
+    else:
+      upgraded_path = os.path.join(tmp_dir, 'upgraded.slp')
+      upgrade_slp(slp_path, upgraded_path, dolphin_config, in_memory=in_memory,
+                  time_limit=dolphin_timeout)
+
+      if check_same_parse:
+        upgraded_game = peppi_py.read_slippi(
+            upgraded_path, rollback_mode=peppi_py.RollbackMode.LAST)
+
+        if upgraded_game.start.slippi.version != expected_version:
+          if debug:
+            import ipdb; ipdb.set_trace()
+          return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
+
+        errors = check_games(game, upgraded_game, debug=debug)
+        if errors:
+          return UpgradeResult(local_file, errors_to_str(errors))
+
+    if skipped and local_file.is_slpz:
+      with open(output_path, 'wb') as f:
+        f.write(raw_data)
+    else:
+      try:
+        subprocess.run(
+            ['slpz', '-x', upgraded_path, '-o', output_path],
+            check=True, capture_output=True, text=True)
+      except subprocess.CalledProcessError as e:
+        return UpgradeResult(local_file, 'slpz: ' + e.stderr)
+
+  return UpgradeResult(local_file, None, skipped=skipped)
+
+def _upgrade_slp_in_archive_safe(
+    local_file: utils.ZipFile,
+    debug: bool = False,
+    **kwargs):
+  if debug:
+    return _upgrade_slp_in_archive(local_file, debug=True, **kwargs)
+
   try:
-    tmp_parent_dir = utils.get_tmp_dir(in_memory=in_memory)
-
-    with tempfile.TemporaryDirectory(dir=tmp_parent_dir) as tmp_dir:
-      raw_data = local_file.read_raw()
-
-      slp_path = os.path.join(tmp_dir, 'game.slp')
-      with open(slp_path, 'wb') as f:
-        f.write(local_file.from_raw(raw_data))
-
-      game = peppi_py.read_slippi(
-          slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
-
-      if check_if_needed and not needs_upgrade(game, min_version):
-        upgraded_path = slp_path
-        skipped = True
-      else:
-        upgraded_path = os.path.join(tmp_dir, 'upgraded.slp')
-        upgrade_slp(slp_path, upgraded_path, dolphin_config, in_memory=in_memory,
-                    time_limit=dolphin_timeout)
-
-        if check_same_parse:
-          upgraded_game = peppi_py.read_slippi(
-              upgraded_path, rollback_mode=peppi_py.RollbackMode.LAST)
-
-          if upgraded_game.start.slippi.version != expected_version:
-            return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
-
-          errors = check_games(game, upgraded_game)
-          if errors:
-            return UpgradeResult(local_file, errors_to_str(errors))
-
-      if skipped and local_file.is_slpz:
-        with open(output_path, 'wb') as f:
-          f.write(raw_data)
-      else:
-        try:
-          subprocess.run(
-              ['slpz', '-x', upgraded_path, '-o', output_path],
-              check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
-          return UpgradeResult(local_file, 'slpz: ' + e.stderr)
+    return _upgrade_slp_in_archive(local_file, **kwargs)
 
   except KeyboardInterrupt:
     raise
@@ -426,9 +440,9 @@ def _upgrade_slp_in_archive(
     if known_error:
       return UpgradeResult(local_file, known_error, skipped=True)
 
-    return UpgradeResult(local_file, type(e).__name__ + ": " + str(e), skipped=skipped)
-
-  return UpgradeResult(local_file, None, skipped=skipped)
+    return UpgradeResult(
+        local_file,
+        type(e).__name__ + ": " + str(e), skipped=False)
 
 def _monitor_results(
     results_iter: Iterator[UpgradeResult],
@@ -488,6 +502,7 @@ def upgrade_archive(
     check_if_needed: bool = False,
     expected_version: tuple[int, int, int] = (3, 18, 0),
     remove_input: bool = False,
+    debug: bool = False,
 ) -> list[UpgradeResult]:
   """Upgrade a Slippi replay archive to the latest version."""
   if not os.path.exists(input_path):
@@ -593,7 +608,7 @@ def upgrade_archive(
     if num_threads == 1:
       def results_iter1():
         for f, output_file_path in todo:
-          yield _upgrade_slp_in_archive(
+          yield _upgrade_slp_in_archive_safe(
               local_file=f,
               output_path=os.path.join(output_dir, output_file_path),
               dolphin_config=dolphin_config,
@@ -602,6 +617,7 @@ def upgrade_archive(
               dolphin_timeout=dolphin_timeout,
               check_if_needed=check_if_needed,
               expected_version=expected_version,
+              debug=debug,
           )
 
       results = _monitor_results(
@@ -615,7 +631,7 @@ def upgrade_archive(
           futures: list[concurrent.futures.Future] = []
           for f, output_file_path in todo:
             futures.append(executor.submit(
-                _upgrade_slp_in_archive,
+                _upgrade_slp_in_archive_safe,
                 local_file=f,
                 output_path=os.path.join(output_dir, output_file_path),
                 dolphin_config=dolphin_config,

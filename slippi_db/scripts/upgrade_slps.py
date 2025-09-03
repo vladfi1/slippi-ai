@@ -20,7 +20,7 @@ CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file
 DOLPHIN_TIMEOUT = flags.DEFINE_integer('dolphin_timeout', 60, 'Dolphin timeout in seconds.')
 
 REMOVE_INPUT = flags.DEFINE_boolean('remove_input', False, 'Whether to remove the input file after conversion.')
-
+DEBUG = flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
 
 def process_single_archive(input_path, output_path, dolphin_config):
   """Process a single archive file."""
@@ -37,6 +37,7 @@ def process_single_archive(input_path, output_path, dolphin_config):
       check_if_needed=CHECK_IF_NEEDED.value,
       remove_input=REMOVE_INPUT.value,
       dolphin_timeout=DOLPHIN_TIMEOUT.value,
+      debug=DEBUG.value,
   )
 
 
