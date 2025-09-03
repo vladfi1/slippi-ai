@@ -180,9 +180,10 @@ class FloatEmbedding(Embedding[float, np.float32]):
 embed_float = FloatEmbedding("float")
 
 class OneHotPolicy(enum.Enum):
-  CLAMP = 0
-  ERROR = 1
-  EXTRA = 2
+  CLAMP = 0  # Clamp to 0 or size-1
+  ERROR = 1  # Raise an error for invalid inputs
+  EXTRA = 2  # Add an extra dimension for invalid inputs
+  EMPTY = 3  # Treat invalid inputs as empty (all off)
 
 T = tp.TypeVar("T")
 
@@ -217,6 +218,9 @@ class OneHotEmbedding(Embedding[int, T]):
       if np.any(invalid):
         state = state.copy()
         state[invalid] = self.input_size
+
+    # For EMPTY, tf.one_hot already does the right thing of setting everything
+    # to 0 for invalid inputs, so we don't need to do anything here.
 
     return state.astype(self.dtype)
 
@@ -432,13 +436,17 @@ embed_action = OneHotEmbedding(
 embed_char = OneHotEmbedding('Character', size=0x21, dtype=np.uint8)
 
 # puff and kirby have 6 jumps
-embed_jumps_left = OneHotEmbedding("jumps_left", 6, dtype=np.uint8)
+legacy_embed_jumps_left = OneHotEmbedding(
+    "jumps_left", 6, dtype=np.uint8, one_hot_policy=OneHotPolicy.EMPTY)
+# we initially forgot to add 1 to the max jumps left, fixed Sep 2025
+embed_jumps_left = OneHotEmbedding("jumps_left", 7, dtype=np.uint8)
 
 def _base_player_embedding(
     xy_scale: float = 0.05,
     shield_scale: float = 0.01,
     speed_scale: float = 0.5,
     with_speeds: bool = False,
+    legacy_jumps_left: bool = False,
 ) -> list[tuple[str, Embedding]]:
   embed_xy = FloatEmbedding("xy", scale=xy_scale)
 
@@ -453,7 +461,7 @@ def _base_player_embedding(
       ("invulnerable", embed_bool),
       # ("hitlag_frames_left", embedFrame),
       # ("hitstun_frames_left", embedFrame),
-      ("jumps_left", embed_jumps_left),
+      ("jumps_left", legacy_embed_jumps_left if legacy_jumps_left else embed_jumps_left),
       # ("charging_smash", embedFloat),
       ("shield_strength", FloatEmbedding("shield_size", scale=shield_scale)),
       ("on_ground", embed_bool),
@@ -478,12 +486,14 @@ def make_player_embedding(
     with_speeds: bool = False,
     with_controller: bool = False,
     with_nana: bool = True,
+    legacy_jumps_left: bool = False,
 ) -> StructEmbedding[Player]:
   embedding = _base_player_embedding(
       xy_scale=xy_scale,
       shield_scale=shield_scale,
       speed_scale=speed_scale,
       with_speeds=with_speeds,
+      legacy_jumps_left=legacy_jumps_left,
   )
 
   if with_nana:
@@ -510,6 +520,7 @@ class PlayerConfig:
   # our own will be embedded separately
   with_controller: bool = False
   with_nana: bool = True
+  legacy_jumps_left: bool = False
 
 default_player_config = PlayerConfig()
 
@@ -695,7 +706,10 @@ def get_state_action_embedding(
   embedding = StateAction(
       state=embed_game,
       action=embed_action,
-      name=OneHotEmbedding('name', num_names, dtype=NAME_DTYPE),
+      name=OneHotEmbedding(
+          'name', num_names,
+          dtype=NAME_DTYPE,
+          one_hot_policy=OneHotPolicy.EMPTY),
   )
   return struct_embedding_from_nt("state_action", embedding)
 
