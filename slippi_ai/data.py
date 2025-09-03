@@ -3,6 +3,7 @@ import collections
 import dataclasses
 import itertools
 import json
+import logging
 import multiprocessing as mp
 import os
 import random
@@ -380,19 +381,28 @@ class DataSource:
     self.observation_config = observation_config
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
+    replay_iter = itertools.cycle(self.replays)
+
     if self.balance_characters:
       # TODO: balance by opponent (i.e. matchup) too?
       by_character = collections.defaultdict(list)
       for replay in self.replays:
         by_character[replay.main_player.character].append(replay)
 
-      iterators = [itertools.cycle(replays) for replays in by_character.values()]
-      while True:
-        for it in iterators:
-          self.replay_counter += 1
-          yield next(it)
+      num_per_character = {
+          melee.Character(c).name: len(vs)
+          for c, vs in by_character.items()
+      }
 
-    for replay in itertools.cycle(self.replays):
+      quantities = list(map(len, by_character.values()))
+      logging.info(f'Character balance: {num_per_character}')
+
+      iterators = [itertools.cycle(replays) for replays in by_character.values()]
+      balanced_iterator = utils.interleave(*iterators)
+
+      replay_iter = utils.interleave(balanced_iterator, replay_iter)
+
+    for replay in replay_iter:
       self.replay_counter += 1
       yield replay
 

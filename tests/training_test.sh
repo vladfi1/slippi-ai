@@ -7,6 +7,7 @@ python scripts/train.py \
   --config.dataset.meta_path=$DATASET/meta.json \
   --config.dataset.test_ratio=0.5 \
   --config.data.compressed=True \
+  --config.data.balance_characters=True \
   --config.runtime.log_interval=4 \
   --config.runtime.max_runtime=10 \
   --config.runtime.eval_every_n=50 \
