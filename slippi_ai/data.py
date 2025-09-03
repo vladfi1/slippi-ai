@@ -530,6 +530,9 @@ def make_source(
   if num_workers == 0:
     return DataSource(**kwargs)
 
+  if num_workers == 1:
+    return DataSourceMP(**kwargs)
+
   return MultiDataSourceMP(num_workers=num_workers, **kwargs)
 
 def toy_data_source(**kwargs) -> DataSource:

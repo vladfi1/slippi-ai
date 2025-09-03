@@ -12,7 +12,7 @@ def load_toy_game() -> Game:
 
   replay_meta = data.ReplayMeta.from_metadata(meta_rows[0])
   replay_path = paths.TOY_DATA_DIR / replay_meta.slp_md5
-  return data.read_table(replay_path, compressed=True)
+  return data.read_table(str(replay_path), compressed=True)
 
 def test_filter_time(filter: observations.ObservationFilter):
   """Test that time-batched and sequential filtering gives the same result."""
