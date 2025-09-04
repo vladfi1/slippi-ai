@@ -43,8 +43,6 @@ from typing import Optional
 from absl import app, flags
 import tqdm
 
-import peppi_py
-
 from slippi_db import parse_peppi
 from slippi_db import preprocessing
 from slippi_db import utils
@@ -74,7 +72,7 @@ def parse_slp(
       f.write(slp_bytes)
     del slp_bytes
 
-    game = peppi_py.read_slippi(path)
+    game = parse_peppi.read_slippi(path)
     metadata = preprocessing.get_metadata(game)
     is_training, reason = preprocessing.is_training_replay(metadata)
 
