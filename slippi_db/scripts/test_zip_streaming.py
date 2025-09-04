@@ -96,20 +96,20 @@ def process_file_content(file_name: str, content: bytes) -> Tuple[str, str, int]
   return (file_name, md5_hash, len(content))
 
 
-def producer_function(
+def stream_files(
     archive_path: str,
     file_info: List[Tuple[str, int]],
     file_queue: mp.Queue,
-    num_processes: int
 ):
-  """Producer process that streams zip contents."""
+
+  proc = None
   try:
     # Start unzip process to stream all files
     proc = subprocess.Popen(
       ['unzip', '-p', archive_path],
       stdout=subprocess.PIPE,
       stderr=subprocess.DEVNULL,
-      bufsize=0  # Unbuffered for immediate streaming
+      # bufsize=0  # Unbuffered for immediate streaming
     )
 
     files_processed = 0
@@ -120,7 +120,7 @@ def producer_function(
     for file_name, expected_size in file_info:
       if expected_size == 0:
         # Handle empty files
-        file_queue.put((file_name, b''))
+        file_queue.put((archive_path, file_name, b''))
         files_processed += 1
         continue
 
@@ -138,7 +138,7 @@ def producer_function(
       if len(content) != expected_size:
         print(f"Warning: Expected {expected_size} bytes for {file_name}, got {len(content)}")
 
-      file_queue.put((file_name, content))
+      file_queue.put((archive_path, file_name, content))
       files_processed += 1
 
       # Progress update with ETA (in place)
@@ -154,22 +154,35 @@ def producer_function(
       print()
 
     # Wait for unzip to finish
-    return_code = proc.wait()
-    if return_code != 0:
-      print(f"Warning: unzip exited with code {return_code}")
+    # return_code = proc.wait()
+    # if return_code != 0:
+    #   print(f"Warning: unzip exited with code {return_code}")
 
-    # Signal workers to stop
+  finally:
+    if proc is not None:
+      proc.terminate()
+
+def producer_function(
+    all_file_info: List[Tuple[str, List[Tuple[str, int]]]],
+    file_queue: mp.Queue,
+    num_processes: int,
+):
+  """Producer process that streams zip contents from multiple archives."""
+
+  try:
+    for archive_path, file_info in all_file_info:
+      print(f"\nStreaming from {os.path.basename(archive_path)}...")
+      stream_files(archive_path, file_info, file_queue)
+
     for _ in range(num_processes):
       file_queue.put(None)
-
   except Exception as e:
     print(f"Producer error: {e}")
     # Signal error to workers
     for _ in range(num_processes):
       file_queue.put(None)
 
-
-def worker_function(archive_path: str, file_queue: mp.Queue, results_queue: mp.Queue):
+def worker_function(file_queue: mp.Queue, results_queue: mp.Queue):
   """Worker process that consumes from queue."""
   processed_count = 0
   while True:
@@ -177,7 +190,7 @@ def worker_function(archive_path: str, file_queue: mp.Queue, results_queue: mp.Q
     if item is None:
       break
 
-    file_name, content = item
+    archive_path, file_name, content = item
 
     # Process the content (applying any decompression if needed)
     try:
@@ -190,33 +203,45 @@ def worker_function(archive_path: str, file_queue: mp.Queue, results_queue: mp.Q
       processed_count += 1
 
     except Exception as e:
-      print(f"Error processing {file_name}: {e}")
+      print(f"Error processing {file_name} from {os.path.basename(archive_path)}: {e}")
       # Still add an entry to maintain count
       results_queue.put((file_name, "ERROR", len(content)))
       processed_count += 1
 
 
-def streaming_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple], float]:
-  """Process zip archive using streaming with unzip -p.
+def streaming_method(archive_paths: List[str], num_processes: int, file_limit: int = None) -> Tuple[List[Tuple], float]:
+  """Process multiple zip archives using streaming with unzip -p.
 
-  A single producer process streams all files using `unzip -p` and puts them
+  A single producer process streams all files from all archives using `unzip -p` and puts them
   into a queue. Multiple worker processes consume from the queue.
   """
   start_time = time.perf_counter()
 
-  # Get list of files and their sizes in archive order
-  with zipfile.ZipFile(archive_path) as zf:
-    file_info = [(info.filename, info.file_size)
-                 for info in zf.infolist()
-                 if utils.is_slp_file(info.filename)]
+  # Collect file info from all archives
+  all_file_info = []  # List of (archive_path, [(filename, filesize), ...])
+  total_files = 0
+  total_size = 0
 
-  if not file_info:
-    print(f"No .slp files found in {archive_path}")
+  for archive_path in archive_paths:
+    with zipfile.ZipFile(archive_path) as zf:
+      file_info = [(info.filename, info.file_size)
+                   for info in zf.infolist()
+                   if utils.is_slp_file(info.filename)]
+
+      # Apply file limit per archive if specified
+      if file_limit is not None and file_limit > 0:
+        file_info = file_info[:file_limit]
+
+      if file_info:
+        all_file_info.append((archive_path, file_info))
+        total_files += len(file_info)
+        total_size += sum(size for _, size in file_info)
+
+  if not all_file_info:
+    print(f"No .slp files found in any archives")
     return [], 0
 
-  total_files = len(file_info)
-  total_size = sum(size for _, size in file_info)
-  print(f"Streaming method: Processing {total_files} files ({total_size:,} bytes) with {num_processes} workers")
+  print(f"Streaming method: Processing {total_files} files ({total_size:,} bytes) from {len(archive_paths)} archive(s) with {num_processes} workers")
 
   # Create queues for passing data between processes
   # Use a reasonable buffer size to avoid memory issues
@@ -227,7 +252,7 @@ def streaming_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple]
   # Start producer in a separate process
   producer_proc = mp.Process(
       target=producer_function,
-      args=(archive_path, file_info, file_queue, num_processes))
+      args=(all_file_info, file_queue, num_processes))
   producer_proc.start()
 
   # Start workers using multiprocessing.Process directly
@@ -235,7 +260,7 @@ def streaming_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple]
   for _ in range(num_processes):
     worker_proc = mp.Process(
         target=worker_function,
-        args=(archive_path, file_queue, results_queue))
+        args=(file_queue, results_queue))
     worker_proc.start()
     worker_processes.append(worker_proc)
 
@@ -277,38 +302,46 @@ def process_single_file(file_obj: utils.ZipFile) -> Tuple[str, str, int]:
     return (file_obj.path, "ERROR", 0)
 
 
-def standard_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple], float]:
-  """Process zip archive using the standard ZipFile approach.
+def standard_method(archive_paths: List[str], num_processes: int, file_limit: int = None) -> Tuple[List[Tuple], float]:
+  """Process multiple zip archives using the standard ZipFile approach.
 
-  Each worker process independently calls unzip on individual files.
+  Each worker process independently calls unzip on individual files from all archives.
   """
   start_time = time.perf_counter()
 
-  # Get list of files
-  files = utils.traverse_slp_files_zip(archive_path)
+  # Get list of files from all archives
+  all_files = []
+  for archive_path in archive_paths:
+    files = utils.traverse_slp_files_zip(archive_path)
 
-  if not files:
-    print(f"No .slp files found in {archive_path}")
+    # Apply file limit per archive if specified
+    if file_limit is not None and file_limit > 0:
+      files = files[:file_limit]
+
+    all_files.extend(files)
+
+  if not all_files:
+    print(f"No .slp files found in any archives")
     return [], 0
 
-  print(f"Standard method: Processing {len(files)} files with {num_processes} workers")
+  print(f"Standard method: Processing {len(all_files)} files from {len(archive_paths)} archive(s) with {num_processes} workers")
 
   results = []
 
   if num_processes == 1:
     # Single-threaded processing
     start_time = time.perf_counter()
-    for i, file_obj in enumerate(files):
+    for i, file_obj in enumerate(all_files):
       results.append(process_single_file(file_obj))
-      if (i + 1) % 10 == 0 or (i + 1) == len(files):
+      if (i + 1) % 10 == 0 or (i + 1) == len(all_files):
         elapsed = time.perf_counter() - start_time
         processed = i + 1
         rate = processed / elapsed if elapsed > 0 else 0
-        remaining = len(files) - processed
+        remaining = len(all_files) - processed
         eta = remaining / rate if rate > 0 else 0
-        print(f"\rProcessed {processed}/{len(files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
+        print(f"\rProcessed {processed}/{len(all_files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
 
-    if len(files) > 0:
+    if len(all_files) > 0:
       print()  # End the progress line
   else:
     # Multi-process processing
@@ -317,7 +350,7 @@ def standard_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple],
       try:
         # Submit all tasks
         futures = {executor.submit(process_single_file, file_obj): file_obj
-              for file_obj in files}
+              for file_obj in all_files}
 
         # Process completed futures
         completed_count = 0
@@ -327,19 +360,19 @@ def standard_method(archive_path: str, num_processes: int) -> Tuple[List[Tuple],
             results.append(result)
             completed_count += 1
 
-            if completed_count % 10 == 0 or completed_count == len(files):
+            if completed_count % 10 == 0 or completed_count == len(all_files):
               elapsed = time.perf_counter() - start_time
               rate = completed_count / elapsed if elapsed > 0 else 0
-              remaining = len(files) - completed_count
+              remaining = len(all_files) - completed_count
               eta = remaining / rate if rate > 0 else 0
-              print(f"\rProcessed {completed_count}/{len(files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
+              print(f"\rProcessed {completed_count}/{len(all_files)} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
 
           except Exception as e:
             file_obj = futures[future]
             print(f"Error processing {file_obj.path}: {e}")
             results.append((file_obj.path, "ERROR", 0))
 
-        if len(files) > 0:
+        if len(all_files) > 0:
           print()  # End the progress line
 
       except KeyboardInterrupt:
@@ -404,7 +437,7 @@ def verify_results(results1: List[Tuple], results2: List[Tuple], name1: str, nam
 
 def main():
   parser = argparse.ArgumentParser(description='Test zip streaming vs standard extraction')
-  parser.add_argument('--archive', help='Path to zip archive (will create test archive if not provided)')
+  parser.add_argument('--archive', nargs='*', help='Path(s) to zip archive(s) (will create test archive if not provided)')
   parser.add_argument('--num_processes', type=int, default=4, help='Number of worker processes')
   parser.add_argument('--method', choices=['all', 'streaming', 'standard'],
             default='all', help='Which method(s) to test')
@@ -414,26 +447,39 @@ def main():
             help='Number of files to create in test archive (default: 50)')
   parser.add_argument('--test_file_size', type=int, default=100,
             help='Size of each test file in KB (default: 100)')
+  parser.add_argument('--file_limit', type=int, default=None,
+            help='Limit the number of files to process from the archive')
 
   args = parser.parse_args()
 
-  # Create or use provided archive
-  created_test_archive = False
-  if args.archive is None:
+  # Create or use provided archives
+  created_test_archives = []
+  archives_to_process = []
+
+  if not args.archive:  # No archives provided
     print("No archive provided, creating test archive...")
     print()
-    args.archive = create_test_archive(args.test_files, args.test_file_size)
-    created_test_archive = True
-  elif not os.path.exists(args.archive):
-    print(f"Error: Archive not found: {args.archive}")
-    return 1
+    test_archive = create_test_archive(args.test_files, args.test_file_size)
+    archives_to_process.append(test_archive)
+    created_test_archives.append(test_archive)
+  else:
+    # Validate all provided archives exist
+    for archive_path in args.archive:
+      if not os.path.exists(archive_path):
+        print(f"Error: Archive not found: {archive_path}")
+        return 1
+      archives_to_process.append(archive_path)
 
   print("=" * 80)
   print(f"ZIP PROCESSING BENCHMARK")
   print("=" * 80)
-  print(f"Archive: {args.archive}")
+  print(f"Archives to process: {len(archives_to_process)}")
+  for archive in archives_to_process:
+    print(f"  - {archive}")
   print(f"Number of processes: {args.num_processes}")
   print(f"Methods to test: {args.method}")
+  if args.file_limit is not None:
+    print(f"File limit per archive: {args.file_limit}")
   print()
 
   results = {}
@@ -445,7 +491,7 @@ def main():
     print("RUNNING STANDARD METHOD")
     print("=" * 60)
     try:
-      results['standard'], times['standard'] = standard_method(args.archive, args.num_processes)
+      results['standard'], times['standard'] = standard_method(archives_to_process, args.num_processes, args.file_limit)
       print(f"✓ Standard method completed in {times['standard']:.2f} seconds")
       print(f"  Processed {len(results['standard'])} files")
     except Exception as e:
@@ -459,7 +505,7 @@ def main():
     print("RUNNING STREAMING METHOD")
     print("=" * 60)
     try:
-      results['streaming'], times['streaming'] = streaming_method(args.archive, args.num_processes)
+      results['streaming'], times['streaming'] = streaming_method(archives_to_process, args.num_processes, args.file_limit)
       print(f"✓ Streaming method completed in {times['streaming']:.2f} seconds")
       print(f"  Processed {len(results['streaming'])} files")
     except Exception as e:
@@ -503,15 +549,15 @@ def main():
       improvement = ((sorted_times[-1][1] - sorted_times[0][1]) / sorted_times[-1][1]) * 100
       print(f"📈 Improvement over slowest: {improvement:.1f}%")
 
-  # Clean up test archive if we created it
-  if created_test_archive:
+  # Clean up test archives if we created them
+  for test_archive in created_test_archives:
     try:
-      temp_dir = os.path.dirname(args.archive)
-      os.remove(args.archive)
+      temp_dir = os.path.dirname(test_archive)
+      os.remove(test_archive)
       os.rmdir(temp_dir)
-      print(f"\n🗑️  Cleaned up test archive")
+      print(f"\n🗑️  Cleaned up test archive: {test_archive}")
     except Exception as e:
-      print(f"\n⚠️  Could not clean up test archive: {e}")
+      print(f"\n⚠️  Could not clean up test archive {test_archive}: {e}")
 
   return 0
 
