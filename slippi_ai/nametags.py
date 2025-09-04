@@ -85,10 +85,18 @@ NAME_GROUPS = [
   ('FknSilver', 'THA#837', 'FUCKIN#1'),  # Samus main, 3K replays
   ('Salt', 'SALT#747'),  # 3K replays
   ('Zamu', 'A#9'),  # 2K replays
+  ('Nicki', 'NICKI#1'),  # 2K replays
+  ('RedX', 'REDX#668'),  # Link main, 2K replays
+  ('Daniel', 'DAN#877'),  # Yoshi main, 8K replays
+  ('Monotheon', 'MON#0'),  # Yoshi main, 6K replays
+  ('Magi', 'MAGI#732'),  # 4K replays
+  ('Nez', 'NEZ#125'),  # Yoshi main, 1K replays
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),  # 1K replays
   ('Moky', 'MOKY#475'),  # 3K replays
+  ('Plup', 'PLUB#754'),
+  ('Medz', 'MEDZ#841'),
 
   # These players have asked not to be included in AI training.
   ('Mang0', 'mang', 'mang0', 'MANG#0'),
