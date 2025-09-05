@@ -66,10 +66,6 @@ class ChunkMeta(NamedTuple):
   end: int
   info: ReplayInfo
 
-class Chunk(NamedTuple):
-  states: Game
-  meta: ChunkMeta
-
 # Action = TypeVar('Action')
 Action = Controller
 
@@ -90,6 +86,10 @@ class Frames(NamedTuple):
   is_resetting: bool
   # The reward will have length one less than the states and actions.
   reward: np.float32
+
+class Chunk(NamedTuple):
+  frames: Frames
+  meta: ChunkMeta
 
 class Batch(NamedTuple):
   frames: Frames
@@ -254,10 +254,12 @@ class TrajectoryManager:
       self,
       source: Iterator[ReplayInfo],
       unroll_length: int,
+      encode_name: Callable[[str], int],
       overlap: int = 1,
       compressed: bool = True,
       game_filter: Optional[Callable[[Game], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
+      reward_kwargs: dict = {},
   ):
     self.source = source
     self.compressed = compressed
@@ -265,8 +267,11 @@ class TrajectoryManager:
     self.overlap = overlap
     self.game_filter = game_filter or (lambda _: True)
     self.observation_filter = observation_filter
+    self.reward_kwargs = reward_kwargs
+    self.encode_name = encode_name
 
     self.game: Game = None
+    self.reward: np.ndarray = None
     self.frame: int = None
     self.info: ReplayInfo = None
 
@@ -284,6 +289,8 @@ class TrajectoryManager:
         continue
       if not self.game_filter(game):
         continue
+
+      self.reward = reward.compute_rewards(game)
       break
 
     if self.observation_filter is not None:
@@ -293,6 +300,7 @@ class TrajectoryManager:
     self.game = game
     self.frame = 0
     self.info = info
+    self.name_code = self.encode_name(info.main_player.name)
 
   def grab_chunk(self) -> Chunk:
     """Grabs a chunk from a trajectory."""
@@ -312,7 +320,19 @@ class TrajectoryManager:
     states = utils.map_nt(slice, self.game)
     self.frame = end - self.overlap
 
-    return Chunk(states, ChunkMeta(start, end, self.info))
+    # Rewards could be deferred to the learner.
+    rewards = self.reward[start:end - 1]
+    name_codes = np.full([self.unroll_length], self.name_code, np.int32)
+    state_action = StateAction(states, states.p0.controller, name_codes)
+    is_resetting = np.full([self.unroll_length], False)
+    is_resetting[0] = needs_reset
+    frames = Frames(
+        state_action=state_action,
+        reward=rewards,
+        is_resetting=is_resetting,
+    )
+
+    return Chunk(frames, ChunkMeta(start, end, self.info))
 
 def swap_players(game: Game) -> Game:
   return game._replace(p0=game.p1, p1=game.p0)
@@ -361,24 +381,26 @@ class DataSource:
         return None
       return observations.build_observation_filter(observation_config)
 
-    self.replay_counter = 0
-    replays_iter = self.iter_replays()
-    self.managers = [
-        TrajectoryManager(
-            replays_iter,
-            unroll_length=self.chunk_size,
-            overlap=extra_frames,
-            compressed=compressed,
-            game_filter=self.is_allowed,
-            observation_filter=build_observation_filter(),
-        ) for _ in range(batch_size)
-    ]
-
     self.allowed_characters = _charset(allowed_characters)
     self.allowed_opponents = _charset(allowed_opponents)
     self.name_map = name_map or {}
     self.encode_name = nametags.name_encoder(self.name_map)
     self.observation_config = observation_config
+
+    self.replay_counter = 0
+    replay_iter = self.iter_replays()
+    self.managers = [
+        TrajectoryManager(
+            replay_iter,
+            unroll_length=self.chunk_size,
+            overlap=extra_frames,
+            compressed=compressed,
+            game_filter=self.is_allowed,
+            observation_filter=build_observation_filter(),
+            reward_kwargs=dict(damage_ratio=damage_ratio),
+            encode_name=self.encode_name,
+        ) for _ in range(batch_size)
+    ]
 
   def iter_replays(self) -> Iterator[ReplayInfo]:
     replay_iter = itertools.cycle(self.replays)
@@ -413,27 +435,12 @@ class DataSource:
         and
         game.p1.character[0] in self.allowed_opponents)
 
-  def process_game(
-      self, game: Game, name_code: int, needs_reset: bool) -> Frames:
-    game_length = game_len(game)
-    assert game_length == self.chunk_size
-    # Rewards could be deferred to the learner.
-    rewards = reward.compute_rewards(game, damage_ratio=self.damage_ratio)
-    name_codes = np.full([game_length], name_code, np.int32)
-    state_action = StateAction(game, game.p0.controller, name_codes)
-    is_resetting = np.full([game_length], False)
-    is_resetting[0] = needs_reset
-    return Frames(
-        state_action=state_action, reward=rewards, is_resetting=is_resetting)
-
   def process_batch(self, chunks: list[Chunk]) -> Batch:
     batches: List[Batch] = []
 
     for chunk in chunks:
-      name_code = self.encode_name(chunk.meta.info.main_player.name)
-      needs_reset = chunk.meta.start == 0
       batches.append(Batch(
-          frames=self.process_game(chunk.states, name_code, needs_reset),
+          frames=chunk.frames,
           count=self.batch_counter,
           meta=chunk.meta))
 
