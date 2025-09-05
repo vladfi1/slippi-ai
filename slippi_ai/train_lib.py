@@ -81,7 +81,7 @@ def log_stats(
     take_mean: bool = True,
 ):
   if take_mean:
-    stats = tree.map_structure(mean, stats)
+    stats = utils.map_nt(mean, stats)
   wandb.log(data=stats, step=step)
 
 _field = utils.field
@@ -403,7 +403,7 @@ def train(config: Config):
     if total_steps % runtime.eval_every_n != 0:
       return
 
-    eval_stats = []
+    per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
 
     def time_mean(x):
@@ -420,10 +420,11 @@ def train(config: Config):
       # Convert to numpy and take time-mean to free up memory.
       stats = utils.map_single_structure(time_mean, stats)
 
-      eval_stats.append(stats)
+      per_step_eval_stats.append(stats)
       metas.append(batch.meta)
 
-    eval_stats = tf.nest.map_structure(utils.stack, *eval_stats)
+    # [eval_steps, batch_size], mean taken over time
+    eval_stats = utils.batch_nest_nt(per_step_eval_stats)
 
     data_time = test_manager.data_profiler.mean_time()
     step_time = test_manager.step_profiler.mean_time()
@@ -437,8 +438,10 @@ def train(config: Config):
         step_time=step_time,
     )
 
-    to_log = dict(eval=eval_stats, **counters)
-    train_lib.log_stats(to_log, total_steps)
+    to_log = dict(
+        counters,
+        eval=utils.map_nt(mean, eval_stats),
+    )
 
     # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
@@ -450,13 +453,11 @@ def train(config: Config):
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
 
-    # Log losses aggregated by name.
-
     # Stats have shape [num_eval_steps, batch_size]
     loss = eval_stats['policy']['loss']
     assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
 
-    meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
+    meta = utils.batch_nest_nt(metas)
 
     # Name of the player we're imitating.
     name = meta.info.main_player.name
@@ -492,7 +493,7 @@ def train(config: Config):
           counts=per_character_loss_counts,
       )
 
-      train_lib.log_stats(to_log, total_steps, take_mean=False)
+    log_stats(to_log, total_steps, take_mean=False)
 
   start_time = time.time()
 
