@@ -91,10 +91,10 @@ NAME_GROUPS = [
   ('Monotheon', 'MON#0'),  # Yoshi main, 6K replays
   ('Magi', 'MAGI#732'),  # 4K replays
   ('Nez', 'NEZ#125'),  # Yoshi main, 1K replays
+  ('Moky', 'MOKY#475'),  # 3K replays
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),  # 1K replays
-  ('Moky', 'MOKY#475'),  # 3K replays
   ('Plup', 'PLUB#754'),
   ('Medz', 'MEDZ#841'),
 
@@ -133,7 +133,7 @@ BANNED_NAMES = {
     'Mang0', 'Wizzrobe', 'Hungrybox',
 
     # Haven't asked yet, so don't train on for now.
-    'Ossify', 'Moky',
+    'Ossify', 'Plup', 'Medz',
 
     'Phillip AI',  # This is us!
 }
