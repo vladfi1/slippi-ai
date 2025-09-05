@@ -456,7 +456,7 @@ class DataSource:
     assert batch.frames.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
-def produce_batches(data_source_kwargs, batch_queue):
+def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
   data_source = DataSource(**data_source_kwargs)
   while True:
     batch_queue.put(next(data_source))

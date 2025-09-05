@@ -124,7 +124,7 @@ def map_nt(f, *nt: T) -> T:
   if t is tuple:
     return tuple([map_nt(f, *vs) for vs in zip(*nt)])
   if issubclass(t, tuple):
-    return t(*[map_nt(f, *vs) for vs in zip(*nt)])
+    return t(*(map_nt(f, *vs) for vs in zip(*nt)))
   if issubclass(t, dict):
     return {k: map_nt(f, *[v[k] for v in nt]) for k in nt[0].keys()}
   if t is list:

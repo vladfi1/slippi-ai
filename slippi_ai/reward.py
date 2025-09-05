@@ -50,7 +50,6 @@ def compute_approaching_factor(
   xy = np.stack([player.x, player.y], axis=-1)
   v = xy[1:] - xy[:-1]
 
-
   opp_xy = np.stack([opponent.x, opponent.y], axis=-1)
   dxy = normalize(opp_xy - xy)
 
@@ -160,7 +159,7 @@ def player_stats(
     player: Player,
     opponent: Player,
     stage: np.ndarray,
-    stalling_threshold: float,
+    stalling_threshold: float = DEFAULT_STALLING_THRESHOLD,
 ) -> dict:
   FPM = 60 * 60
   return dict(

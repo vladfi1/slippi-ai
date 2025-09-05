@@ -39,10 +39,11 @@ def main(_):
     batches += 1
   run_time = time.perf_counter() - start
   bps = batches / run_time
+  sbp = 1 / bps
 
   frames_per_batch = data_config.unroll_length * data_config.batch_size
   fps = frames_per_batch * bps
-  print(f'bps={bps:.2f} fps={fps:.2f}')
+  print(f'bps={bps:.2f} fps={fps:.2f} sbp={sbp:.3f}')
 
 if __name__ == '__main__':
   app.run(main)
