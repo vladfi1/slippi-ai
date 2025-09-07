@@ -80,13 +80,21 @@ def test_or_save_outputs(
 
   outputs = unroll(model_path, input_path, existing_subsample)
 
-  allclose = utils.map_nt(
-      lambda x, y: np.allclose(x, y, atol=1e-5, rtol=1e-5),
-      outputs, existing_outputs
-  )
+  def check(path: tuple, xs: np.ndarray, ys: np.ndarray):
+    isclose = np.isclose(xs, ys, atol=1e-5, rtol=1e-5)
 
-  for path, close in tree.flatten_with_path(allclose):
-    if not close:
-      raise ValueError(f'Output mismatch at {path}')
+    # Handle multi-dimensional arrays like logits.
+    rank = isclose.ndim
+    if rank > 1:
+      isclose = np.all(isclose, axis=tuple(range(1, rank)))
+
+    idxs = np.arange(len(xs))[~isclose]
+    if len(idxs) > 0:
+      idx = idxs[0].item()
+      x = xs[idx]
+      y = ys[idx]
+      raise ValueError(f'Output mismatch at {path} ({idx}): {x} != {y}')
+
+  tree.map_structure_with_path(check, outputs, existing_outputs)
 
   print('Outputs match.')
