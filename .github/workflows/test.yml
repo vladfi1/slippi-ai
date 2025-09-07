@@ -36,6 +36,7 @@ jobs:
         python tests/slippi_db_test.py
         python tests/observations_test.py
         python tests/unroll_agent.py
+        python tests/test_agent_outputs.py
 
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
