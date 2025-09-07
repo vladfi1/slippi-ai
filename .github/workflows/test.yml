@@ -22,8 +22,8 @@ jobs:
     # See https://github.com/pypa/pip/issues/11281
     - name: Install
       run: |
-        pip install tensorflow ray
         pip install -r requirements.txt
+        pip install ray
         pip install .
         sudo apt update
         sudo apt install -y zipmerge

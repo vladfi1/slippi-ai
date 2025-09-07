@@ -5,7 +5,6 @@ import contextlib
 import typing as tp
 
 import numpy as np
-import ray
 
 from slippi_ai import envs as env_lib
 from slippi_ai import (
@@ -348,80 +347,3 @@ class Evaluator(RolloutWorker):
         for port, trajectory in trajectories.items()
     }
     return metrics, timings
-
-RayRolloutWorker = ray.remote(RolloutWorker)
-
-class RayEvaluator:
-  def __init__(
-      self,
-      agent_kwargs: tp.Mapping[Port, dict],
-      dolphin_kwargs: dict,
-      num_envs: int,  # per-worker
-      num_workers: int = 1,
-      async_envs: bool = False,
-      env_kwargs: dict = {},
-      use_gpu: bool = False,
-      resources: tp.Mapping[str, float] = {},
-  ):
-    # TODO: Allow multiple gpu workers on the same machine. For this,
-    # we'll need to tell tensorflow not to reserve all gpu memory.
-    build_worker = RayRolloutWorker.options(
-        num_gpus=1 if use_gpu else 0,
-        resources=resources)
-
-    self._rollout_workers: list[ray.ObjectRef[RolloutWorker]] = []
-    for _ in range(num_workers):
-      self._rollout_workers.append(build_worker.remote(
-          agent_kwargs=agent_kwargs,
-          dolphin_kwargs=dolphin_kwargs,
-          num_envs=num_envs,
-          async_envs=async_envs,
-          env_kwargs=env_kwargs,
-          use_gpu=use_gpu,
-      ))
-
-  def update_variables(
-      self, updates: tp.Mapping[Port, tp.Sequence[np.ndarray]],
-  ):
-    ray.wait([
-        worker.update_variables.remote(updates)
-        for worker in self._rollout_workers])
-
-  def rollout(
-      self,
-      num_steps: int,
-      policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
-  ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
-    if policy_vars is not None:
-      for worker in self._rollout_workers:
-        worker.update_variables.remote(policy_vars)
-
-    rollout_futures = [
-        worker.rollout.remote(num_steps)
-        for worker in self._rollout_workers
-    ]
-    rollout_results = ray.get(rollout_futures)
-    trajectories, timings = zip(*rollout_results)
-
-    # Merge the results.
-    trajectories = utils.concat_nest_nt(trajectories)
-    # TODO: handle non-mean timings.
-    timings = utils.map_nt(lambda *args: np.mean(args), *timings)
-
-    metrics = {
-        port: RolloutMetrics.from_trajectory(trajectory)
-        for port, trajectory in trajectories.items()
-    }
-    return metrics, timings
-
-  @contextlib.contextmanager
-  def run(self):
-    try:
-      ray.wait([worker.start.remote() for worker in self._rollout_workers])
-      yield
-    except KeyboardInterrupt:
-      # Properly shut down the workers. If we don't do this, the workers
-      # can get stuck, not sure why.
-      raise
-    finally:
-      ray.wait([worker.stop.remote() for worker in self._rollout_workers])
