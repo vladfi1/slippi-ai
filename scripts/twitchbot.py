@@ -784,7 +784,13 @@ class Bot(commands.Bot):
         await ctx.send('Sorry, too many sessions already active.')
         return
 
+      agent_config = self._get_opponent_config(name)
+      is_weak_agent = parse_imitation_char(agent_config.name) is not None
+
       is_stream = self._stream and (self._streaming_against is None)
+      if is_weak_agent:
+        is_stream = False
+
       if is_stream:
         self._stop_bot_session()
 
@@ -793,12 +799,12 @@ class Bot(commands.Bot):
       logging.info(message)
       await ctx.send(message)
 
-      agent_config = self._get_opponent_config(name)
       session = self._start_session(
           connect_code,
           agent_config=agent_config,
           render=is_stream,
           stages=self._stages.get(name, None),
+          save_replays=not is_weak_agent,
       )
       self._sessions[name] = SessionInfo(
           session=session,
@@ -850,6 +856,7 @@ class Bot(commands.Bot):
       agent_config: AgentConfig,
       stages: Optional[list[melee.Stage]],
       render: bool = False,
+      save_replays: bool = True,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
     config.slippi_port = portpicker.pick_unused_port()
@@ -863,10 +870,7 @@ class Bot(commands.Bot):
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    is_weak_agent = parse_imitation_char(agent_config.name)
-
-    if is_weak_agent:
-      config.save_replays = False
+    config.save_replays = save_replays
 
     return RemoteSession.remote(
         config,
