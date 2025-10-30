@@ -300,6 +300,7 @@ class DolphinConfig:
   replay_dir: Optional[str] = None  # Directory to save replays to.
   gfx_backend: str = ''  # Graphics backend to use.
   disable_audio: bool = False  # Disable dolphin audio.
+  audio_backend: str = ''  # Audio backend to use.
   headless: bool = True  # Headless configuration: exi + ffw, no graphics or audio.
   emulation_speed: float = 1.0  # Set to 0 for unlimited speed. Mainline only.
   infinite_time: bool = True  # Infinite time no stocks.
