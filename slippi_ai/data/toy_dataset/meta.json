@@ -1,1 +1,55 @@
-[{"name": "ranked-anonymized/master-diamond-108b6618198b285ed08fd8a0.slp", "slp_md5": "17a23013c055634c0d9ff3fa0daea106", "slp_size": 2088409, "lastFrame": 4606, "slippi_version": [3, 15, 0], "num_players": 2, "players": [{"port": 1, "character": 1, "type": 0, "name_tag": "", "netplay": {"name": "Diamond Player", "code": "", "suid": ""}}, {"port": 2, "character": 22, "type": 0, "name_tag": "", "netplay": {"name": "Master Player", "code": "", "suid": ""}}], "stage": 8, "timer": 480, "is_teams": false, "winner": 1, "valid": true, "is_training": true, "not_training_reason": "", "pq_size": 18977, "raw": "Ranked/ranked-anonymized-2-151807.7z", "compression": "zlib"}]
+[
+  {
+    "name": "diamond-diamond-0006b3a3007d0b1bb14630a5.slp",
+    "slp_md5": "6827921534249607dafa57e9a67f8df4",
+    "slp_size": 2224228,
+    "lastFrame": 6278,
+    "slippi_version": [
+      3,
+      16,
+      0
+    ],
+    "match": {
+      "id": "",
+      "game": 0,
+      "tiebreaker": 0
+    },
+    "num_players": 2,
+    "players": [
+      {
+        "port": 1,
+        "character": 7,
+        "type": 0,
+        "name_tag": "",
+        "netplay": {
+          "name": "Diamond Player",
+          "code": "",
+          "suid": ""
+        },
+        "damage_taken": 262.4547424316406
+      },
+      {
+        "port": 2,
+        "character": 16,
+        "type": 0,
+        "name_tag": "",
+        "netplay": {
+          "name": "Diamond Player",
+          "code": "",
+          "suid": ""
+        },
+        "damage_taken": 208.77999877929688
+      }
+    ],
+    "stage": 31,
+    "timer": 480,
+    "is_teams": false,
+    "winner": 2,
+    "valid": true,
+    "is_training": true,
+    "not_training_reason": "",
+    "pq_size": 75274,
+    "compression": "zlib",
+    "raw": "single_game.zip"
+  }
+]
