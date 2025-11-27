@@ -301,6 +301,8 @@ def get_ports(gamestate: melee.GameState, display_name: str):
   name_to_port = {
       player.displayName: port for port, player in gamestate.players.items()
   }
+  if display_name not in name_to_port:
+    raise ValueError(f'Could not find display name {display_name} in {name_to_port}')
   actual_port = name_to_port[display_name]
   ports = list(gamestate.players)
   ports.remove(actual_port)
