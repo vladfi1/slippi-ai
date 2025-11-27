@@ -924,6 +924,7 @@ class EnsembleAgent:
 
   def _get_agent(self, model: str) -> Agent:
     if model == self.current_model:
+      assert self._agent is not None
       return self._agent
 
     if self._agent:
@@ -939,9 +940,14 @@ class EnsembleAgent:
     return self._agent
 
   def step(self, gamestate: melee.GameState) -> SampleOutputs:
-    opponent = gamestate.players[self.opponent_port].character
-    model = self.opponent_table[opponent]
-    agent = self._get_agent(model)
+    agent = self._agent
+
+    if agent is None or gamestate.frame == -123:
+      # New game, pick new agent.
+      opponent = gamestate.players[self.opponent_port].character
+      model = self.opponent_table[opponent]
+      agent = self._get_agent(model)
+
     return agent.step(gamestate)
 
   def start(self):
