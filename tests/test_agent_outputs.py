@@ -10,7 +10,7 @@ from typing import List, Tuple
 import urllib.request
 import urllib.error
 
-from slippi_ai import unroll_agent
+from slippi_ai import paths, unroll_agent
 
 TEST_CASES: List[Tuple[str, str]] = [
   (
@@ -37,7 +37,7 @@ def run_unroll_test(model_path: Path, output_path: Path, input_path: Path) -> bo
   try:
     unroll_agent.test_or_save_outputs(
         model_path=str(model_path),
-        input_path=str(input_path),
+        input_dir=str(input_path),
         output_path=str(output_path),
         overwrite=False,
     )
@@ -53,13 +53,7 @@ def main():
     print("Test skipped.")
     return 0
 
-  # Find a suitable input file from toy dataset
-  from slippi_ai import paths
-  try:
-    input_path = next(paths.TOY_DATA_DIR.iterdir())
-  except StopIteration:
-    print("Error: No files found in toy dataset directory")
-    return 1
+  input_path = paths.TOY_DATA_DIR
 
   failures = []
 
