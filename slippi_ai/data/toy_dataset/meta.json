@@ -48,7 +48,7 @@
     "valid": true,
     "is_training": true,
     "not_training_reason": "",
-    "pq_size": 74463,
+    "pq_size": 85934,
     "compression": "zlib",
     "raw": "single_game.zip"
   }
