@@ -133,8 +133,6 @@ def test_or_save_outputs(
 
   updated = False
   for input_file in inputs:
-    overwrite = overwrite or (input_file not in outputs)
-
     if not overwrite:
       results = outputs[input_file]
       subsample = results['subsample']
