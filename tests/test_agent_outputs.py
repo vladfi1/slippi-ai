@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Test script that downloads model and output files from URLs and runs unroll_agent.py tests.
+Test script that downloads model and output files from URLs or uses local files and runs unroll_agent.py tests.
 """
 
+import argparse
 import sys
 import tempfile
 from pathlib import Path
@@ -14,10 +15,39 @@ from slippi_ai import paths, unroll_agent
 
 TEST_CASES: List[Tuple[str, str]] = [
   (
+    str(paths.DEMO_CHECKPOINT),
+    str(paths.DATA_PATH / 'demo_unroll_output.pkl')
+  ),
+  (
     'https://dl.dropbox.com/scl/fi/bppnln3rfktxfdocottuw/all_d21_imitation_v3?rlkey=46yqbsp7vi5222x04qt4npbkq&st=6knz106y&dl=1',
     'https://dl.dropbox.com/scl/fi/ej321uyygfyiwobv1897a/all_d21_v3_demo_unroll_output.pkl?rlkey=zv9p1k559tza1sisbjxvx86tu&st=pjh8w101&dl=1'
   ),
 ]
+
+
+def is_url(path: str) -> bool:
+  """Check if a path is a URL."""
+  return path.startswith(('http://', 'https://'))
+
+
+def get_file_path(source: str, dest_dir: Path, filename: str) -> Path:
+  """Get file path, downloading if source is URL or copying if local file."""
+  dest_path = dest_dir / filename
+
+  if is_url(source):
+    download_file(source, dest_path)
+  else:
+    # Source is a local file
+    source_path = Path(source)
+    if not source_path.exists():
+      raise FileNotFoundError(f"Local file not found: {source}")
+
+    # Copy the file to destination
+    import shutil
+    shutil.copy2(source_path, dest_path)
+    print(f"Copied local file {source} to {dest_path}")
+
+  return dest_path
 
 
 def download_file(url: str, dest_path: Path) -> None:
@@ -46,38 +76,44 @@ def run_unroll_test(model_path: Path, output_path: Path, input_path: Path) -> bo
 
   return True
 
+def parse_args():
+  """Parse command-line arguments."""
+  parser = argparse.ArgumentParser(
+    description="Test agent outputs with model and output files (URLs or local files)"
+  )
+  parser.add_argument(
+    "--input-dir",
+    default=None,
+    help="Path to input directory (defaults to TOY_DATA_DIR)"
+  )
+  return parser.parse_args()
+
+
 def main():
   """Main test function."""
-  if not TEST_CASES:
-    print("Warning: No test cases defined. Add (model_url, output_url) pairs to TEST_CASES.")
-    print("Test skipped.")
-    return 0
+  args = parse_args()
 
-  input_path = paths.TOY_DATA_DIR
+  input_path = Path(args.input_dir) if args.input_dir else paths.TOY_DATA_DIR
 
   failures = []
 
   with tempfile.TemporaryDirectory() as tmpdir:
     tmpdir_path = Path(tmpdir)
 
-    for i, (model_url, output_url) in enumerate(TEST_CASES):
+    for i, (model_source, output_source) in enumerate(TEST_CASES):
       print(f"\n--- Test case {i+1}/{len(TEST_CASES)} ---")
 
-      # Download files
-      model_path = tmpdir_path / f"model_{i}.pkl"
-      output_path = tmpdir_path / f"output_{i}.pkl"
-
       try:
-        download_file(model_url, model_path)
-        download_file(output_url, output_path)
+        model_path = get_file_path(model_source, tmpdir_path, f"model_{i}.pkl")
+        output_path = get_file_path(output_source, tmpdir_path, f"output_{i}.pkl")
       except Exception as e:
-        print(f"Failed to download files for test case {i+1}: {e}")
-        failures.append((i+1, model_url, output_url, str(e)))
+        print(f"Failed to get files for test case {i+1}: {e}")
+        failures.append((i+1, model_source, output_source, str(e)))
         continue
 
       # Run test
       if not run_unroll_test(model_path, output_path, input_path):
-        failures.append((i+1, model_url, output_url, "Test execution failed"))
+        failures.append((i+1, model_source, output_source, "Test execution failed"))
 
   # Report results
   print(f"\n=== Test Results ===")
@@ -87,10 +123,10 @@ def main():
 
   if failures:
     print("\nFailed test cases:")
-    for case_num, model_url, output_url, error in failures:
+    for case_num, model_source, output_source, error in failures:
       print(f"  Case {case_num}: {error}")
-      print(f"  Model: {model_url}")
-      print(f"  Output: {output_url}")
+      print(f"  Model: {model_source}")
+      print(f"  Output: {output_source}")
     return 1
   else:
     print("\nAll tests passed!")
