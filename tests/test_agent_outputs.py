@@ -16,11 +16,11 @@ from slippi_ai import paths, unroll_agent
 TEST_CASES: List[Tuple[str, str]] = [
   (
     str(paths.DEMO_CHECKPOINT),
-    str(paths.DATA_PATH / 'demo_unroll_output.pkl')
+    str(paths.AGENT_OUTPUTS_DIR / 'demo.pkl')
   ),
   (
     'https://dl.dropbox.com/scl/fi/bppnln3rfktxfdocottuw/all_d21_imitation_v3?rlkey=46yqbsp7vi5222x04qt4npbkq&st=6knz106y&dl=1',
-    'https://dl.dropbox.com/scl/fi/ej321uyygfyiwobv1897a/all_d21_v3_demo_unroll_output.pkl?rlkey=zv9p1k559tza1sisbjxvx86tu&st=pjh8w101&dl=1'
+    str(paths.AGENT_OUTPUTS_DIR / 'all_d21_imitation_v3.pkl')
   ),
 ]
 

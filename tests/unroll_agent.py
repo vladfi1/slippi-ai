@@ -9,7 +9,7 @@ from slippi_ai import paths
 
 FLAGS = flags.FLAGS
 
-OUTPUT_PATH = paths.DATA_PATH / 'demo_unroll_output.pkl'
+OUTPUT_PATH = paths.AGENT_OUTPUTS_DIR / 'demo.pkl'
 
 flags.DEFINE_string('model', str(paths.DEMO_CHECKPOINT), 'Path to the model.')
 flags.DEFINE_string('input', str(paths.TOY_DATA_DIR), 'Path to the input file directory.')
