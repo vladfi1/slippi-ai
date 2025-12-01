@@ -77,12 +77,21 @@ class Policy(snt.Module):
     self.imitation_loss(dummy_frames, initial_state)
 
   def _value_outputs(
-      self, outputs, last_input, is_resetting, final_state, rewards, discount):
+      self,
+      outputs,  # t = [0, T-1]
+      last_input: tf.Tensor,  # t = T
+      is_resetting: tf.Tensor,  # t = [0, T]
+      final_state: RecurrentState,  # t = T - 1
+      rewards: tf.Tensor,  # t = [0, T-1]
+      discount: float,
+  ) -> ValueOutputs:
     values = tf.squeeze(self.value_head(outputs), -1)
     last_output, _ = self.network.step_with_reset(
-        last_input, is_resetting, final_state)
+        last_input, is_resetting[-1], final_state)
     last_value = tf.squeeze(self.value_head(last_output), -1)
-    discounts = tf.fill(tf.shape(rewards), tf.cast(discount, tf.float32))
+
+    #
+    discounts = tf.where(is_resetting[1:], 0.0, tf.cast(discount, tf.float32))
     value_targets = discounted_returns(
         rewards=rewards,
         discounts=discounts,
@@ -149,7 +158,7 @@ class Policy(snt.Module):
     )
 
     value_outputs = self._value_outputs(
-        outputs, last_input, frames.is_resetting[-1], final_state,
+        outputs, last_input, frames.is_resetting, final_state,
         frames.reward, discount)
     metrics['value'] = value_outputs.metrics
 
@@ -240,7 +249,7 @@ class Policy(snt.Module):
 
     # We're only really doing this to initialize the value_head...
     value_outputs = self._value_outputs(
-        outputs, last_input, frames.is_resetting[-1], final_state,
+        outputs, last_input, frames.is_resetting, final_state,
         frames.reward, discount)
     metrics['value'] = value_outputs.metrics
 

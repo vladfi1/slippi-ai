@@ -101,6 +101,7 @@ def update_rewards(
 ) -> Trajectory:
   rewards = reward_lib.compute_rewards(
       trajectory.states, **dataclasses.asdict(reward_config))
+  rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
   return trajectory._replace(rewards=rewards)
 
 class Learner:
