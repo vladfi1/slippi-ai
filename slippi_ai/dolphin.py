@@ -54,6 +54,11 @@ class AI(Player):
 def is_menu_state(gamestate: melee.GameState) -> bool:
   return gamestate.menu_state not in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]
 
+def is_game_state(gamestate: melee.GameState) -> bool:
+  return gamestate.menu_state in (melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH)
+
+INITIAL_FRAME = -123
+
 class ConnectFailed(Exception):
   """Raised when we fail to connect to the console."""
 
@@ -75,10 +80,12 @@ class Dolphin:
       render: Optional[bool] = None,  # Render even when running headless.
       connect_code: Optional[str] = None,
       copy_home_directory: bool = False,
+      min_slp_version: Optional[tuple[int, int, int]] = (3, 18, 0),
       **console_kwargs,
   ) -> None:
     self._players = players
     self.stage = stage
+    self.min_slp_version = min_slp_version
 
     platform = None
     path = path or default_dolphin_install_path()
@@ -176,12 +183,24 @@ class Dolphin:
     if gamestate is None:
       raise TimeoutError('Console timed out.')
 
-    if (
-      gamestate.frame == -123
-      and self.console.slp_version_tuple >= (3, 19, 0)
-      and gamestate.stage is melee.Stage.POKEMON_STADIUM
-    ):
-      if not self.console.is_frozen_ps:
+    # Perform some checks at the start of the game
+    if is_game_state(gamestate) and gamestate.frame == INITIAL_FRAME:
+      assert self.console.slp_version_tuple is not None
+
+      if (
+        self.min_slp_version is not None
+        and self.console.slp_version_tuple < self.min_slp_version
+      ):
+        raise RuntimeError(
+          f'Slippi version {self.console.slp_version_tuple} is too old. '
+          f'Minimum required is {self.min_slp_version}.')
+
+      # Phillip doesn't work well on unfrozen stadium
+      if (
+        self.console.slp_version_tuple >= (3, 19, 0)
+        and gamestate.stage is melee.Stage.POKEMON_STADIUM
+        and not self.console.is_frozen_ps
+      ):
         logging.warning('Playing on unfrozen stadium')
 
     return gamestate
