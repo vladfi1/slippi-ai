@@ -426,6 +426,9 @@ class MLPWrapper(Embedding[In, Out]):
     embedded = self._embed(inputs)
     return self._mlp(embedded)
 
+  def dummy(self, shape: Sequence[int] = ()) -> Out:
+    return self._embed.dummy(shape)
+
 # Note: some Kirby ability-copy actions states go beyond this.
 embed_action = OneHotEmbedding(
     'Action', size=0x18F, dtype=np.int32,
