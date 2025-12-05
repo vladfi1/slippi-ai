@@ -1,4 +1,5 @@
 import abc
+import copy
 import typing as tp
 
 import sonnet as snt
@@ -191,6 +192,9 @@ CONSTRUCTORS = dict(
 
 DEFAULT_CONFIG = dict({k: c.CONFIG for k, c in CONSTRUCTORS.items()})
 DEFAULT_CONFIG.update(name='independent')
+
+def default_config() -> dict:
+  return copy.deepcopy(DEFAULT_CONFIG)
 
 def construct(name, embed_controller, **config):
   kwargs = dict(config[name], embed_controller=embed_controller)

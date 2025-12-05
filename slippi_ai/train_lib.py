@@ -112,8 +112,8 @@ class Config:
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
   # TODO: turn these into dataclasses too
-  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
-  controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
+  network: dict = _field(networks.default_config)
+  controller_head: dict = _field(controller_heads.default_config)
 
   embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
 

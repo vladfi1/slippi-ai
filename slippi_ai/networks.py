@@ -1,4 +1,5 @@
 import abc
+import copy
 from typing import Optional, Tuple
 
 import tree
@@ -434,6 +435,9 @@ DEFAULT_CONFIG = dict(
     res_lstm=DeepResLSTM.CONFIG,
     tx_like=TransformerLike.CONFIG,
 )
+
+def default_config() -> dict:
+  return copy.deepcopy(DEFAULT_CONFIG)
 
 def construct_network(name, **config):
   return CONSTRUCTORS[name](**config[name])
