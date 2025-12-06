@@ -204,13 +204,6 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   return replays
 
-def _add_mirrored(replays: List[ReplayInfo]):
-  mirrored_replays = []
-  for info in replays:
-    mirrored_replays.append(info._replace(mirror=True))
-  replays.extend(mirrored_replays)
-  # No need to shuffle; mirrored replays are already far apart.
-
 
 def train_test_split(
     config: DatasetConfig,
@@ -247,11 +240,18 @@ def train_test_split(
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
 
+  def add_mirrored(unmirrored: List[ReplayInfo]):
+    mirrored = []
+    for info in unmirrored:
+      mirrored.append(info._replace(mirror=True))
+    unmirrored.extend(mirrored)
+    rng.shuffle(unmirrored)
+
   # Add mirrored versions of each replay.
   # We do this here to avoid contamination between train and test sets.
   if config.mirror:
-    _add_mirrored(train_replays)
-    _add_mirrored(test_replays)
+    add_mirrored(train_replays)
+    add_mirrored(test_replays)
 
   return train_replays, test_replays
 
@@ -438,7 +438,6 @@ class DataSource:
           for c, vs in by_character.items()
       }
 
-      quantities = list(map(len, by_character.values()))
       logging.info(f'Character balance: {num_per_character}')
 
       iterators = [itertools.cycle(replays) for replays in by_character.values()]
