@@ -21,6 +21,7 @@ import melee
 
 from slippi_ai import reward, utils, nametags, paths, observations
 from slippi_ai.types import Game, game_array_to_nt, Controller
+from slippi_ai.mirror import mirror_game
 
 class PlayerMeta(NamedTuple):
   character: int
@@ -52,6 +53,8 @@ class ReplayInfo(NamedTuple):
   swap: bool
   # We use empty tuple instead of None to play nicely with Tensorflow.
   meta: Union[ReplayMeta, Tuple[()]] = ()
+
+  mirror: bool = False
 
   @property
   def main_player(self) -> PlayerMeta:
@@ -117,6 +120,7 @@ class DatasetConfig:
   banned_names: str = NONE
 
   swap: bool = True  # yield swapped versions of each replay
+  mirror: bool = False  # mirror left/right in each replay
   seed: int = 0
 
 def create_name_filter(
@@ -200,6 +204,14 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   return replays
 
+def _add_mirrored(replays: List[ReplayInfo]):
+  mirrored_replays = []
+  for info in replays:
+    mirrored_replays.append(info._replace(mirror=True))
+  replays.extend(mirrored_replays)
+  # No need to shuffle; mirrored replays are already far apart.
+
+
 def train_test_split(
     config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
@@ -224,7 +236,8 @@ def train_test_split(
     for filename in filenames:
       replay_path = os.path.join(config.data_dir, filename)
       replays.append(ReplayInfo(replay_path, False))
-      replays.append(ReplayInfo(replay_path, True))
+      if config.swap:
+        replays.append(ReplayInfo(replay_path, True))
 
   # TODO: stable partition
   rng = random.Random(config.seed)
@@ -233,6 +246,12 @@ def train_test_split(
 
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
+
+  # Add mirrored versions of each replay.
+  # We do this here to avoid contamination between train and test sets.
+  if config.mirror:
+    _add_mirrored(train_replays)
+    _add_mirrored(test_replays)
 
   return train_replays, test_replays
 
@@ -279,6 +298,9 @@ class TrajectoryManager:
     game = read_table(info.path, compressed=self.compressed)
     if info.swap:
       game = swap_players(game)
+    if info.mirror:
+      # Also mirrors the controller inputs, which is what we want.
+      game = mirror_game(game)
     return game
 
   def find_game(self):
