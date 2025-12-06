@@ -77,6 +77,7 @@ def main(_):
 
       eval_lib.update_character(player, agent.config)
 
+  # TODO: use an envs.Environment like in RL
   dolphin = dolphin_lib.Dolphin(
       players=players,
       **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),

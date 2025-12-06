@@ -85,6 +85,10 @@ class Environment:
 
     games = {}
     for actual_port, port in self.port_from_actual.items():
+      # Skip ports without opponents (e.g. human players).
+      if actual_port not in self._opponents:
+        continue
+
       parser = self._parsers[actual_port]
       games[port] = parser.get_game(self._prev_state)
 

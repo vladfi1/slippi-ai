@@ -19,6 +19,7 @@ from slippi_ai import (
   embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
   observations, flag_utils
 )
+import slippi_ai.mirror as mirror_lib
 from slippi_ai.controller_lib import send_controller
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_db.parse_libmelee import Parser
@@ -547,6 +548,7 @@ class Agent:
       port: tp.Optional[int] = None,
       controller: tp.Optional[melee.Controller] = None,
       name_change_mode: NameChangeMode = NameChangeMode.FIXED,
+      mirror: bool = False,
       **agent_kwargs,
   ):
     self._controller = controller
@@ -560,6 +562,7 @@ class Agent:
     self.players = (self._port, opponent_port)
     self.config = config
     self.name_change_mode = name_change_mode
+    self.mirror = mirror
 
     self.name_map: dict[str, int] = state['name_map']
     rl_names = get_name_from_rl_state(state)
@@ -605,6 +608,8 @@ class Agent:
 
     needs_reset = np.array([new_game])
     game = self._parser.get_game(gamestate)
+    if self.mirror:
+      game = mirror_lib.mirror_game(game)
     game = self._observation_filter.filter(game)
     game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
 
@@ -613,6 +618,10 @@ class Agent:
     # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
     action = utils.map_nt(lambda x: x[0], action)
     action = self._agent.embed_controller.decode(action)
+    if self.mirror:
+      action = mirror_lib.mirror_controller(action)
+
+    assert self._controller is not None
     send_controller(self._controller, action)
     return sample_outputs
 
@@ -657,6 +666,7 @@ AGENT_FLAGS = dict(
     name_change_mode=ff.EnumClass(
         NameChangeMode.FIXED, NameChangeMode,
         'How to change the agent name.'),
+    mirror=ff.Boolean(False, 'Mirror the x axis.'),
 )
 
 PLAYER_FLAGS = dict(
