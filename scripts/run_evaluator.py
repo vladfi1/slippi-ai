@@ -44,8 +44,6 @@ if __name__ == '__main__':
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
   OPPONENT = ff.DEFINE_dict('opponent', **player_flags)
 
-  NUM_WORKERS = flags.DEFINE_integer('num_workers', 0, 'Number of rollout workers.')
-
   def main(_):
     player_kwargs = {
         1: PLAYER.value,
@@ -87,11 +85,7 @@ if __name__ == '__main__':
         damage_ratio=0,
     )
 
-    if NUM_WORKERS.value == 0:
-      evaluator = evaluators.Evaluator(**evaluator_kwargs)
-    else:
-      evaluator = evaluators.RayEvaluator(
-          num_workers=NUM_WORKERS.value, **evaluator_kwargs)
+    evaluator = evaluators.Evaluator(**evaluator_kwargs)
 
     with evaluator.run():
       # burnin
