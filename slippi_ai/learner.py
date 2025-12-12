@@ -116,19 +116,12 @@ class Learner:
 
   def step(
       self,
-      batch: Batch,
+      frames: Frames,
       initial_states: RecurrentState,
       train: bool = True,
       compile: Optional[bool] = None,
   ):
     compile = compile if compile is not None else self.compile
     step = self._compiled_step if compile else self._step
-
-    frames = batch.frames._replace(
-        state_action=self.policy.embed_state_action.from_state(
-            batch.frames.state_action))
-
-    if np.any(frames.is_resetting[:, 1:]):
-      raise ValueError("Unexpected mid-episode reset.")
 
     return step(frames, initial_states, train=train)

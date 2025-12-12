@@ -6,7 +6,9 @@ import datetime
 import json
 import os
 import pickle
+import queue
 import secrets
+import threading
 import time
 import typing as tp
 
@@ -49,6 +51,7 @@ class TrainManager:
       learner: learner_lib.Learner,
       data_source: data_lib.DataSource,
       step_kwargs={},
+      prefetch: int = 10,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -57,12 +60,43 @@ class TrainManager:
     self.data_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
 
+    self.frames_queue = queue.Queue(maxsize=prefetch)
+    self.stop_requested = threading.Event()
+
+    self.data_thread = threading.Thread(target=self.produce_frames)
+    self.data_thread.start()
+
+  def produce_frames(self):
+    while not self.stop_requested.is_set():
+      batch, epoch = next(self.data_source)
+      frames = batch.frames
+
+      if np.any(frames.is_resetting[:, 1:]):
+        raise ValueError("Unexpected mid-episode reset.")
+
+      frames = frames._replace(
+          state_action=self.learner.policy.embed_state_action.from_state(
+              frames.state_action))
+      frames = utils.map_nt(tf.convert_to_tensor, frames)
+      data = (batch, epoch, frames)
+      try:
+        self.frames_queue.put(data, timeout=1)
+      except queue.Full:
+        pass
+
+  def stop(self):
+    self.stop_requested.set()
+    self.data_thread.join()
+
+  def __del__(self):
+    self.stop()
+
   def step(self, compiled: bool = True) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
-      batch, epoch = next(self.data_source)
+      batch, epoch, frames = self.frames_queue.get()
     with self.step_profiler:
       stats, self.hidden_state = self.learner.step(
-          batch, self.hidden_state, compile=compiled, **self.step_kwargs)
+          frames, self.hidden_state, compile=compiled, **self.step_kwargs)
     stats.update(
         epoch=epoch,
     )
@@ -502,3 +536,7 @@ def train(config: Config):
     step.assign_add(1)
     maybe_log(train_stats)
     maybe_eval()
+
+  # TODO: use a context manager to ensure clean shutdown
+  train_manager.stop()
+  test_manager.stop()

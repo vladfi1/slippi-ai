@@ -118,6 +118,7 @@ def is_known_player(name):
   return normalize_name(name) in KNOWN_PLAYERS
 
 def max_name_code(name_map: dict[str, int]) -> int:
+  # Assume that one past the max is used for unknown names.
   return (max(name_map.values()) + 1) if name_map else 0
 
 def name_encoder(name_map: dict[str, int]):
