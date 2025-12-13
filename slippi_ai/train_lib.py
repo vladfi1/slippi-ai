@@ -323,6 +323,7 @@ def train(config: Config):
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
 
   # initialize variables
+  test_manager.step()  # training requires prior initialization
   train_stats, _ = train_manager.step()
   logging.info('Initialized policy with %d variables', len(policy.variables))
   logging.info('loss initial: %f', _get_loss(train_stats))

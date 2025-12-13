@@ -157,12 +157,12 @@ class AutoRegressive(ControllerHead, snt.Module):
     residual = self.to_residual(inputs)
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
 
-    samples: list[SampleOutputs] = []
+    sample_outputs: list[SampleOutputs] = []
     for res_block, prev in zip(self.res_blocks, prev_controller_flat):
       residual, sample = res_block.sample(residual, prev, temperature=temperature)
-      samples.append(sample)
+      sample_outputs.append(sample)
 
-    samples, logits = zip(*samples)
+    samples, logits = zip(*sample_outputs)
     return SampleOutputs(
         controller_state=self.embed_controller.unflatten(iter(samples)),
         logits=self.embed_controller.unflatten(iter(logits)),
@@ -173,13 +173,13 @@ class AutoRegressive(ControllerHead, snt.Module):
     prev_controller_flat = self.embed_controller.flatten(prev_controller_state)
     target_controller_flat = self.embed_controller.flatten(target_controller_state)
 
-    distances: list[DistanceOutputs] = []
+    distance_outputs: list[DistanceOutputs] = []
     for res_block, prev, target in zip(
         self.res_blocks, prev_controller_flat, target_controller_flat):
       residual, distance = res_block.distance(residual, prev, target)
-      distances.append(distance)
+      distance_outputs.append(distance)
 
-    distances, logits = zip(*distances)
+    distances, logits = zip(*distance_outputs)
     return DistanceOutputs(
         distance=self.embed_controller.unflatten(iter(distances)),
         logits=self.embed_controller.unflatten(iter(logits)),
