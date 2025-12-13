@@ -14,7 +14,7 @@ python scripts/train.py \
   --config.runtime.max_runtime=10 \
   --config.runtime.eval_every_n=50 \
   --config.runtime.num_eval_steps=2 \
-  --config.network.name=gru \
-  --config.network.gru.hidden_size=1 \
+  --config.network.name=tx_like \
+  --config.network.tx_like.hidden_size=2 \
   --config.value_function.separate_network_config=False \
   "$@"

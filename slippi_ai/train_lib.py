@@ -91,7 +91,7 @@ class TrainManager:
   def __del__(self):
     self.stop()
 
-  def step(self, compiled: bool = True) -> tuple[dict, data_lib.Batch]:
+  def step(self, compiled: tp.Optional[bool] = None) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
       batch, epoch, frames = self.frames_queue.get()
     with self.step_profiler:
