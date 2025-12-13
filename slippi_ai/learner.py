@@ -146,7 +146,7 @@ class Learner:
   @tf.function
   def apply_grads(self, grads, scale: float = 1.0):
     grads = tf.nest.map_structure(
-        lambda g: g * scale, grads)
+        lambda g: g * scale if g is not None else g, grads)
     policy_grads, value_grads = grads
     self.policy_optimizer.apply(policy_grads, self.policy_vars)
     self.value_optimizer.apply(value_grads, self.value_vars)

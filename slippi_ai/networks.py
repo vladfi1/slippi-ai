@@ -176,6 +176,9 @@ class LayerNorm(snt.Module):
   @snt.once
   def _initialize(self, inputs):
     feature_shape = inputs.shape[-1:]
+    if feature_shape[0] == 1:
+      raise ValueError('LayerNorm cannot be applied to scalar features.')
+
     self.scale = tf.Variable(
         tf.ones(feature_shape, dtype=inputs.dtype),
         name='scale')
