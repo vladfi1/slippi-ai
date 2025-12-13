@@ -251,7 +251,7 @@ def train_test_split(
   # We do this here to avoid contamination between train and test sets.
   if config.mirror:
     add_mirrored(train_replays)
-    add_mirrored(test_replays)
+    # TODO: test on mirrored too, but keep separate from original test replays.
 
   return train_replays, test_replays
 
