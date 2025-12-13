@@ -17,4 +17,6 @@ python scripts/train.py \
   --config.network.name=tx_like \
   --config.network.tx_like.hidden_size=2 \
   --config.value_function.separate_network_config=False \
+  --config.controller_head.name=autoregressive \
+  --config.controller_head.autoregressive.residual_size=2 \
   "$@"

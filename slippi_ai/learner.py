@@ -138,7 +138,7 @@ class Learner:
 
     if train:
       grads_acc = tf.nest.map_structure(
-          lambda a, g: a + g,
+          lambda a, g: a + g if g is not None else a,
           grads_acc, grads)
 
     return metrics, final_states, grads_acc
