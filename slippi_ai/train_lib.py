@@ -51,7 +51,7 @@ class TrainManager:
       learner: learner_lib.Learner,
       data_source: data_lib.DataSource,
       step_kwargs={},
-      prefetch: int = 10,
+      prefetch: int = 16,
   ):
     self.learner = learner
     self.data_source = data_source

@@ -483,7 +483,7 @@ def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
     batch_queue.put(next(data_source))
 
 class DataSourceMP:
-  def __init__(self, buffer=4, **kwargs):
+  def __init__(self, buffer=16, **kwargs):
     for k, v in kwargs.items():
       if k == 'replays':
         continue
