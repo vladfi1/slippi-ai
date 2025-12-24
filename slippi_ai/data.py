@@ -440,10 +440,12 @@ class DataSource:
 
       logging.info(f'Character balance: {num_per_character}')
 
-      iterators = [itertools.cycle(replays) for replays in by_character.values()]
-      balanced_iterator = utils.interleave(*iterators)
-
-      replay_iter = utils.interleave(balanced_iterator, replay_iter)
+      if len(by_character) > 1:
+        iterators = [itertools.cycle(replays) for replays in by_character.values()]
+        balanced_iterator = utils.interleave(*iterators)
+        replay_iter = utils.interleave(balanced_iterator, replay_iter)
+      else:
+        logging.info("Only one character present, balancing not needed.")
 
     for replay in replay_iter:
       self.replay_counter += 1
