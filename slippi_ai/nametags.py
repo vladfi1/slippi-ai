@@ -18,6 +18,7 @@ def get_player(raw: str) -> Optional[str]:
 PLAYER_MAINS = {
     ('Solobattle', melee.Character.JIGGLYPUFF),
     ('Franz', melee.Character.DOC),
+    ('CookBook', melee.Character.POPO),
 }
 
 def name_from_metadata(player_meta: dict, raw: Optional[str] = None) -> str:
@@ -78,20 +79,30 @@ NAME_GROUPS = [
   ('JChu', 'JCHU#536'),  # 3.5K replays
   ('Axe', 'AXE#845'),  # 800 replays
   ('M2K', 'KOTU#737', 'CHU#352'),  # 9K replays, mostly Sheik
-  ('Siddward', 'SIDD#539'),  # Luigi main, 14K replays
   ('Kandayo', 'KAND#898'),  # Marth main, 4K replays
   ('Krudo', 'CHUG#596', 'CODY#007'),  # 9K replays
   ('Uhhei', 'SUTT#456'),  # Samus main, 7K replays
   ('FknSilver', 'THA#837', 'FUCKIN#1'),  # Samus main, 3K replays
   ('Salt', 'SALT#747'),  # 3K replays
   ('Zamu', 'A#9'),  # 2K replays
-  ('Nicki', 'NICKI#1'),  # 2K replays
   ('RedX', 'REDX#668'),  # Link main, 2K replays
   ('Daniel', 'DAN#877'),  # Yoshi main, 8K replays
   ('Monotheon', 'MON#0'),  # Yoshi main, 6K replays
   ('Magi', 'MAGI#732'),  # 4K replays
   ('Nez', 'NEZ#125'),  # Yoshi main, 1K replays
   ('Moky', 'MOKY#475'),  # 3K replays
+
+  # Ice Climbers
+  ('CookBook', 'COOK#671'),  # 20K replays
+  ('Friend', 'FREN#129', 'GOOM#5'),  # 8K replays
+  ('Grab2Win', 'G2W#0'),  # 4K replays
+  ('MOF', 'MOF#366'),  # 1K replays
+  ('Nicki', 'NICKI#1'),  # 1K replays
+
+  # Luigi
+  ('Siddward', 'SIDD#539'),  # Luigi main, 6.6K replays
+  ('JahRidin', 'JAH#516'),  # 1K replays
+  ('RapM', 'RAPM#151'),  # 700 replays
 
   # Don't have permission from these players yet.
   ('Ossify', 'OSSIFY#0'),  # 1K replays
