@@ -78,6 +78,7 @@ class Learner:
       bm_frames: Frames,
       initial_states: RecurrentState,
       train: bool = True,
+      apply_grads: bool = True,
   ) -> tuple[dict, RecurrentState, tuple[list[tf.Tensor], list[tf.Tensor]]]:
     policy_initial_states, value_initial_states = initial_states
     del initial_states
@@ -95,7 +96,8 @@ class Learner:
         policy_params = self.policy_vars
         tf_utils.assert_same_variables(tape.watched_variables(), policy_params)
         policy_grads = tape.gradient(policy_loss, policy_params)
-        # self.policy_optimizer.apply(policy_grads, policy_params)
+        if apply_grads:
+          self.policy_optimizer.apply(policy_grads, policy_params)
       else:
         policy_grads = []
 
@@ -111,7 +113,8 @@ class Learner:
         value_params = self.value_vars
         tf_utils.assert_same_variables(tape.watched_variables(), value_params)
         value_grads = tape.gradient(value_outputs.loss, value_params)
-        # self.value_optimizer.apply(value_grads, value_params)
+        if apply_grads:
+          self.value_optimizer.apply(value_grads, value_params)
       else:
         value_grads = []
 
@@ -139,7 +142,7 @@ class Learner:
       train: bool = True,
   ):
     metrics, final_states, grads = self._step_grads(
-        bm_frames, initial_states, train=train)
+        bm_frames, initial_states, train=train, apply_grads=False)
 
     if train:
       grads_acc = tf.nest.map_structure(
@@ -162,11 +165,8 @@ class Learner:
       initial_states: RecurrentState,
       train: bool = True,
   ):
-    metrics, final_states, grads = self._step_grads(
-        bm_frames, initial_states, train=train)
-
-    if train:
-      self.apply_grads(grads)
+    metrics, final_states, _ = self._step_grads(
+        bm_frames, initial_states, train=train, apply_grads=True)
 
     return metrics, final_states
 
