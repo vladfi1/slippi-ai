@@ -19,6 +19,7 @@ LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to 
 CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file needs conversion before processing.')
 DOLPHIN_TIMEOUT = flags.DEFINE_integer('dolphin_timeout', 60, 'Dolphin timeout in seconds.')
 
+SKIP_EXISTING = flags.DEFINE_boolean('skip_existing', False, 'Whether to skip existing output archives.')
 REMOVE_INPUT = flags.DEFINE_boolean('remove_input', False, 'Whether to remove the input file after conversion.')
 DEBUG = flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
 
@@ -72,6 +73,7 @@ def main(_):
     print(f'Found {len(zip_files)} zip files to process')
 
     json_results = []
+    skipped = []
 
     for zip_file in zip_files:
       # Calculate relative path from input directory
@@ -81,6 +83,10 @@ def main(_):
       output_file = output_path / rel_path
       output_file.parent.mkdir(parents=True, exist_ok=True)
 
+      if SKIP_EXISTING.value and output_file.exists():
+        skipped.append(str(zip_file))
+        continue
+
       print(f'Processing {zip_file} -> {output_file}')
       results = process_single_archive(str(zip_file), str(output_file), dolphin_config)
 
@@ -88,6 +94,12 @@ def main(_):
         json_results.append((
             str(zip_file), result.local_file.name,
             result.error, result.skipped))
+
+    if skipped:
+      print(f'Skipped {len(skipped)} files that already exist in output:')
+      for path in skipped:
+        print(f'  {path}')
+
   else:
     raise ValueError(f'Input path does not exist: {input_path}')
 
