@@ -537,7 +537,8 @@ def upgrade_archive(
       continue
 
     if _is_archive(zip_info.filename):
-      raise ValueError(f'Input archive contains nested archive: {zip_info.filename}')
+      logging.warning(f'Found nested archive: {zip_info.filename}')
+      # raise ValueError(f'Input archive contains nested archive: {zip_info.filename}')
 
     if not utils.is_slp_file(zip_info.filename):
       continue
