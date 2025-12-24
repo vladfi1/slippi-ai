@@ -51,8 +51,13 @@ class Learner:
     self.minibatch_size = minibatch_size
 
     self.compile = compile
+
+    compile_kwargs = dict(jit_compile=jit_compile, autograph=False)
+
     self._compiled_step = tf.function(
-        self._step_grads_acc, jit_compile=jit_compile, autograph=False)
+        self._step, **compile_kwargs)
+    self._compiled_step_grads_acc = tf.function(
+        self._step_grads_acc, **compile_kwargs)
 
   def initial_state(self, batch_size: int) -> RecurrentState:
     return (
@@ -151,6 +156,20 @@ class Learner:
     self.policy_optimizer.apply(policy_grads, self.policy_vars)
     self.value_optimizer.apply(value_grads, self.value_vars)
 
+  def _step(
+      self,
+      bm_frames: Frames,
+      initial_states: RecurrentState,
+      train: bool = True,
+  ):
+    metrics, final_states, grads = self._step_grads(
+        bm_frames, initial_states, train=train)
+
+    if train:
+      self.apply_grads(grads)
+
+    return metrics, final_states
+
   @tf.function
   def combine_final_states(
       self,
@@ -187,13 +206,19 @@ class Learner:
       compile: Optional[bool] = None,
   ):
     compile = compile if compile is not None else self.compile
-    step = self._compiled_step if compile else self._step_grads_acc
+
+    if self.minibatch_size == 0:
+      step = self._compiled_step if compile else self._step
+      return step(
+          frames,
+          initial_states,
+          train=train,
+      )
+
+    step_grads_acc = self._compiled_step_grads_acc if compile else self._step_grads_acc
 
     batch_size = frames.is_resetting.shape[0]
-    if self.minibatch_size == 0:
-      minibatch_size = batch_size
-    else:
-      minibatch_size = self.minibatch_size
+    minibatch_size = self.minibatch_size
 
     num_splits, r = divmod(batch_size, minibatch_size)
     if r != 0:
@@ -215,7 +240,7 @@ class Learner:
       bm_frames_mb = tf.nest.map_structure(slice_mb, frames)
       initial_states_mb = tf.nest.map_structure(slice_mb, initial_states)
 
-      metrics_mb, final_states_mb, grads_acc = step(
+      metrics_mb, final_states_mb, grads_acc = step_grads_acc(
           bm_frames_mb,
           initial_states_mb,
           train=train,
