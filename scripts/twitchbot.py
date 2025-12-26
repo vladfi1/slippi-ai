@@ -1,6 +1,7 @@
 """Bot that runs on twitch and lets people play against phillip 2."""
 
 import abc
+import asyncio
 import dataclasses
 import datetime
 import json
@@ -14,6 +15,8 @@ from typing import Optional, Union
 
 from absl import app, flags
 import fancyflags as ff
+import twitchio
+from twitchio import eventsub
 from twitchio.ext import commands, routines
 import portpicker
 import ray
@@ -36,11 +39,20 @@ NAME_TO_STAGE = {
 }
 
 # Twitch settings
-default_access_token = os.environ.get('TWITCHBOT_ACCESS_TOKEN')
-ACCESS_TOKEN = flags.DEFINE_string(
-    'token', default_access_token, 'Access token for the twitch bot.',
-    required=default_access_token is None)
+# see https://twitchio.dev/en/latest/getting-started/migrating.html
+
+default_client_id = os.environ.get("TWITCH_CLIENT_ID")
+default_client_secret = os.environ.get("TWITCH_CLIENT_SECRET")
+
+CLIENT_ID = flags.DEFINE_string(
+    'client_id', default_client_id, 'Twitch client ID.',
+    required=default_client_id is None)
+CLIENT_SECRET = flags.DEFINE_string(
+    'client_secret', default_client_secret, 'Twitch client secret.',
+    required=default_client_secret is None)
+
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
+BOT_USER = flags.DEFINE_string('bot_user', 'x_pilot_bot', 'twitch bot user')
 
 STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
 
@@ -481,11 +493,65 @@ async def send_list(ctx: commands.Context, items: list[str]):
     assert len(message) <= max_chars
     await ctx.send(message)
 
+async def get_ids(client_id: str, client_secret: str, names: list[str]) -> list[str]:
+  async with twitchio.Client(client_id=client_id, client_secret=client_secret) as client:
+      await client.login()
+      users = await client.fetch_users(logins=names)
+      return [u.id for u in users]
 
 class Bot(commands.Bot):
 
   def __init__(
-      self, token: str, prefix: str, channel: str,
+      self,
+      bot_user: str,
+      client_id: str,
+      client_secret: str,
+      prefix: str,
+      channel: str,
+      controller: 'Controller',
+  ):
+    self.controller = controller
+
+    user_id, bot_id = asyncio.run(get_ids(client_id, client_secret, [channel, bot_user]))
+
+    super().__init__(
+        client_id=client_id,
+        client_secret=client_secret,
+        bot_id=bot_id,
+        owner_id=user_id,
+        prefix=prefix,
+    )
+
+  async def setup_hook(self) -> None:
+    # Listen for messages on our channel...
+    # You need appropriate scopes, see the docs on authenticating for more info...
+    payload = eventsub.ChatMessageSubscription(broadcaster_user_id=self.owner_id, user_id=self.bot_id)
+    await self.subscribe_websocket(payload=payload)
+
+    await self.add_component(self.controller)
+
+  async def event_ready(self):
+    # Notify us when everything is ready!
+    # We are logged in and ready to chat and use commands...
+    print(f'Logged in as | {self.user.name}')
+    print(f'User id is | {self.user.id}')
+
+    await self.send_message('Bot is online!')
+
+    self.controller.do_chores.start()
+
+  async def send_message(self, message: str):
+    await self.owner.send_message(message, sender=self.user)
+
+class Controller(commands.Component):
+
+  def __init__(
+      self,
+      bot_user: str,
+      client_id: str,
+      client_secret: str,
+      prefix: str,
+      channel: str,
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_kwargs: dict,
       models_path: str,
@@ -498,9 +564,6 @@ class Bot(commands.Bot):
       auto_delay: int = 18,
       default_agent: Optional[str] = None,
   ):
-    super().__init__(token=token, prefix=prefix, initial_channels=[channel])
-    self.owner = channel
-
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
     self._max_sessions = max_sessions
@@ -549,7 +612,14 @@ class Bot(commands.Bot):
     self._play_codes: dict[str, str] = {}
     self._stages: dict[str, list[melee.Stage]] = {}
 
-    self._do_chores.start()
+    self.bot = Bot(
+        bot_user=bot_user,
+        client_id=client_id,
+        client_secret=client_secret,
+        prefix=prefix,
+        channel=channel,
+        controller=self,
+    )
 
   def _single_agent(
       self,
@@ -681,7 +751,7 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def config(self, ctx: commands.Context):
-    words = ctx.message.content.split(' ')
+    words = ctx.message.text.split(' ')
     if len(words) != 2:
       await ctx.send('You must specify an agent.')
       return
@@ -709,7 +779,7 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
-    words = ctx.message.content.split(' ')
+    words = ctx.message.text.split(' ')
 
     if len(words) != 2:
       await ctx.send('You must specify a single agent.')
@@ -735,17 +805,11 @@ class Bot(commands.Bot):
         self._stop_sessions([self._sessions[name]])
         await self._play(ctx)
 
-  async def event_ready(self):
-    # Notify us when everything is ready!
-    # We are logged in and ready to chat and use commands...
-    print(f'Logged in as | {self.nick}')
-    print(f'User id is | {self.user_id}')
-
   @commands.command()
   async def stages(self, ctx: commands.Context):
     name = ctx.author.name
     assert isinstance(name, str)
-    words = ctx.message.content.split(' ')
+    words = ctx.message.text.split(' ')
 
     stage_names = words[1:]
     if len(stage_names) == 0:
@@ -836,7 +900,7 @@ class Bot(commands.Bot):
   async def play(self, ctx: commands.Context):
     name = ctx.author.name
     assert isinstance(name, str)
-    words = ctx.message.content.split(' ')
+    words = ctx.message.text.split(' ')
 
     if len(words) == 1:
       connect_code = self._play_codes.get(name)
@@ -931,12 +995,9 @@ class Bot(commands.Bot):
 
       self._bot_session = self._start_bot_session()
       logging.info('Started bot session.')
-      chan = self.get_channel(self.owner)
-      # Might be None if we haven't logged in yet
-      if chan:
-        bot1 = self._bot_configs[1].name
-        bot2 = self._bot_configs[2].name
-        await chan.send(f'Started {bot1} vs. {bot2} on stream.')
+      bot1 = self._bot_configs[1].name
+      bot2 = self._bot_configs[2].name
+      await self.bot.send_message(f'Started {bot1} vs. {bot2} on stream.')
       return True
 
   @commands.command()
@@ -949,7 +1010,7 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def bots(self, ctx: commands.Context):
-    words = ctx.message.content.split(' ')[1:]
+    words = ctx.message.text.split(' ')[1:]
 
     if len(words) == 1:
       bot1 = bot2 = words[0]
@@ -1046,7 +1107,7 @@ class Bot(commands.Bot):
       await ctx.send('Only mods can kick players.')
       return
 
-    words = ctx.message.content.split(' ')[1:]
+    words = ctx.message.text.split(' ')[1:]
     if len(words) != 1:
       await ctx.send('Must specify a player to kick')
       return
@@ -1079,8 +1140,7 @@ class Bot(commands.Bot):
       if to_gc:
         names = ", ".join([info.twitch_name for info in to_gc])
         logging.info(f'GCed sessions: {names}')
-        chan = self.get_channel(self.owner)
-        await chan.send(f'Stopped idle session against {names}')
+        await self.bot.send_message(f'Stopped idle session against {names}')
       return to_gc
 
   @commands.command()
@@ -1090,8 +1150,8 @@ class Bot(commands.Bot):
     names = ", ".join(names)
     await ctx.send(f"GCed ({names})")
 
-  @routines.routine(minutes=1)
-  async def _do_chores(self):
+  @routines.routine(delta=datetime.timedelta(minutes=1))
+  async def do_chores(self):
     with self.lock:
       await self._gc_sessions()
       await self._maybe_start_bot_session()
@@ -1101,17 +1161,20 @@ class Bot(commands.Bot):
       logging.info('Shutting down')
       self._stop_sessions(list(self._sessions.values()))
       self._stop_bot_session()
-      self._do_chores.stop()
+      self.do_chores.stop()
 
 def main(_):
+  twitchio.utils.setup_logging(level=logging.INFO)
   eval_lib.disable_gpus()
 
   agent_kwargs = AGENT.value
   if not agent_kwargs['path']:
     raise ValueError('Must provide agent path.')
 
-  bot = Bot(
-      token=ACCESS_TOKEN.value,
+  controller = Controller(
+      bot_user=BOT_USER.value,
+      client_id=CLIENT_ID.value,
+      client_secret=CLIENT_SECRET.value,
       prefix='!',
       channel=CHANNEL.value,
       models_path=MODELS_PATH.value,
@@ -1127,9 +1190,10 @@ def main(_):
   )
 
   try:
-    bot.run()
+    controller.bot.run()
+    # asyncio.run(bot.start())
   finally:
-    bot.shutdown()
+    controller.shutdown()
 
 if __name__ == '__main__':
     app.run(main)
