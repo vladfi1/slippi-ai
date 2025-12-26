@@ -135,7 +135,7 @@ class Dolphin:
     self.console = console
 
     self.controllers: Mapping[int, melee.Controller] = {}
-    self._menuing_controllers: list[tuple[melee.Controller, Player]] = []
+    self._menuing_controllers: list[tuple[melee.Controller, CPU | AI]] = []
     self._autostart = True
     self._connect_code = connect_code
 
@@ -155,7 +155,7 @@ class Dolphin:
           console, port, player.controller_type())
       self.controllers[port] = controller
 
-      if not isinstance(player, Human):
+      if isinstance(player, (CPU, AI)):
         self._menuing_controllers.append((controller, player))
 
     console.run(
@@ -202,6 +202,17 @@ class Dolphin:
         and not self.console.is_frozen_ps
       ):
         logging.warning('Playing on unfrozen stadium')
+
+      # Check that we picked the desired characters
+      for controller, player in self._menuing_controllers:
+        gs_player = gamestate.players[controller.port]
+        desired_character = player.character
+        actual_character = gs_player.character
+        if actual_character != desired_character:
+          raise ValueError(
+            f'Port {controller.port}: expected character '
+            f'{desired_character.name}, got {actual_character.name}'
+          )
 
     return gamestate
 
