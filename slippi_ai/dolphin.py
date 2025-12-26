@@ -232,7 +232,7 @@ class Dolphin:
             gamestate, controller,
             stage_selected=self.stage,
             connect_code=self._connect_code,
-            autostart=self._autostart and i == 0 and menu_frames > 180,
+            autostart=self._autostart and i == 0 and menu_frames > 30,
             swag=False,
             costume=i,
             **player.menuing_kwargs())
