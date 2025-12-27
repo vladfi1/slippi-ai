@@ -494,10 +494,13 @@ async def send_list(ctx: commands.Context, items: list[str]):
     await ctx.send(message)
 
 async def get_ids(client_id: str, client_secret: str, names: list[str]) -> list[str]:
+  unique_names = list(set(names))
+
   async with twitchio.Client(client_id=client_id, client_secret=client_secret) as client:
       await client.login()
-      users = await client.fetch_users(logins=names)
-      return [u.id for u in users]
+      users = await client.fetch_users(logins=unique_names)
+      name_to_id = {name: u.id for name, u in zip(unique_names, users)}
+      return [name_to_id[name] for name in names]
 
 class Bot(commands.Bot):
 
