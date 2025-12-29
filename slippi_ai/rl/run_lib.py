@@ -209,10 +209,11 @@ class LearnerManager:
 
     if self._config.opponent.should_train():
       ports = [self._port, self._enemy_port]
-      trajectories = [trajectories[p] for p in ports]
-      trajectory = evaluators.Trajectory.batch(trajectories)
+      trajectory = evaluators.Trajectory.batch([trajectories[p] for p in ports])
     else:
       trajectory = trajectories[self._port]
+
+
 
     return trajectory, timings
 
@@ -520,7 +521,7 @@ def run(config: Config):
       # We don't log mirror matches as the ko_diff will be 0.
 
     def get_name_matchup_stats(states: Game) -> dict:
-      tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+      tm_kos = reward.ko_diff(states)  # [T, P, B]
       bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
 
       stats = {}
@@ -559,7 +560,7 @@ def run(config: Config):
       # We don't log mirror matches as the ko_diff will be 0.
 
     def get_char_matchup_stats(states: Game) -> dict:
-      tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+      tm_kos = reward.ko_diff(states)  # [T, P, B]
       bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
 
       stats = {}

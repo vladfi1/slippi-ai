@@ -340,7 +340,7 @@ def run(config: Config):
   MINUTES_PER_FRAME = 60 * 60
 
   def get_matchup_stats(states: embed.Game) -> dict:
-    tm_kos = reward.compute_rewards(states, damage_ratio=0)  # [T, P, B]
+    tm_kos = reward.ko_diff(states)  # [T, P, B]
     bm_kos = tm_kos.mean(axis=(0, 1))  # [B]
 
     stats = {}

@@ -260,7 +260,7 @@ class RolloutWorker:
     trajectories = {}
     is_resetting = np.array(is_resetting)
     for port, agent in self._agents.items():
-      states=utils.batch_nest_nt(gamestates[port])
+      states = utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
           # TODO: Let the learner call from_state on game
           states=agent._policy.embed_game.from_state(states),

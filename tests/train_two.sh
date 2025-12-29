@@ -11,5 +11,6 @@ python slippi_ai/rl/train_two.py \
   --config.optimizer_burnin_steps=2 \
   --config.value_burnin_steps=2 \
   --config.learner.ppo.num_batches=2 \
+  --config.learner.reward.nana_ratio=0 \
   --wandb.mode=offline \
   "$@"
