@@ -383,25 +383,6 @@ def ordered_struct_embedding(
       getter=getattr,
   )
 
-K = TypeVar("K")
-V = TypeVar("V")
-
-def get_dict(d: Mapping[K, V], k: K) -> V:
-  return d[k]
-
-id_fn = lambda x: x
-
-def dict_embedding(
-    name: str,
-    embedding: Sequence[Tuple[str, Embedding]],
-) -> StructEmbedding[Dict[str, Any]]:
-  return StructEmbedding(
-      name=name,
-      embedding=embedding,
-      builder=id_fn,
-      getter=get_dict,
-  )
-
 class MLPWrapper(Embedding[In, Out]):
 
   def __init__(
