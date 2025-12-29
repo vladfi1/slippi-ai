@@ -204,15 +204,17 @@ class Dolphin:
         logging.warning('Playing on unfrozen stadium')
 
       # Check that we picked the desired characters
-      for controller, player in self._menuing_controllers:
-        gs_player = gamestate.players[controller.port]
-        desired_character = player.character
-        actual_character = gs_player.character
-        if actual_character != desired_character:
-          raise ValueError(
-            f'Port {controller.port}: expected character '
-            f'{desired_character.name}, got {actual_character.name}'
-          )
+      # Doesn't work in netplay because our port may be different
+      if self._connect_code is None:
+        for controller, player in self._menuing_controllers:
+          gs_player = gamestate.players[controller.port]
+          desired_character = player.character
+          actual_character = gs_player.character
+          if actual_character != desired_character:
+            raise ValueError(
+              f'Port {controller.port}: expected character '
+              f'{desired_character.name}, got {actual_character.name}'
+            )
 
     return gamestate
 
