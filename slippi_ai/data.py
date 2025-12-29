@@ -567,8 +567,8 @@ def make_source(
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(
-      data_dir=paths.TOY_DATA_DIR,
-      meta_path=paths.TOY_META_PATH,
+      data_dir=str(paths.TOY_DATA_DIR),
+      meta_path=str(paths.TOY_META_PATH),
   )
   return DataSource(
       replays=replays_from_meta(dataset_config),
