@@ -461,6 +461,27 @@ def parse_imitation_char(agent: str) -> Optional[melee.Character]:
 def tokens(message: str) -> list[str]:
   return [x for x in message.split(' ') if x != '']
 
+async def send_list(ctx: commands.Context, items: list[str]):
+  max_chars = 500
+  chunks = [[]]
+  chunk_size = 0
+  for name in items:
+    chunk = chunks[-1]
+    new_chunk_size = chunk_size + len(name) + 1
+    if new_chunk_size > max_chars:
+      chunk = []
+      chunks.append(chunk)
+      chunk_size = len(name)
+    else:
+      chunk_size = new_chunk_size
+    chunk.append(name)
+
+  for chunk in chunks:
+    message = " ".join(chunk)
+    assert len(message) <= max_chars
+    await ctx.send(message)
+
+
 class Bot(commands.Bot):
 
   def __init__(
@@ -573,7 +594,7 @@ class Bot(commands.Bot):
     await ctx.send(ABOUT_MESSAGE)
 
   def _reload_models(self):
-    self._special_agents: list[AgentConfig] = []
+    self._special_agents: list[str] = []
     self._agents: dict[str, AgentConfig] = {}
 
     # For inspection by the !config command
@@ -596,37 +617,48 @@ class Bot(commands.Bot):
       if len(summary.characters) == 1:
         add_agent(self._single_agent(model=model))
       else:
+        char_names = []
         for char in summary.characters:
+          char_names.append(char.name.lower())
           agent_config = self._single_agent(
               model=model, char=char,
               name=model + '-' + char.name.lower())
           add_agent(agent_config)
 
-          # Make these special for now, e.g. medium-fox, gm-falco, etc.
-          self._special_agents.append(agent_config)
+        self._special_agents.append(f'{model}-[{",".join(char_names)}]')
 
     # imitation agents
     imitation_models = eval_lib.get_imitation_agents(
         self._models_path, delay=self._auto_delay)
 
+    imitation_names = []
     for char, model in imitation_models.items():
       agent_config = self._single_agent(
           model=model,
           char=char,
           name=imitation_prefix + char.name.lower(),
       )
-      self._special_agents.append(agent_config)
       add_agent(agent_config)
+      imitation_names.append(char.name.lower())
+
+    if len(imitation_names) > 0:
+      self._special_agents.append(
+          f'{imitation_prefix}[{",".join(imitation_names)}]')
 
     # auto agents
     self._auto_agents: dict[melee.Character, AutoAgent] = {}
     matchup_table = eval_lib.build_matchup_table(
         self._models_path, delay=self._auto_delay)
+    auto_names = []
     for character in matchup_table:
       agent_config = self._auto_agent(character)
-      self._special_agents.append(agent_config)
       self._auto_agents[character] = agent_config
       add_agent(agent_config)
+      auto_names.append(character.name.lower())
+
+    if len(auto_names) > 0:
+      self._special_agents.append(
+          f'{auto_prefix}[{",".join(auto_names)}]')
 
     # Set default agent
     if self._default_agent is not None:
@@ -669,29 +701,11 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
-    names = [agent_config.name for agent_config in self._special_agents]
-    await ctx.send(' '.join(names))
+    await send_list(ctx, sorted(self._special_agents))
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
-    max_chars = 500
-    chunks = [[]]
-    chunk_size = 0
-    for name in sorted(self._agents):
-      chunk = chunks[-1]
-      new_chunk_size = chunk_size + len(name) + 1
-      if new_chunk_size > max_chars:
-        chunk = []
-        chunks.append(chunk)
-        chunk_size = len(name)
-      else:
-        chunk_size = new_chunk_size
-      chunk.append(name)
-
-    for chunk in chunks:
-      message = " ".join(chunk)
-      assert len(message) <= max_chars
-      await ctx.send(message)
+    await send_list(ctx, sorted(self._agents.keys()))
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
