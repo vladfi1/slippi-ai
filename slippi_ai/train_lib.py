@@ -133,7 +133,7 @@ class RuntimeConfig:
 class ValueFunctionConfig:
   train_separate_network: bool = True
   separate_network_config: bool = True
-  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
+  network: dict = _field(networks.default_config)
 
 @dataclasses.dataclass
 class Config:

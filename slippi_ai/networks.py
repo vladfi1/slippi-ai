@@ -436,6 +436,8 @@ DEFAULT_CONFIG = dict(
     tx_like=TransformerLike.CONFIG,
 )
 
+# Warning: use this method to get a fresh copy of the default config
+# when using as a dataclass field default value.
 def default_config() -> dict:
   return copy.deepcopy(DEFAULT_CONFIG)
 

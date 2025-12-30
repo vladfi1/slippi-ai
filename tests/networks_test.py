@@ -12,8 +12,10 @@ def assert_tensors_close(t1: tf.Tensor, t2: tf.Tensor):
   # TODO: relax tolerance when running on GPU
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
 
+default_network_config = networks.default_config()
+
 def default_network(name):
-  return networks.CONSTRUCTORS[name](**networks.DEFAULT_CONFIG[name])
+  return networks.CONSTRUCTORS[name](**default_network_config[name])
 
 embed_game = embed.make_game_embedding()
 

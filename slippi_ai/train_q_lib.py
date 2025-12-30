@@ -80,7 +80,7 @@ class RLEvaluatorConfig:
 
 @dataclasses.dataclass
 class QFunctionConfig:
-  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
+  network: dict = _field(networks.default_config)
 
 @dataclasses.dataclass
 class Config:
@@ -97,8 +97,8 @@ class Config:
   # TODO: can we support distinct configurations here?
   policy: policies.PolicyConfig = _field(
       lambda: policies.PolicyConfig(train_value_head=False))
-  network: dict = _field(lambda: networks.DEFAULT_CONFIG)
-  controller_head: dict = _field(lambda: controller_heads.DEFAULT_CONFIG)
+  network: dict = _field(networks.default_config)
+  controller_head: dict = _field(controller_heads.default_config)
 
   embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
 
