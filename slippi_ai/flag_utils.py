@@ -108,7 +108,7 @@ def _get_default(field: dataclasses.Field):
     return field.default_factory()
   if field.default is not dataclasses.MISSING:
     return field.default
-  return None
+  return dataclasses.MISSING
 
 
 def get_flags_from_dataclass(cls: type) -> tree.Structure[ff.Item]:
@@ -118,12 +118,20 @@ def get_flags_from_dataclass(cls: type) -> tree.Structure[ff.Item]:
   result = {}
 
   for field in dataclasses.fields(cls):
+    field_default = _get_default(field)
     if dataclasses.is_dataclass(field.type):
-      result[field.name] = get_flags_from_dataclass(field.type)
+      if field_default is dataclasses.MISSING:
+        result[field.name] = get_flags_from_dataclass(field.type)
+      else:
+        result[field.name] = get_flags_from_default(field_default)
     elif field.type is dict:
-      result[field.name] = get_flags_from_default(_get_default(field))
+      if field_default is dataclasses.MISSING:
+        raise ValueError(f'Field {cls.__name__}.{field.name} is a dict but has no default value')
+      result[field.name] = get_flags_from_default(field_default)
     else:
-      item = get_leaf_flag(field.type, _get_default(field))
+      if field_default is dataclasses.MISSING:
+        raise ValueError(f'Field {cls.__name__}.{field.name} has no default value')
+      item = get_leaf_flag(field.type, field_default)
       if item is not None:
         result[field.name] = item
 
