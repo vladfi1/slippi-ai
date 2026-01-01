@@ -10,6 +10,8 @@ if __name__ == '__main__':
   from absl import app, flags
   import fancyflags as ff
 
+  import tensorflow as tf
+
   from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils, saving
 
   default_dolphin_config = dolphin.DolphinConfig(
@@ -43,6 +45,8 @@ if __name__ == '__main__':
 
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
   OPPONENT = ff.DEFINE_dict('opponent', **player_flags)
+
+  TF_PROFILE = flags.DEFINE_boolean('tf_profile', False, 'Enable TF profiler.')
 
   def main(_):
     player_kwargs = {
@@ -93,9 +97,15 @@ if __name__ == '__main__':
       burnin_steps = math.ceil(32 / batch_steps) * batch_steps
       evaluator.rollout(burnin_steps)
 
+      if TF_PROFILE.value:
+        tf.profiler.experimental.start('tf_profile')
+
       timer = utils.Profiler(burnin=0)
       with timer:
         stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value)
+
+      if TF_PROFILE.value:
+        tf.profiler.experimental.stop()
 
     num_frames = NUM_ENVS.value * ROLLOUT_LENGTH.value
     num_minutes = num_frames / (60 * 60)
