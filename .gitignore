@@ -150,3 +150,4 @@ setup.sh
 .vscode
 saved_models/
 pickled_models/
+test_models/
