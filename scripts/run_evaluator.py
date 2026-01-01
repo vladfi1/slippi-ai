@@ -103,7 +103,7 @@ if __name__ == '__main__':
     print('ko diff per minute:', kdpm)
 
     timings = metrics['timing']
-    print('timings:', utils.map_single_structure(lambda f: f'{f:.3f}', timings))
+    print('timings:', utils.map_single_structure(lambda f: f'{f * 1000:.3f}', timings))
 
     sps = ROLLOUT_LENGTH.value / timer.cumtime
     fps = sps * NUM_ENVS.value

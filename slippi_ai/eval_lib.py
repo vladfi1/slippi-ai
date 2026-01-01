@@ -2,13 +2,13 @@ import contextlib
 import enum
 import dataclasses
 import enum
-import functools
 import logging
 import os
 import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
 
+import tree
 import numpy as np
 import fancyflags as ff
 import tensorflow as tf
@@ -102,6 +102,9 @@ class BasicAgent:
       return policy.sample(
           state_action, prev_state, needs_reset, **sample_kwargs)
 
+    # Note that (compiled) multi_sample doesn't work with set_name_code
+    # because the name code is baked into the tensorflow graph.
+    # TODO: optimize with packed_compile
     def multi_sample(
         states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
         prev_action: embed.Action,  # only for first step
@@ -130,13 +133,40 @@ class BasicAgent:
 
     if compile:
       compile_fn = tf.function(jit_compile=jit_compile, autograph=False)
-      sample = compile_fn(sample)
       multi_sample = compile_fn(multi_sample)
+
+      # Packing significantly speeds up single-step inference, particularly
+      # when items are enabled.
+      sample = tf_utils.packed_compile(
+          sample,
+          self.sample_signature(),
+          jit_compile=jit_compile,
+          autograph=False,
+      )
 
     self._sample = sample
     self._multi_sample = multi_sample
 
     self.hidden_state = self._policy.initial_state(batch_size)
+
+  def sample_signature(self) -> tf_utils.Signature:
+    dummy_state_action = self._policy.embed_state_action.dummy([self._batch_size])
+    dummy_state_action = utils.map_nt(
+        lambda x: tf_utils.ArraySpec(
+            shape=x.shape,
+            dtype=x.dtype,
+        ), dummy_state_action)
+
+    # Don't pack action and prev_state as they are already Tensors.
+    dummy_state_action = dummy_state_action._replace(action=None)
+    prev_state = None
+
+    needs_reset = tf_utils.ArraySpec(
+        shape=(self._batch_size,),
+        dtype=np.dtype('bool'),
+    )
+
+    return (dummy_state_action, prev_state, needs_reset)
 
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     if isinstance(name_code, int):

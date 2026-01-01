@@ -140,6 +140,18 @@ def concat_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
   return map_nt(lambda *xs: np.concatenate(xs, axis), *nests)
 
+def flatten_up_to(shallow_structure, input_structure, acc: list | None = None) -> list:
+  if acc is None:
+    acc = []
+
+  if isinstance(shallow_structure, (tuple, list)):
+    for s, i in zip(shallow_structure, input_structure):
+      flatten_up_to(s, i, acc)
+  else:
+    acc.append(input_structure)
+
+  return acc
+
 def unbatch_nest(nest: T) -> list[T]:
   return [
       tree.unflatten_as(nest, flat_slice)

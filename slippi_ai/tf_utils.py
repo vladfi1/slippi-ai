@@ -3,6 +3,9 @@
 Separate from non-TF utils to reduce memory usage.
 """
 
+import dataclasses
+import math
+import collections
 import contextlib
 import functools
 import typing as tp
@@ -10,6 +13,8 @@ import typing as tp
 import numpy as np
 import tensorflow as tf
 import tree
+
+from slippi_ai import utils
 
 def mean_and_variance(xs: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
   mean = tf.reduce_mean(xs)
@@ -177,3 +182,109 @@ def move_axis(x: tf.Tensor, src: int, dst: int) -> tf.Tensor:
   perm.pop(src)
   perm.insert(dst, src)
   return tf.transpose(x, perm)
+
+
+@dataclasses.dataclass
+class ArraySpec:
+  dtype: np.dtype
+  shape: tuple[int, ...]
+
+PackingSpec = tp.Optional[ArraySpec]
+Signature = tp.Sequence[tree.StructureKV[str, PackingSpec]]
+
+def packing_fns(
+    signature: Signature,
+):
+  flat_signature: list[PackingSpec] = tree.flatten(signature)
+
+  flat_slices = []
+  num_skipped = 0
+  packed_sizes = collections.defaultdict(lambda: 0)
+
+  for spec in flat_signature:
+    if spec is None:
+      flat_slices.append(num_skipped)
+      num_skipped += 1
+      continue
+
+    size = math.prod(spec.shape)
+    start = packed_sizes[spec.dtype]
+    end = start + size
+    flat_slices.append((start, end))
+    packed_sizes[spec.dtype] = end
+
+  dtypes = list(packed_sizes.keys())
+  print('dtypes:', dtypes)
+
+  def pack_args(*args):
+    flattened_args = {dtype: [] for dtype in dtypes}
+    skipped = []
+
+    # flat_inputs = tree.flatten_up_to(signature, args, check_types=False)
+    flat_inputs = utils.flatten_up_to(signature, args)
+    for array, spec in zip(flat_inputs, flat_signature):
+      if spec is None:
+        skipped.append(array)
+        continue
+
+      assert isinstance(array, np.ndarray)
+      assert array.dtype == spec.dtype
+      assert array.shape == spec.shape
+      flattened_args[spec.dtype].append(np.reshape(array, [-1]))
+
+    packed = []
+    for dtype in dtypes:
+      packed.append(np.concatenate(flattened_args[dtype], axis=0))
+
+    return packed, skipped
+
+  def unpack_args(packed_args, skipped):
+    dtype_to_array = {
+        dtype: array
+        for dtype, array in zip(dtypes, packed_args)
+    }
+    flat_arrays = []
+    for spec, slice_or_idx in zip(flat_signature, flat_slices):
+      if spec is None:
+        assert isinstance(slice_or_idx, int)
+        flat_arrays.append(skipped[slice_or_idx])
+        continue
+
+      start, end = slice_or_idx
+      array = dtype_to_array[spec.dtype]
+      subarray = array[start:end]
+      if isinstance(array, tf.Tensor):
+        reshaped = tf.reshape(subarray, spec.shape)
+      else:
+        reshaped = np.reshape(subarray, spec.shape)
+      flat_arrays.append(reshaped)
+
+    return tree.unflatten_as(signature, flat_arrays)
+
+  return pack_args, unpack_args
+
+
+P = tp.ParamSpec('P')
+
+def packed_compile(
+    fn: tp.Callable[P, T],
+    signature: Signature,
+    **compile_kwargs,
+) -> tp.Callable[P, T]:
+  """Compiles a function with packed inputs.
+
+  Packing inputs can improve performance by reducing the number of tensors
+  that TF has to handle. The tensorboard trace view shows a lot of time spent
+  in `tf.constant` when there are many input tensors.
+  """
+  pack_args, unpack_args = packing_fns(signature)
+
+  @tf.function(**compile_kwargs)
+  def packed_fn(packed, skipped):
+    return fn(*unpack_args(packed, skipped))
+
+  def wrapped(*args):
+    packed, skipped = pack_args(*args)
+    return packed_fn(packed, skipped)
+
+  return wrapped

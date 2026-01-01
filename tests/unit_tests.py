@@ -23,6 +23,43 @@ def static_rnn(core, inputs, initial_state):
 def assert_tensors_close(t1, t2):
   np.testing.assert_allclose(t1.numpy(), t2.numpy())
 
+dtypes = [np.float32, np.int32, np.bool_, np.uint8]
+
+def random_spec() -> tf_utils.ArraySpec:
+  dtype = np.random.choice(dtypes)
+  ndims = np.random.randint(1, 4)
+  shape = tuple(np.random.randint(1, 5, size=ndims))
+  return tf_utils.ArraySpec(dtype=dtype, shape=shape)
+
+def random_signature(size: int) -> list[tf_utils.ArraySpec | None]:
+  signature = []
+  for _ in range(size):
+    if np.random.rand() < 0.2:
+      signature.append(None)
+      continue
+
+    signature.append(random_spec())
+
+  return tuple(signature)
+
+def random_array(spec: tf_utils.ArraySpec | None) -> np.ndarray:
+  if spec is None:
+    return [np.random.uniform(size=(2, 3))]
+
+  if np.issubdtype(spec.dtype, np.floating):
+    return np.random.uniform(size=spec.shape).astype(spec.dtype)
+  elif np.issubdtype(spec.dtype, np.integer):
+    return np.random.randint(
+        0, 100, size=spec.shape, dtype=spec.dtype)
+  elif spec.dtype == np.bool_:
+    return np.random.randint(
+        0, 2, size=spec.shape, dtype=np.int32).astype(bool)
+  else:
+    raise ValueError(f'Unsupported dtype: {spec.dtype}')
+
+def sample_input(signature: list[tf_utils.ArraySpec | None]) -> list[np.ndarray]:
+  return [random_array(spec) for spec in signature]
+
 class TFUtilsTest(unittest.TestCase):
   def test_dynamic_rnn(self):
 
@@ -71,6 +108,19 @@ class TFUtilsTest(unittest.TestCase):
     x = tf.random.uniform([4, 5, 6, 7])
     y = tf_utils.move_axis(x, 1, 3)
     self.assertEqual(y.shape, [4, 6, 7, 5])
+
+  def test_packing_fns(self):
+    for _ in range(10):
+      signature = random_signature(size=20)
+      inputs = sample_input(signature)
+
+      pack_fn, unpack_fn = tf_utils.packing_fns(signature)
+      packed = pack_fn(*inputs)
+      unpacked = unpack_fn(*packed)
+
+      tf.nest.map_structure(
+          np.testing.assert_array_equal,
+          inputs, unpacked, check_types=False)
 
 class UtilsTest(unittest.TestCase):
 
