@@ -18,6 +18,7 @@ TYPE_TO_ITEM: dict[type, ItemConstructor] = {
     str: ff.String,
     float: ff.Float,
     list[str]: ff.StringList,
+    tuple[int, ...]: ff.Sequence,
 }
 
 def maybe_undo_optional(t: type) -> type:
