@@ -136,9 +136,9 @@ def where(cond: tf.Tensor, x: tf.Tensor, y: tf.Tensor):
   return tf.where(cond, x, y)
 
 T = tp.TypeVar('T')
-# P = tp.ParamSpec('P')
+P = tp.ParamSpec('P')
 
-def run_on_cpu(fn: tp.Callable[..., T]) -> tp.Callable[..., T]:
+def run_on_cpu(fn: tp.Callable[P, T]) -> tp.Callable[P, T]:
   """Decorator to run a function on the CPU."""
   @functools.wraps(fn)
   def wrapped(*args, **kwargs):
@@ -263,8 +263,6 @@ def packing_fns(
 
   return pack_args, unpack_args
 
-
-P = tp.ParamSpec('P')
 
 def packed_compile(
     fn: tp.Callable[P, T],

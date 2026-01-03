@@ -1,7 +1,7 @@
 import contextlib
 import enum
+import functools
 import dataclasses
-import enum
 import logging
 import os
 import threading, queue
@@ -94,7 +94,7 @@ class BasicAgent:
     default_controller = self._embed_controller.dummy([batch_size])
     self._prev_controller = default_controller
 
-    def sample(
+    def base_sample(
         state_action: embed.StateAction,
         prev_state: policies.RecurrentState,
         needs_reset: tf.Tensor,
@@ -105,7 +105,7 @@ class BasicAgent:
     # Note that (compiled) multi_sample doesn't work with set_name_code
     # because the name code is baked into the tensorflow graph.
     # TODO: optimize with packed_compile
-    def multi_sample(
+    def base_multi_sample(
         states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
         prev_action: embed.Action,  # only for first step
         initial_state: policies.RecurrentState,
@@ -118,34 +118,58 @@ class BasicAgent:
             action=prev_action,
             name=self._name_code,
         )
-        next_action, hidden_state = sample(
+        next_action, hidden_state = base_sample(
             state_action, hidden_state, needs_reset)
         actions.append(next_action)
         prev_action = next_action.controller_state
 
       return actions, hidden_state
 
+    sample_1 = base_sample
+    multi_sample_1 = base_multi_sample
+
     if run_on_cpu:
       if jit_compile and tf.config.list_physical_devices('GPU'):
         raise UserWarning("jit compilation may ignore run_on_cpu")
-      sample = tf_utils.run_on_cpu(sample)
-      multi_sample = tf_utils.run_on_cpu(multi_sample)
+      sample_1 = tf_utils.run_on_cpu(base_sample)
+      multi_sample_1 = tf_utils.run_on_cpu(base_multi_sample)
 
     if compile:
-      compile_fn = tf.function(jit_compile=jit_compile, autograph=False)
-      multi_sample = compile_fn(multi_sample)
+      # compile_fn = tf.function(jit_compile=jit_compile, autograph=False)
+      # base_multi_sample = compile_fn(base_multi_sample)
 
       # Packing significantly speeds up single-step inference, particularly
       # when items are enabled.
-      sample = tf_utils.packed_compile(
-          sample,
+      sample_2 = tf_utils.packed_compile(
+          sample_1,
           self.sample_signature(),
           jit_compile=jit_compile,
           autograph=False,
       )
 
-    self._sample = sample
-    self._multi_sample = multi_sample
+      @functools.cache
+      def compile_multi_sample(num_steps: int):
+        return tf_utils.packed_compile(
+            multi_sample_1,
+            self.multi_sample_signature(num_steps),
+            jit_compile=jit_compile,
+            autograph=False,
+        )
+
+      def multi_sample_2(
+          states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
+          prev_action: embed.Action,  # only for first step
+          initial_state: policies.RecurrentState,
+      ) -> Tuple[list[SampleOutputs], policies.RecurrentState]:
+        compiled_fn = compile_multi_sample(len(states))
+        return compiled_fn(states, prev_action, initial_state)
+
+    else:
+      sample_2 = sample_1
+      multi_sample_2 = multi_sample_1
+
+    self._sample = sample_2
+    self._multi_sample = multi_sample_2
 
     self.hidden_state = self._policy.initial_state(batch_size)
 
@@ -167,6 +191,23 @@ class BasicAgent:
     )
 
     return (dummy_state_action, prev_state, needs_reset)
+
+  def multi_sample_signature(self, num_steps: int) -> tf_utils.Signature:
+    dummy_state = self._policy.embed_game.dummy([self._batch_size])
+    dummy_state_spec = utils.map_nt(
+        lambda x: tf_utils.ArraySpec(
+            shape=x.shape,
+            dtype=x.dtype,
+        ), dummy_state)
+
+    needs_reset_spec = tf_utils.ArraySpec(
+        shape=(self._batch_size,),
+        dtype=np.dtype('bool'),
+    )
+
+    states_spec = [(dummy_state_spec, needs_reset_spec)] * num_steps
+
+    return (states_spec, None, None)
 
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     if isinstance(name_code, int):
