@@ -16,12 +16,17 @@ CHECK_SAME_PARSE = flags.DEFINE_bool('check_same_parse', True, 'Check if the rep
 WORK_DIR = flags.DEFINE_string('work_dir', None, 'Optional working directory for temporary files.')
 IN_MEMORY = flags.DEFINE_bool('in_memory', True, 'Use in-memory temporary files for conversion.')
 LOG_INTERVAL = flags.DEFINE_integer('log_interval', 30, 'Interval in seconds to log progress during conversion.')
-CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file needs conversion before processing.')
-DOLPHIN_TIMEOUT = flags.DEFINE_integer('dolphin_timeout', 60, 'Dolphin timeout in seconds.')
+CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', True, 'Check if the file needs conversion before processing.')
+DOLPHIN_TIMEOUT = flags.DEFINE_integer(
+    'dolphin_timeout', 60, 'Dolphin timeout in seconds. If the upgrade process takes longer, it is considered a failure.')
 
-SKIP_EXISTING = flags.DEFINE_boolean('skip_existing', False, 'Whether to skip existing output archives.')
+SKIP_EXISTING = flags.DEFINE_boolean(
+    'skip_existing', True,
+    'Whether to skip existing output archives. Files that already exist in the '
+    'output archive will not be overwritten.')
 REMOVE_INPUT = flags.DEFINE_boolean('remove_input', False, 'Whether to remove the input file after conversion.')
 DEBUG = flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
+DRY_RUN = flags.DEFINE_boolean('dry_run', False, 'If true, do not perform any conversions, just log what would be done.')
 
 def process_single_archive(input_path, output_path, dolphin_config):
   """Process a single archive file."""
@@ -88,6 +93,10 @@ def main(_):
         continue
 
       print(f'Processing {zip_file} -> {output_file}')
+
+      if DRY_RUN.value:
+        continue
+
       results = process_single_archive(str(zip_file), str(output_file), dolphin_config)
 
       for result in results:
