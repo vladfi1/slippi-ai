@@ -665,12 +665,8 @@ def run(config: Config):
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
-  # The OpponentType enum sadly needs to be converted.
-  rl_config_jsonnable = dataclasses.asdict(config)
-  rl_config_jsonnable = tf.nest.map_structure(
-      lambda x: x.value if isinstance(x, enum.Enum) else x,
-      rl_config_jsonnable
-  )
+  # TODO: better versioning for the RL config
+  rl_config_dict = dataclasses.asdict(config)
 
   def save(step: int):
     # Note: this state is valid as an imitation state.
@@ -679,7 +675,7 @@ def run(config: Config):
         config=teacher_state['config'],
         name_map=teacher_state['name_map'],
         step=step,
-        rl_config=rl_config_jsonnable,
+        rl_config=rl_config_dict,
     )
     pickled_state = pickle.dumps(combined_state)
 
