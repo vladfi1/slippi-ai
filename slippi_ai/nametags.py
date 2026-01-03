@@ -14,11 +14,14 @@ def get_player(raw: str) -> Optional[str]:
   return None
 
 # Some player dumps have a lot of local games with no name or code.
-# For such players, we assume any game with that player's main is them.
+# For such players, we assume any game with that player's main is them,
+# at risk of false positives in exchange for more identified games.
 PLAYER_MAINS = {
     ('Solobattle', melee.Character.JIGGLYPUFF),
     ('Franz', melee.Character.DOC),
     ('CookBook', melee.Character.POPO),
+    ('Cody', melee.Character.FOX),
+    ('Hax', melee.Character.FOX),
 }
 
 def name_from_metadata(player_meta: dict, raw: Optional[str] = None) -> str:
