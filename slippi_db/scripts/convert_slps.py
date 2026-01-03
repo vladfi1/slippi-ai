@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Convert .slp files in a zip archive or directory to .slpp.gz format using the slp tool.
+"""Convert .slp files in a zip archive or directory to .slpz format using the slp tool.
 
 This script takes a .zip archive or directory containing .slp files and outputs a new .zip
-archive or directory with each .slp file converted to .slpp.gz format using the `slp` tool
-with gzip compression.
+archive or directory with each .slp file converted to .slpz format using the `slpz` tool.
+
+Typically, raw archives should be put into a directory `Raw/`, and the script would be run
+to convert them into `Slpz/` like so:
+```
+python slippi_db/scripts/convert_slps.py --input Raw/ --output Slpz/ [--threads N]
+```
+
+The `--remove_input` flag is useful to a) save space and b) easily examine which files
+failed to convert (they will remain in the input archive).
 
 Usage:
   Single archive: python slippi_db/scripts/convert_slps.py --input input.zip --output output.zip [--threads N]
@@ -16,7 +24,6 @@ import gzip
 import os
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -32,6 +39,10 @@ class OutputType(enum.Enum):
 FLAGS = flags.FLAGS
 flags.DEFINE_string('input', None, 'Input zip file or directory containing .slp files', required=True)
 flags.DEFINE_string('output', None, 'Output zip file or directory for converted files', required=True)
+flags.DEFINE_boolean('process_existing_archives', False,
+                     'Whether to re-process input archives with corresponding output archives.'
+                     ' Existing files within the output archives will not be overwritten.'
+                     ' Useful for re-processing failed conversions.')
 flags.DEFINE_integer('threads', 1, 'Number of threads to use')
 flags.DEFINE_integer('limit', None, 'Limit number of files to process (for testing)')
 flags.DEFINE_boolean('remove_input', False, 'Whether to remove successful files from input archive after conversion')
@@ -312,9 +323,12 @@ def main(_):
 
       # Create output path maintaining directory structure
       output_file = output_path / rel_path
-      output_file.parent.mkdir(parents=True, exist_ok=True)
 
-      print(f"\nProcessing {zip_file} -> {output_file}")
+      if output_file.exists() and not FLAGS.process_existing_archives:
+        print(f"Skipping existing output archive: {output_file}")
+        continue
+
+      output_file.parent.mkdir(parents=True, exist_ok=True)
 
       try:
         convert_zip_archive(
