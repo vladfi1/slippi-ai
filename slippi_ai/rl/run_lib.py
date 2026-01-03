@@ -95,16 +95,18 @@ class AgentConfig:
     allowed_chars = eval_lib.allowed_characters(state['config'])
 
     if allowed_chars is None:  # None means all are allowed
+      if self.char is None:
+        raise ValueError('Character must be specified if teacher allows all.')
       return
 
     # Default to all characters used during imitation
-    if not self.char:
+    if self.char is None:
       self.char = allowed_chars
       logging.info(f'Training on {[c.name for c in self.char]}')
-
-    for char in self.char:
-      if char not in allowed_chars:
-        raise ValueError(f'Character {char} not in {allowed_chars}')
+    else:
+      for char in self.char:
+        if char not in allowed_chars:
+          raise ValueError(f'Character {char} not in {allowed_chars}')
 
 class OpponentType(enum.Enum):
   CPU = 'cpu'
@@ -326,6 +328,7 @@ def run(config: Config):
           f'{config.restore} (requested) != {previous_config.restore} (checkpoint)')
 
     previous_teacher = previous_config.teacher
+    assert previous_teacher is not None
 
     if config.teacher and config.teacher != previous_teacher:
       assert restore_from_checkpoint
@@ -342,7 +345,7 @@ def run(config: Config):
     if rl_delay != teacher_delay:
       raise ValueError(
           'Teacher delay does not match RL state delay: '
-          f'{teacher_delay} != {rl_delay}. Using teacher delay.')
+          f'{teacher_delay} != {rl_delay}.')
 
     step = rl_state['step']
   elif config.teacher:
