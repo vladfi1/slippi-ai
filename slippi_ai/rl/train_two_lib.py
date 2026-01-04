@@ -138,8 +138,9 @@ class AgentManager:
 
     # TODO: check if teacher is itself an RL-trained model
     teacher_state = saving.load_state_from_disk(agent_config.teacher)
+    teacher_config_dict = saving.upgrade_config(teacher_state['config'])
     teacher_config = flag_utils.dataclass_from_dict(
-        train_lib.Config, teacher_state['config'])
+        train_lib.Config, teacher_config_dict)
     self.character = get_pretraining_character(teacher_config)
 
     if self.character is None:
@@ -151,7 +152,7 @@ class AgentManager:
       self.step = 0
 
     self.to_save = {
-        'config': teacher_state['config'],
+        'config': teacher_config_dict,
         'name_map': teacher_state['name_map'],
         AGENT_CONFIG_KEY: dataclasses.asdict(agent_config),
     }
@@ -162,17 +163,7 @@ class AgentManager:
       teacher = saving.load_policy_from_state(teacher_state)
     self.policy = saving.load_policy_from_state(rl_state)
 
-    # TODO: put this code into saving.py or train_lib.py
-    vf_config = teacher_config.value_function
-    value_function = None
-    if vf_config.train_separate_network:
-      value_net_config = teacher_config.network
-      if vf_config.separate_network_config:
-        value_net_config = vf_config.network
-      value_function = vf_lib.ValueFunction(
-          network_config=value_net_config,
-          embed_state_action=self.policy.embed_state_action,
-      )
+    value_function = train_lib.value_function_from_config(teacher_config)
 
     self.learner = learner_lib.Learner(
         config=learner_config,
