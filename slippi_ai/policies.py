@@ -11,7 +11,7 @@ from slippi_ai.controller_heads import (
     SampleOutputs,
 )
 from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import data, networks, embed, types, tf_utils
+from slippi_ai import data, networks, embed, types, tf_utils, utils
 from slippi_ai.value_function import ValueOutputs
 
 Outputs = tf_utils.Outputs
@@ -35,22 +35,14 @@ class Policy(snt.Module):
 
   def __init__(
       self,
-      network: networks.Network,
+      network: networks.StateActionNetwork,
       controller_head: ControllerHead,
-      embed_game: embed.StructEmbedding[data.Game],
-      num_names: int,
       train_value_head: bool = True,
       delay: int = 0,
   ):
     super().__init__(name='Policy')
     self.network = network
     self.controller_head = controller_head
-    self.embed_game = embed_game
-    self.embed_state_action = embed.get_state_action_embedding(
-        embed_game=embed_game,
-        embed_action=self.controller_embedding,
-        num_names=num_names,
-    )
 
     self.initial_state = self.network.initial_state
     self.train_value_head = train_value_head
@@ -67,7 +59,7 @@ class Policy(snt.Module):
   def initialize_variables(self):
     T = 2 + self.delay
     B = 1
-    dummy_state_action = self.embed_state_action.dummy([T, B])
+    dummy_state_action = self.network.dummy((T, B))
     dummy_reward = tf.zeros([T-1, B], tf.float32)
     is_resetting = tf.fill([T, B], False)
     dummy_frames = data.Frames(dummy_state_action, is_resetting, dummy_reward)
@@ -79,7 +71,7 @@ class Policy(snt.Module):
   def _value_outputs(
       self,
       outputs,  # t = [0, T-1]
-      last_input: tf.Tensor,  # t = T
+      last_input: data.StateAction,  # t = T
       is_resetting: tf.Tensor,  # t = [0, T]
       final_state: RecurrentState,  # t = T - 1
       rewards: tf.Tensor,  # t = [0, T-1]
@@ -90,7 +82,6 @@ class Policy(snt.Module):
         last_input, is_resetting[-1], final_state)
     last_value = tf.squeeze(self.value_head(last_output), -1)
 
-    #
     discounts = tf.where(is_resetting[1:], 0.0, tf.cast(discount, tf.float32))
     value_targets = discounted_returns(
         rewards=rewards,
@@ -134,8 +125,8 @@ class Policy(snt.Module):
       value_cost: Weighting of value function loss.
       discount: Per-frame discount factor for returns.
     """
-    all_inputs = self.embed_state_action(frames.state_action)
-    inputs, last_input = all_inputs[:-1], all_inputs[-1]
+    inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
+    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
@@ -225,8 +216,8 @@ class Policy(snt.Module):
       initial_state: RecurrentState,
       discount: float = 0.99,
   ):
-    all_inputs = self.embed_state_action(frames.state_action)
-    inputs, last_input = all_inputs[:-1], all_inputs[-1]
+    inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
+    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
@@ -268,14 +259,12 @@ class Policy(snt.Module):
       is_resetting: tp.Optional[tf.Tensor] = None,
       **kwargs,
   ) -> tp.Tuple[SampleOutputs, RecurrentState]:
-    input = self.embed_state_action(state_action)
-
     if is_resetting is None:
-      batch_size = input.shape[0]
+      batch_size = state_action.state.stage.shape[0]
       is_resetting = tf.fill([batch_size], False)
 
     output, final_state = self.network.step_with_reset(
-        input, is_resetting, initial_state)
+        state_action, is_resetting, initial_state)
 
     prev_action = state_action.action
     next_action = self.controller_head.sample(
@@ -292,7 +281,7 @@ class Policy(snt.Module):
   ) -> Tuple[list[SampleOutputs], RecurrentState]:
     actions = []
     hidden_state = initial_state
-    for game in range(states):
+    for game in states:
       state_action = embed.StateAction(
           state=game,
           action=prev_action,
@@ -301,7 +290,7 @@ class Policy(snt.Module):
       next_action, hidden_state = self.sample(
           state_action, hidden_state, **kwargs)
       actions.append(next_action)
-      prev_action = next_action
+      prev_action = next_action.controller_state
 
     return actions, hidden_state
 
