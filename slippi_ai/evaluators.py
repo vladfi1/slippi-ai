@@ -263,7 +263,7 @@ class RolloutWorker:
       states = utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
           # TODO: Let the learner call from_state on game
-          states=agent._policy.embed_game.from_state(states),
+          states=agent._policy.network.encode_game(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
               agent.name_code,

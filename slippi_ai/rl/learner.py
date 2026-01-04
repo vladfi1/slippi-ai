@@ -501,7 +501,7 @@ class Learner:
         lambda var, val: var.assign(val),
         tf_state, state)
 
-    # Unfortunately the optimizer state includes the learning rate, so it will
+    # Unfortunately the tensorflow state includes the learning rate, so it will
     # be overridden by the imitation learning rate.
     self.learning_rate.assign(self._config.learning_rate)
 

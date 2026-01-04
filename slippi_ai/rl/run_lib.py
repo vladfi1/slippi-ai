@@ -26,7 +26,6 @@ from slippi_ai import (
 )
 
 from slippi_ai.types import Game
-from slippi_ai import value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -274,12 +273,12 @@ def dummy_trajectory(
     unroll_length: int,
     batch_size: int,
 ) -> evaluators.Trajectory:
-  embedders = dict(policy.embed_state_action.embedding)
   embed_controller = policy.controller_embedding
-  shape = [unroll_length + 1, batch_size]
+  shape = (unroll_length + 1, batch_size)
+  dummy_state_action = policy.network.dummy(shape)
   return evaluators.Trajectory(
-      states=embedders['state'].dummy(shape),
-      name=embedders['name'].dummy(shape),
+      states=dummy_state_action.state,
+      name=dummy_state_action.name,
       actions=eval_lib.dummy_sample_outputs(embed_controller, shape),
       rewards=np.full([unroll_length, batch_size], 0, dtype=np.float32),
       is_resetting=np.full(shape, False),
@@ -369,17 +368,7 @@ def run(config: Config):
   pretraining_config = flag_utils.dataclass_from_dict(
       train_lib.Config, saving.upgrade_config(teacher_state['config']))
 
-  # TODO: put this code into saving.py or train_lib.py
-  vf_config = pretraining_config.value_function
-  value_function = None
-  if vf_config.train_separate_network:
-    value_net_config = pretraining_config.network
-    if vf_config.separate_network_config:
-      value_net_config = vf_config.network
-    value_function = vf_lib.ValueFunction(
-        network_config=value_net_config,
-        embed_state_action=policy.embed_state_action,
-    )
+  value_function = train_lib.value_function_from_config(pretraining_config)
 
   learner = learner_lib.Learner(
       config=config.learner,

@@ -98,6 +98,7 @@ class BasicAgent:
         prev_state: policies.RecurrentState,
         needs_reset: tf.Tensor,
     ) -> tuple[SampleOutputs, policies.RecurrentState]:
+      # Note: sample outputs are discretized by the controller_head.
       return policy.sample(
           state_action, prev_state, needs_reset, **sample_kwargs)
 
@@ -173,15 +174,15 @@ class BasicAgent:
     self.hidden_state = self._policy.initial_state(batch_size)
 
   def sample_signature(self) -> tf_utils.Signature:
-    dummy_state_action = self._policy.embed_state_action.dummy([self._batch_size])
-    dummy_state_action = utils.map_nt(
+    dummy_state_action = self._policy.network.dummy((self._batch_size,))
+    state_action_spec = utils.map_nt(
         lambda x: tf_utils.ArraySpec(
             shape=x.shape,
             dtype=x.dtype,
         ), dummy_state_action)
 
     # Don't pack action and prev_state as they are already Tensors.
-    dummy_state_action = dummy_state_action._replace(action=None)
+    state_action_spec = state_action_spec._replace(action=None)
     prev_state = None
 
     needs_reset = tf_utils.ArraySpec(
@@ -189,22 +190,22 @@ class BasicAgent:
         dtype=np.dtype('bool'),
     )
 
-    return (dummy_state_action, prev_state, needs_reset)
+    return (state_action_spec, prev_state, needs_reset)
 
   def multi_sample_signature(self, num_steps: int) -> tf_utils.Signature:
-    dummy_state = self._policy.embed_game.dummy([self._batch_size])
-    dummy_state_spec = utils.map_nt(
+    dummy_state_action = self._policy.network.dummy((self._batch_size,))
+    state_spec = utils.map_nt(
         lambda x: tf_utils.ArraySpec(
             shape=x.shape,
             dtype=x.dtype,
-        ), dummy_state)
+        ), dummy_state_action.state)
 
     needs_reset_spec = tf_utils.ArraySpec(
         shape=(self._batch_size,),
         dtype=np.dtype('bool'),
     )
 
-    states_spec = [(dummy_state_spec, needs_reset_spec)] * num_steps
+    states_spec = [(state_spec, needs_reset_spec)] * num_steps
 
     return (states_spec, None, None)
 
@@ -217,7 +218,7 @@ class BasicAgent:
 
   def warmup(self):
     """Warm up the agent by running a dummy step."""
-    game = self._policy.embed_game.dummy([self._batch_size])
+    game = self._policy.network.dummy((self._batch_size,)).state
     needs_reset = np.full([self._batch_size], False)
     self.step(game, needs_reset)
 
@@ -228,12 +229,12 @@ class BasicAgent:
   ) -> SampleOutputs:
     """Doesn't take into account delay."""
     state_action = embed.StateAction(
-        state=self._policy.embed_game.from_state(game),
+        state=self._policy.network.encode_game(game),
         action=self._prev_controller,
         name=self._name_code,
     )
 
-    # Keep hidden state and _prev_controller on device.
+    # Keep hidden state and prev_controller on device.
     sample_outputs: SampleOutputs
     sample_outputs, self.hidden_state = self._sample(
         state_action, self.hidden_state, needs_reset)
@@ -246,7 +247,7 @@ class BasicAgent:
       states: list[tuple[embed.Game, np.ndarray]],
   ) -> list[SampleOutputs]:
     states = [
-        (self._policy.embed_game.from_state(game), needs_reset)
+        (self._policy.network.encode_game(game), needs_reset)
         for game, needs_reset in states
     ]
 
