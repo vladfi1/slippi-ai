@@ -5,7 +5,7 @@ import sonnet as snt
 
 from melee.enums import Action
 
-from slippi_ai import data, embed, networks, tf_utils, types
+from slippi_ai import data, embed, networks, tf_utils, types, utils
 from slippi_ai.rl_lib import discounted_returns
 from slippi_ai.networks import RecurrentState
 
@@ -27,11 +27,15 @@ class ValueFunction(snt.Module):
   def __init__(
       self,
       network_config: dict,
-      embed_state_action: embed.StructEmbedding[embed.StateAction],
+      num_names: int,
+      embed_config: embed.EmbedConfig,
   ):
     super().__init__(name='ValueFunction')
-    self.network = networks.construct_network(**network_config)
-    self.embed_state_action = embed_state_action
+    self.network = networks.build_embed_network(
+          embed_config=embed_config,
+          num_names=num_names,
+          network_config=network_config,
+    )
     self.value_head = snt.Linear(1, name='value_head')
     self.initial_state = self.network.initial_state
 
@@ -54,8 +58,8 @@ class ValueFunction(snt.Module):
     """
     rewards = frames.reward
 
-    all_inputs = self.embed_state_action(frames.state_action)
-    inputs, last_input = all_inputs[:-1], all_inputs[-1]
+    inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
+    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
@@ -115,7 +119,7 @@ class FakeValueFunction(snt.Module):
     del batch_size
     return ()
 
-  def loss(self, frames: data.Frames, initial_state, discount):
+  def loss(self, frames: data.Frames, initial_state, discount, **_):
     del discount
 
     outputs = ValueOutputs(

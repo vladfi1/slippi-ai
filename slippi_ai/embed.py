@@ -8,7 +8,7 @@ import enum
 import math
 import typing as tp
 from typing import (
-    Any, Callable, Dict, Generic, Iterator, Mapping, Sequence,
+    Any, Callable, Generic, Iterator, Mapping, Sequence,
     Tuple, Type, TypeVar, Union
 )
 
@@ -63,7 +63,7 @@ class Embedding(Generic[In, Out], abc.ABC, snt.Module):
     return np.zeros(shape, self.dtype)
 
   def dummy_embedding(self, shape: Sequence[int] = ()):
-    return np.zeros(shape + [self.size], np.float32)
+    return np.zeros(list(shape) + [self.size], np.float32)
 
   def sample(self, embedded: tf.Tensor, **kwargs) -> Out:
     raise NotImplementedError
@@ -627,13 +627,13 @@ class DiscreteEmbedding(OneHotEmbedding):
   #   discrete = super().sample(embedded, **kwargs)
   #   return tf.cast(discrete, tf.float32) / self.n
 
-  def from_state(self, a: Union[np.float32, np.ndarray]):
-    assert a.dtype == np.float32
-    return (a * self.n + 0.5).astype(self.dtype)
+  def from_state(self, state: Union[np.float32, np.ndarray]):
+    assert state.dtype == np.float32
+    return (state * self.n + 0.5).astype(self.dtype)
 
-  def decode(self, a: Union[np.uint8, np.ndarray]) -> Union[np.float32, np.ndarray]:
-    assert a.dtype == self.dtype
-    return (a / self.n).astype(np.float32)
+  def decode(self, out: Union[np.uint8, np.ndarray]) -> Union[np.float32, np.ndarray]:
+    assert out.dtype == self.dtype
+    return (out / self.n).astype(np.float32)
 
 NATIVE_AXIS_SPACING = 160
 NATIVE_SHOULDER_SPACING = 140
@@ -672,6 +672,12 @@ class ControllerConfig:
   axis_spacing: int = 16
   shoulder_spacing: int = 4
 
+  def make_embedding(self):
+    return get_controller_embedding(
+        axis_spacing=self.axis_spacing,
+        shoulder_spacing=self.shoulder_spacing,
+    )
+
 @dataclasses.dataclass
 class EmbedConfig:
   player: PlayerConfig = utils.field(PlayerConfig)
@@ -679,6 +685,14 @@ class EmbedConfig:
   with_randall: bool = True
   with_fod: bool = True
   items: ItemsConfig = utils.field(ItemsConfig)
+
+  def make_game_embedding(self):
+    return make_game_embedding(
+        player_config=dataclasses.asdict(self.player),
+        with_randall=self.with_randall,
+        with_fod=self.with_fod,
+        items_config=self.items,
+    )
 
 NAME_DTYPE = np.int32
 
