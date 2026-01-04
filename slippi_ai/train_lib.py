@@ -77,8 +77,7 @@ class TrainManager:
         raise ValueError("Unexpected mid-episode reset.")
 
       frames = frames._replace(
-          state_action=self.learner.policy.embed_state_action.from_state(
-              frames.state_action))
+          state_action=self.learner.policy.network.encode(frames.state_action))
       frames = utils.map_nt(tf.convert_to_tensor, frames)
       data = (batch, epoch, frames)
 
@@ -203,6 +202,23 @@ def create_name_map(
 
   return name_map
 
+def value_function_from_config(
+    config: Config
+) -> tp.Optional[vf_lib.ValueFunction]:
+  vf_config = config.value_function
+  if vf_config.train_separate_network:
+    network_config = config.network
+    if vf_config.separate_network_config:
+      network_config = vf_config.network
+
+    return vf_lib.ValueFunction(
+        network_config=network_config,
+        num_names=config.max_names,
+        embed_config=config.embed,
+    )
+  else:
+    return None
+
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
     _train(config, exit_stack)
@@ -264,16 +280,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       config.runtime.eval_at_start = True
 
   policy = saving.policy_from_config(dataclasses.asdict(config))
-
-  value_function = None
-  if config.value_function.train_separate_network:
-    value_net_config = config.network
-    if config.value_function.separate_network_config:
-      value_net_config = config.value_function.network
-    value_function = vf_lib.ValueFunction(
-        network_config=value_net_config,
-        embed_state_action=policy.embed_state_action,
-    )
+  value_function = value_function_from_config(config)
 
   learner_kwargs = dataclasses.asdict(config.learner)
   learning_rate = tf.Variable(

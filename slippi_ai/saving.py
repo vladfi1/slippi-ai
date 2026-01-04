@@ -84,43 +84,25 @@ def upgrade_config(config: dict):
   assert config['version'] == VERSION
   return config
 
-
-def build_policy(
-  controller_head_config: dict,
-  network_config: dict,
-  num_names: int,
-  embed_controller: embed.Embedding,
-  embed_game: embed.Embedding,
-  **policy_kwargs,
-) -> policies.Policy:
-  controller_head_config = dict(
-      controller_head_config,
-      embed_controller=embed_controller)
-
-  return policies.Policy(
-      networks.construct_network(**network_config),
-      controller_heads.construct(**controller_head_config),
-      embed_game=embed_game,
-      num_names=num_names,
-      **policy_kwargs,
-  )
-
 def policy_from_config(config: dict) -> policies.Policy:
   # TODO: Take config dataclasses instead of dictionaries
   config = upgrade_config(config)
 
-  return build_policy(
-      controller_head_config=config['controller_head'],
-      network_config=config['network'],
-      num_names=config['max_names'],
-      embed_controller=embed.get_controller_embedding(
-          **config['embed']['controller']),
-      embed_game=embed.make_game_embedding(
-          player_config=config['embed']['player'],
-          with_randall=config['embed']['with_randall'],
-          with_fod=config['embed']['with_fod'],
-          items_config=dataclass_from_dict(
-              embed.ItemsConfig, config['embed']['items']),
+  embed_config = dataclass_from_dict(embed.EmbedConfig, config['embed'])
+
+  # Note: the controller embedding is constructed twice, once for the policy
+  # and once for the controller head. The policy uses it to embed the previous
+  # action as input, while the controller head uses it to produce the next
+  # action.
+  return policies.Policy(
+      network=networks.build_embed_network(
+          embed_config=embed_config,
+          num_names=config['max_names'],
+          network_config=config['network'],
+      ),
+      controller_head=controller_heads.construct(
+          embed_controller=embed_config.controller.make_embedding(),
+          **config['controller_head'],
       ),
       **config['policy'],
   )

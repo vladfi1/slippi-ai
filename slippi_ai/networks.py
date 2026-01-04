@@ -7,6 +7,9 @@ import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai import tf_utils
+from slippi_ai import embed as embed_lib
+from slippi_ai.data import StateAction
+from slippi_ai.types import Game
 
 RecurrentState = tree.StructureKV[str, tf.Tensor]
 Inputs = tf.Tensor
@@ -450,3 +453,146 @@ def construct_network(name, **config):
 def construct_network2(network_config: dict, module_name: str):
   name = network_config['name']
   return CONSTRUCTORS[name](name=module_name, **network_config[name])
+
+
+class StateActionNetwork(abc.ABC, snt.Module):
+  """Like a network, but takes StateAction as input."""
+
+  @abc.abstractmethod
+  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+    """Returns a dummy input of the given shape."""
+    # TODO: this shouldn't be specific to any particular Network
+
+  @abc.abstractmethod
+  def encode(self, state_action: StateAction) -> StateAction:
+    """Encodes the state and action into a form suitable for the network."""
+
+  @abc.abstractmethod
+  def encode_game(self, game: Game) -> Game:
+    """Like encode but only the gamestate.
+
+    Useful for agents who who already have encoded actions.
+    Assumes that the controller_head's encoding matches that of the network.
+    """
+
+
+  @abc.abstractmethod
+  def initial_state(self, batch_size: int) -> RecurrentState:
+    pass
+
+  @abc.abstractmethod
+  def step(
+      self,
+      state_action: StateAction,
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    pass
+
+  def step_with_reset(
+      self,
+      state_action: StateAction,
+      reset: tf.Tensor,
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    batch_size = reset.shape[0]
+    initial_state = tf.nest.map_structure(
+        lambda x, y: tf_utils.where(reset, x, y),
+        self.initial_state(batch_size), prev_state)
+    return self.step(state_action, initial_state)
+
+  def _step_with_reset(
+      self,
+      inputs: tuple[StateAction, tf.Tensor],
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    """Used for unroll/scan."""
+    state_action, reset = inputs
+    return self.step_with_reset(state_action, reset, prev_state)
+
+  def unroll(
+      self,
+      state_action: StateAction,
+      reset: tf.Tensor,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    return tf_utils.dynamic_rnn(
+        self._step_with_reset, (state_action, reset), initial_state)
+
+  def scan(
+      self,
+      state_action: StateAction,
+      reset: tf.Tensor,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    return tf_utils.scan_rnn(
+        self._step_with_reset, (state_action, reset), initial_state)
+
+
+class SimpleEmbedNetwork(StateActionNetwork):
+  """Embeds the state and action using provided embedding module."""
+
+  def __init__(
+      self,
+      embed_game: embed_lib.Embedding[Game, Game],
+      embed_state_action: embed_lib.Embedding[StateAction, StateAction],
+      network: Network,
+      name: Optional[str] = None,
+  ):
+    super().__init__(name=name or network.name)
+    self._embed_game = embed_game
+    self._embed_state_action = embed_state_action
+    self._network = network
+
+  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+    return self._embed_state_action.dummy(shape)
+
+  def initial_state(self, batch_size: int) -> RecurrentState:
+    return self._network.initial_state(batch_size)
+
+  def encode(self, state_action: StateAction) -> StateAction:
+    return self._embed_state_action.from_state(state_action)
+
+  def encode_game(self, game: Game) -> Game:
+    return self._embed_game.from_state(game)
+
+  def step(
+      self,
+      state_action: StateAction,
+      prev_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    embedded = self._embed_state_action(state_action)
+    return self._network.step(embedded, prev_state)
+
+  def unroll(
+      self,
+      state_action: StateAction,
+      reset: tf.Tensor,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    embedded = self._embed_state_action(state_action)
+    return self._network.unroll(embedded, reset, initial_state)
+
+  def scan(
+      self,
+      state_action: StateAction,
+      reset: tf.Tensor,
+      initial_state: RecurrentState,
+  ) -> Tuple[tf.Tensor, RecurrentState]:
+    embedded = self._embed_state_action(state_action)
+    return self._network.scan(embedded, reset, initial_state)
+
+def build_embed_network(
+    embed_config: embed_lib.EmbedConfig,
+    num_names: int,
+    network_config: dict,
+) -> StateActionNetwork:
+  embed_game = embed_config.make_game_embedding()
+  return SimpleEmbedNetwork(
+      embed_game=embed_game,
+      embed_state_action=embed_lib.get_state_action_embedding(
+          embed_game=embed_game,
+          embed_action=embed_config.controller.make_embedding(),
+          num_names=num_names,
+      ),
+      network=construct_network(**network_config),
+  )

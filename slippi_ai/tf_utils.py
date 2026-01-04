@@ -36,9 +36,10 @@ def to_numpy(x) -> np.ndarray:
     return x.numpy()
   return x
 
-Inputs = tree.Structure[tf.Tensor]
-Outputs = tree.Structure[tf.Tensor]
-RecurrentState = tree.Structure[tf.Tensor]
+TensorNest = tree.Structure[tf.Tensor]
+Inputs = tp.TypeVar('Inputs', bound=TensorNest)
+Outputs = tp.TypeVar('Outputs', bound=TensorNest)
+RecurrentState = tp.TypeVar('RecurrentState', bound=TensorNest)
 
 def dynamic_rnn(
     core: tp.Callable[[Inputs, RecurrentState], tp.Tuple[Outputs, RecurrentState]],
