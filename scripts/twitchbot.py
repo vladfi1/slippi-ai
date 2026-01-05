@@ -68,9 +68,10 @@ MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concur
 agent_flags = eval_lib.AGENT_FLAGS.copy()
 agent_flags.update(
     async_inference=ff.Boolean(True),
-    jit_compile=ff.Boolean(False),
+    run_on_cpu=ff.Boolean(False),
 )
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
+
 
 BOT = flags.DEFINE_string('bot', None, 'Path to first bot agent.')
 BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
@@ -167,7 +168,6 @@ class SingleAgent(AgentConfig):
         port=port,
         opponent_port=opponent_port,
         console_delay=console_delay,
-        run_on_cpu=True,
         state=self.state,
         **self.agent_kwargs,
     )
@@ -224,7 +224,6 @@ class AutoAgent(AgentConfig):
         opponent_port=opponent_port,
         controller=controller,
         console_delay=console_delay,
-        run_on_cpu=True,
         **self.agent_kwargs,
     )
 
@@ -236,9 +235,15 @@ class BotSession:
       dolphin_config: dolphin_lib.DolphinConfig,
       agent_configs: dict[int, AgentConfig],
       extra_dolphin_kwargs: dict = {},
+      run_on_cpu: bool = False,
   ):
-    eval_lib.disable_gpus()
     logging.basicConfig(level=logging.INFO)
+
+    if run_on_cpu:
+      eval_lib.disable_gpus()
+    else:
+      set_memory_growth()
+
     self.dolphin_config = dolphin_config
     self.stop_requested = threading.Event()
 
@@ -295,7 +300,8 @@ class BotSession:
         is_alive=self._thread.is_alive(),
     )
 
-RemoteBotSession = ray.remote(BotSession)
+RemoteBotSession = ray.remote(num_gpus=0)(BotSession)
+RemoteGpuBotSession = ray.remote(num_gpus=0.1)(BotSession)
 
 def get_ports(gamestate: melee.GameState, display_name: str):
   name_to_port = {
@@ -318,8 +324,13 @@ class Session:
       agent_config: AgentConfig,
       extra_dolphin_kwargs: dict = {},
       stages: Optional[list[melee.Stage]] = None,
+      run_on_cpu: bool = False,
   ):
-    eval_lib.disable_gpus()
+    if run_on_cpu:
+      eval_lib.disable_gpus()
+    else:
+      set_memory_growth()
+
     self.dolphin_config = dolphin_config
     self.agent_config = agent_config
     self.stop_requested = threading.Event()
@@ -401,7 +412,8 @@ class Session:
     self.stop_requested.set()
     self._thread.join()
 
-RemoteSession = ray.remote(Session)
+RemoteSession = ray.remote(num_gpus=0)(Session)
+RemoteGpuSession = ray.remote(num_gpus=0.1)(Session)
 
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
@@ -503,6 +515,13 @@ class Bot(commands.Bot):
 
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
+    self.run_on_cpu = agent_kwargs['run_on_cpu']
+
+    if self.run_on_cpu:
+      eval_lib.disable_gpus()
+    else:
+      set_memory_growth()
+
     self._max_sessions = max_sessions
     self._menu_timeout = menu_timeout
     self._stream = stream
@@ -888,11 +907,14 @@ class Bot(commands.Bot):
 
     config.save_replays = save_replays
 
-    return RemoteSession.remote(
+    session_class = RemoteSession if self.run_on_cpu else RemoteGpuSession
+
+    return session_class.remote(
         config,
         agent_config,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
         stages=stages,
+        run_on_cpu=self.run_on_cpu,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
@@ -908,9 +930,12 @@ class Bot(commands.Bot):
       # TODO: don't hardcode this
       extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
 
-    return RemoteBotSession.remote(
+    session_class = RemoteBotSession if self.run_on_cpu else RemoteGpuBotSession
+
+    return session_class.remote(
         config, self._bot_configs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
+        run_on_cpu=self.run_on_cpu,
     )
 
   async def _maybe_start_bot_session(self) -> bool:
@@ -1103,9 +1128,19 @@ class Bot(commands.Bot):
       self._stop_bot_session()
       self._do_chores.stop()
 
-def main(_):
-  eval_lib.disable_gpus()
+def set_memory_growth():
+  """Set memory growth for all available GPUs."""
+  import tensorflow as tf
 
+  gpus = tf.config.experimental.list_physical_devices('GPU')
+
+  for gpu in gpus:
+    try:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+      logging.warning(f'Could not set memory growth for GPU {gpu}: {e}')
+
+def main(_):
   agent_kwargs = AGENT.value
   if not agent_kwargs['path']:
     raise ValueError('Must provide agent path.')
