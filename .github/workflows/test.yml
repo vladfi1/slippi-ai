@@ -55,7 +55,7 @@ jobs:
       run: ./tests/train_rl.sh --config.override_delay=3
 
     - name: Test RL with Fake Data + Restore
-      run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo
+      run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo --config.agent.char=FOX
 
     - name: Test train_two with Fake Data
       run: ./tests/train_two.sh

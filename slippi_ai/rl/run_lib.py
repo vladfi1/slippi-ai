@@ -215,8 +215,6 @@ class LearnerManager:
     else:
       trajectory = trajectories[self._port]
 
-
-
     return trajectory, timings
 
   def unroll(self):
@@ -300,6 +298,9 @@ def run(config: Config):
     expt_dir = os.path.join(config.runtime.expt_root, tag)
     os.makedirs(expt_dir, exist_ok=True)
   logging.info('experiment directory: %s', expt_dir)
+
+  if config.agent.path is not None:
+    raise ValueError('Main agent path is not used, use `restore` instead')
 
   # Restore from existing save file if it exists.
   restore_path = None
@@ -402,9 +403,6 @@ def run(config: Config):
     opponent_players = [dolphin_lib.CPU() for _ in range(batch_size)]
   else:
     opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
-
-  if config.agent.path is not None:
-    raise ValueError('Main agent path is not used, use `restore` instead')
 
   main_agent_kwargs = config.agent.get_kwargs()
   config.agent.check_allowed_chars(rl_state)

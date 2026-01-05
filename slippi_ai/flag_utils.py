@@ -17,6 +17,8 @@ TYPE_TO_ITEM: dict[type, ItemConstructor] = {
     int: ff.Integer,
     str: ff.String,
     float: ff.Float,
+
+    # TODO: decide whether to handle these here or in handle_list
     list[str]: ff.StringList,
     tuple[int, ...]: ff.Sequence,
 }
