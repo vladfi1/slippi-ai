@@ -62,6 +62,9 @@ INITIAL_FRAME = -123
 class ConnectFailed(Exception):
   """Raised when we fail to connect to the console."""
 
+class WrongCharacterSelected(Exception):
+  """Raised on the initial frame if the wrong character is selected."""
+
 class Dolphin:
 
   def __init__(
@@ -211,7 +214,7 @@ class Dolphin:
         desired_character = player.character
         actual_character = gs_player.character
         if actual_character != desired_character:
-          raise ValueError(
+          raise WrongCharacterSelected(
             f'Port {controller.port}: expected character '
             f'{desired_character.name}, got {actual_character.name}'
           )

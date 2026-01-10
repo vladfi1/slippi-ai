@@ -164,6 +164,7 @@ class SafeEnvironment:
         on_exception={
             EnetDisconnected: self._reset_env,
             TimeoutError: self._reset_env,
+            dolphin.WrongCharacterSelected: self._reset_env,
         },
         num_retries=self._num_retries)
 
