@@ -1,6 +1,7 @@
 import enum
 import dataclasses
 import typing as tp
+import types
 
 from absl import flags
 from absl import logging
@@ -12,7 +13,9 @@ T = tp.TypeVar('T')
 Item = tp.Union[ff.Item, MultiItem]
 ItemConstructor = tp.Callable[[tp.Any], Item]
 
-TYPE_TO_ITEM: dict[type, ItemConstructor] = {
+Type = type | types.GenericAlias
+
+TYPE_TO_ITEM: dict[Type, ItemConstructor] = {
     bool: ff.Boolean,
     int: ff.Integer,
     str: ff.String,
@@ -23,7 +26,7 @@ TYPE_TO_ITEM: dict[type, ItemConstructor] = {
     tuple[int, ...]: ff.Sequence,
 }
 
-def maybe_undo_optional(t: type) -> type:
+def maybe_undo_optional(t: Type) -> Type:
   if (
       hasattr(t, '__origin__') and
       t.__origin__ is tp.Union and
@@ -33,7 +36,7 @@ def maybe_undo_optional(t: type) -> type:
     return t.__args__[0]
   return t
 
-def undo_list(t: type) -> tp.Optional[type]:
+def undo_list(t: Type) -> tp.Optional[Type]:
   if (
       hasattr(t, '__origin__') and
       t.__origin__ is list
@@ -41,28 +44,35 @@ def undo_list(t: type) -> tp.Optional[type]:
     return t.__args__[0]
   return None
 
-def handle_list(field_type: type, default: tp.Any) -> tp.Optional[Item]:
+def _issubclass(cls: Type, class_or_tuple: tp.Union[type, tuple[type, ...]]) -> bool:
+  """Like issubclass but works generics like dict[int, str]."""
+  if isinstance(cls, types.GenericAlias):
+    cls = cls.__origin__
+
+  return issubclass(cls, class_or_tuple)
+
+def handle_list(field_type: Type, default: tp.Any) -> tp.Optional[Item]:
   base_type = undo_list(field_type)
   if base_type is None:
     return None
 
-  if issubclass(base_type, enum.Enum):
+  if _issubclass(base_type, enum.Enum):
     return ff.MultiEnumClass(
         default=default,
         enum_class=base_type,
     )
 
-  if issubclass(base_type, (int, float, str)):
+  if _issubclass(base_type, (int, float, str)):
     return ff.Sequence(default=default)
 
   return None
 
-def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[Item]:
+def get_leaf_flag(field_type: Type, default: tp.Any) -> tp.Optional[Item]:
   field_type = maybe_undo_optional(field_type)
   item_constructor = TYPE_TO_ITEM.get(field_type)
   if item_constructor is not None:
     return item_constructor(default)
-  elif issubclass(field_type, enum.Enum):
+  elif _issubclass(field_type, enum.Enum):
     return ff.EnumClass(
         default=default,
         enum_class=field_type,
@@ -76,9 +86,10 @@ def get_leaf_flag(field_type: type, default: tp.Any) -> tp.Optional[Item]:
   logging.warn(f'Unsupported field of type {field_type}')
   return None
 
-def is_leaf(type_: type) -> bool:
+def is_leaf(type_: Type) -> bool:
   type_ = maybe_undo_optional(type_)
-  if issubclass(type_, dict) or dataclasses.is_dataclass(type_):
+
+  if _issubclass(type_, dict) or dataclasses.is_dataclass(type_):
     return False
   return True
 
