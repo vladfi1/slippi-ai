@@ -1,10 +1,11 @@
 #!/usr/bin/env sh
 
 # These parameters are optimized for an i7-11700K and RTX 3080Ti with 64GB of RAM.
-# I suggest increasing the num_envs until you run out of RAM, and then increasing
-# the rollout_length until you run out of GPU memory. The inner_batch_size should
-# be set so that num_envs / inner_batch_size is approximately the number of CPU
-# threads you have available. The rest of the parameters can be left as is.
+# I suggest increasing the num_envs until you run out of RAM (each env uses about
+# 40MB), and then increasing the rollout_length until you run out of GPU memory.
+# The inner_batch_size should be set so that num_envs / inner_batch_size is
+# approximately the number of CPU threads you have available. The rest of the
+# parameters can be left as is.
 
 CHAR=fox
 # What player(s) from the dataset should we condition on?
