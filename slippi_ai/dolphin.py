@@ -88,7 +88,9 @@ class Dolphin:
     self.min_slp_version = min_slp_version
 
     platform = None
-    path = path or default_dolphin_install_path()
+
+    # TODO: some of this logic should be moved to Console
+    path = path or default_dolphin_install_path()[0]
     version = get_dolphin_version(path)
 
     if render is None:

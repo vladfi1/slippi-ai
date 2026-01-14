@@ -1,7 +1,7 @@
 pandas
 dm-sonnet
 dm-tree
-git+https://github.com/vladfi1/libmelee.git@v0.42.1
+git+https://github.com/vladfi1/libmelee.git@v0.43.0
 tensorflow
 tensorflow_probability[tf]
 wandb
