@@ -1,6 +1,7 @@
 import atexit
 import collections
 import dataclasses
+import functools
 import itertools
 import json
 import logging
@@ -545,6 +546,16 @@ class MultiDataSourceMP:
     batches, epochs = zip(*results)
     return utils.concat_nest_nt(batches), np.mean(epochs)
 
+class CachedDataSource(DataSource):
+  """Guaranteed fast, useful for performance benchmarking."""
+
+  @functools.cache
+  def _get_batch(self) -> tuple[Batch, float]:
+    return super().__next__()
+
+  def __next__(self) -> Tuple[Batch, float]:
+    return self._get_batch()
+
 @dataclasses.dataclass
 class DataConfig:
   batch_size: int = 32
@@ -553,11 +564,16 @@ class DataConfig:
   compressed: bool = True
   num_workers: int = 0
   balance_characters: bool = False
+  cached: bool = False
 
 def make_source(
     num_workers: int,
+    cached: bool = False,
     **kwargs):
   if num_workers == 0:
+    if cached:
+      return CachedDataSource(**kwargs)
+
     return DataSource(**kwargs)
 
   if num_workers == 1:
