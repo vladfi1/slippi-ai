@@ -1,3 +1,4 @@
+import collections
 import concurrent.futures
 import configparser
 import dataclasses
@@ -689,3 +690,125 @@ def upgrade_archive(
 
   print(f"Output saved to: {output_path}")
   return results
+
+# To save space, we've decided to only keep upgraded replays, so we need some
+# utilities to remove non-upgraded replays from the existing archives.
+
+def game_is_upgraded(game: peppi_py.Game) -> bool:
+  """Check if a Slippi replay has been upgraded."""
+  if game.start.scene is None:
+    raise ValueError('Cannot determine if game is upgraded: missing start.scene')
+  return game.start.scene.major == 14
+
+def file_is_upgraded(
+    local_file: utils.LocalFile,
+    tmpdir: str,
+    skip_frames: bool = True,
+) -> bool:
+  with local_file.extract(tmpdir) as extracted_path:
+    game = peppi_py.read_slippi(
+        extracted_path, skip_frames=skip_frames)
+
+  return game_is_upgraded(game)
+
+def file_is_upgraded_safe(
+    local_file: utils.LocalFile,
+    tmpdir: str,
+    skip_frames: bool = True,
+    debug: bool = False,
+) -> bool | str:
+  if debug:
+    return file_is_upgraded(local_file, tmpdir, skip_frames=skip_frames)
+
+  try:
+    return file_is_upgraded(local_file, tmpdir, skip_frames=skip_frames)
+  except BaseException as e:
+    return type(e).__name__ + ": " + str(e)
+
+def delete_non_upgraded(
+    archive_path: str,
+    num_threads: int = 1,
+    debug: bool = False,
+    dry_run: bool = False,
+):
+  """Delete non-upgraded .slp files from an archive."""
+  if not os.path.exists(archive_path):
+    raise FileNotFoundError(f'Archive path does not exist: {archive_path}')
+
+  if not archive_path.endswith('.zip'):
+    raise ValueError(f'Archive path must be a .zip file: {archive_path}')
+
+  zf = zipfile.ZipFile(archive_path, 'r')
+
+  files: list[utils.ZipFile] = []
+
+  for zip_info in zf.infolist():
+    if zip_info.is_dir():
+      continue
+
+    if not utils.is_slp_file(zip_info.filename):
+      raise ValueError(f'Input archive contains non-slp file: {zip_info.filename}')
+
+    local_file = utils.ZipFile(archive_path, zip_info.filename)
+    files.append(local_file)
+
+  zf.close()
+
+  print(f'Found {len(files)} .slp files in archive')
+
+  tmpdir = utils.get_tmp_dir(in_memory=True)
+  if not tmpdir:
+    raise RuntimeError('Could not get temporary directory for processing')
+
+  results: list[tuple[utils.ZipFile, bool | str]] = []
+
+  if num_threads == 1 or debug:
+    for f in files:
+      result = file_is_upgraded_safe(f, tmpdir, debug=debug)
+      results.append((f, result))
+  else:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
+      try:
+        future_to_file: dict[concurrent.futures.Future, utils.ZipFile] = {}
+        for f in files:
+          future = executor.submit(
+              file_is_upgraded_safe,
+              local_file=f,
+              tmpdir=tmpdir,
+              debug=False,
+          )
+          future_to_file[future] = f
+
+        for future in tqdm.tqdm(
+            concurrent.futures.as_completed(future_to_file),
+            total=len(future_to_file),
+            desc="Checking files", unit="file", smoothing=0):
+          result = future.result()
+          f = future_to_file[future]
+          results.append((f, result))
+
+      except KeyboardInterrupt:
+        print('KeyboardInterrupt, shutting down')
+        executor.shutdown(cancel_futures=True)
+        raise
+
+  to_remove: list[str] = []
+  errors = collections.Counter()
+  for f, result in results:
+    if isinstance(result, str):
+      errors[result] += 1
+    elif result is False:
+      to_remove.append(f.path)
+
+  if errors:
+    print('Errors encountered while checking files:')
+    for error, count in errors.items():
+      print(f'  {count} files had error: {error}')
+
+  print(f'Found {len(to_remove)} non-upgraded files to remove')
+
+  if dry_run or not to_remove:
+    return
+
+  with utils.Timer(f'Deleting files from archive {archive_path}'):
+    utils.delete_from_zip(archive_path, to_remove)
