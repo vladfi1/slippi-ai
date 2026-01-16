@@ -9,7 +9,7 @@ import tensorflow as tf
 from slippi_ai.data import Batch, Frames
 from slippi_ai.policies import Policy, RecurrentState
 from slippi_ai import value_function as vf_lib
-from slippi_ai import tf_utils
+from slippi_ai import utils, tf_utils
 
 def swap_axes(t, axis1=0, axis2=1):
   permutation = list(range(len(t.shape)))
@@ -145,15 +145,15 @@ class Learner:
         bm_frames, initial_states, train=train, apply_grads=False)
 
     if train:
-      grads_acc = tf.nest.map_structure(
+      grads_acc = utils.map_nt(
           lambda a, g: a + g if g is not None else a,
           grads_acc, grads)
 
     return metrics, final_states, grads_acc
 
   @tf.function
-  def apply_grads(self, grads, scale: float = 1.0):
-    grads = tf.nest.map_structure(
+  def apply_grads(self, grads: tuple[list[tf.Tensor], list[tf.Tensor]], scale: float = 1.0):
+    grads = utils.map_nt(
         lambda g: g * scale if g is not None else g, grads)
     policy_grads, value_grads = grads
     self.policy_optimizer.apply(policy_grads, self.policy_vars)
@@ -237,8 +237,8 @@ class Learner:
       end = start + minibatch_size
       slice_mb = lambda t: t[start:end]
 
-      bm_frames_mb = tf.nest.map_structure(slice_mb, frames)
-      initial_states_mb = tf.nest.map_structure(slice_mb, initial_states)
+      bm_frames_mb = utils.map_nt(slice_mb, frames)
+      initial_states_mb = utils.map_nt(slice_mb, initial_states)
 
       metrics_mb, final_states_mb, grads_acc = step_grads_acc(
           bm_frames_mb,
