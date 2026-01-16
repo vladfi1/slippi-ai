@@ -24,6 +24,7 @@ def main(_):
     )
   elif input_path.is_dir():
     zip_files = list(input_path.rglob('*.zip'))
+    zip_files.sort(key=lambda f: f.stat().st_size)
     print(f'Found {len(zip_files)} zip files to process')
 
     for zip_file in zip_files:
