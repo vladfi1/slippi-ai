@@ -12,17 +12,19 @@ Usage:
 import argparse
 import concurrent.futures
 import hashlib
+import io
 import multiprocessing as mp
 import os
 import subprocess
 import sys
 import tempfile
 import time
+import typing
 import zipfile
 from typing import List, Tuple, Dict
 
-# Add parent directories to path to import slippi_db modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+import tqdm
+
 from slippi_db import utils
 
 
@@ -99,28 +101,26 @@ def process_file_content(file_name: str, content: bytes) -> Tuple[str, str, int]
 def stream_files(
     archive_path: str,
     file_info: List[Tuple[str, int]],
-    file_queue: mp.Queue,
-):
+) -> typing.Iterator[tuple[str, bytes]]:
 
-  proc = None
+  # Start unzip process to stream all files
+  proc = subprocess.Popen(
+    ['unzip', '-p', archive_path],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    # bufsize=0  # Unbuffered for immediate streaming
+  )
+
   try:
-    # Start unzip process to stream all files
-    proc = subprocess.Popen(
-      ['unzip', '-p', archive_path],
-      stdout=subprocess.PIPE,
-      stderr=subprocess.DEVNULL,
-      # bufsize=0  # Unbuffered for immediate streaming
-    )
+    assert isinstance(proc.stdout, io.BufferedReader)
 
     files_processed = 0
-    total_files = len(file_info)
-    start_time = time.perf_counter()
 
     # Read each file's content based on expected size
     for file_name, expected_size in file_info:
       if expected_size == 0:
         # Handle empty files
-        file_queue.put((archive_path, file_name, b''))
+        yield (file_name, b'')
         files_processed += 1
         continue
 
@@ -136,80 +136,38 @@ def stream_files(
       content = bytes(buffer[:bytes_read])
 
       if len(content) != expected_size:
-        print(f"Warning: Expected {expected_size} bytes for {file_name}, got {len(content)}")
+        raise ValueError(f"Warning: Expected {expected_size} bytes for {file_name}, got {len(content)}")
 
-      file_queue.put((archive_path, file_name, content))
+      yield (file_name, content)
       files_processed += 1
 
-      # Progress update with ETA (in place)
-      if files_processed % 10 == 0 or files_processed == total_files:
-        elapsed = time.perf_counter() - start_time
-        if files_processed > 0:
-          rate = files_processed / elapsed
-          remaining = total_files - files_processed
-          eta = remaining / rate if rate > 0 else 0
-          print(f"\rStreamed {files_processed}/{total_files} files ({rate:.1f}/sec, ETA: {eta:.1f}s)", end='', flush=True)
-
-    if total_files > 0:  # Ensure we end the progress line
-      print()
-
-    # Wait for unzip to finish
-    # return_code = proc.wait()
-    # if return_code != 0:
-    #   print(f"Warning: unzip exited with code {return_code}")
-
   finally:
-    if proc is not None:
-      proc.terminate()
+    proc.terminate()
 
-def producer_function(
+def stream_multiple_files(
     all_file_info: List[Tuple[str, List[Tuple[str, int]]]],
-    file_queue: mp.Queue,
+) -> typing.Iterator[Tuple[str, str, bytes]]:
+  """Stream files from multiple archives sequentially."""
+  for archive_path, file_info in all_file_info:
+    print(f"\nStreaming from {os.path.basename(archive_path)}...")
+    for file_name, content in stream_files(archive_path, file_info):
+      yield (archive_path, file_name, content)
+
+def process_item(todo: tuple[str, str, bytes]) -> Tuple[str, str, int]:
+  """Process a single file item."""
+  # Handle compressed files using the ZipFile utility
+  archive_path, file_name, content = todo
+  file_obj = utils.ZipFile(archive_path, file_name)
+  processed_content = file_obj.from_raw(content)
+
+  return process_file_content(file_name, processed_content)
+
+
+def streaming_method(
+    archive_paths: List[str],
     num_processes: int,
-):
-  """Producer process that streams zip contents from multiple archives."""
-
-  try:
-    for archive_path, file_info in all_file_info:
-      print(f"\nStreaming from {os.path.basename(archive_path)}...")
-      stream_files(archive_path, file_info, file_queue)
-
-    for _ in range(num_processes):
-      file_queue.put(None)
-  except Exception as e:
-    print(f"Producer error: {e}")
-    # Signal error to workers
-    for _ in range(num_processes):
-      file_queue.put(None)
-
-def worker_function(file_queue: mp.Queue, results_queue: mp.Queue):
-  """Worker process that consumes from queue."""
-  processed_count = 0
-  while True:
-    item = file_queue.get()
-    if item is None:
-      break
-
-    archive_path, file_name, content = item
-
-    # Process the content (applying any decompression if needed)
-    try:
-      # Handle compressed files using the ZipFile utility
-      file_obj = utils.ZipFile(archive_path, file_name)
-      processed_content = file_obj.from_raw(content)
-
-      result = process_file_content(file_name, processed_content)
-      results_queue.put(result)
-      processed_count += 1
-
-    except Exception as e:
-      print(f"Error processing {file_name} from {os.path.basename(archive_path)}: {e}")
-      # Still add an entry to maintain count
-      results_queue.put((file_name, "ERROR", len(content)))
-      processed_count += 1
-
-
-def streaming_method(archive_paths: List[str], num_processes: int, file_limit: int = None) -> Tuple[List[Tuple], float]:
+    file_limit: typing.Optional[int] = None,
+) -> Tuple[List[Tuple], float]:
   """Process multiple zip archives using streaming with unzip -p.
 
   A single producer process streams all files from all archives using `unzip -p` and puts them
@@ -243,44 +201,17 @@ def streaming_method(archive_paths: List[str], num_processes: int, file_limit: i
 
   print(f"Streaming method: Processing {total_files} files ({total_size:,} bytes) from {len(archive_paths)} archive(s) with {num_processes} workers")
 
-  # Create queues for passing data between processes
-  # Use a reasonable buffer size to avoid memory issues
-  queue_size = min(num_processes * 4, 50)
-  file_queue = mp.Queue(maxsize=queue_size)
-  results_queue = mp.Queue()
+  files_iterator = stream_multiple_files(all_file_info)
 
-  # Start producer in a separate process
-  producer_proc = mp.Process(
-      target=producer_function,
-      args=(all_file_info, file_queue, num_processes))
-  producer_proc.start()
+  with mp.Pool(processes=num_processes) as pool:
+    try:
+      todo = tqdm.tqdm(
+          files_iterator, total=total_files, unit='file', desc='Processing files')
 
-  # Start workers using multiprocessing.Process directly
-  worker_processes: list[mp.Process] = []
-  for _ in range(num_processes):
-    worker_proc = mp.Process(
-        target=worker_function,
-        args=(file_queue, results_queue))
-    worker_proc.start()
-    worker_processes.append(worker_proc)
-
-  try:
-    results = []
-    for _ in range(total_files):
-      result = results_queue.get()
-      results.append(result)
-  except KeyboardInterrupt:
-    producer_proc.terminate()
-    for worker_proc in worker_processes:
-      worker_proc.terminate()
-    raise
-
-  # Wait for all workers to finish
-  for worker_proc in worker_processes:
-    worker_proc.join()
-
-  # Wait for producer to finish
-  producer_proc.join()
+      results = list(pool.imap_unordered(process_item, todo, chunksize=1))
+    except KeyboardInterrupt:
+      pool.terminate()  # TODO: use interrupt in python 3.14+
+      raise
 
   elapsed = time.perf_counter() - start_time
 
