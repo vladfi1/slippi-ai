@@ -35,7 +35,7 @@ class Timer:
       print(f'{self.name}: {self.duration:.1f}')
 
 def monitor(
-    futures: tp.Dict[concurrent.futures.Future, str],
+    futures: tp.Dict[concurrent.futures.Future[T], str],
     log_interval: int = 10,
 ) -> tp.Iterator[T]:
   total_items = len(futures)
@@ -133,6 +133,7 @@ class LocalFile(abc.ABC):
 
   @contextmanager
   @abc.abstractmethod
+  @contextmanager
   def extract(self, tmpdir: str) -> tp.Generator[str, None, None]:
     """Extract the file to a temporary directory and return it."""
 
@@ -184,8 +185,8 @@ class GZipFile(LocalFile):
 
   @contextmanager
   def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    path = os.path.join(tmpdir, self.name)
     try:
-      path = os.path.join(tmpdir, self.name)
       with open(path, 'wb') as f:
         f.write(self.read())
       yield path
@@ -204,9 +205,9 @@ class SevenZipFile(LocalFile):
     return self.path
 
   def read(self) -> bytes:
-    result = subprocess.check_call(
+    result = subprocess.run(
         ['7z', 'e', '-so', self.root, self.path],
-        stdout=subprocess.PIPE)
+        capture_output=True, check=True)
     return result.stdout
 
   @contextmanager
@@ -259,9 +260,12 @@ class ZipFile(LocalFile):
       data = gzip.decompress(data)
 
     if self.is_slpz:
-      result = subprocess.run(
-          ['slpz', '-d', '-', '-o', '-'],
-          capture_output=True, input=data, check=True)
+      try:
+        result = subprocess.run(
+            ['slpz', '-d', '-o', '-', '-'],
+            capture_output=True, input=data, check=True)
+      except subprocess.CalledProcessError as e:
+        raise RuntimeError(e.stderr.decode()) from e
       data = result.stdout
 
     return data
@@ -425,7 +429,12 @@ def extract_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> 
     zip_proc.stdin.close()
     zip_proc.wait()
 
-def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:
+def copy_zip_files(
+    source_zip: str,
+    file_names: list[str],
+    dest_zip: str,
+    tmpdir: tp.Optional[str] = None,
+) -> None:
   """Copies specified files from source zip archive to destination zip archive.
 
   Extracts specified files from the source archive and adds them to the destination
@@ -438,7 +447,7 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
   """
 
   if os.path.exists(dest_zip):
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
       tmp_zip = os.path.join(tmpdir, 'tmp.zip')
       extract_zip_files(source_zip, file_names, tmp_zip)
       subprocess.check_call(['zipmerge', dest_zip, tmp_zip])
@@ -448,7 +457,9 @@ def copy_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> Non
 
 def copy_multi_zip_files(
     sources_and_files: list[tuple[str, list[str]]],
-    dest_zip: str) -> None:
+    dest_zip: str,
+    tmpdir: tp.Optional[str] = None,
+) -> None:
   """Copies specified files from multiple source zip archives to destination zip archive.
 
   Extracts specified files from the source archives and adds them to the destination
@@ -460,7 +471,7 @@ def copy_multi_zip_files(
     dest_zip: Path to the destination zip archive.
   """
 
-  with tempfile.TemporaryDirectory() as tmpdir:
+  with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
     tmp_zips = []
     for i, (source_zip, file_names) in enumerate(sources_and_files):
       tmp_zip = os.path.join(tmpdir, f'tmp_{i}.zip')
