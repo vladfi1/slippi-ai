@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import functools
 import gzip
 import hashlib
+import io
 import os
 from typing import Generator
 
@@ -223,9 +224,10 @@ class SevenZipFile(LocalFile):
 class ZipFile(LocalFile):
   """File inside a zip archive."""
 
-  def __init__(self, root: str, path: str):
+  def __init__(self, root: str, path: str, raw: tp.Optional[bytes] = None):
     self.root = root
     self.path = path
+    self.raw = raw
 
     suffix_found = False
     for suffix in VALID_SUFFIXES:
@@ -247,6 +249,9 @@ class ZipFile(LocalFile):
     return self.base_name + _SLP_SUFFIX
 
   def read_raw(self) -> bytes:
+    if self.raw is not None:
+      return self.raw
+
     try:
       result = subprocess.run(
           ['unzip', '-p', self.root, self.path],
@@ -531,3 +536,67 @@ def delete_from_zip(zip_path: str, file_names: list[str]) -> None:
     zip_proc.wait()
     if zip_proc.returncode != 0:
       raise subprocess.CalledProcessError(zip_proc.returncode, ['zip', '-d', zip_path, '-@'])
+
+def stream_files_zip(
+    archive_path: str,
+    file_limit: tp.Optional[int] = None,
+) -> tp.Iterator[tuple[str, bytes]]:
+
+  with zipfile.ZipFile(archive_path) as zf:
+    infolist = zf.infolist()
+
+  infolist = [info for info in infolist if not info.is_dir()]
+
+  if file_limit is not None:
+    infolist = infolist[:file_limit]
+
+  # Start unzip process to stream all files
+  proc = subprocess.Popen(
+      ['unzip', '-p', archive_path],
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      # bufsize=0  # Unbuffered for immediate streaming
+  )
+
+  try:
+    assert isinstance(proc.stdout, io.BufferedReader)
+
+    # Read each file's content based on expected size
+    for info in infolist:
+      expected_size = info.file_size
+
+      if expected_size == 0:
+        # Handle empty files
+        yield (info.filename, b'')
+        continue
+
+      # Read exactly expected_size bytes using a pre-allocated buffer
+      buffer = bytearray(expected_size)
+      bytes_read = 0
+      while bytes_read < expected_size:
+        chunk_size = proc.stdout.readinto(memoryview(buffer)[bytes_read:])
+        if chunk_size is None or chunk_size == 0:
+          break
+        bytes_read += chunk_size
+
+      content = bytes(buffer[:bytes_read])
+
+      if len(content) != expected_size:
+        raise ValueError(f"Expected {expected_size} bytes for {info.filename}, got {len(content)}")
+
+      yield (info.filename, content)
+
+    if file_limit is None:
+      proc.wait()
+
+  finally:
+    proc.terminate()
+
+def stream_slp_files_zip(
+    archive_path: str,
+    file_limit: tp.Optional[int] = None,
+) -> tp.Iterator[ZipFile]:
+  """Streams Slippi files from a zip archive."""
+
+  for file_name, raw_data in stream_files_zip(archive_path, file_limit=file_limit):
+    yield ZipFile(archive_path, file_name, raw=raw_data)
