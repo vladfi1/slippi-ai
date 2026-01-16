@@ -3,13 +3,16 @@ import concurrent.futures
 import configparser
 import dataclasses
 import enum
+import functools
 import json
+import multiprocessing as mp
 import os
 import psutil
 import subprocess
 import tempfile
 import time
 from typing import Optional, Iterator, Any
+import typing as tp
 import zipfile
 
 from absl import logging
@@ -696,9 +699,16 @@ def upgrade_archive(
 
 def game_is_upgraded(game: peppi_py.Game) -> bool:
   """Check if a Slippi replay has been upgraded."""
+  # Older games may not have a scene
   if game.start.scene is None:
-    raise ValueError('Cannot determine if game is upgraded: missing start.scene')
-  return game.start.scene.major == 14
+    return False
+
+  if game.start.scene.major != 14:
+    return False
+
+  assert game.start.slippi.version >= (3, 18, 0)
+  return True
+
 
 def file_is_upgraded(
     local_file: utils.LocalFile,
@@ -722,8 +732,28 @@ def file_is_upgraded_safe(
 
   try:
     return file_is_upgraded(local_file, tmpdir, skip_frames=skip_frames)
+  except KeyboardInterrupt:
+    # We can't raise an exception because it will deadlock the multiprocessing
+    # pool: https://bugs.python.org/issue22393
+    return 'KeyboardInterrupt'
   except BaseException as e:
     return type(e).__name__ + ": " + str(e)
+
+FileType = tp.TypeVar('FileType', bound=utils.LocalFile)
+
+def file_is_upgraded_safe_tuple(
+    local_file: FileType,
+    tmpdir: str,
+    skip_frames: bool = True,
+    debug: bool = False,
+) -> tuple[FileType, bool | str]:
+  return local_file, file_is_upgraded_safe(
+      local_file,
+      tmpdir,
+      skip_frames=skip_frames,
+      debug=debug,
+  )
+
 
 def delete_non_upgraded(
     archive_path: str,
@@ -760,36 +790,30 @@ def delete_non_upgraded(
   if not tmpdir:
     raise RuntimeError('Could not get temporary directory for processing')
 
+  file_stream = utils.stream_slp_files_zip(archive_path)
+  file_stream = tqdm.tqdm(
+      file_stream, total=len(files), unit='file', desc='Processing files',
+      smoothing=0)
+
   results: list[tuple[utils.ZipFile, bool | str]] = []
 
   if num_threads == 1 or debug:
-    for f in files:
+    for f in file_stream:
       result = file_is_upgraded_safe(f, tmpdir, debug=debug)
       results.append((f, result))
   else:
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
+    with mp.Pool(processes=num_threads) as pool:
       try:
-        future_to_file: dict[concurrent.futures.Future, utils.ZipFile] = {}
-        for f in files:
-          future = executor.submit(
-              file_is_upgraded_safe,
-              local_file=f,
-              tmpdir=tmpdir,
-              debug=False,
-          )
-          future_to_file[future] = f
+        fn = functools.partial(
+            file_is_upgraded_safe_tuple,
+            tmpdir=tmpdir,
+            debug=debug,
+        )
 
-        for future in tqdm.tqdm(
-            concurrent.futures.as_completed(future_to_file),
-            total=len(future_to_file),
-            desc="Checking files", unit="file", smoothing=0):
-          result = future.result()
-          f = future_to_file[future]
-          results.append((f, result))
-
+        results = list(pool.imap_unordered(fn, file_stream, chunksize=1))
       except KeyboardInterrupt:
-        print('KeyboardInterrupt, shutting down')
-        executor.shutdown(cancel_futures=True)
+        # Note: this tends to hang due to https://bugs.python.org/issue22393
+        pool.terminate()  # TODO: use interrupt in python 3.14+
         raise
 
   to_remove: list[str] = []
@@ -797,6 +821,7 @@ def delete_non_upgraded(
   for f, result in results:
     if isinstance(result, str):
       errors[result] += 1
+      # TODO: maybe remove files with certain errors?
     elif result is False:
       to_remove.append(f.path)
 
