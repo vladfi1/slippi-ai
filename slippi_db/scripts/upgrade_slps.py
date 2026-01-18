@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 
 from absl import app, flags
 
@@ -48,6 +49,11 @@ def process_single_archive(input_path, output_path, dolphin_config):
 
 
 def main(_):
+  # Check that slpz and copy_slp_metadata are available
+  for command in ['slpz', 'copy_slp_metadata']:
+    if shutil.which(command) is None:
+      raise RuntimeError(f'Required command not found in PATH: {command}')
+
   dolphin_config = upgrade_slp.DolphinConfig(
       dolphin_path=DOLPHIN.value,
       ssbm_iso_path=SSBM_ISO.value,
