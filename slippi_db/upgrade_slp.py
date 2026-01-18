@@ -373,7 +373,7 @@ def _upgrade_slp_in_archive(
     in_memory: bool = True,
     check_same_parse: bool = True,
     dolphin_timeout: Optional[int] = None,
-    check_if_needed: bool = False,
+    check_if_needed: bool = True,
     min_version: tuple[int, int, int] = DEFAULT_MIN_VERSION,
     expected_version: tuple[int, int, int] = (3, 18, 0),
     debug: bool = False,
@@ -389,11 +389,9 @@ def _upgrade_slp_in_archive(
     with open(slp_path, 'wb') as f:
       f.write(local_file.from_raw(raw_data))
 
-    game = peppi_py.read_slippi(
-        slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
+    game_no_frames = peppi_py.read_slippi(slp_path, skip_frames=True)
 
-    if check_if_needed and not needs_upgrade(game, min_version):
-      upgraded_path = slp_path
+    if check_if_needed and not needs_upgrade(game_no_frames, min_version):
       skipped = True
     else:
       upgraded_path = os.path.join(tmp_dir, 'upgraded.slp')
@@ -401,6 +399,8 @@ def _upgrade_slp_in_archive(
                   time_limit=dolphin_timeout)
 
       if check_same_parse:
+        original_game = peppi_py.read_slippi(
+            slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
         upgraded_game = peppi_py.read_slippi(
             upgraded_path, rollback_mode=peppi_py.RollbackMode.LAST)
 
@@ -409,17 +409,13 @@ def _upgrade_slp_in_archive(
             import ipdb; ipdb.set_trace()
           return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
 
-        errors = check_games(game, upgraded_game, debug=debug)
+        errors = check_games(original_game, upgraded_game, debug=debug)
         if errors:
           return UpgradeResult(local_file, errors_to_str(errors))
 
-    if skipped and local_file.is_slpz:
-      with open(output_path, 'wb') as f:
-        f.write(raw_data)
-    else:
       try:
         subprocess.run(
-            ['slpz', '-x', upgraded_path, '-o', output_path],
+            ['slpz', '-x', '-o', output_path, upgraded_path],
             check=True, capture_output=True, text=True)
       except subprocess.CalledProcessError as e:
         return UpgradeResult(local_file, 'slpz: ' + e.stderr)
@@ -457,15 +453,18 @@ def _monitor_results(
 
   last_log_time = 0
   successful_conversions = 0
+  non_skipped = 0
   last_error: Optional[tuple[str, str]] = None
 
   results: list[UpgradeResult] = []
 
   for result in results_iter:
-    if result.error is None:
-      successful_conversions += 1
-    else:
-      last_error = result.local_file.name, result.error
+    if not result.skipped:
+      non_skipped += 1
+      if result.error is None:
+        successful_conversions += 1
+      else:
+        last_error = result.local_file.name, result.error
 
     results.append(result)
 
@@ -473,7 +472,7 @@ def _monitor_results(
 
     if time.time() - last_log_time > log_interval:
       last_log_time = time.time()
-      success_rate = successful_conversions / pbar.n
+      success_rate = successful_conversions / non_skipped if non_skipped > 0 else 1
       logging.info(f'Success rate: {success_rate:.2%}')
       if last_error is not None:
         logging.error(f'Last error: {last_error}')
@@ -503,7 +502,7 @@ def upgrade_archive(
     check_same_parse: bool = True,
     log_interval: int = 30,  # seconds between logs
     dolphin_timeout: Optional[int] = 60,
-    check_if_needed: bool = False,
+    check_if_needed: bool = True,
     expected_version: tuple[int, int, int] = (3, 18, 0),
     remove_input: bool = False,
     debug: bool = False,
@@ -583,6 +582,7 @@ def upgrade_archive(
   else:
     raise ValueError('Either in_memory must be True or work_dir must be specified')
 
+  # Note: this is very pessimistic as it assumes every file will be upgraded
   if total_size > work_dir_space:
     raise MemoryError(f'Not enough free space to process archive: {total_size / (2 ** 30):.2f} GB required, {work_dir_space / (2 ** 30):.2f} GB available')
 
@@ -665,8 +665,8 @@ def upgrade_archive(
     non_skipped_results = [result for result in results if not result.skipped]
     skipped_conversions = len(results) - len(non_skipped_results)
 
-    successful_conversions = sum(1 for result in results if result.error is None)
-    failed_conversions = len(results) - successful_conversions
+    successful_conversions = sum(1 for result in non_skipped_results if result.error is None)
+    failed_conversions = len(non_skipped_results) - successful_conversions
 
     print(f"Conversion complete: {successful_conversions} successful, {failed_conversions} failed, {skipped_conversions} skipped")
 
