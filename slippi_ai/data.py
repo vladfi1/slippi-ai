@@ -5,6 +5,7 @@ import functools
 import itertools
 import json
 import logging
+import math
 import multiprocessing as mp
 import os
 import random
@@ -209,6 +210,9 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 def train_test_split(
     config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
+  if config.data_dir is None:
+    raise ValueError("data_dir must be specified in DatasetConfig")
+
   filenames = sorted(os.listdir(config.data_dir))
   print(f"Found {len(filenames)} files.")
 
@@ -234,9 +238,14 @@ def train_test_split(
         replays.append(ReplayInfo(replay_path, True))
 
   # TODO: stable partition
+  if len(replays) < 2:
+    raise ValueError("Not enough replays found.")
+
   rng = random.Random(config.seed)
   rng.shuffle(replays)
-  num_test = int(config.test_ratio * len(replays))
+
+  # Ensure at least one train and one test replay.
+  num_test = 1 + math.ceil(config.test_ratio * (len(replays) - 2))
 
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
