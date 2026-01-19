@@ -8,7 +8,7 @@ import tensorflow as tf
 
 from slippi_ai import tf_utils
 
-RecurrentState = tree.Structure[tf.Tensor]
+RecurrentState = tree.StructureKV[str, tf.Tensor]
 Inputs = tf.Tensor
 
 class Network(snt.Module, abc.ABC):

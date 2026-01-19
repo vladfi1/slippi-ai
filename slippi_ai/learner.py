@@ -204,7 +204,7 @@ class Learner:
       initial_states: RecurrentState,
       train: bool = True,
       compile: Optional[bool] = None,
-  ):
+  ) -> tuple[dict, RecurrentState]:
     compile = compile if compile is not None else self.compile
 
     if self.minibatch_size == 0:

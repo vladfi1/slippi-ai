@@ -79,10 +79,14 @@ class TrainManager:
               frames.state_action))
       frames = utils.map_nt(tf.convert_to_tensor, frames)
       data = (batch, epoch, frames)
-      try:
-        self.frames_queue.put(data, timeout=1)
-      except queue.Full:
-        pass
+
+      # Try to put data into the queue, but check for stop_requested
+      while not self.stop_requested.is_set():
+        try:
+          self.frames_queue.put(data, timeout=1)
+          break
+        except queue.Full:
+          continue
 
   def stop(self):
     self.stop_requested.set()
@@ -93,12 +97,15 @@ class TrainManager:
 
   def step(self, compiled: tp.Optional[bool] = None) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
+      frames_queue_size = self.frames_queue.qsize()
       batch, epoch, frames = self.frames_queue.get()
     with self.step_profiler:
       stats, self.hidden_state = self.learner.step(
           frames, self.hidden_state, compile=compiled, **self.step_kwargs)
+
     stats.update(
         epoch=epoch,
+        frames_queue_size=frames_queue_size,
     )
     return stats, batch
 
