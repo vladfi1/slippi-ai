@@ -1,6 +1,7 @@
 """Train (and test) a network via imitation learning."""
 
 import collections
+import contextlib
 import dataclasses
 import datetime
 import json
@@ -91,9 +92,6 @@ class TrainManager:
   def stop(self):
     self.stop_requested.set()
     self.data_thread.join()
-
-  def __del__(self):
-    self.stop()
 
   def step(self, compiled: tp.Optional[bool] = None) -> tuple[dict, data_lib.Batch]:
     with self.data_profiler:
@@ -201,6 +199,10 @@ def create_name_map(
   return name_map
 
 def train(config: Config):
+  with contextlib.ExitStack() as exit_stack:
+    _train(config, exit_stack)
+
+def _train(config: Config, exit_stack: contextlib.ExitStack):
   tag = config.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
   # to be set properly even when we try to override it.
@@ -210,8 +212,6 @@ def train(config: Config):
     os.makedirs(expt_dir, exist_ok=True)
   config.expt_dir = expt_dir  # for wandb logging
   logging.info('experiment directory: %s', expt_dir)
-
-  runtime = config.runtime
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
@@ -328,6 +328,12 @@ def train(config: Config):
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
+
+  # TrainManager should probably be a proper context manager.
+  exit_stack.callback(train_manager.stop)
+  exit_stack.callback(test_manager.stop)
+
+  runtime = config.runtime
 
   # initialize variables
   if config.learner.minibatch_size > 0:
@@ -545,7 +551,3 @@ def train(config: Config):
     step.assign_add(1)
     maybe_log(train_stats)
     maybe_eval()
-
-  # TODO: use a context manager to ensure clean shutdown
-  train_manager.stop()
-  test_manager.stop()
