@@ -70,6 +70,7 @@ agent_flags.update(
     async_inference=ff.Boolean(True),
     run_on_cpu=ff.Boolean(False),
 )
+del agent_flags['path']  # not used
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
 
@@ -1141,10 +1142,6 @@ def set_memory_growth():
       logging.warning(f'Could not set memory growth for GPU {gpu}: {e}')
 
 def main(_):
-  agent_kwargs = AGENT.value
-  if not agent_kwargs['path']:
-    raise ValueError('Must provide agent path.')
-
   bot = Bot(
       token=ACCESS_TOKEN.value,
       prefix='!',
@@ -1153,7 +1150,7 @@ def main(_):
       max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
-      agent_kwargs=agent_kwargs,
+      agent_kwargs=AGENT.value,
       stream=STREAM.value,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
       bot=BOT.value,
