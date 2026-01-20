@@ -626,6 +626,8 @@ class Bot(commands.Bot):
         logging.warning(f'Duplicate agents named {agent_config.name}')
       self._agents[agent_config.name] = agent_config
 
+    regular_multiname_agents: list[tuple[str, list[str]]] = []
+
     # Regular agents
     for model in os.listdir(self._models_path):
       path = os.path.join(self._models_path, model)
@@ -645,7 +647,21 @@ class Bot(commands.Bot):
               name=model + '-' + char.name.lower())
           add_agent(agent_config)
 
-        self._special_agents.append(f'{model}-[{",".join(char_names)}]')
+        regular_multiname_agents.append((model, char_names))
+
+    models_by_chars: dict[tuple[str, ...], list[str]] = {}
+    for model, char_names in regular_multiname_agents:
+      key = tuple(sorted(char_names))
+      models_by_chars.setdefault(key, []).append(model)
+
+    def names_to_str(names: tp.Sequence[str]) -> str:
+      if len(names) > 1:
+        return "[" + ",".join(names) + "]"
+      return names[0]
+
+    for char_tuple, models in models_by_chars.items():
+      self._special_agents.append(
+          names_to_str(models) + '-' + names_to_str(char_tuple))
 
     # imitation agents
     imitation_models = eval_lib.get_imitation_agents(
