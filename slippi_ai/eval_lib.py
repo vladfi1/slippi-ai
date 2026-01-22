@@ -8,7 +8,6 @@ import threading, queue
 from typing import Callable, Optional, Tuple
 import typing as tp
 
-import tree
 import numpy as np
 import fancyflags as ff
 import tensorflow as tf
@@ -305,10 +304,10 @@ class DelayedAgent:
     self._policy = policy
     self.embed_controller = policy.controller_embedding
 
-    if console_delay > policy.delay:
+    if console_delay > policy.delay - (self.batch_steps - 1):
       raise ValueError(
           f'console delay ({console_delay}) must be <='
-          f' policy delay ({policy.delay})')
+          f' policy delay ({policy.delay}) - batch_steps ({self.batch_steps}) + 1')
 
     self.delay = policy.delay - console_delay
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
@@ -439,14 +438,14 @@ class AsyncDelayedAgent:
     self.embed_controller = policy.controller_embedding
 
     self.delay = policy.delay - console_delay
-    if self.delay < 0:
+    headroom = self.delay - (self.batch_steps - 1)
+    if headroom < 0:
       raise ValueError(
+          f'No headroom: '
           f'console delay ({console_delay}) must be <='
-          f' policy delay ({policy.delay})')
-    elif self.delay == 0:
-      logging.warning(
-          f'Console delay ({console_delay}) equals policy delay ({policy.delay}),'
-          ' agent will effectively run synchronously.')
+          f' policy delay ({policy.delay}) - batch_steps ({self.batch_steps}) + 1')
+    elif headroom == 0:
+      logging.warning('No headroom, agent will effectively run synchronously.')
 
     self._output_queue: utils.PeekableQueue[SampleOutputs] \
       = utils.PeekableQueue()
@@ -730,6 +729,7 @@ BATCH_AGENT_FLAGS = dict(
     fake=ff.Boolean(False, 'Use fake agents.'),
     # Generally we want to set `run_on_cpu` once for all agents.
     # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
+    batch_steps=ff.Integer(0, 'Number of steps to batch (in time)'),
 )
 
 AGENT_FLAGS = dict(
