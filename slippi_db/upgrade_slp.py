@@ -265,6 +265,11 @@ def check_same_metadata(
       if old is not None and new != old:
         return f'different end.{key}'
 
+  # Check metadata JSON element
+  if old_game.metadata is not None:
+    if new_game.metadata != old_game.metadata:
+      return 'different metadata'
+
   return None
 
 def _known_game_read_exception(e: BaseException) -> str | None:
@@ -837,3 +842,295 @@ def delete_non_upgraded(
 
   with utils.Timer(f'Deleting files from archive {archive_path}'):
     utils.delete_from_zip(archive_path, to_remove)
+
+
+def _copy_single_metadata(
+    input_path: str,
+    output_path: str,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
+):
+  """Copy metadata from input file to output file. Returns error message or None."""
+  subprocess.run(
+      [copy_slp_metadata_binary, input_path, output_path],
+      check=True, text=True, capture_output=True)
+
+
+def _copy_single_metadata_safe(
+    input_path: str,
+    output_path: str,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
+    debug: bool = False,
+) -> Optional[str]:
+  """Copy metadata from input file to output file. Returns error message or None."""
+  if debug:
+    return _copy_single_metadata(input_path, output_path, copy_slp_metadata_binary)
+
+  try:
+    return _copy_single_metadata(input_path, output_path, copy_slp_metadata_binary)
+  # except KeyboardInterrupt:
+  #   return 'KeyboardInterrupt'
+  except subprocess.CalledProcessError as e:
+    return e.stderr
+  except BaseException as e:
+    return type(e).__name__ + ": " + str(e)
+
+
+@dataclasses.dataclass(slots=True)
+class MetadataCopyResult:
+  """Result of copying metadata for a file."""
+  input_name: str
+  output_name: str
+  error: Optional[str] = None
+
+
+def _copy_metadata_for_pair(
+    input_file: utils.ZipFile,
+    output_file: utils.ZipFile,
+    tmpdir: str,
+    updated_path: str,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
+    check_metadata: bool = False,
+    debug: bool = False,
+) -> MetadataCopyResult:
+  """Extract files, copy metadata, write to updated_path, return result."""
+  error: Optional[str] = None
+  with input_file.extract(tmpdir) as input_path:
+    with output_file.extract(tmpdir) as output_path:
+      error = _copy_single_metadata_safe(
+          input_path, output_path, copy_slp_metadata_binary, debug=debug)
+      if error is None:
+        # Optionally check that metadata was copied correctly
+        if check_metadata:
+          try:
+            input_game = peppi_py.read_slippi(input_path, skip_frames=True)
+            output_game = peppi_py.read_slippi(output_path, skip_frames=True)
+            error = check_same_metadata(input_game, output_game)
+          except BaseException as e:
+            error = 'check_metadata: ' + type(e).__name__ + ": " + str(e)
+
+        if error is None:
+          # Re-compress the output file with slpz to updated_path
+          try:
+            subprocess.run(
+                ['slpz', '-x', '-o', updated_path, output_path],
+                check=True, capture_output=True, text=True)
+          except subprocess.CalledProcessError as e:
+            error = 'slpz: ' + e.stderr
+
+  return MetadataCopyResult(
+      input_name=input_file.path,
+      output_name=output_file.path,
+      error=error,
+  )
+
+
+def update_slp_metadata_in_archive(
+    input_archive: str,
+    output_archive: str,
+    num_threads: int = 1,
+    copy_slp_metadata_binary: str = 'copy_slp_metadata',
+    check_metadata: bool = False,
+    dest_archive: Optional[str] = None,
+    debug: bool = False,
+    dry_run: bool = False,
+) -> list[MetadataCopyResult]:
+  """Update metadata in output archive using original files from input archive.
+
+  For each file in the output archive, finds the corresponding file in the input
+  archive (by base name) and copies metadata from input to output using the
+  copy_slp_metadata binary.
+
+  Args:
+    input_archive: Path to the input archive containing original .slp files.
+    output_archive: Path to the output archive containing upgraded .slpz files.
+    num_threads: Number of parallel workers.
+    copy_slp_metadata_binary: Path to the copy_slp_metadata binary.
+    check_metadata: If true, verify metadata was copied correctly after each copy.
+    dest_archive: If provided, write the updated archive to this path instead of
+      overwriting the original output archive.
+    debug: Whether to run in debug mode (no exception handling).
+    dry_run: If true, only report what would be done without modifying files.
+
+  Returns:
+    List of MetadataCopyResult objects.
+  """
+  if not os.path.exists(input_archive):
+    raise FileNotFoundError(f'Input archive does not exist: {input_archive}')
+
+  if not os.path.exists(output_archive):
+    raise FileNotFoundError(f'Output archive does not exist: {output_archive}')
+
+  if not input_archive.endswith('.zip'):
+    raise ValueError(f'Input archive must be a .zip file: {input_archive}')
+
+  if not output_archive.endswith('.zip'):
+    raise ValueError(f'Output archive must be a .zip file: {output_archive}')
+
+  # Build mapping of base names to files in input archive
+  input_files: dict[str, utils.ZipFile] = {}
+  with zipfile.ZipFile(input_archive, 'r') as zf:
+    for info in zf.infolist():
+      if info.is_dir():
+        continue
+      if not utils.is_slp_file(info.filename):
+        continue
+      local_file = utils.ZipFile(input_archive, info.filename)
+      input_files[local_file.base_name] = local_file
+
+  # Build mapping of base names to files in output archive
+  output_files: dict[str, utils.ZipFile] = {}
+  with zipfile.ZipFile(output_archive, 'r') as zf:
+    for info in zf.infolist():
+      if info.is_dir():
+        continue
+      if not utils.is_slp_file(info.filename):
+        continue
+      local_file = utils.ZipFile(output_archive, info.filename)
+      output_files[local_file.base_name] = local_file
+
+  # Check for existing files in dest_archive to skip
+  existing_in_dest: set[str] = set()
+  if dest_archive is not None and os.path.exists(dest_archive):
+    with zipfile.ZipFile(dest_archive, 'r') as zf:
+      for info in zf.infolist():
+        if not info.is_dir():
+          existing_in_dest.add(info.filename)
+
+  # Match files by base name
+  pairs: list[tuple[utils.ZipFile, utils.ZipFile]] = []
+  missing_in_input = 0
+  skipped_existing = 0
+  for base_name, output_file in output_files.items():
+    if base_name in input_files:
+      if output_file.path in existing_in_dest:
+        skipped_existing += 1
+      else:
+        pairs.append((input_files[base_name], output_file))
+    else:
+      missing_in_input += 1
+
+  print(f'Found {len(pairs)} matching files between input and output archives')
+  if skipped_existing > 0:
+    print(f'Skipping {skipped_existing} files already in dest archive')
+  if missing_in_input > 0:
+    print(f'Warning: {missing_in_input} output files have no matching input file')
+
+  if not pairs:
+    print('No files to process')
+    return []
+
+  if dry_run:
+    print('Dry run mode, not modifying files')
+    return []
+
+  tmpdir = utils.get_tmp_dir(in_memory=True)
+  if not tmpdir:
+    raise RuntimeError('Could not get temporary directory for processing')
+
+  # Create a work directory for extracted and updated files
+  with tempfile.TemporaryDirectory(dir=tmpdir) as work_dir:
+    updated_dir = os.path.join(work_dir, 'updated')
+    os.makedirs(updated_dir)
+
+    # Create output directories for updated files
+    output_dirs = set()
+    for _, output_file in pairs:
+      output_dirs.add(os.path.join(updated_dir, os.path.dirname(output_file.path)))
+    for d in output_dirs:
+      os.makedirs(d, exist_ok=True)
+
+    results: list[MetadataCopyResult] = []
+    successful_updates: list[tuple[str, str]] = []  # (path_in_archive, path_on_disk)
+
+    if num_threads == 1 or debug:
+      for input_file, output_file in tqdm.tqdm(pairs, desc='Copying metadata'):
+        updated_path = os.path.join(updated_dir, output_file.path)
+        result = _copy_metadata_for_pair(
+            input_file=input_file,
+            output_file=output_file,
+            tmpdir=work_dir,
+            updated_path=updated_path,
+            copy_slp_metadata_binary=copy_slp_metadata_binary,
+            check_metadata=check_metadata,
+            debug=debug,
+        )
+        results.append(result)
+        if result.error is None:
+          successful_updates.append((output_file.path, updated_path))
+    else:
+      with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
+        try:
+          futures: dict[concurrent.futures.Future, tuple[utils.ZipFile, str]] = {}
+          for input_file, output_file in pairs:
+            updated_path = os.path.join(updated_dir, output_file.path)
+            future = executor.submit(
+                _copy_metadata_for_pair,
+                input_file=input_file,
+                output_file=output_file,
+                tmpdir=work_dir,
+                updated_path=updated_path,
+                copy_slp_metadata_binary=copy_slp_metadata_binary,
+                check_metadata=check_metadata,
+                debug=False
+            )
+            futures[future] = (output_file, updated_path)
+
+          for future in tqdm.tqdm(
+              concurrent.futures.as_completed(futures),
+              total=len(futures),
+              desc='Copying metadata'):
+            result = future.result()
+            results.append(result)
+            if result.error is None:
+              output_file, updated_path = futures[future]
+              successful_updates.append((output_file.path, updated_path))
+
+        except KeyboardInterrupt:
+          print('KeyboardInterrupt, shutting down')
+          executor.shutdown(cancel_futures=True)
+          raise
+
+    # Report results
+    failed_count = sum(1 for r in results if r.error is not None)
+    print(f'Metadata copy complete: {len(successful_updates)} successful, {failed_count} failed')
+
+    if failed_count > 0:
+      error_counts = collections.Counter(r.error for r in results if r.error is not None)
+      print('Errors:')
+      for error, count in error_counts.most_common(10):
+        print(f'  {count}: {error}')
+
+    # Update the output archive with modified files
+    if successful_updates:
+      print(f'Updating {len(successful_updates)}/{len(output_files)} files in output archive')
+
+      # Determine destination archive path
+      final_dest = dest_archive if dest_archive is not None else output_archive
+      replacing_all = len(successful_updates) == len(output_files)
+      writing_to_new_location = dest_archive is not None
+
+      if writing_to_new_location:
+        os.makedirs(os.path.dirname(os.path.abspath(final_dest)), exist_ok=True)
+        if not replacing_all:
+          # Copy original archive to new location, then modify it
+          import shutil
+          shutil.copy2(output_archive, final_dest)
+
+      if replacing_all:
+        # No need to keep the old archive
+        if not writing_to_new_location:
+          os.remove(output_archive)
+      else:
+        # Remove old versions of files being replaced
+        to_delete = [path_in_archive for path_in_archive, _ in successful_updates]
+        utils.delete_from_zip(final_dest, to_delete)
+
+      # Add the updated files
+      subprocess.check_call(
+          ['zip', '-r', '-q', '-0', os.path.abspath(final_dest), '.'],
+          cwd=updated_dir,
+      )
+
+      print(f'Output archive updated: {final_dest}')
+
+  return results
