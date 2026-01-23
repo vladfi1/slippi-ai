@@ -217,7 +217,7 @@ E = tp.TypeVar('E', bound=Exception)
 
 def retry(
     f: tp.Callable[[], T],
-    on_exception: tp.Mapping[type, tp.Callable[[], tp.Any]],
+    on_exception: tp.Mapping[type[Exception], tp.Callable[[], tp.Any]],
     num_retries: int = 4,
 ) -> T:
   for _ in range(num_retries):
@@ -232,13 +232,13 @@ def retry(
 
 def is_structure(type_: type) -> bool:
   assert isinstance(type_, type), f'Expected type, got {type_}'
-  return issubclass(type_, (tp.Mapping, tp.Sequence, np.ndarray))
+  return issubclass(type_, (tp.Mapping, tp.Sequence))
 
 def is_namedtuple(t: type) -> bool:
   return hasattr(t, '_fields')
 
 def is_sequence(t: type) -> bool:
-  return issubclass(t, (tp.Sequence, np.ndarray))
+  return issubclass(t, tp.Sequence)
 
 def _check_same_structure(
     s1, s2, equal: bool = False) -> list[tuple[list, str]]:
