@@ -195,13 +195,13 @@ Signature = tp.Sequence[tree.StructureKV[str, PackingSpec]]
 def packing_fns(
     signature: Signature,
 ):
-  flat_signature: list[PackingSpec] = tree.flatten(signature)
+  flat_signature: list[tuple[tuple[str, ...], PackingSpec]] = tree.flatten_with_path(signature)
 
   flat_slices = []
   num_skipped = 0
   packed_sizes = collections.defaultdict(lambda: 0)
 
-  for spec in flat_signature:
+  for _, spec in flat_signature:
     if spec is None:
       flat_slices.append(num_skipped)
       num_skipped += 1
@@ -222,14 +222,14 @@ def packing_fns(
 
     # flat_inputs = tree.flatten_up_to(signature, args, check_types=False)
     flat_inputs = utils.flatten_up_to(signature, args)
-    for array, spec in zip(flat_inputs, flat_signature):
+    for array, (path, spec) in zip(flat_inputs, flat_signature):
       if spec is None:
         skipped.append(array)
         continue
 
-      assert isinstance(array, np.ndarray)
-      assert array.dtype == spec.dtype
-      assert array.shape == spec.shape
+      assert isinstance(array, np.ndarray), path
+      assert array.dtype == spec.dtype, path
+      assert array.shape == spec.shape, path
       flattened_args[spec.dtype].append(np.reshape(array, [-1]))
 
     packed = []
@@ -244,9 +244,9 @@ def packing_fns(
         for dtype, array in zip(dtypes, packed_args)
     }
     flat_arrays = []
-    for spec, slice_or_idx in zip(flat_signature, flat_slices):
+    for (path, spec), slice_or_idx in zip(flat_signature, flat_slices):
       if spec is None:
-        assert isinstance(slice_or_idx, int)
+        assert isinstance(slice_or_idx, int), path
         flat_arrays.append(skipped[slice_or_idx])
         continue
 
