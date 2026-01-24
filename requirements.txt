@@ -1,13 +1,10 @@
 pandas
-dm-sonnet
 dm-tree
 git+https://github.com/vladfi1/libmelee.git@v0.43.0
-tensorflow
-tensorflow_probability[tf]
 wandb
 dnspython
 fancyflags
 pyarrow
-git+https://github.com/vladfi1/py7zr.git@dev
+py7zr
 parameterized
 peppi-py==0.8.1
