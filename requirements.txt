@@ -1,9 +1,6 @@
 pandas
-dm-sonnet
 dm-tree
 melee
-tensorflow
-tensorflow_probability[tf]
 wandb
 dnspython
 fancyflags
