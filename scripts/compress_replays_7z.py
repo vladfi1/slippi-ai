@@ -7,13 +7,6 @@ currently open, and then calls the external **7-Zip** tool to add everything
 else to a ZIP archive (default: Replays.zip).
 After a successful 7-Zip run the script deletes the files that were archived.
 
-Open-file detection order
--------------------------
-1. If **lsof** is available, any file that appears in `lsof <file>` is treated
-   as “open”.
-2. If lsof is missing, a file counts as open **unless** it is older than one
-   day (mtime > 24 h).
-
 The list of *open* files is written to a temporary list-file, which is passed
 to 7-Zip with the `-x@<list>` flag so that only **closed** files are added.
 """
@@ -24,6 +17,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 from absl import app, flags
 from tqdm import tqdm
@@ -33,7 +27,7 @@ flags.DEFINE_string("source_dir", "Replays", "Directory to scan for replay files
 flags.DEFINE_string("zip_filename", "Replays.zip", "Target ZIP archive path.")
 flags.DEFINE_integer("cores", None, "Number of cores to use.")
 
-ONE_DAY_SECS = 24 * 60 * 60
+AGE_LIMIT_SECONDS = 60 * 60
 
 
 # ---------- utility helpers -------------------------------------------------
@@ -43,30 +37,15 @@ def cmd_exists(cmd: str) -> bool:
   # return subprocess.call(["command", "-v", cmd], stdout=subprocess.DEVNULL,
   #                        stderr=subprocess.DEVNULL, shell=False) == 0
 
-
-def file_is_open_lsof(path: Path) -> bool:
-  """True if *path* shows up in `lsof` output (i.e. some process has it open)."""
-  try:
-    result = subprocess.run(["lsof", str(path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True)
-    return result.returncode == 0 and bool(result.stdout.strip())
-  except FileNotFoundError:    # should not happen if we checked cmd_exists
-    return False
-
-
 def file_is_open_mtime(path: Path) -> bool:
-  """Fallback check: treat files newer than 1 day as still open."""
-  return (time.time() - path.stat().st_mtime) < ONE_DAY_SECS
+  """Fallback check: treat files newer than 1 hour as still open."""
+  return (time.time() - path.stat().st_mtime) < AGE_LIMIT_SECONDS
 
 
 # ---------- main archiving routine -----------------------------------------
 def archive_replays(source_dir: Path, zip_path: Path, cores: Optional[int] = None) -> None:
   if not source_dir.is_dir():
     sys.exit(f"[ERROR] Source directory {source_dir} does not exist.")
-
-  lsof_ok = cmd_exists("lsof")
 
   seven_zip_ok = False
   for seven_zip_command in ("7z", "7zz", "7z.exe"):
@@ -83,7 +62,6 @@ def archive_replays(source_dir: Path, zip_path: Path, cores: Optional[int] = Non
     return
 
   open_files, closed_files = [], []
-  # check_fn = file_is_open_lsof if lsof_ok else file_is_open_mtime
   check_fn = file_is_open_mtime
 
   for p in tqdm(all_files, desc="Checking files", unit="file"):
