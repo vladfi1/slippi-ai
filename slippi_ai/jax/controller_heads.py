@@ -4,6 +4,7 @@ import typing as tp
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 from slippi_ai.jax import embed, jax_utils
@@ -78,7 +79,9 @@ class Independent(ControllerHead[ControllerType]):
     # Independent and AutoRegressive ControllerHeads.
     embed_struct = self.embed_controller.map(lambda e: e)
     embed_sizes = [e.size for e in self.embed_controller.flatten(embed_struct)]
-    leaf_logits = jnp.split(controller_prediction, jnp.cumsum(jnp.array(embed_sizes[:-1])), axis=-1)
+    # Use numpy for split indices to avoid tracing issues with JIT
+    split_indices = np.cumsum(embed_sizes[:-1]).tolist()
+    leaf_logits = jnp.split(controller_prediction, split_indices, axis=-1)
     return self.embed_controller.unflatten(iter(leaf_logits))
 
   def sample(self, rngs, inputs, prev_controller_state, temperature=None):
