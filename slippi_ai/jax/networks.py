@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.data import StateAction
 from slippi_ai.types import Game
@@ -19,13 +20,7 @@ Inputs = Array
 
 def where_pytree(cond: Array, x, y):
   """Like jnp.where but broadcasts cond over pytree leaves."""
-  def _where(a, b):
-    # Expand cond to broadcast over feature dimensions
-    cond_expanded = cond
-    while cond_expanded.ndim < a.ndim:
-      cond_expanded = jnp.expand_dims(cond_expanded, -1)
-    return jnp.where(cond_expanded, a, b)
-  return jax.tree.map(_where, x, y)
+  return jax.tree.map(lambda a, b: jax_utils.where(cond, a, b), x, y)
 
 InputTree = tp.TypeVar('InputTree')
 
@@ -78,6 +73,16 @@ def scan_rnn(
 
 
 class Network(nnx.Module, abc.ABC):
+
+  @staticmethod
+  def default_config() -> dict[str, tp.Any]:
+    '''Returns the default config for this Network.'''
+    raise NotImplementedError()
+
+  @property
+  @abc.abstractmethod
+  def output_size(self) -> int:
+    '''Returns the output size of the network.'''
 
   @abc.abstractmethod
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -162,41 +167,47 @@ class Network(nnx.Module, abc.ABC):
 
 
 class MLP(Network):
-  CONFIG = dict(
+
+  @staticmethod
+  def default_config() -> dict[str, tp.Any]:
+    return dict(
       depth=2,
       width=128,
-  )
+    )
 
   def __init__(self, rngs: nnx.Rngs, input_size: int, depth: int, width: int):
-    self.layers = nnx.List()
-    prev_size = input_size
-    for _ in range(depth):
-      self.layers.append(nnx.Linear(prev_size, width, rngs=rngs))
-      prev_size = width
+    self._width = width
+    self._mlp = jax_utils.MLP(
+        rngs=rngs,
+        input_size=input_size,
+        features=[width] * depth,
+    )
+
+  @property
+  def output_size(self) -> int:
+    return self._width
 
   def initial_state(self, batch_size, rngs):
     return ()
 
-  def _forward(self, inputs):
-    x = inputs
-    for layer in self.layers:
-      x = nnx.relu(layer(x))
-    return x
-
   def step(self, inputs, prev_state):
     del prev_state
-    return self._forward(inputs), ()
+    return self._mlp(inputs), ()
 
   def unroll(self, inputs, reset, initial_state):
     del reset, initial_state
-    return self._forward(inputs), ()
-
+    return self._mlp(inputs), ()
 
 class RecurrentWrapper(Network):
   """Wraps an RNN cell as a Network."""
 
-  def __init__(self, core: nnx.RNNCellBase):
+  def __init__(self, core: nnx.RNNCellBase, output_size: int):
     self._core = core
+    self._output_size = output_size
+
+  @property
+  def output_size(self) -> int:
+    return self._output_size
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     input_shape = (batch_size, getattr(self._core, 'in_features', 1))
@@ -214,8 +225,13 @@ class FFWWrapper(Network):
   Assumes that the module can handle multiple batch dimensions.
   """
 
-  def __init__(self, module: tp.Callable[[Array], Array]):
+  def __init__(self, module: tp.Callable[[Array], Array], output_size: int):
     self._module = module
+    self._output_size = output_size
+
+  @property
+  def output_size(self) -> int:
+    return self._output_size
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     del batch_size, rngs
@@ -238,6 +254,10 @@ class Sequential(Network):
 
   def __init__(self, layers: list[Network]):
     self._layers = nnx.List(layers)
+
+  @property
+  def output_size(self) -> int:
+    return self._layers[-1].output_size
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     return [layer.initial_state(batch_size, rngs) for layer in self._layers]
@@ -269,6 +289,10 @@ class ResidualWrapper(Network):
   def __init__(self, net: Network):
     self._net = net
 
+  @property
+  def output_size(self) -> int:
+    return self._net.output_size
+
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     return self._net.initial_state(batch_size, rngs)
 
@@ -286,22 +310,36 @@ class ResidualWrapper(Network):
 
 
 class GRU(RecurrentWrapper):
-  CONFIG = dict(hidden_size=128)
+
+  @staticmethod
+  def default_config() -> dict[str, tp.Any]:
+    return dict(
+      hidden_size=128,
+    )
 
   def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int):
-    super().__init__(nnx.GRUCell(
-        in_features=input_size,
-        hidden_features=hidden_size,
-        rngs=rngs))
+    super().__init__(
+        nnx.GRUCell(
+            in_features=input_size,
+            hidden_features=hidden_size,
+            rngs=rngs),
+        output_size=hidden_size)
 
 class LSTM(RecurrentWrapper):
-  CONFIG = dict(hidden_size=128)
+
+  @staticmethod
+  def default_config() -> dict[str, tp.Any]:
+    return dict(
+      hidden_size=128,
+    )
 
   def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int):
-    super().__init__(nnx.LSTMCell(
-        in_features=input_size,
-        hidden_features=hidden_size,
-        rngs=rngs))
+    super().__init__(
+        nnx.LSTMCell(
+            in_features=input_size,
+            hidden_features=hidden_size,
+            rngs=rngs),
+        output_size=hidden_size)
 
 
 class ResBlock(nnx.Module):
@@ -330,16 +368,18 @@ class ResBlock(nnx.Module):
     return residual + x
 
 
-class TransformerLike(Network):
+class TransformerLike(Sequential):
   """Alternates recurrent and FFW layers."""
 
-  CONFIG = dict(
-      hidden_size=128,
-      num_layers=1,
-      ffw_multiplier=4,
-      recurrent_layer='lstm',
-      activation='gelu',
-  )
+  @staticmethod
+  def default_config() -> dict[str, tp.Any]:
+    return dict(
+        hidden_size=128,
+        num_layers=1,
+        ffw_multiplier=4,
+        recurrent_layer='lstm',
+        activation='gelu',
+    )
 
   def __init__(
       self,
@@ -370,7 +410,7 @@ class TransformerLike(Network):
 
     # We need to encode for the first residual
     encoder = nnx.Linear(input_size, hidden_size, rngs=rngs)
-    layers.append(FFWWrapper(encoder))
+    layers.append(FFWWrapper(encoder, output_size=hidden_size))
 
     for _ in range(num_layers):
       recurrent = ResidualWrapper(
@@ -380,24 +420,18 @@ class TransformerLike(Network):
       ffw_layer = ResBlock(
           rngs, hidden_size, hidden_size * ffw_multiplier,
           activation=activation_fn)
-      layers.append(FFWWrapper(ffw_layer))
+      layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
 
-    self._sequential = Sequential(layers)
+    super().__init__(layers)
 
-  def initial_state(self, batch_size, rngs: nnx.Rngs):
-    return self._sequential.initial_state(batch_size, rngs)
-
-  def step(self, inputs, prev_state):
-    return self._sequential.step(inputs, prev_state)
-
-  def unroll(self, inputs, reset, initial_state):
-    return self._sequential.unroll(inputs, reset, initial_state)
-
-  def scan(self, inputs, reset, initial_state):
-    return self._sequential.scan(inputs, reset, initial_state)
 
 class StateActionNetwork(nnx.Module, abc.ABC):
   """Like a network, but takes StateAction as input."""
+
+  @property
+  @abc.abstractmethod
+  def output_size(self) -> int:
+    """Returns the output size of the network."""
 
   @abc.abstractmethod
   def dummy(self, shape: Tuple[int, ...]) -> StateAction:
@@ -480,6 +514,10 @@ class SimpleEmbedNetwork(StateActionNetwork):
     self._embed_state_action = embed_state_action
     self._network = network
 
+  @property
+  def output_size(self) -> int:
+    return self._network.output_size
+
   def dummy(self, shape: Tuple[int, ...]) -> StateAction:
     return self._embed_state_action.dummy(shape)
 
@@ -530,10 +568,7 @@ CONSTRUCTORS: dict[str, type[Network]] = dict(
 
 DEFAULT_CONFIG: dict[str, Any] = dict(
     name='mlp',
-    mlp=MLP.CONFIG,
-    gru=GRU.CONFIG,
-    lstm=LSTM.CONFIG,
-    tx_like=TransformerLike.CONFIG,
+    **{name: cls.default_config() for name, cls in CONSTRUCTORS.items()}
 )
 
 
@@ -543,6 +578,10 @@ def default_config() -> dict[str, Any]:
   Use this method when using as a dataclass field default value.
   """
   return copy.deepcopy(DEFAULT_CONFIG)
+
+
+# Alias for train_lib compatibility
+default_network_config = default_config
 
 
 def construct_network(
