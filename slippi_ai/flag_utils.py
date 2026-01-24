@@ -93,7 +93,7 @@ def is_leaf(type_: Type) -> bool:
     return False
   return True
 
-def get_flags_from_default(default) -> tp.Optional[tree.Structure[ff.Item]]:
+def get_flags_from_default(default) -> tp.Optional[tree.Structure[Item]]:
   if isinstance(default, dict):
     result = {}
     for k, v in default.items():
