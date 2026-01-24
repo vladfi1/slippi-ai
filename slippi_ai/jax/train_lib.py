@@ -136,10 +136,11 @@ _field = utils.field
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
-  save_interval: int = 300  # seconds between saving to disk
 
   eval_every_n: int = 100  # number of training steps between evaluations
   num_eval_steps: int = 10  # number of batches per evaluation
+
+  compile: bool = True  # whether to JIT compile the training step
 
 
 @dataclasses.dataclass
@@ -173,7 +174,7 @@ class Config:
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
-  restore_pickle: tp.Optional[str] = None
+  restore_path: tp.Optional[str] = None
 
   version: int = 1
 
@@ -311,9 +312,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # attempt to restore parameters
   restored = False
   combined_state: tp.Optional[dict] = None
-  if config.restore_pickle:
-    logging.info('restoring from %s', config.restore_pickle)
-    with open(config.restore_pickle, 'rb') as f:
+  if config.restore_path:
+    logging.info('restoring from %s', config.restore_path)
+    with open(config.restore_path, 'rb') as f:
       combined_state = pickle.load(f)
     restored = True
   elif os.path.exists(pickle_path):
@@ -416,16 +417,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data = data_lib.make_source(replays=test_replays, **data_config)
   del train_replays, test_replays  # free up memory
 
+  runtime = config.runtime
+
   train_manager = TrainManager(
-      learner, train_data, dict(train=True), rngs=rngs)
+      learner, train_data, dict(train=True, compile=runtime.compile), rngs=rngs)
   test_manager = TrainManager(
-      learner, test_data, dict(train=False), rngs=rngs)
+      learner, test_data, dict(train=False, compile=runtime.compile), rngs=rngs)
 
   # TrainManager should probably be a proper context manager.
   exit_stack.callback(train_manager.stop)
   exit_stack.callback(test_manager.stop)
-
-  runtime = config.runtime
 
   # initialize variables
   train_stats, _ = train_manager.step()
@@ -531,7 +532,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       # Stats are either scalars or (time, batch)-shaped.
       if isinstance(x, jax.Array):
         x = np.asarray(x)
-      if isinstance(x, float) or len(x.shape) == 0:
+      if isinstance(x, (int, float)) or (hasattr(x, 'shape') and len(x.shape) == 0):
         return x
 
       return np.mean(x, axis=0)

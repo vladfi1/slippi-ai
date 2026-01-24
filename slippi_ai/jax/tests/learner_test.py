@@ -97,11 +97,19 @@ def main():
   # Get initial state
   initial_state = learner.initial_state(batch_size, rngs)
 
-  print("Running _step...")
-  metrics, final_state = learner._step(frames, initial_state, train=True)
+  print("Running _step (uncompiled)...")
+  metrics, final_state = learner.step(frames, initial_state, train=True, compile=False)
+  print(f"Total loss: {metrics['total_loss']}")
+
+  print("Running step (JIT compiled, first call)...")
+  metrics, final_state = learner.step(frames, initial_state, train=True, compile=True)
+  print(f"Total loss: {metrics['total_loss']}")
+
+  print("Running step (JIT compiled, second call)...")
+  metrics, final_state = learner.step(frames, initial_state, train=True, compile=True)
+  print(f"Total loss: {metrics['total_loss']}")
 
   print("Success!")
-  print(f"Total loss: {metrics['total_loss']}")
 
 
 if __name__ == '__main__':

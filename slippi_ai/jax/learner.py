@@ -30,6 +30,7 @@ class LearnerConfig:
   decay_rate: float = 0.
   value_cost: float = 0.5
   reward_halflife: float = 4
+  compile: bool = True
 
 
 class Learner(nnx.Module):
@@ -42,12 +43,14 @@ class Learner(nnx.Module):
       reward_halflife: float,
       value_function: Optional[vf_lib.ValueFunction] = None,
       decay_rate: Optional[float] = None,
+      compile: bool = True,
   ):
     self.policy = policy
     self.value_function = value_function or vf_lib.FakeValueFunction()
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
     self.decay_rate = decay_rate
+    self.compile = compile
 
     # Create optimizers using optax
     self.policy_optimizer = nnx.Optimizer(
@@ -55,6 +58,10 @@ class Learner(nnx.Module):
 
     self.value_optimizer = nnx.Optimizer(
         self.value_function, optax.adam(learning_rate), wrt=nnx.Param)
+
+    # JIT-compiled versions of step (created lazily)
+    self._jit_train_step: Optional[callable] = None
+    self._jit_eval_step: Optional[callable] = None
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return (
@@ -119,11 +126,56 @@ class Learner(nnx.Module):
     final_states = (policy_final_states, value_final_states)
     return metrics, final_states
 
+  def _get_jit_train_step(self):
+    """Lazily create JIT-compiled training step."""
+    if self._jit_train_step is None:
+      @nnx.jit
+      def jit_train_step(
+          learner: Learner,
+          frames: Frames,
+          initial_states: RecurrentState,
+      ) -> tuple[dict, RecurrentState]:
+        return learner._step(frames, initial_states, train=True)
+      self._jit_train_step = jit_train_step
+    return self._jit_train_step
+
+  def _get_jit_eval_step(self):
+    """Lazily create JIT-compiled eval step."""
+    if self._jit_eval_step is None:
+      @nnx.jit
+      def jit_eval_step(
+          learner: Learner,
+          frames: Frames,
+          initial_states: RecurrentState,
+      ) -> tuple[dict, RecurrentState]:
+        return learner._step(frames, initial_states, train=False)
+      self._jit_eval_step = jit_eval_step
+    return self._jit_eval_step
+
   def step(
       self,
       frames: Frames,
       initial_states: RecurrentState,
       train: bool = True,
+      compile: Optional[bool] = None,
   ) -> tuple[dict, RecurrentState]:
-    """Training step."""
-    return self._step(frames, initial_states, train=train)
+    """Training/eval step.
+
+    Args:
+      frames: Batch of frames to train on.
+      initial_states: Initial recurrent states.
+      train: Whether to compute gradients and update parameters.
+      compile: Whether to use JIT compilation.
+
+    Returns:
+      Tuple of (metrics dict, final recurrent states).
+    """
+    compile = self.compile if compile is None else compile
+
+    if compile:
+      if train:
+        return self._get_jit_train_step()(self, frames, initial_states)
+      else:
+        return self._get_jit_eval_step()(self, frames, initial_states)
+    else:
+      return self._step(frames, initial_states, train=train)
