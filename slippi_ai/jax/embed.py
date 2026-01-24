@@ -14,6 +14,7 @@ from typing import (
 
 import jax
 import jax.numpy as jnp
+import optax
 import numpy as np
 
 from slippi_ai import utils, types
@@ -28,6 +29,8 @@ Array = jax.Array
 In = TypeVar('In')
 Out = TypeVar('Out')
 
+
+# TODO: distinguish between leaf and composite embeddings
 class Embedding(Generic[In, Out], abc.ABC):
   """Embeds game type (In) into jax-ready type Out."""
 
@@ -101,18 +104,10 @@ class BoolEmbedding(Embedding[np.bool, np.bool]):
 
   def distance(self, distribution: Array, target: Array):
     logits = jnp.squeeze(distribution, axis=-1)
-    labels = target.astype(jnp.float32)
+    return optax.sigmoid_binary_cross_entropy(
+        logits, target)
 
-    # Broadcast to common shape
-    common_shape = jnp.broadcast_shapes(logits.shape, labels.shape)
-    logits = jnp.broadcast_to(logits, common_shape)
-    labels = jnp.broadcast_to(labels, common_shape)
-
-    # sigmoid cross entropy: max(logits, 0) - logits * labels + log(1 + exp(-abs(logits)))
-    return (jnp.maximum(logits, 0) - logits * labels +
-            jnp.log1p(jnp.exp(-jnp.abs(logits))))
-
-  def sample(self, rng: jax.Array, distribution: Array, temperature=None):
+  def sample(self, rng: jax.Array, distribution: Array, temperature=None, **_):
     logits = jnp.squeeze(distribution, axis=-1)
     if temperature is not None:
       logits = logits / temperature
@@ -229,9 +224,7 @@ class OneHotEmbedding(Embedding[int, T]):
     return jnp.argmax(embedded, axis=-1).astype(self.dtype)
 
   def distance(self, distribution: Array, target: Array):
-    logprobs = jax.nn.log_softmax(distribution)
-    target = self(target)
-    return -jnp.sum(logprobs * target, axis=-1)
+    return optax.softmax_cross_entropy_with_integer_labels(distribution, target)
 
   def sample(self, rng: jax.Array, distribution: Array, temperature=None, **_):
     logits = distribution
