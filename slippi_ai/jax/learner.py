@@ -41,12 +41,12 @@ class Learner(nnx.Module):
       learning_rate: float,
       value_cost: float,
       reward_halflife: float,
-      value_function: Optional[vf_lib.ValueFunction] = None,
+      value_function: vf_lib.ValueFunction,
       decay_rate: Optional[float] = None,
       compile: bool = True,
   ):
     self.policy = policy
-    self.value_function = value_function or vf_lib.FakeValueFunction()
+    self.value_function = value_function
     self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
     self.decay_rate = decay_rate
@@ -129,7 +129,7 @@ class Learner(nnx.Module):
   def _get_jit_train_step(self):
     """Lazily create JIT-compiled training step."""
     if self._jit_train_step is None:
-      @nnx.jit
+      @nnx.jit(donate_argnames=('learner',))
       def jit_train_step(
           learner: Learner,
           frames: Frames,
@@ -142,7 +142,7 @@ class Learner(nnx.Module):
   def _get_jit_eval_step(self):
     """Lazily create JIT-compiled eval step."""
     if self._jit_eval_step is None:
-      @nnx.jit
+      @nnx.jit(donate_argnames=('learner',))
       def jit_eval_step(
           learner: Learner,
           frames: Frames,
