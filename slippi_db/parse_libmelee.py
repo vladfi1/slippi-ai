@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import pyarrow as pa
@@ -22,12 +22,12 @@ from slippi_ai.types import (
 )
 from slippi_db import parsing_utils
 
-def get_stick(stick: Tuple[float]) -> Stick:
+def get_stick(stick: tuple[float, ...]) -> Stick:
   return Stick(*map(np.float32, stick))
 
 def get_buttons(button: Dict[melee.Button, bool]) -> Buttons:
   return Buttons(**{
-      name: button[lm_button]
+      name: np.bool(button[lm_button])
       for name, lm_button in LIBMELEE_BUTTONS.items()
   })
 
@@ -35,7 +35,7 @@ def get_controller(cs: melee.ControllerState) -> Controller:
   return Controller(
       main_stick=get_stick(cs.main_stick),
       c_stick=get_stick(cs.c_stick),
-      shoulder=cs.l_shoulder,
+      shoulder=np.float32(cs.l_shoulder),
       buttons=get_buttons(cs.processed_button),
   )
 
@@ -70,7 +70,7 @@ def get_player(player: melee.PlayerState) -> Player:
 
   if player.nana is not None:
     nana_dict = get_base_player(player.nana)
-    nana = Nana(exists=True, **nana_dict)
+    nana = Nana(exists=np.bool(True), **nana_dict)
   else:
     nana = _EMPTY_NANA
 
