@@ -11,7 +11,6 @@ from slippi_ai.data import Frames
 from slippi_ai.jax.policies import Policy
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import value_function as vf_lib
-from slippi_ai import utils
 
 Array = jax.Array
 
@@ -30,7 +29,6 @@ class LearnerConfig:
   decay_rate: float = 0.
   value_cost: float = 0.5
   reward_halflife: float = 4
-  compile: bool = True
 
 
 class Learner(nnx.Module):
@@ -179,3 +177,12 @@ class Learner(nnx.Module):
         return self._get_jit_eval_step()(self, frames, initial_states)
     else:
       return self._step(frames, initial_states, train=train)
+
+  def get_state(self):
+    _, state = nnx.split(self)
+    return state.to_pure_dict()
+
+  def set_state(self, state_dict):
+    _, state = nnx.split(self)
+    nnx.replace_by_pure_dict(state, state_dict)
+    nnx.update(self, state)
