@@ -2,12 +2,58 @@
 
 from typing import Tuple
 
+import numpy as np
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from flax import nnx
 
 Array = jax.Array
 
+
+# Multi-device utilities
+
+def get_mesh(axis_name: str = 'data') -> Mesh:
+  """Create a 1D device mesh for data parallelism."""
+  return Mesh(jax.devices(), (axis_name,))
+
+
+def replicate_sharding(mesh: Mesh) -> NamedSharding:
+  """Create a sharding that replicates data across all devices."""
+  return NamedSharding(mesh, P())
+
+
+def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
+  """Create a sharding that splits the first axis across devices."""
+  return NamedSharding(mesh, P(axis_name))
+
+
+def shard_module(module: nnx.Module, sharding: NamedSharding):
+  """Shard/replicate module parameters across devices in-place."""
+  _, state = nnx.split(module)
+  sharded_state = jax.tree.map(
+      lambda x: jax.device_put(x, sharding), state)
+  nnx.update(module, sharded_state)
+
+
+def replicate_module(module: nnx.Module, mesh: Mesh):
+  """Replicate module parameters across all devices in the mesh."""
+  shard_module(module, replicate_sharding(mesh))
+
+
+def shard_pytree(pytree, sharding: NamedSharding):
+  """Shard a pytree of arrays with the given sharding."""
+  def shard_leaf(x):
+    return jax.device_put(x, sharding)
+  return jax.tree.map(shard_leaf, pytree)
+
+
+def num_devices() -> int:
+  """Get the number of local devices."""
+  return jax.local_device_count()
+
+
+# Other utilities
 
 def mean_and_variance(xs: Array) -> Tuple[Array, Array]:
   mean = jnp.mean(xs)
