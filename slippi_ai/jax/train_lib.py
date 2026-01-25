@@ -50,9 +50,9 @@ class TrainManager:
   def __init__(
       self,
       learner: learner_lib.Learner,
-      data_source: data_lib.DataSource,
+      data_source: data_lib.AbstractDataSource,
       step_kwargs={},
-      prefetch: int = 16,
+      prefetch: int = 8,
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
   ):
@@ -156,7 +156,7 @@ class RuntimeConfig:
   num_eval_steps: int = 10  # number of batches per evaluation
 
   compile: bool = True  # whether to JIT compile the training step
-  multi_device: bool = False  # whether to use multi-device data parallelism
+  multi_device: bool = True  # whether to use multi-device data parallelism
 
 
 @dataclasses.dataclass
@@ -424,7 +424,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
-  test_data = data_lib.make_source(replays=test_replays, **data_config)
+
+  test_data_config = dict(
+      data_config,
+      # Use more workers for test data to keep up with eval speed.
+      num_workers=2 * config.data.num_workers,
+  )
+  test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays  # free up memory
 
   train_manager = TrainManager(
@@ -517,7 +523,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     test_loss = _get_loss(test_stats)
 
     print(f'step={total_steps} epoch={epoch:.3f}')
-    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
+    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e} qsize={train_stats["frames_queue_size"]}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
           f' data={data_time:.3f}'
