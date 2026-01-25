@@ -521,7 +521,6 @@ def train(config: Config):
         per_character_loss_sums[name] = np.sum(loss * mask)
         per_character_loss_counts[name] = np.sum(mask)
 
-      losses, counts = zip(*loss_sums_and_counts)
       to_log['eval_characters'] = dict(
           losses=per_character_loss_sums,
           counts=per_character_loss_counts,

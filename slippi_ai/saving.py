@@ -1,7 +1,6 @@
 import dataclasses
 import pickle
 
-from absl import logging
 import tree
 
 from slippi_ai import (
@@ -11,6 +10,7 @@ from slippi_ai import (
     networks,
     controller_heads,
     embed,
+    data,
 )
 from slippi_ai.flag_utils import dataclass_from_dict
 
@@ -30,7 +30,6 @@ def upgrade_config(config: dict):
       train_value_head=False,
     )
     config['version'] = 1
-    logging.warning('Upgraded config to version 1')
 
   if config['version'] == 1:
     if 'value_function' not in config:
@@ -39,7 +38,6 @@ def upgrade_config(config: dict):
       )
 
     config['version'] = 2
-    logging.warning('Upgraded config version 1 -> 2')
 
   if config['version'] == 2:
     assert 'embed' not in config
@@ -58,14 +56,12 @@ def upgrade_config(config: dict):
     )
     config['embed'] = dataclasses.asdict(old_embed_config)
     config['version'] = 3
-    logging.warning('Upgraded config version 2 -> 3')
 
   if config['version'] == 3:
     assert 'observation' not in config
     config['observation'] = dataclasses.asdict(
         observations.NULL_OBSERVATION_CONFIG)
     config['version'] = 4
-    logging.warning('Upgraded config version 3 -> 4')
 
   if config['version'] == 4:
     old_items_config = embed.ItemsConfig(type=embed.ItemsType.SKIP)
@@ -79,7 +75,11 @@ def upgrade_config(config: dict):
         legacy_jumps_left=True,
     )
     config['version'] = 5
-    logging.warning('Upgraded config version 4 -> 5')
+
+  # Everything else is handled by the defaults in train_lib.Config
+  from slippi_ai.train_lib import Config  # avoid circular import
+  config_dc = dataclass_from_dict(Config, config)
+  config = dataclasses.asdict(config_dc)
 
   assert config['version'] == VERSION
   return config
