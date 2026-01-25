@@ -345,6 +345,11 @@ def interleave(*iterables: tp.Iterable[T]) -> tp.Iterator[T]:
       except StopIteration:
         iterators.remove(it)
 
+def cycle_iterable(iterable: tp.Iterable[T]) -> tp.Iterator[T]:
+  """More efficient than itertools.cycle as it avoids storing a copy of the iterable."""
+  while True:
+    yield from iterable
+
 def find_open_udp_ports(num: int):
   min_port = 10_000
   max_port = 2 ** 16
