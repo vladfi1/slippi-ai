@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """Test imitation learning training loop - JAX version."""
 
 from absl import app
