@@ -35,6 +35,7 @@ from slippi_ai.jax import controller_heads
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import policies as policies_lib
 from slippi_ai.jax import value_function as vf_lib
+from slippi_ai.jax import jax_utils
 from slippi_ai import data as data_lib
 from slippi_ai import observations as obs_lib
 
@@ -53,14 +54,23 @@ class TrainManager:
       step_kwargs={},
       prefetch: int = 16,
       rngs: tp.Optional[nnx.Rngs] = None,
+      data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
   ):
     self.learner = learner
     self.data_source = data_source
     self.rngs = rngs or nnx.Rngs(0)
-    self.hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     self.step_kwargs = step_kwargs
     self.data_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
+    self.data_sharding = data_sharding
+
+    # Initialize hidden state (and shard if multi-device)
+    hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
+    if data_sharding is not None:
+      hidden_state = jax_utils.shard_pytree(hidden_state, data_sharding)
+    self.hidden_state = hidden_state
+
+    self._encode_state_action = learner.policy.network.encode
 
     self.frames_queue = queue.Queue(maxsize=prefetch)
     self.stop_requested = threading.Event()
@@ -69,6 +79,7 @@ class TrainManager:
     self.data_thread.start()
 
   def produce_frames(self):
+    # TODO: we might not need this anymore due to jax runahead
     while not self.stop_requested.is_set():
       batch, epoch = next(self.data_source)
       frames = batch.frames
@@ -78,10 +89,14 @@ class TrainManager:
 
       # Encode frames using the policy's network
       frames = frames._replace(
-          state_action=self.learner.policy.network.encode(frames.state_action))
+          state_action=self._encode_state_action(frames.state_action))
 
-      # Convert to JAX arrays
-      frames = utils.map_nt(jnp.asarray, frames)
+      # Convert to JAX arrays (and shard if multi-device)
+      if self.data_sharding is not None:
+        frames = jax_utils.shard_pytree(frames, self.data_sharding)
+      else:
+        frames = utils.map_nt(jnp.asarray, frames)
+
       data = (batch, epoch, frames)
 
       # Try to put data into the queue, but check for stop_requested
@@ -141,11 +156,11 @@ class RuntimeConfig:
   num_eval_steps: int = 10  # number of batches per evaluation
 
   compile: bool = True  # whether to JIT compile the training step
+  multi_device: bool = False  # whether to use multi-device data parallelism
 
 
 @dataclasses.dataclass
 class ValueFunctionConfig:
-  train_separate_network: bool = True
   separate_network_config: bool = True
   network: dict = _field(networks.default_network_config)
 
@@ -168,7 +183,7 @@ class Config:
   policy: policies_lib.PolicyConfig = _field(policies_lib.PolicyConfig)
   value_function: ValueFunctionConfig = _field(ValueFunctionConfig)
 
-  max_names: int = 16
+  max_names: int = 16  # Move to embed or dataset?
 
   expt_root: str = 'experiments/jax'
   expt_dir: tp.Optional[str] = None
@@ -176,6 +191,7 @@ class Config:
 
   restore_path: tp.Optional[str] = None
 
+  seed: int = 0
   version: int = 1
 
 
@@ -252,45 +268,16 @@ def value_function_from_config(
     rngs: nnx.Rngs,
 ) -> tp.Optional[vf_lib.ValueFunction]:
   vf_config = config.value_function
-  if vf_config.train_separate_network:
-    network_config = config.network
-    if vf_config.separate_network_config:
-      network_config = vf_config.network
+  network_config = config.network
+  if vf_config.separate_network_config:
+    network_config = vf_config.network
 
-
-    return vf_lib.ValueFunction(
-        rngs=rngs,
-        network_config=network_config,
-        num_names=config.max_names,
-        embed_config=config.embed,
-    )
-  else:
-    return None
-
-
-def get_state(learner: learner_lib.Learner) -> dict:
-  """Extract serializable state from learner."""
-  # Use nnx.state to get the state
-  _, policy_state = nnx.split(learner.policy)
-  _, value_state = nnx.split(learner.value_function)
-  _, policy_opt_state = nnx.split(learner.policy_optimizer)
-  _, value_opt_state = nnx.split(learner.value_optimizer)
-
-  return dict(
-      policy=policy_state.to_pure_dict(),
-      value_function=value_state.to_pure_dict(),
-      policy_optimizer=policy_opt_state.to_pure_dict(),
-      value_optimizer=value_opt_state.to_pure_dict(),
+  return vf_lib.ValueFunction(
+      rngs=rngs,
+      network_config=network_config,
+      num_names=config.max_names,
+      embed_config=config.embed,
   )
-
-
-def set_state(learner: learner_lib.Learner, state: dict):
-  """Restore state to learner."""
-  # Use nnx.update to restore state
-  nnx.update(learner.policy, state['policy'])
-  nnx.update(learner.value_function, state['value_function'])
-  nnx.update(learner.policy_optimizer, state['policy_optimizer'])
-  nnx.update(learner.value_optimizer, state['value_optimizer'])
 
 
 def train(config: Config):
@@ -351,7 +338,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         setattr(config, key, previous)
 
   # Initialize RNG
-  rngs = nnx.Rngs(0)
+  rngs = nnx.Rngs(config.seed)
 
   # Build policy and value function
   policy = policy_from_config(config, rngs)
@@ -363,6 +350,29 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       value_function=value_function,
       **learner_kwargs,
   )
+
+  # Multi-device setup
+  runtime = config.runtime
+  mesh = None
+  data_sharding = None
+  if runtime.multi_device:
+    num_devices = jax_utils.num_devices()
+    if num_devices > 1:
+      logging.info('Multi-device training enabled with %d devices', num_devices)
+      if config.data.batch_size % num_devices != 0:
+        raise ValueError(
+            f'Batch size {config.data.batch_size} must be divisible by '
+            f'num_devices {num_devices}')
+      mesh = jax_utils.get_mesh()
+      jax_utils.replicate_module(learner, mesh)
+      data_sharding = jax_utils.data_sharding(mesh)
+    else:
+      logging.info('Multi-device requested but only 1 device available')
+  else:
+    if jax_utils.num_devices() > 1:
+      logging.warning(
+          'Multiple devices detected but multi-device training not enabled.')
+    logging.info('Single-device training')
 
   logging.info("Network configuration")
   for comp in ['network', 'controller_head']:
@@ -417,18 +427,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data = data_lib.make_source(replays=test_replays, **data_config)
   del train_replays, test_replays  # free up memory
 
-  runtime = config.runtime
-
   train_manager = TrainManager(
-      learner, train_data, dict(train=True, compile=runtime.compile), rngs=rngs)
+      learner, train_data, dict(train=True, compile=runtime.compile),
+      rngs=rngs, data_sharding=data_sharding)
   test_manager = TrainManager(
-      learner, test_data, dict(train=False, compile=runtime.compile), rngs=rngs)
+      learner, test_data, dict(train=False, compile=runtime.compile),
+      rngs=rngs, data_sharding=data_sharding)
 
   # TrainManager should probably be a proper context manager.
   exit_stack.callback(train_manager.stop)
   exit_stack.callback(test_manager.stop)
 
-  # initialize variables
   train_stats, _ = train_manager.step()
   logging.info('loss initial: %f', _get_loss(train_stats))
 
@@ -438,7 +447,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   def save(eval_loss=None):
     nonlocal best_eval_loss
     # Local Save
-    state = get_state(learner)
+    state = learner.get_state()
 
     # easier to always bundle the config with the state
     combined = dict(
@@ -457,7 +466,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   if restored:
     assert isinstance(combined_state, dict)  # appease type checker
-    set_state(learner, combined_state['state'])
+    learner.set_state(combined_state['state'])
     step = combined_state.get('step', 0)
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)

@@ -1,5 +1,6 @@
 """Minimal test for Learner._step"""
 
+import jax
 import numpy as np
 from flax import nnx
 
@@ -9,6 +10,8 @@ from slippi_ai.jax import networks
 from slippi_ai.jax import controller_heads
 from slippi_ai.jax import policies
 from slippi_ai.jax import learner as learner_lib
+from slippi_ai.jax import value_function as vf_lib
+from slippi_ai.jax import jax_utils
 
 
 def make_dummy_frames(
@@ -83,12 +86,16 @@ def main():
       delay=0,
   )
 
+  # Create a fake value function for testing
+  value_function = vf_lib.FakeValueFunction()
+
   # Create learner
   learner = learner_lib.Learner(
       policy=policy,
       learning_rate=1e-4,
       value_cost=0.5,
       reward_halflife=4,
+      value_function=value_function,
   )
 
   # Create dummy data
@@ -109,7 +116,55 @@ def main():
   metrics, final_state = learner.step(frames, initial_state, train=True, compile=True)
   print(f"Total loss: {metrics['total_loss']}")
 
-  print("Success!")
+  # Multi-device test
+  num_devices = jax.local_device_count()
+  print(f"\nDetected {num_devices} device(s)")
+
+  if num_devices > 1:
+    print("\nTesting multi-device training...")
+
+    # Create new learner for multi-device
+    multi_device_learner = learner_lib.Learner(
+        policy=policy,
+        learning_rate=1e-4,
+        value_cost=0.5,
+        reward_halflife=4,
+        value_function=value_function,
+    )
+
+    # Set up multi-device
+    mesh = jax_utils.get_mesh()
+    jax_utils.replicate_module(multi_device_learner, mesh)
+    data_sharding = jax_utils.data_sharding(mesh)
+
+    # Create data with batch size divisible by num_devices
+    multi_batch_size = num_devices * 2
+    multi_frames = make_dummy_frames(
+        multi_batch_size, unroll_length, embed_game, embed_controller)
+    multi_initial_state = multi_device_learner.initial_state(multi_batch_size, rngs)
+
+    # Shard data
+    multi_frames = jax_utils.shard_pytree(multi_frames, data_sharding)
+    multi_initial_state = jax_utils.shard_pytree(multi_initial_state, data_sharding)
+
+    print(f"Multi-device batch size: {multi_batch_size}")
+    print(f"Per-device batch size: {multi_batch_size // num_devices}")
+
+    print("Running multi-device step (first call)...")
+    metrics, final_state = multi_device_learner.step(
+        multi_frames, multi_initial_state, train=True)
+    print(f"Total loss: {metrics['total_loss']}")
+
+    print("Running multi-device step (second call)...")
+    metrics, final_state = multi_device_learner.step(
+        multi_frames, multi_initial_state, train=True)
+    print(f"Total loss: {metrics['total_loss']}")
+
+    print("Multi-device tests passed!")
+  else:
+    print("Skipping multi-device tests (only 1 device available)")
+
+  print("\nSuccess!")
 
 
 if __name__ == '__main__':
