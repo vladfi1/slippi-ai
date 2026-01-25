@@ -1,6 +1,6 @@
 """Test imitation learning training loop - JAX version."""
 
-from absl import app
+from absl import app, flags
 import wandb
 import fancyflags as ff
 
@@ -57,12 +57,18 @@ if __name__ == '__main__':
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_default(DEFAULT_CONFIG))
 
+  SIZE = flags.DEFINE_integer('size',  None, 'tx_like hidden size')
+
 
   def main(_):
     wandb.init(mode='disabled')
 
     config = flag_utils.dataclass_from_dict(
         train_lib.Config, CONFIG.value)
+
+    # Don't update value function config to be consistent with past experiments.
+    if SIZE.value is not None:
+        config.network['tx_like']['hidden_size'] = SIZE.value
 
     train_lib.train(config)
 
