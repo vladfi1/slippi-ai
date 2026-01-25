@@ -50,7 +50,7 @@ class TrainManager:
   def __init__(
       self,
       learner: learner_lib.Learner,
-      data_source: data_lib.DataSource,
+      data_source: data_lib.AbstractDataSource,
       step_kwargs={},
       prefetch: int = 16,
   ):
