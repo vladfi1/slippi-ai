@@ -1,3 +1,4 @@
+import abc
 import atexit
 import collections
 import dataclasses
@@ -382,8 +383,21 @@ def read_table(path: str, compressed: bool) -> Game:
   game_struct = table['root'].combine_chunks()
   return game_array_to_nt(game_struct)
 
+class AbstractDataSource(abc.ABC):
 
-class DataSource:
+  @abc.abstractmethod
+  def __next__(self) -> tuple[Batch, float]:
+    """Returns the next batch and epoch number."""
+
+  def shutdown(self):
+    """Cleans up any resources used by the data source."""
+
+  @property
+  @abc.abstractmethod
+  def batch_size(self) -> int:
+    """Returns the batch size used by the data source."""
+
+class DataSource(AbstractDataSource):
   def __init__(
       self,
       replays: List[ReplayInfo],
@@ -400,7 +414,7 @@ class DataSource:
       observation_config: Optional[observations.ObservationConfig] = None,
   ):
     self.replays = replays
-    self.batch_size = batch_size
+    self._batch_size = batch_size
     self.unroll_length = unroll_length
     self.chunk_size = unroll_length + extra_frames
     self.damage_ratio = damage_ratio
@@ -434,8 +448,12 @@ class DataSource:
         ) for _ in range(batch_size)
     ]
 
+  @property
+  def batch_size(self) -> int:
+    return self._batch_size
+
   def iter_replays(self) -> Iterator[ReplayInfo]:
-    replay_iter = itertools.cycle(self.replays)
+    replay_iter = utils.cycle_iterable(self.replays)
 
     if self.balance_characters:
       # TODO: balance by opponent (i.e. matchup) too?
@@ -494,12 +512,10 @@ def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
   while True:
     batch_queue.put(next(data_source))
 
-class DataSourceMP:
+
+class DataSourceMP(AbstractDataSource):
   def __init__(self, buffer=16, **kwargs):
-    for k, v in kwargs.items():
-      if k == 'replays':
-        continue
-      setattr(self, k, v)
+    self._batch_size = kwargs['batch_size']
 
     # 'spawn' uses much less memory than 'fork'
     context = mp.get_context('spawn')
@@ -510,16 +526,23 @@ class DataSourceMP:
         name='DataSourceMP')
     self.process.start()
 
-    atexit.register(self.batch_queue.close)
-    atexit.register(self.process.terminate)
+    atexit.register(self.shutdown)
 
-  def __next__(self) -> Tuple[Batch, float]:
+  @property
+  def batch_size(self) -> int:
+    return self._batch_size
+
+  def shutdown(self):
+    self.batch_queue.close()
+    self.process.terminate()
+
+  def __next__(self) -> tuple[Batch, float]:
     return self.batch_queue.get()
 
   def __del__(self):
-    self.process.terminate()
+    self.shutdown()
 
-class MultiDataSourceMP:
+class MultiDataSourceMP(AbstractDataSource):
 
   def __init__(
       self,
@@ -547,14 +570,20 @@ class MultiDataSourceMP:
           **kwargs
       ))
 
-    self.batch_size = batch_size
-    for k in kwargs:
-      setattr(self, k, kwargs[k])
+    self._batch_size = batch_size
 
-  def __next__(self) -> Tuple[Batch, float]:
+  @property
+  def batch_size(self) -> int:
+    return self._batch_size
+
+  def __next__(self) -> tuple[Batch, float]:
     results = [next(source) for source in self.sources]
     batches, epochs = zip(*results)
     return utils.concat_nest_nt(batches), np.mean(epochs)
+
+  def shutdown(self):
+    for source in self.sources:
+      source.shutdown()
 
 class CachedDataSource(DataSource):
   """Guaranteed fast, useful for performance benchmarking."""
