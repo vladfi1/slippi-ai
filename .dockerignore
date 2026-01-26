@@ -3,4 +3,11 @@
 
 # allow only these
 !requirements.txt
-!docker/
+!slippi_ai/
+!tests/
+!scripts/
+!slippi_db/
+!setup.cfg
+!Manifest.in
+!pyproject.toml
+!README.md
