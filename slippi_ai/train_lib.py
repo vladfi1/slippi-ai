@@ -245,7 +245,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       best_eval_loss = float('inf')  # Old losses don't apply to new delay.
 
     # These we can't change after the fact.
-    for key in ['network', 'controller_head', 'embed']:
+    for key in ['network', 'controller_head', 'embed', 'value_function']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
