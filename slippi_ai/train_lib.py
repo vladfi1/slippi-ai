@@ -467,10 +467,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     def time_mean(x):
       # Stats are either scalars or (time, batch)-shaped.
       x = tf_utils.to_numpy(x)
-      if isinstance(x, float) or len(x.shape) == 0:
-        return x
 
-      return np.mean(x, axis=0)
+      if isinstance(x, np.ndarray):
+        if len(x.shape) == 0:
+          return x.item()
+
+        return np.mean(x, axis=0)
+
+      return x
 
     for _ in range(runtime.num_eval_steps):
       stats, batch = test_manager.step()
