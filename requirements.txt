@@ -8,6 +8,6 @@ wandb
 dnspython
 fancyflags
 pyarrow
-git+https://github.com/vladfi1/py7zr.git@dev
+py7zr
 parameterized
 peppi-py==0.8.1
