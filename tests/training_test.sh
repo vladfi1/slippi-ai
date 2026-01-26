@@ -9,6 +9,7 @@ python scripts/train.py \
   --config.data.compressed=True \
   --config.data.balance_characters=True \
   --config.data.batch_size=2 \
+  --config.data.num_workers=0 \
   --config.learner.minibatch_size=1 \
   --config.runtime.log_interval=4 \
   --config.runtime.max_runtime=10 \

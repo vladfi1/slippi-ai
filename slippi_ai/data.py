@@ -529,9 +529,10 @@ class MultiDataSourceMP:
       **kwargs,
   ):
     if num_workers > len(replays):
-      raise ValueError(
-          f"num_workers ({num_workers}) must be less than the number of "
-          f"replays ({len(replays)})")
+      num_workers = len(replays)
+      logging.warning(
+          f"num_workers reduced to {num_workers} since there are only "
+          f"{len(replays)} replays.")
 
     if batch_size % num_workers != 0:
       raise ValueError(

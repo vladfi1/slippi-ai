@@ -323,7 +323,15 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       **char_filters,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
-  test_data = data_lib.make_source(replays=test_replays, **data_config)
+
+  test_batch_size = 2 * config.data.batch_size
+  test_data_config = dict(
+      data_config,
+      # Use more workers for test data to keep up with eval speed.
+      num_workers=2 * config.data.num_workers,
+      batch_size=test_batch_size,
+  )
+  test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays  # free up memory
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
@@ -505,7 +513,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # Stats have shape [num_eval_steps, batch_size]
     loss = eval_stats['policy']['loss']
-    assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
+    assert loss.shape == (runtime.num_eval_steps, test_batch_size)
 
     meta = utils.batch_nest_nt(metas)
 
