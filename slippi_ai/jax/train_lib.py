@@ -75,32 +75,43 @@ class TrainManager:
 
     self._encode_state_action = learner.policy.network.encode
 
-    self.frames_queue = queue.Queue(maxsize=prefetch)
-    self.stop_requested = threading.Event()
+    self.prefetch = prefetch
+    if prefetch > 0:
+      self.frames_queue = queue.Queue(maxsize=prefetch)
+      self.stop_requested = threading.Event()
+      self.data_thread = threading.Thread(target=self.fetch_batches)
+      self.data_thread.start()
 
-    self.data_thread = threading.Thread(target=self.produce_frames)
-    self.data_thread.start()
+  def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
+    batch, epoch = next(self.data_source)
+    epoch += self.epoch_offset
+    frames = batch.frames
 
-  def produce_frames(self):
+    if np.any(frames.is_resetting[:, 1:]):
+      raise ValueError("Unexpected mid-episode reset.")
+
+    # Encode frames using the policy's network
+    # TODO: when prefetching, calling network.encode can result strange
+    # errors, such as:
+    # 'SimpleEmbedNetwork' object has no attribute '_embed_state_action'
+    # I believe this is due to a race condition with flax's in-place Module
+    # updates, which can briefly cause members of the modules to disappear.
+    # This should be mitigated by the use of nnx.cached_partial in the Learner.
+    frames = frames._replace(
+        state_action=self._encode_state_action(frames.state_action))
+
+    # Convert to JAX arrays (and shard if multi-device)
+    if self.data_sharding is not None:
+      frames = jax_utils.shard_pytree(frames, self.data_sharding)
+    else:
+      frames = utils.map_nt(jnp.asarray, frames)
+
+    return (batch, epoch, frames)
+
+  def fetch_batches(self):
     # TODO: we might not need this anymore due to jax runahead
     while not self.stop_requested.is_set():
-      batch, epoch = next(self.data_source)
-      frames = batch.frames
-
-      if np.any(frames.is_resetting[:, 1:]):
-        raise ValueError("Unexpected mid-episode reset.")
-
-      # Encode frames using the policy's network
-      frames = frames._replace(
-          state_action=self._encode_state_action(frames.state_action))
-
-      # Convert to JAX arrays (and shard if multi-device)
-      if self.data_sharding is not None:
-        frames = jax_utils.shard_pytree(frames, self.data_sharding)
-      else:
-        frames = utils.map_nt(jnp.asarray, frames)
-
-      data = (batch, epoch, frames)
+      data = self.fetch_batch()
 
       # Try to put data into the queue, but check for stop_requested
       while not self.stop_requested.is_set():
@@ -111,21 +122,27 @@ class TrainManager:
           continue
 
   def stop(self):
-    self.stop_requested.set()
-    self.data_thread.join()
+    if self.prefetch > 0:
+      self.stop_requested.set()
+      self.data_thread.join()
 
   def step(self) -> tuple[dict, data_lib.Batch]:
-    with self.data_profiler:
-      frames_queue_size = self.frames_queue.qsize()
-      batch, epoch, frames = self.frames_queue.get()
-    with self.step_profiler:
-      stats, self.hidden_state = self.learner.step(
-          frames, self.hidden_state, **self.step_kwargs)
+    stats = {}
 
-    stats.update(
-        epoch=epoch,
-        frames_queue_size=frames_queue_size,
-    )
+    with self.data_profiler:
+      if self.prefetch > 0:
+        stats.update(frames_queue_size=self.frames_queue.qsize())
+        batch, epoch, frames = self.frames_queue.get()
+      else:
+        batch, epoch, frames = self.fetch_batch()
+
+      stats.update(epoch=epoch)
+
+    with self.step_profiler:
+      learner_stats, self.hidden_state = self.learner.step(
+          frames, self.hidden_state, **self.step_kwargs)
+      stats.update(learner_stats)
+
     return stats, batch
 
 
@@ -160,7 +177,7 @@ class RuntimeConfig:
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
-
+  prefetch: int = 8  # number of batches to prefetch in data loader
 
 @dataclasses.dataclass
 class ValueFunctionConfig:
@@ -438,10 +455,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True, compile=runtime.compile),
-      rngs=rngs, data_sharding=data_sharding)
+      rngs=rngs, data_sharding=data_sharding, prefetch=runtime.prefetch)
   test_manager = TrainManager(
       learner, test_data, dict(train=False, compile=runtime.compile),
-      rngs=rngs, data_sharding=data_sharding)
+      rngs=rngs, data_sharding=data_sharding, prefetch=runtime.prefetch)
 
   # TrainManager should probably be a proper context manager.
   exit_stack.callback(train_manager.stop)
@@ -526,7 +543,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     test_loss = _get_loss(test_stats)
 
     print(f'step={total_steps} epoch={epoch:.3f}')
-    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e} qsize={train_stats["frames_queue_size"]}')
+    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
     print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
     print(f'timing:'
           f' data={data_time:.3f}'
