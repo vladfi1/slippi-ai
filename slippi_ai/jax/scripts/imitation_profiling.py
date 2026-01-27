@@ -33,8 +33,8 @@ DEFAULT_CONFIG = train_lib.Config(
     ),
     runtime=train_lib.RuntimeConfig(
         log_interval=10,
-        max_runtime=40,
-        eval_every_n=10000,
+        max_runtime=60,
+        num_evals_per_epoch=0,
     ),
     network=network_config(num_layers=3, hidden_size=512),
     value_function=train_lib.ValueFunctionConfig(
