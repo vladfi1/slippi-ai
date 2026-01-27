@@ -265,6 +265,12 @@ class StructEmbedding(Embedding[NT, NT]):
   def dtype(self):
     raise NotImplementedError('StructEmbedding has no single dtype')
 
+  def map_shallow(self, f, *args: NT) -> NT:
+    result = {
+        k: f(e, *(self.getter(x, k) for x in args))
+        for k, e in self.embedding}
+    return self.builder(result)
+
   def map(self, f, *args: NT) -> NT:
     result = {
         k: e.map(f, *(self.getter(x, k) for x in args))
