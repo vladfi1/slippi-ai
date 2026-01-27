@@ -472,6 +472,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     nonlocal last_train_epoch_evaluated
     nonlocal needs_initial_eval
 
+    # Check whether we need to run an evaluation
     train_epoch = train_manager.last_epoch
     if (
       (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1
@@ -495,6 +496,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
       return x
 
+    logging.info('Starting evaluation at train epoch %.3f', train_epoch)
+    start_time = time.perf_counter()
     test_epoch = test_manager.last_epoch
     while (test_manager.last_epoch - test_epoch) < runtime.num_eval_epochs:
       stats, batch = test_manager.step()
@@ -505,11 +508,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       per_step_eval_stats.append(stats)
       metas.append(batch.meta)
 
+    eval_time = time.perf_counter() - start_time
+
     # [eval_steps, batch_size], mean taken over time
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)
 
     data_time = test_manager.data_profiler.mean_time()
     step_time = test_manager.step_profiler.mean_time()
+
+    sps = len(per_step_eval_stats) / eval_time
+    frames_per_step = test_batch_size * config.data.unroll_length
+    mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
     total_steps = int(step.numpy())
     total_frames = total_steps * FRAMES_PER_STEP
@@ -519,6 +528,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         train_epoch=train_epoch,
         data_time=data_time,
         step_time=step_time,
+        sps=sps,
+        mps=mps,
     )
 
     to_log = dict(
@@ -528,7 +539,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
-    logging.info('eval loss: %.4f data: %.3f step: %.3f', eval_loss, data_time, step_time)
+    logging.info('eval loss: %.4f data: %.3f step: %.3f mps: %.1f', eval_loss, data_time, step_time, mps)
 
     # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:
