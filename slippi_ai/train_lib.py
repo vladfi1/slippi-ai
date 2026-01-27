@@ -134,6 +134,7 @@ class RuntimeConfig:
   save_interval: int = 300  # seconds between saving to disk
 
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
+  eval_at_start: bool = False  # do an eval at the start of training
   num_eval_epochs: float = 1  # number of test-set epochs per evaluation
 
 @dataclasses.dataclass
@@ -253,6 +254,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       if current != previous:
         logging.warning(f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
+
+    if (config.dataset.allowed_characters != restore_config.dataset.allowed_characters or
+        config.dataset.allowed_opponents != restore_config.dataset.allowed_opponents):
+      logging.warning('Dataset character/opponent filters changed, resetting best eval loss.')
+      best_eval_loss = float('inf')
+      config.runtime.eval_at_start = True
 
   policy = saving.policy_from_config(dataclasses.asdict(config))
 
@@ -458,15 +465,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     allowed_characters = list(melee.Character)
 
   last_train_epoch_evaluated = 0.
+  needs_initial_eval = runtime.eval_at_start
 
   def maybe_eval():
     nonlocal best_eval_loss
     nonlocal last_train_epoch_evaluated
+    nonlocal needs_initial_eval
 
     train_epoch = train_manager.last_epoch
-    if (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
+    if (
+      (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1
+      and not needs_initial_eval):
       return
     last_train_epoch_evaluated = train_epoch
+    needs_initial_eval = False
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
@@ -568,7 +580,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   start_time = time.time()
 
   while time.time() - start_time < runtime.max_runtime:
+    maybe_eval()
+
     train_stats, _ = train_manager.step()
     step.assign_add(1)
     maybe_log(train_stats)
-    maybe_eval()
