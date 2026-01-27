@@ -7,7 +7,17 @@ import fancyflags as ff
 
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
-from slippi_ai.jax import train_lib
+from slippi_ai.jax import train_lib, networks
+
+network_config = networks.default_config()
+network_config['name'] = 'tx_like'
+network_config['tx_like'].update(
+    hidden_size=2,
+    num_layers=1,
+    ffw_multiplier=4,
+    recurrent_layer='lstm',
+    activation='gelu',
+)
 
 DEFAULT_CONFIG = train_lib.Config(
     dataset=data_lib.DatasetConfig(
@@ -19,6 +29,7 @@ DEFAULT_CONFIG = train_lib.Config(
         compressed=True,
         balance_characters=True,
         batch_size=2,
+        unroll_length=5,
     ),
     learner=train_lib.learner_lib.LearnerConfig(),
     runtime=train_lib.RuntimeConfig(
@@ -27,16 +38,7 @@ DEFAULT_CONFIG = train_lib.Config(
         num_evals_per_epoch=2,
         num_eval_epochs=0.1,
     ),
-    network=dict(
-        name='tx_like',
-        tx_like=dict(
-            hidden_size=2,
-            num_layers=1,
-            ffw_multiplier=4,
-            recurrent_layer='lstm',
-            activation='gelu',
-        ),
-    ),
+    network=network_config,
     value_function=train_lib.ValueFunctionConfig(
         separate_network_config=False,
     ),
