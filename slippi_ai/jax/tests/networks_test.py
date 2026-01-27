@@ -11,14 +11,14 @@ from slippi_ai.jax import networks
 default_network_config = networks.default_config()
 
 def default_network(name: str, rngs: nnx.Rngs, input_size: int = 10) -> networks.Network:
-  return networks.CONSTRUCTORS[name](rngs=rngs, input_size=input_size, **default_network_config[name])
+  return networks.SIMPLE_CONSTRUCTORS[name](rngs=rngs, input_size=input_size, **default_network_config[name])
 
 def assert_tensors_close(t1: jnp.ndarray, t2: jnp.ndarray):
   np.testing.assert_allclose(t1, t2)
 
 class NetworksTest(unittest.TestCase):
 
-  @parameterized.expand(networks.CONSTRUCTORS)
+  @parameterized.expand(networks.SIMPLE_CONSTRUCTORS)
   def test_unroll_vs_step(self, name='mlp'):
     rngs = nnx.Rngs(0)
     unroll_length = 8

@@ -6,29 +6,31 @@ import typing as tp
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import tree
 
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.data import StateAction
-from slippi_ai.types import Game
+from slippi_ai.types import Controller, Game, Player, Nana
 
 Array = jax.Array
 
-RecurrentState = tp.Any
-Inputs = Array
-
+RecurrentState = Any
+Inputs = tree.StructureKV[str, Array]
+Outputs = tree.StructureKV[str, Array]
 
 def where_pytree(cond: Array, x, y):
   """Like jnp.where but broadcasts cond over pytree leaves."""
   return jax.tree.map(lambda a, b: jax_utils.where(cond, a, b), x, y)
 
 InputTree = tp.TypeVar('InputTree')
+OutputTree = tp.TypeVar('OutputTree')
 
 def dynamic_rnn(
-    cell_fn: Callable[[InputTree, RecurrentState], Tuple[Array, RecurrentState]],
+    cell_fn: Callable[[InputTree, RecurrentState], Tuple[OutputTree, RecurrentState]],
     inputs: InputTree,
     initial_state: RecurrentState,
-) -> Tuple[Array, RecurrentState]:
+) -> Tuple[OutputTree, RecurrentState]:
   """Unrolls an RNN over time, returning outputs and final state.
 
   Args:
@@ -49,10 +51,10 @@ def dynamic_rnn(
 
 
 def scan_rnn(
-    cell_fn: Callable[[InputTree, RecurrentState], Tuple[Array, RecurrentState]],
+    cell_fn: Callable[[InputTree, RecurrentState], Tuple[OutputTree, RecurrentState]],
     inputs: InputTree,
     initial_state: RecurrentState,
-) -> Tuple[Array, RecurrentState]:
+) -> Tuple[OutputTree, RecurrentState]:
   """Like dynamic_rnn but returns all intermediate hidden states.
 
   Args:
@@ -92,7 +94,7 @@ class Network(nnx.Module, abc.ABC):
       self,
       inputs: Inputs,
       prev_state: RecurrentState,
-  ) -> Tuple[Array, RecurrentState]:
+  ) -> Tuple[Outputs, RecurrentState]:
     '''Step without reset.
 
     Arguments:
@@ -110,7 +112,7 @@ class Network(nnx.Module, abc.ABC):
       inputs: Inputs,
       reset: Array,
       prev_state: RecurrentState,
-  ) -> Tuple[Array, RecurrentState]:
+  ) -> Tuple[Outputs, RecurrentState]:
     batch_size = reset.shape[0]
     rngs = nnx.Rngs(0)  # TODO: pass rngs properly
     initial_state = where_pytree(
@@ -121,7 +123,7 @@ class Network(nnx.Module, abc.ABC):
       self,
       inputs_and_reset: tuple[Inputs, Array],
       prev_state: RecurrentState,
-  ) -> Tuple[Array, RecurrentState]:
+  ) -> Tuple[Outputs, RecurrentState]:
     """Used for unroll/scan."""
     inputs, reset = inputs_and_reset
     return self.step_with_reset(inputs, reset, prev_state)
@@ -131,7 +133,7 @@ class Network(nnx.Module, abc.ABC):
       inputs: Inputs,
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[Array, RecurrentState]:
+  ) -> Tuple[Outputs, RecurrentState]:
     '''
     Arguments:
       inputs: (time, batch, x_dim)
@@ -150,7 +152,7 @@ class Network(nnx.Module, abc.ABC):
       inputs: Inputs,
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[Array, RecurrentState]:
+  ) -> Tuple[Outputs, RecurrentState]:
     '''Like unroll but also returns intermediate hidden states.
 
     Arguments:
@@ -214,6 +216,7 @@ class RecurrentWrapper(Network):
     return self._core.initialize_carry(input_shape, rngs)
 
   def step(self, inputs, prev_state):
+    assert isinstance(inputs, Array)
     # flax's RNNCells have the arguments reversed
     next_state, output = self._core(prev_state, inputs)
     return output, next_state
@@ -225,7 +228,7 @@ class FFWWrapper(Network):
   Assumes that the module can handle multiple batch dimensions.
   """
 
-  def __init__(self, module: tp.Callable[[Array], Array], output_size: int):
+  def __init__(self, module: tp.Callable[[Inputs], Array], output_size: int):
     self._module = module
     self._output_size = output_size
 
@@ -296,18 +299,20 @@ class ResidualWrapper(Network):
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     return self._net.initial_state(batch_size, rngs)
 
+  def _combine(self, inputs, outputs):
+    return jax.tree.map(jnp.add, inputs, outputs)
+
   def step(self, inputs, prev_state):
     outputs, next_state = self._net.step(inputs, prev_state)
-    return inputs + outputs, next_state
+    return self._combine(inputs, outputs), next_state
 
   def unroll(self, inputs, reset, initial_state):
     outputs, final_state = self._net.unroll(inputs, reset, initial_state)
-    return inputs + outputs, final_state
+    return self._combine(inputs, outputs), final_state
 
   def scan(self, inputs, reset, initial_state):
-    outputs, hidden_state = self._net.scan(inputs, reset, initial_state)
-    return inputs + outputs, hidden_state
-
+    outputs, final_state = self._net.scan(inputs, reset, initial_state)
+    return self._combine(inputs, outputs), final_state
 
 class GRU(RecurrentWrapper):
 
@@ -536,7 +541,9 @@ class SimpleEmbedNetwork(StateActionNetwork):
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed_state_action(state_action)
-    return self._network.step(embedded, prev_state)
+    output, next_state = self._network.step(embedded, prev_state)
+    assert isinstance(output, Array)
+    return output, next_state
 
   def unroll(
       self,
@@ -545,7 +552,9 @@ class SimpleEmbedNetwork(StateActionNetwork):
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed_state_action(state_action)
-    return self._network.unroll(embedded, reset, initial_state)
+    output, final_state = self._network.unroll(embedded, reset, initial_state)
+    assert isinstance(output, Array)
+    return output, final_state
 
   def scan(
       self,
@@ -554,12 +563,292 @@ class SimpleEmbedNetwork(StateActionNetwork):
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed_state_action(state_action)
-    return self._network.scan(embedded, reset, initial_state)
+    output, final_state = self._network.scan(embedded, reset, initial_state)
+    assert isinstance(output, Array)
+    return output, final_state
 
+Group = Array | tp.Sequence[Array]
+
+# TODO: unify with controller_heads
+class ControllerRNN(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      embed_controller: embed_lib.StructEmbedding[Controller],
+      hidden_size: int,
+      rnn_cell: str = 'lstm',
+  ):
+    self._embed_controller = embed_controller
+    embed_struct = embed_controller.map(lambda e: e)
+    self._embed_flat: list[embed_lib.Embedding] = list(embed_controller.flatten(embed_struct))
+    if len(self._embed_flat) == 0:
+      raise ValueError('ControllerRNN requires at least one embedded component.')
+
+    rnn_constructor = dict(
+        lstm=nnx.LSTMCell,
+        gru=nnx.GRUCell,
+    )[rnn_cell]
+
+    cells: list[nnx.RNNCellBase] = []
+
+    for e in self._embed_flat:
+      cells.append(rnn_constructor(
+          in_features=e.size,
+          hidden_features=hidden_size,
+          rngs=rngs,
+      ))
+
+    self._initial_state_fn = cells[0].initialize_carry
+    self._cells = nnx.List(cells)
+
+  def __call__(self, controller: Controller) -> Array:
+    batch_shape = controller.main_stick.x.shape + (self._embed_flat[0].size,)
+
+    # TODO: pass rngs properly? maybe reuse from __init__?
+    hidden_state = self._initial_state_fn(batch_shape, rngs=nnx.Rngs(0))
+
+    for cell, embed, component in zip(
+        self._cells, self._embed_flat,
+        self._embed_controller.flatten(controller)):
+      hidden_state, output = cell(hidden_state, embed(component))
+
+    return output  # type: ignore
+
+class GroupNetwork(Network):
+
+  def __init__(self, networks: list[Network]):
+    self._networks = nnx.List(networks)
+
+  @property
+  def output_size(self) -> list[int]:
+    return [net.output_size for net in self._networks]
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> Any:
+    return [
+        net.initial_state(batch_size, rngs)
+        for net in self._networks]
+
+  def step(
+      self,
+      inputs: list[Array],
+      prev_state: Any,
+  ) -> Tuple[list[Array], Any]:
+    outputs = []
+    next_states = []
+    for net, inp, state in zip(self._networks, inputs, prev_state):
+      out, next_state = net.step(inp, state)
+      outputs.append(out)
+      next_states.append(next_state)
+    return outputs, next_states
+
+  def unroll(
+      self,
+      inputs: list[Array],
+      reset: Array,
+      initial_state: RecurrentState,
+  ) -> Tuple[list[Array], RecurrentState]:
+    outputs = []
+    final_states = []
+    for net, inp, state in zip(self._networks, inputs, initial_state):
+      out, final_state = net.unroll(inp, reset, state)
+      outputs.append(out)
+      final_states.append(final_state)
+    return outputs, final_states
+
+  def scan(
+      self,
+      inputs: list[Array],
+      reset: Array,
+      initial_state: RecurrentState,
+  ) -> Tuple[list[Array], RecurrentState]:
+    outputs = []
+    final_states = []
+    for net, inp, state in zip(self._networks, inputs, initial_state):
+      out, final_state = net.scan(inp, reset, state)
+      outputs.append(out)
+      final_states.append(final_state)
+    return outputs, final_states
+
+class FrameTransformer(StateActionNetwork):
+  name = 'frame_tx'
+
+  @classmethod
+  def default_config(cls) -> dict[str, tp.Any]:
+    return dict(
+        hidden_size=128,
+        use_self_nana=False,
+        rnn_cell='lstm',
+    )
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      embed_state_action: embed_lib.StructEmbedding[StateAction],
+      hidden_size: int,
+      use_self_nana: bool = False,
+      rnn_cell: str = 'lstm',
+  ):
+    self._embed_state_action = embed_state_action
+    self._hidden_size = hidden_size
+    self._use_self_nana = use_self_nana
+
+    # self._embed_struct = embed_state_action.map(lambda e: e)
+
+    embed_state_action_shallow = embed_state_action.map_shallow(
+        lambda e: e)
+
+    self._embed_game = tp.cast(
+        embed_lib.StructEmbedding[Game],
+        embed_state_action_shallow.state)
+    self._embed_controller = tp.cast(
+        embed_lib.StructEmbedding[Controller],
+        embed_state_action_shallow.action)
+
+    self._controller_rnn = ControllerRNN(
+        rngs=rngs,
+        embed_controller=self._embed_controller,
+        hidden_size=hidden_size,
+        rnn_cell=rnn_cell,
+    )
+
+    dummy_state_action = embed_state_action.dummy(())
+    group_shapes: list = jax.eval_shape(self._make_groups, dummy_state_action)
+
+    for g in group_shapes:
+      assert isinstance(g, jax.ShapeDtypeStruct)
+      assert len(g.shape) == 1
+    group_sizes: list[int] = [g.shape[0] for g in group_shapes]
+
+    layers = []
+
+    rnn_constructor = dict(
+        lstm=LSTM,
+        gru=GRU,
+    )[rnn_cell]
+
+    layers.append(GroupNetwork([
+        rnn_constructor(rngs, input_size=s, hidden_size=hidden_size)
+        for s in group_sizes]))
+
+    self._network = Sequential(layers)
+
+  @property
+  def output_size(self) -> int:
+    return self._hidden_size
+
+  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+    return self._embed_state_action.dummy(shape)
+
+  def encode(self, state_action: StateAction) -> StateAction:
+    return self._embed_state_action.from_state(state_action)
+
+  def encode_game(self, game: Game) -> Game:
+    return self._embed_game.from_state(game)
+
+  def _player_or_nana_groups(self, player: Player | Nana) -> list[Group]:
+    groups = [
+        player.percent,
+        player.facing,
+        [player.x, player.y],
+        player.action,
+        player.invulnerable,
+        player.character,
+        player.jumps_left,
+        player.shield_strength,
+        player.on_ground,
+    ]
+
+    if isinstance(player, Nana):
+      groups.append(player.exists)
+
+    return groups
+
+  def _player_groups(self, player: Player, with_nana: bool):
+    groups = self._player_or_nana_groups(player)
+
+    if with_nana:
+      nana_groups = self._player_or_nana_groups(player.nana)
+      groups.extend(nana_groups)
+
+    return groups
+
+  def _make_groups(self, state_action: StateAction) -> list[Array]:
+    state_action_embed = self._embed_state_action.map(
+        lambda e, v: e(v), state_action)
+
+    groups = []
+    game = state_action_embed.state
+
+    for player in [game.p0, game.p1]:
+      groups.extend(
+          self._player_groups(
+              player,
+              with_nana=self._use_self_nana,
+          ))
+
+    groups.extend([
+        game.stage,
+        game.randall,
+        game.fod_platforms,
+    ])
+
+    # Each item is its own group
+    groups.extend(game.items)
+
+    groups.append(tp.cast(Array, state_action_embed.name))
+
+    # Last group is the controller
+    groups.append(self._controller_rnn(state_action.action))
+
+    def maybe_concat(g: Group) -> Array:
+      if isinstance(g, Array):
+        return g
+      else:
+        return jnp.concatenate(g, axis=-1)
+
+    return [maybe_concat(g) for g in groups]
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+    return self._network.initial_state(batch_size, rngs)
+
+  def _extract_output(self, outputs: Outputs) -> Array:
+    assert isinstance(outputs, list)
+    assert isinstance(outputs[0], Array)
+    return outputs[0]
+
+  def step(
+      self,
+      state_action: StateAction,
+      prev_state: RecurrentState,
+  ) -> Tuple[Array, RecurrentState]:
+    groups = self._make_groups(state_action)
+    outputs, next_state = self._network.step(groups, prev_state)
+    return self._extract_output(outputs), next_state
+
+  def unroll(
+      self,
+      state_action: StateAction,
+      reset: Array,
+      initial_state: RecurrentState,
+  ) -> Tuple[Array, RecurrentState]:
+    groups = self._make_groups(state_action)
+    outputs, final_state = self._network.unroll(groups, reset, initial_state)
+    return self._extract_output(outputs), final_state
+
+  def scan(
+      self,
+      state_action: StateAction,
+      reset: Array,
+      initial_state: RecurrentState,
+  ) -> Tuple[Array, RecurrentState]:
+    groups = self._make_groups(state_action)
+    outputs, final_state = self._network.scan(groups, reset, initial_state)
+    return self._extract_output(outputs), final_state
 
 # Factory functions for network construction
 
-CONSTRUCTORS: dict[str, type[Network]] = dict(
+SIMPLE_CONSTRUCTORS: dict[str, type[Network]] = dict(
     mlp=MLP,
     gru=GRU,
     lstm=LSTM,
@@ -568,8 +857,9 @@ CONSTRUCTORS: dict[str, type[Network]] = dict(
 
 DEFAULT_CONFIG: dict[str, Any] = dict(
     name='mlp',
-    **{name: cls.default_config() for name, cls in CONSTRUCTORS.items()}
+    **{name: cls.default_config() for name, cls in SIMPLE_CONSTRUCTORS.items()},
 )
+DEFAULT_CONFIG[FrameTransformer.name] = FrameTransformer.default_config()
 
 
 def default_config() -> dict[str, Any]:
@@ -601,7 +891,7 @@ def construct_network(
   Returns:
     Constructed network.
   """
-  constructor = CONSTRUCTORS[name]
+  constructor = SIMPLE_CONSTRUCTORS[name]
   return constructor(rngs=rngs, input_size=input_size, **config[name])
 
 
@@ -610,7 +900,7 @@ def build_embed_network(
     embed_config: embed_lib.EmbedConfig,
     num_names: int,
     network_config: dict,
-) -> SimpleEmbedNetwork:
+) -> StateActionNetwork:
   """Build a SimpleEmbedNetwork from config.
 
   Args:
@@ -630,14 +920,26 @@ def build_embed_network(
   )
   input_size = embed_state_action.size
 
-  network = construct_network(
-      rngs=rngs,
-      input_size=input_size,
-      **network_config,
-  )
+  name = network_config['name']
 
-  return SimpleEmbedNetwork(
-      embed_game=embed_game,
-      embed_state_action=embed_state_action,
-      network=network,
-  )
+  if name in SIMPLE_CONSTRUCTORS:
+    network = construct_network(
+        rngs=rngs,
+        input_size=input_size,
+        **network_config,
+    )
+
+    return SimpleEmbedNetwork(
+        embed_game=embed_game,
+        embed_state_action=embed_state_action,
+        network=network,
+    )
+
+  if name == FrameTransformer.name:
+    return FrameTransformer(
+        rngs=rngs,
+        embed_state_action=embed_state_action,
+        **network_config[name],
+    )
+
+  raise ValueError(f'Unknown network name: {name}')
