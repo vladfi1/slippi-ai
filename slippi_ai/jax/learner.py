@@ -1,6 +1,8 @@
 import dataclasses
 import functools
 from typing import Optional
+import typing as tp
+import types
 
 import jax
 import jax.numpy as jnp
@@ -30,6 +32,25 @@ class LearnerConfig:
   value_cost: float = 0.5
   reward_halflife: float = 4
 
+# TODO: move to jax_utils
+P = tp.ParamSpec('P')
+T = tp.TypeVar('T')
+
+def jit_method(
+    method: tp.Callable[P, T],
+    *,
+    static_argnames: tp.Optional[tp.Iterable[str]] = None,
+) -> tp.Callable[P, T]:
+  if not isinstance(method, types.MethodType):
+    raise TypeError('jit_method can only be applied to methods.')
+
+  jitted = nnx.jit(
+      donate_argnums=(0,),
+      static_argnames=static_argnames,
+  )(method.__func__)
+
+  return nnx.cached_partial(jitted, method.__self__)
+
 
 class Learner(nnx.Module):
 
@@ -57,9 +78,7 @@ class Learner(nnx.Module):
     self.value_optimizer = nnx.Optimizer(
         self.value_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    # JIT-compiled versions of step (created lazily)
-    self._jit_train_step: Optional[callable] = None
-    self._jit_eval_step: Optional[callable] = None
+    self.jit_step = jit_method(self._step, static_argnames=('train',))
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return (
@@ -124,32 +143,6 @@ class Learner(nnx.Module):
     final_states = (policy_final_states, value_final_states)
     return metrics, final_states
 
-  def _get_jit_train_step(self):
-    """Lazily create JIT-compiled training step."""
-    if self._jit_train_step is None:
-      @nnx.jit(donate_argnames=('learner',))
-      def jit_train_step(
-          learner: Learner,
-          frames: Frames,
-          initial_states: RecurrentState,
-      ) -> tuple[dict, RecurrentState]:
-        return learner._step(frames, initial_states, train=True)
-      self._jit_train_step = jit_train_step
-    return self._jit_train_step
-
-  def _get_jit_eval_step(self):
-    """Lazily create JIT-compiled eval step."""
-    if self._jit_eval_step is None:
-      @nnx.jit(donate_argnames=('learner',))
-      def jit_eval_step(
-          learner: Learner,
-          frames: Frames,
-          initial_states: RecurrentState,
-      ) -> tuple[dict, RecurrentState]:
-        return learner._step(frames, initial_states, train=False)
-      self._jit_eval_step = jit_eval_step
-    return self._jit_eval_step
-
   def step(
       self,
       frames: Frames,
@@ -169,14 +162,8 @@ class Learner(nnx.Module):
       Tuple of (metrics dict, final recurrent states).
     """
     compile = self.compile if compile is None else compile
-
-    if compile:
-      if train:
-        return self._get_jit_train_step()(self, frames, initial_states)
-      else:
-        return self._get_jit_eval_step()(self, frames, initial_states)
-    else:
-      return self._step(frames, initial_states, train=train)
+    step_fn = self.jit_step if compile else self._step
+    return step_fn(frames, initial_states, train=train)
 
   def get_state(self):
     _, state = nnx.split(self)
