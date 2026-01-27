@@ -55,6 +55,8 @@ class TrainManager:
       prefetch: int = 8,
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
+      # TODO: pass in epoch offset when resuming from checkpoint
+      epoch_offset: float = 0,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -63,6 +65,7 @@ class TrainManager:
     self.data_profiler = utils.Profiler()
     self.step_profiler = utils.Profiler()
     self.data_sharding = data_sharding
+    self.epoch_offset = epoch_offset
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -152,8 +155,8 @@ class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
   log_interval: int = 10  # seconds between logging
 
-  eval_every_n: int = 100  # number of training steps between evaluations
-  num_eval_steps: int = 10  # number of batches per evaluation
+  num_evals_per_epoch: float = 1  # number evaluations per training epoch
+  num_eval_epochs: float = 1  # number of epochs per evaluation
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
@@ -535,10 +538,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if allowed_characters is None:
     allowed_characters = list(melee.Character)
 
+  last_train_epoch_evaluated = 0.
+  last_test_epoch = 0.
+
   def maybe_eval():
-    nonlocal best_eval_loss  # Allow modification of the best_eval_loss variable
-    if step % runtime.eval_every_n != 0:
+    nonlocal best_eval_loss, last_train_epoch_evaluated, last_test_epoch
+
+    train_epoch = train_stats['epoch']
+    if (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
       return
+    last_train_epoch_evaluated = train_epoch
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
@@ -552,8 +561,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
       return np.mean(x, axis=0)
 
-    for _ in range(runtime.num_eval_steps):
+    test_epoch = last_test_epoch
+    while test_epoch - last_test_epoch < runtime.num_eval_epochs:
       stats, batch = test_manager.step()
+      test_epoch = stats['epoch']
 
       # Convert to numpy and take time-mean to free up memory.
       stats = utils.map_single_structure(time_mean, stats)

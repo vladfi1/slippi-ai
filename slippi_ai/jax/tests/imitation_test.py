@@ -24,8 +24,8 @@ DEFAULT_CONFIG = train_lib.Config(
     runtime=train_lib.RuntimeConfig(
         log_interval=4,
         max_runtime=10,
-        eval_every_n=50,
-        num_eval_steps=2,
+        num_evals_per_epoch=2,
+        num_eval_epochs=0.1,
     ),
     network=dict(
         name='tx_like',
