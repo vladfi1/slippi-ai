@@ -449,6 +449,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       data_config,
       # Use more workers for test data to keep up with eval speed.
       num_workers=2 * config.data.num_workers,
+      batch_size=2 * config.data.batch_size,
   )
   test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays  # free up memory
@@ -621,7 +622,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # Stats have shape [num_eval_steps, batch_size]
     loss = eval_stats['policy']['loss']
-    assert loss.shape == (runtime.num_eval_steps, config.data.batch_size)
+    assert loss.shape == (len(per_step_eval_stats), test_data.batch_size)
 
     meta = utils.batch_nest_nt(metas)
 
