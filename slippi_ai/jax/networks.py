@@ -556,6 +556,30 @@ class SimpleEmbedNetwork(StateActionNetwork):
     embedded = self._embed_state_action(state_action)
     return self._network.scan(embedded, reset, initial_state)
 
+class FrameTransformer(StateActionNetwork):
+
+  def __init__(
+      self,
+      embed_game: embed_lib.Embedding[Game, Game],
+      embed_state_action: embed_lib.StructEmbedding[StateAction],
+      hidden_size: int,
+  ):
+    self._embed_game = embed_game
+    self._embed_state_action = embed_state_action
+    self._hidden_size = hidden_size
+
+  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+    return self._embed_state_action.dummy(shape)
+
+  def encode(self, state_action: StateAction) -> StateAction:
+    return self._embed_state_action.from_state(state_action)
+
+  def encode_game(self, game: Game) -> Game:
+    return self._embed_game.from_state(game)
+
+
+
+
 
 # Factory functions for network construction
 
