@@ -68,6 +68,7 @@ MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concur
 agent_flags = eval_lib.AGENT_FLAGS.copy()
 agent_flags.update(
     async_inference=ff.Boolean(True),
+    jit_compile=ff.Boolean(True),
     run_on_cpu=ff.Boolean(False),
 )
 del agent_flags['path']  # not used
