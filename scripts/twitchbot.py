@@ -99,9 +99,14 @@ class AgentConfig(abc.ABC):
     """The agent's delay."""
 
   @property
+  @abc.abstractmethod
+  def batch_steps(self) -> int:
+    """Number of (time)steps to batch during inference."""
+
+  @property
   def target_console_delay(self) -> int:
     # Leave a local delay of 1 for async inference.
-    target_delay = max(self.delay - 1, 0)
+    target_delay = max(self.delay - self.batch_steps, 0)
     return min(target_delay, MAX_DOLPHIN_DELAY)
 
   @abc.abstractmethod
@@ -156,6 +161,10 @@ class SingleAgent(AgentConfig):
     self._load()
     return self.config.policy.delay
 
+  @property
+  def batch_steps(self) -> int:
+    return self.agent_kwargs['batch_steps'] or 1
+
   def build(
       self,
       controller: melee.Controller,
@@ -209,6 +218,10 @@ class AutoAgent(AgentConfig):
   @property
   def delay(self) -> int:
     return self._delay
+
+  @property
+  def batch_steps(self) -> int:
+    return self.agent_kwargs['batch_steps'] or 1
 
   def build(
       self,
