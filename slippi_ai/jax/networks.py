@@ -2,6 +2,7 @@ import abc
 import copy
 from typing import Any, Callable, Optional, Tuple
 import typing as tp
+from types import MethodType
 
 import jax
 import jax.numpy as jnp
@@ -16,15 +17,17 @@ from slippi_ai.types import Controller, Game, Player, Nana
 Array = jax.Array
 
 RecurrentState = Any
-Inputs = tree.StructureKV[str, Array]
-Outputs = tree.StructureKV[str, Array]
+ArrayTree = tree.StructureKV[str, Array]
+Inputs = ArrayTree
+Outputs = ArrayTree
 
 def where_pytree(cond: Array, x, y):
   """Like jnp.where but broadcasts cond over pytree leaves."""
   return jax.tree.map(lambda a, b: jax_utils.where(cond, a, b), x, y)
 
-InputTree = tp.TypeVar('InputTree')
-OutputTree = tp.TypeVar('OutputTree')
+InputTree = tp.TypeVar('InputTree', bound=Inputs)
+OutputTree = tp.TypeVar('OutputTree', bound=Outputs)
+OutputTree2 = tp.TypeVar('OutputTree2', bound=Outputs)
 
 def dynamic_rnn(
     cell_fn: Callable[[InputTree, RecurrentState], Tuple[OutputTree, RecurrentState]],
@@ -74,7 +77,7 @@ def scan_rnn(
   return outputs, hidden_states
 
 
-class Network(nnx.Module, abc.ABC):
+class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
 
   @staticmethod
   def default_config() -> dict[str, tp.Any]:
@@ -92,9 +95,9 @@ class Network(nnx.Module, abc.ABC):
 
   def step(
       self,
-      inputs: Inputs,
+      inputs: InputTree,
       prev_state: RecurrentState,
-  ) -> Tuple[Outputs, RecurrentState]:
+  ) -> Tuple[OutputTree, RecurrentState]:
     '''Step without reset.
 
     Arguments:
@@ -109,10 +112,10 @@ class Network(nnx.Module, abc.ABC):
 
   def step_with_reset(
       self,
-      inputs: Inputs,
+      inputs: InputTree,
       reset: Array,
       prev_state: RecurrentState,
-  ) -> Tuple[Outputs, RecurrentState]:
+  ) -> Tuple[OutputTree, RecurrentState]:
     batch_size = reset.shape[0]
     rngs = nnx.Rngs(0)  # TODO: pass rngs properly
     initial_state = where_pytree(
@@ -121,19 +124,19 @@ class Network(nnx.Module, abc.ABC):
 
   def _step_with_reset(
       self,
-      inputs_and_reset: tuple[Inputs, Array],
+      inputs_and_reset: tuple[InputTree, Array],
       prev_state: RecurrentState,
-  ) -> Tuple[Outputs, RecurrentState]:
+  ) -> Tuple[OutputTree, RecurrentState]:
     """Used for unroll/scan."""
     inputs, reset = inputs_and_reset
     return self.step_with_reset(inputs, reset, prev_state)
 
   def unroll(
       self,
-      inputs: Inputs,
+      inputs: InputTree,
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[Outputs, RecurrentState]:
+  ) -> Tuple[OutputTree, RecurrentState]:
     '''
     Arguments:
       inputs: (time, batch, x_dim)
@@ -149,10 +152,10 @@ class Network(nnx.Module, abc.ABC):
 
   def scan(
       self,
-      inputs: Inputs,
+      inputs: InputTree,
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[Outputs, RecurrentState]:
+  ) -> Tuple[OutputTree, RecurrentState]:
     '''Like unroll but also returns intermediate hidden states.
 
     Arguments:
@@ -167,8 +170,12 @@ class Network(nnx.Module, abc.ABC):
     return scan_rnn(
         self._step_with_reset, (inputs, reset), initial_state)
 
+  def append(self, other: 'Network[OutputTree, OutputTree2]') -> 'Network[InputTree, OutputTree2]':
+    """Appends another network to this one."""
+    return Compose(self, other)
 
-class MLP(Network):
+
+class MLP(Network[Array, Array]):
 
   @staticmethod
   def default_config() -> dict[str, tp.Any]:
@@ -200,7 +207,7 @@ class MLP(Network):
     del reset, initial_state
     return self._mlp(inputs), ()
 
-class RecurrentWrapper(Network):
+class RecurrentWrapper(Network[Array, Array]):
   """Wraps an RNN cell as a Network."""
 
   def __init__(self, core: nnx.RNNCellBase, output_size: int):
@@ -222,13 +229,13 @@ class RecurrentWrapper(Network):
     return output, next_state
 
 
-class FFWWrapper(Network):
+class FFWWrapper(Network[InputTree, OutputTree]):
   """Wraps a feedforward module as a Network.
 
   Assumes that the module can handle multiple batch dimensions.
   """
 
-  def __init__(self, module: tp.Callable[[Inputs], Outputs], output_size: int):
+  def __init__(self, module: tp.Callable[[InputTree], OutputTree], output_size: int):
     self._module = module
     self._output_size = output_size
 
@@ -252,6 +259,58 @@ class FFWWrapper(Network):
     del reset, initial_state
     return self._module(inputs), ()
 
+MidTree = tp.TypeVar('MidTree', bound=ArrayTree)
+
+class Compose(Network[InputTree, OutputTree]):
+
+  def __init__(
+      self,
+      first: Network[InputTree, MidTree],
+      second: Network[MidTree, OutputTree],
+  ):
+    self._first = first
+    self._second = second
+
+  @property
+  def output_size(self) -> int:
+    return self._second.output_size
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+    first_state = self._first.initial_state(batch_size, rngs)
+    second_state = self._second.initial_state(batch_size, rngs)
+    return (first_state, second_state)
+
+  def step(
+      self,
+      inputs: InputTree,
+      prev_state: Tuple[RecurrentState, RecurrentState],
+  ) -> Tuple[OutputTree, Tuple[RecurrentState, RecurrentState]]:
+    first_state, second_state = prev_state
+    mid_outputs, next_first_state = self._first.step(inputs, first_state)
+    outputs, next_second_state = self._second.step(mid_outputs, second_state)
+    return outputs, (next_first_state, next_second_state)
+
+  def unroll(
+      self,
+      inputs: InputTree,
+      reset: Array,
+      initial_state: Tuple[RecurrentState, RecurrentState],
+  ) -> Tuple[OutputTree, Tuple[RecurrentState, RecurrentState]]:
+    first_state, second_state = initial_state
+    mid_outputs, final_first_state = self._first.unroll(inputs, reset, first_state)
+    outputs, final_second_state = self._second.unroll(mid_outputs, reset, second_state)
+    return outputs, (final_first_state, final_second_state)
+
+  def scan(
+      self,
+      inputs: InputTree,
+      reset: Array,
+      initial_state: Tuple[RecurrentState, RecurrentState],
+  ) -> Tuple[OutputTree, Tuple[RecurrentState, RecurrentState]]:
+    first_state, second_state = initial_state
+    mid_outputs, hidden_first_state = self._first.scan(inputs, reset, first_state)
+    outputs, hidden_second_state = self._second.scan(mid_outputs, reset, second_state)
+    return outputs, (hidden_first_state, hidden_second_state)
 
 class Sequential(Network):
 
@@ -287,9 +346,9 @@ class Sequential(Network):
     return inputs, hidden_states
 
 
-class ResidualWrapper(Network):
+class ResidualWrapper(Network[InputTree, InputTree]):
 
-  def __init__(self, net: Network):
+  def __init__(self, net: Network[InputTree, InputTree]):
     self._net = net
 
   @property
@@ -299,7 +358,7 @@ class ResidualWrapper(Network):
   def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     return self._net.initial_state(batch_size, rngs)
 
-  def _combine(self, inputs, outputs):
+  def _combine(self, inputs: InputTree, outputs: InputTree) -> InputTree:
     return jax.tree.map(jnp.add, inputs, outputs)
 
   def step(self, inputs, prev_state):
@@ -513,7 +572,7 @@ class SimpleEmbedNetwork(StateActionNetwork):
       self,
       embed_game: embed_lib.Embedding[Game, Game],
       embed_state_action: embed_lib.Embedding[StateAction, StateAction],
-      network: Network,
+      network: Network[Array, Array],
   ):
     self._embed_game = embed_game
     self._embed_state_action = embed_state_action
@@ -567,8 +626,6 @@ class SimpleEmbedNetwork(StateActionNetwork):
     assert isinstance(output, Array)
     return output, final_state
 
-Group = Array | tp.Sequence[Array]
-
 # TODO: unify with controller_heads
 class ControllerRNN(nnx.Module):
   """Embed controller using an RNN over its components."""
@@ -616,25 +673,27 @@ class ControllerRNN(nnx.Module):
 
     return output  # type: ignore
 
-class GroupNetwork(Network):
+Group = Array | tp.Sequence[Array]
 
-  def __init__(self, networks: list[Network]):
+class GroupNetwork(Network[list[InputTree], list[OutputTree]]):
+
+  def __init__(self, networks: list[Network[InputTree, OutputTree]]):
     self._networks = nnx.List(networks)
 
   @property
-  def output_size(self) -> list[int]:
-    return [net.output_size for net in self._networks]
+  def output_size(self):
+    raise NotImplementedError()
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> Any:
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
     return [
         net.initial_state(batch_size, rngs)
         for net in self._networks]
 
   def step(
       self,
-      inputs: list[Array],
-      prev_state: Any,
-  ) -> Tuple[list[Array], Any]:
+      inputs: list[InputTree],
+      prev_state: RecurrentState,
+  ) -> Tuple[list[OutputTree], RecurrentState]:
     outputs = []
     next_states = []
     for net, inp, state in zip(self._networks, inputs, prev_state):
@@ -645,10 +704,10 @@ class GroupNetwork(Network):
 
   def unroll(
       self,
-      inputs: list[Array],
+      inputs: list[InputTree],
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[list[Array], RecurrentState]:
+  ) -> Tuple[list[OutputTree], RecurrentState]:
     outputs = []
     final_states = []
     for net, inp, state in zip(self._networks, inputs, initial_state):
@@ -659,10 +718,10 @@ class GroupNetwork(Network):
 
   def scan(
       self,
-      inputs: list[Array],
+      inputs: list[InputTree],
       reset: Array,
       initial_state: RecurrentState,
-  ) -> Tuple[list[Array], RecurrentState]:
+  ) -> Tuple[list[OutputTree], RecurrentState]:
     outputs = []
     final_states = []
     for net, inp, state in zip(self._networks, inputs, initial_state):
@@ -670,6 +729,174 @@ class GroupNetwork(Network):
       outputs.append(out)
       final_states.append(final_state)
     return outputs, final_states
+
+P = tp.ParamSpec('P')
+T = tp.TypeVar('T')
+
+def vmap_method(
+    method: tp.Callable[P, T],
+    *,
+    in_axes: int | tp.Sequence[tp.Optional[int]] | None,
+    out_axes: int | tp.Sequence[tp.Optional[int]] | None,
+):
+  if not isinstance(method, MethodType):
+    raise TypeError('jit_method can only be applied to methods.')
+
+  if not isinstance(method.__self__, nnx.Module):
+    raise TypeError('vmap_method can only be applied to nnx.Module methods.')
+
+  graphdef, state = nnx.split(method.__self__)
+
+  def pure_method(state, *args: P.args, **kwargs: P.kwargs) -> T:
+    module = nnx.merge(graphdef, state)
+    return method.__func__(module, *args, **kwargs)
+
+  if isinstance(in_axes, int) or in_axes is None:
+    in_axes = (in_axes,)
+
+  vmapped = jax.vmap(
+      pure_method,
+      in_axes=(None,) + tuple(in_axes),
+      out_axes=out_axes,
+  )
+
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    return vmapped(state, *args, **kwargs)
+
+  return wrapped
+
+class StackedNetwork(Network[InputTree, OutputTree]):
+
+  def __init__(
+      self,
+      builder: tp.Callable[[nnx.Rngs], Network[InputTree, OutputTree]],
+      width: int,
+      rngs: nnx.Rngs,
+      axis: int = -2,
+  ):
+    self.width = width
+    self.axis = axis
+
+    stacked_builder = nnx.vmap(builder, in_axes=0, out_axes=0)
+    split_rngs = rngs.fork(split=width)
+    self._networks = stacked_builder(split_rngs)
+
+    nnx.vmap()
+
+  @property
+  def output_size(self) -> int:
+    return self._networks.output_size
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+
+    @nnx.vmap(in_axes=(0, 0), out_axes=1, axis_size=self.width)
+    def init_single(net: Network, r: nnx.Rngs) -> RecurrentState:
+      return net.initial_state(batch_size, r)
+
+    return init_single(self._networks, rngs.fork(split=self.width))
+
+  def step(
+      self,
+      inputs: InputTree,
+      prev_state: RecurrentState,
+  ) -> Tuple[OutputTree, RecurrentState]:
+    @nnx.vmap(in_axes=(0, self.axis, 1), out_axes=(self.axis, 1))
+    def step_single(
+        net: Network[InputTree, OutputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> Tuple[OutputTree, RecurrentState]:
+      return net.step(inp, state)
+
+    return step_single(self._networks, inputs, prev_state)
+
+  def unroll(
+      self,
+      inputs: InputTree,
+      reset: jax.Array,
+      initial_state: RecurrentState,
+  ) -> tuple[OutputTree, RecurrentState]:
+
+    @nnx.vmap(in_axes=(0, self.axis, 1), out_axes=(self.axis, 1))
+    def unroll_single(
+        net: Network[InputTree, OutputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> Tuple[OutputTree, RecurrentState]:
+      return net.unroll(inp, reset, state)
+
+    return unroll_single(self._networks, inputs, initial_state)
+
+  def scan(
+      self,
+      inputs: InputTree,
+      reset: jax.Array,
+      initial_state: RecurrentState,
+  ) -> tuple[OutputTree, RecurrentState]:
+    # Note: hidden_state out axis is 2 because it returns all intermediate states
+    @nnx.vmap(in_axes=(0, self.axis, 1), out_axes=(self.axis, 2))
+    def scan_single(
+        net: Network[InputTree, OutputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> Tuple[OutputTree, RecurrentState]:
+      return net.scan(inp, reset, state)
+
+    return scan_single(self._networks, inputs, initial_state)
+
+
+class IndependentMultiHeadAttention(nnx.Module):
+
+  def __init__(
+      self,
+      num_groups: int,
+      features: int,
+      num_heads: int,
+      rngs: nnx.Rngs,
+  ):
+    self.num_groups = num_groups
+    self.feature_dim = features
+
+    if features % num_heads != 0:
+      raise ValueError('features must be divisible by num_heads')
+    self.head_dim = features // num_heads
+
+    self.query_ln = nnx.LayerNorm(
+      self.head_dim,
+      use_bias=False,
+      rngs=rngs,
+    )
+    self.key_ln = nnx.LayerNorm(
+      self.head_dim,
+      use_bias=False,
+      rngs=rngs,
+    )
+
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def make_qkv_linear(r: nnx.Rngs) -> nnx.LinearGeneral:
+        return nnx.LinearGeneral(
+            in_features=features,
+            out_features=(3, num_heads, self.head_dim),
+            rngs=r,
+        )
+    self.qkv_linear = make_qkv_linear(rngs.fork(split=num_groups))
+
+  def __call__(self, inputs: Array) -> Array:
+    assert inputs.shape[-2] == self.num_groups
+
+    @nnx.vmap(in_axes=(0, -2), out_axes=-4)
+    def qkv_single(qkv_linear: nnx.LinearGeneral, x: Array) -> Array:
+      return qkv_linear(x)
+
+    qkv = qkv_single(self.qkv_linear, inputs)  # (..., num_groups, 3, num_heads, head_dim)
+
+    queries, keys, values = jnp.unstack(qkv, axis=-3)
+
+    outputs = nnx.dot_product_attention(queries, keys, values)  # (..., num_groups, num_heads, head_dim)
+
+    # Concatenate heads back into feature dimension
+    return outputs.reshape(outputs.shape[:-2] + (self.feature_dim,))
+
 
 class FrameTransformer(StateActionNetwork):
   name = 'frame_tx'
@@ -720,13 +947,14 @@ class FrameTransformer(StateActionNetwork):
 
     dummy_state_action = embed_state_action.dummy(())
     group_shapes: list = jax.eval_shape(self._make_groups, dummy_state_action)
+    self._num_groups = len(group_shapes)
 
     for g in group_shapes:
       assert isinstance(g, jax.ShapeDtypeStruct)
       assert len(g.shape) == 1
     group_sizes: list[int] = [g.shape[0] for g in group_shapes]
 
-    layers = []
+    # layers = []
 
     rnn_constructor = dict(
         lstm=LSTM,
@@ -734,39 +962,63 @@ class FrameTransformer(StateActionNetwork):
     )[rnn_cell]
 
     # Initial per-attention RNNs take heterogeneous group sizes
-    layers.append(GroupNetwork([
+    initital_rnn = GroupNetwork([
         rnn_constructor(rngs, input_size=s, hidden_size=hidden_size)
-        for s in group_sizes]))
+        for s in group_sizes])
+
+    def stack_groups_fn(xs: list[Array]) -> Array:
+      assert len(xs) == len(group_sizes)
+      return jnp.stack(xs, axis=-2)
+    stack_groups_net = FFWWrapper(stack_groups_fn, output_size=hidden_size)
+
+    def unstack_groups_fn(x: Array) -> list[Array]:
+      assert x.shape[-2] == len(group_sizes)
+      return list(jnp.unstack(x, axis=-2))
+    unstack_groups_net = FFWWrapper(unstack_groups_fn, output_size=hidden_size)
+
+    def recurrent_layer(rngs: nnx.Rngs, stacked: bool):
+      if stacked:
+        per_group_rnn = StackedNetwork(
+            builder=lambda r: rnn_constructor(r, input_size=hidden_size, hidden_size=hidden_size),
+            width=len(group_sizes),
+            rngs=rngs,
+            axis=-2,
+        )
+        return ResidualWrapper(per_group_rnn)
+
+      net = unstack_groups_net
+      net = net.append(GroupNetwork([
+          ResidualWrapper(rnn_constructor(rngs, input_size=hidden_size, hidden_size=hidden_size))
+          for _ in group_sizes]))
+      net = net.append(stack_groups_net)
+      return net
 
     # Stack groups into a single tensor
-    stack_groups = FFWWrapper(
-        lambda xs: jnp.stack(xs, axis=-2),
-        output_size=hidden_size)
+    net = initital_rnn.append(stack_groups_net)
 
     for _ in range(num_layers):
-      layers.append(stack_groups)
-
-      attention = nnx.MultiHeadAttention(
+      # attention = nnx.MultiHeadAttention(
+      #     num_heads=num_heads,
+      #     in_features=hidden_size,
+      #     qkv_features=hidden_size,
+      #     out_features=hidden_size,
+      #     rngs=rngs,
+      #     decode=False,
+      # )
+      attention = IndependentMultiHeadAttention(
+          num_groups=self._num_groups,
+          features=hidden_size,
           num_heads=num_heads,
-          in_features=hidden_size,
-          qkv_features=hidden_size,
-          out_features=hidden_size,
           rngs=rngs,
-          decode=False,
       )
-      layers.append(ResidualWrapper(FFWWrapper(attention, output_size=hidden_size)))
+      residual_attention = ResidualWrapper(FFWWrapper(attention, output_size=hidden_size))
+      # layers.append(residual_attention)
+      net = net.append(residual_attention)
 
-      per_group_rnn = GroupNetwork([
-          ResidualWrapper(rnn_constructor(rngs, input_size=hidden_size, hidden_size=hidden_size))
-          for _ in group_sizes])
+      net = net.append(recurrent_layer(rngs, stacked=False))
 
-      # TODO: optimize this with a single vmap
-      layers.extend([
-          FFWWrapper(lambda x: jnp.unstack(x, axis=-2), output_size=hidden_size),
-          per_group_rnn,
-      ])
-
-    self._network = Sequential(layers)
+    # self._network = Sequential(layers)
+    self._network = net
 
   @property
   def output_size(self) -> int:
@@ -848,10 +1100,14 @@ class FrameTransformer(StateActionNetwork):
     return self._network.initial_state(batch_size, rngs)
 
   def _extract_output(self, outputs: Outputs) -> Array:
-    assert isinstance(outputs, list)
-    output = outputs[-1]
-    assert isinstance(output, Array)
-    return output
+    # assert isinstance(outputs, list)
+    # output = outputs[-1]
+    # assert isinstance(output, Array)
+    # return output
+    assert isinstance(outputs, Array)
+    assert outputs.shape[-1] == self._hidden_size
+    assert outputs.shape[-2] == self._num_groups
+    return outputs[..., -1, :]
 
   def step(
       self,
