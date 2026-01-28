@@ -228,7 +228,7 @@ class FFWWrapper(Network):
   Assumes that the module can handle multiple batch dimensions.
   """
 
-  def __init__(self, module: tp.Callable[[Inputs], Array], output_size: int):
+  def __init__(self, module: tp.Callable[[Inputs], Outputs], output_size: int):
     self._module = module
     self._output_size = output_size
 
@@ -571,6 +571,7 @@ Group = Array | tp.Sequence[Array]
 
 # TODO: unify with controller_heads
 class ControllerRNN(nnx.Module):
+  """Embed controller using an RNN over its components."""
 
   def __init__(
       self,
@@ -603,10 +604,10 @@ class ControllerRNN(nnx.Module):
     self._cells = nnx.List(cells)
 
   def __call__(self, controller: Controller) -> Array:
-    batch_shape = controller.main_stick.x.shape + (self._embed_flat[0].size,)
+    input_shape = controller.main_stick.x.shape + (self._embed_flat[0].size,)
 
     # TODO: pass rngs properly? maybe reuse from __init__?
-    hidden_state = self._initial_state_fn(batch_shape, rngs=nnx.Rngs(0))
+    hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
 
     for cell, embed, component in zip(
         self._cells, self._embed_flat,
@@ -677,6 +678,8 @@ class FrameTransformer(StateActionNetwork):
   def default_config(cls) -> dict[str, tp.Any]:
     return dict(
         hidden_size=128,
+        num_heads=4,
+        num_layers=2,
         use_self_nana=False,
         rnn_cell='lstm',
     )
@@ -686,13 +689,16 @@ class FrameTransformer(StateActionNetwork):
       rngs: nnx.Rngs,
       embed_state_action: embed_lib.StructEmbedding[StateAction],
       hidden_size: int,
+      num_heads: int,
+      num_layers: int,
       use_self_nana: bool = False,
       rnn_cell: str = 'lstm',
   ):
     self._embed_state_action = embed_state_action
     self._hidden_size = hidden_size
     self._use_self_nana = use_self_nana
-
+    self._num_layers = num_layers
+    self._num_heads = num_heads
     # self._embed_struct = embed_state_action.map(lambda e: e)
 
     embed_state_action_shallow = embed_state_action.map_shallow(
@@ -727,9 +733,38 @@ class FrameTransformer(StateActionNetwork):
         gru=GRU,
     )[rnn_cell]
 
+    # Initial per-attention RNNs take heterogeneous group sizes
     layers.append(GroupNetwork([
         rnn_constructor(rngs, input_size=s, hidden_size=hidden_size)
         for s in group_sizes]))
+
+    # Stack groups into a single tensor
+    stack_groups = FFWWrapper(
+        lambda xs: jnp.stack(xs, axis=-2),
+        output_size=hidden_size)
+
+    for _ in range(num_layers):
+      layers.append(stack_groups)
+
+      attention = nnx.MultiHeadAttention(
+          num_heads=num_heads,
+          in_features=hidden_size,
+          qkv_features=hidden_size,
+          out_features=hidden_size,
+          rngs=rngs,
+          decode=False,
+      )
+      layers.append(ResidualWrapper(FFWWrapper(attention, output_size=hidden_size)))
+
+      per_group_rnn = GroupNetwork([
+          ResidualWrapper(rnn_constructor(rngs, input_size=hidden_size, hidden_size=hidden_size))
+          for _ in group_sizes])
+
+      # TODO: optimize this with a single vmap
+      layers.extend([
+          FFWWrapper(lambda x: jnp.unstack(x, axis=-2), output_size=hidden_size),
+          per_group_rnn,
+      ])
 
     self._network = Sequential(layers)
 
@@ -814,8 +849,9 @@ class FrameTransformer(StateActionNetwork):
 
   def _extract_output(self, outputs: Outputs) -> Array:
     assert isinstance(outputs, list)
-    assert isinstance(outputs[0], Array)
-    return outputs[0]
+    output = outputs[-1]
+    assert isinstance(output, Array)
+    return output
 
   def step(
       self,
