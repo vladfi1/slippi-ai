@@ -272,11 +272,8 @@ def policy_from_config(
   )
 
   policy = policies_lib.Policy(
-      rngs=rngs,
       network=network,
       controller_head=controller_head,
-      hidden_size=network.output_size,
-      train_value_head=config.policy.train_value_head,
       delay=config.policy.delay,
   )
 
