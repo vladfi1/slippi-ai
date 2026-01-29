@@ -464,6 +464,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_stats, _ = train_manager.step()
   logging.info('loss initial: %f', _get_loss(train_stats))
+  logging.info(f"Using {jax_utils.get_process_gpu_memory_gb():.2f} GB GPU memory")
 
   # Step counter (using plain Python int since JAX doesn't have mutable variables)
   step = 0
