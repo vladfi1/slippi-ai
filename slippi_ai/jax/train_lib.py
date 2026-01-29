@@ -140,7 +140,7 @@ class TrainManager:
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
-          frames, self.hidden_state, **self.step_kwargs)
+          frames, self.hidden_state, combined=True, **self.step_kwargs)
       stats.update(learner_stats)
 
     return stats, batch
