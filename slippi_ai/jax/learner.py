@@ -1,5 +1,6 @@
+
 import dataclasses
-import functools
+import logging
 from typing import Optional
 import typing as tp
 import types
@@ -72,7 +73,11 @@ class Learner(nnx.Module):
     self.value_optimizer = nnx.Optimizer(
         self.value_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    self.jit_step = jit_method(self._step, static_argnames=('train',))
+    self.jit_step = jit_method(self._step, static_argnames=('train', 'compile'))
+    self.jit_step_policy = jit_method(
+        self._step_policy, static_argnames=('train',))
+    self.jit_step_value_function = jit_method(
+        self._step_value_function, static_argnames=('train',))
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return (
@@ -80,15 +85,13 @@ class Learner(nnx.Module):
         self.value_function.initial_state(batch_size, rngs),
     )
 
-  def _step(
+  def _step_policy(
       self,
       bm_frames: Frames,
       initial_states: RecurrentState,
       train: bool = True,
-  ) -> tuple[dict, RecurrentState]:
-    """Single training/eval step."""
-    policy_initial_states, value_initial_states = initial_states
-
+  ) -> tuple[Array, dict, RecurrentState]:
+    """Single training/eval step for policy only."""
     # Switch axes to time-major
     tm_frames: Frames = jax.tree.map(swap_axes, bm_frames)
 
@@ -98,32 +101,75 @@ class Learner(nnx.Module):
           tm_frames, initial_states)
       return policy_loss, (policy_metrics, policy_final_states)
 
-    # Define loss function for value function
-    def value_loss_fn(value_function: vf_lib.ValueFunction):
-      delay = self.policy.delay
-      value_frames = jax.tree.map(
-          lambda t: t[:t.shape[0] - delay] if delay > 0 else t, tm_frames)
-      value_outputs, value_final_states = value_function.loss(
-          value_frames, value_initial_states, self.discount)
-      return jnp.mean(value_outputs.loss), (value_outputs.metrics, value_final_states)
-
     if train:
       # Compute gradients for policy using value_and_grad to also get loss
-      (policy_loss, (policy_metrics, policy_final_states)), policy_grads = nnx.value_and_grad(
+      (loss, (metrics, final_states)), policy_grads = nnx.value_and_grad(
           policy_loss_fn, has_aux=True)(self.policy)
-
-      # Compute gradients for value function
-      (value_loss, (value_metrics, value_final_states)), value_grads = nnx.value_and_grad(
-          value_loss_fn, has_aux=True)(self.value_function)
 
       # Apply gradients
       self.policy_optimizer.update(self.policy, policy_grads)
-      self.value_optimizer.update(self.value_function, value_grads)
-
     else:
       # Just compute forward pass without gradients
-      policy_loss, (policy_metrics, policy_final_states) = policy_loss_fn(self.policy)
-      value_loss, (value_metrics, value_final_states) = value_loss_fn(self.value_function)
+      loss, (metrics, final_states) = policy_loss_fn(self.policy)
+
+
+    return loss, metrics, final_states
+
+  def _step_value_function(
+      self,
+      bm_frames: Frames,
+      initial_states: RecurrentState,
+      train: bool = True,
+  ) -> tuple[Array, dict, RecurrentState]:
+    """Single training/eval step for value function only."""
+    # Switch axes to time-major
+    tm_frames: Frames = jax.tree.map(swap_axes, bm_frames)
+
+    # Define loss function for value function
+    def value_loss_fn(value_function: vf_lib.ValueFunction):
+      delay = self.policy.delay
+      # Value function sees non-delayed actions
+      value_frames = jax.tree.map(
+          lambda t: t[:t.shape[0] - delay] if delay > 0 else t, tm_frames)
+      value_outputs, value_final_states = value_function.loss(
+          value_frames, initial_states, self.discount)
+      return jnp.mean(value_outputs.loss), (value_outputs.metrics, value_final_states)
+
+    if train:
+      # Compute gradients for value function
+      (loss, (metrics, final_states)), value_grads = nnx.value_and_grad(
+          value_loss_fn, has_aux=True)(self.value_function)
+
+      # Apply gradients
+      self.value_optimizer.update(self.value_function, value_grads)
+    else:
+      # Just compute forward pass without gradients
+      loss, (metrics, final_states) = value_loss_fn(self.value_function)
+
+    return loss, metrics, final_states
+
+  def _step(
+      self,
+      bm_frames: Frames,
+      initial_states: RecurrentState,
+      train: bool = True,
+      compile: Optional[bool] = None,
+  ) -> tuple[dict, RecurrentState]:
+    """Single training/eval step."""
+    compile = self.compile if compile is None else compile
+    if compile:
+      step_policy_fn = self.jit_step_policy
+      step_value_fn = self.jit_step_value_function
+    else:
+      step_policy_fn = self._step_policy
+      step_value_fn = self._step_value_function
+
+    policy_initial_states, value_initial_states = initial_states
+
+    policy_loss, policy_metrics, policy_final_states = step_policy_fn(
+        bm_frames, policy_initial_states, train=train)
+    value_loss, value_metrics, value_final_states = step_value_fn(
+        bm_frames, value_initial_states, train=train)
 
     total_loss = policy_loss + value_loss
 
@@ -142,6 +188,7 @@ class Learner(nnx.Module):
       initial_states: RecurrentState,
       train: bool = True,
       compile: Optional[bool] = None,
+      combined: bool = False,
   ) -> tuple[dict, RecurrentState]:
     """Training/eval step.
 
@@ -155,8 +202,22 @@ class Learner(nnx.Module):
       Tuple of (metrics dict, final recurrent states).
     """
     compile = self.compile if compile is None else compile
-    step_fn = self.jit_step if compile else self._step
-    return step_fn(frames, initial_states, train=train)
+
+    if combined:
+      if not compile:
+        logging.warning('Learner.combine only matters when compiling.')
+
+      step_fn = self.jit_step if compile else self._step
+      # If using jit_step, we don't need to compile the inner
+      # step_{policy,value_function}
+      return step_fn(frames, initial_states, train=train, compile=False)
+
+    return self._step(
+        frames,
+        initial_states,
+        train=train,
+        compile=compile,
+    )
 
   def get_state(self):
     _, state = nnx.split(self)
