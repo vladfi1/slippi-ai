@@ -1,6 +1,9 @@
 """JAX utilities."""
 
+import os
 from typing import Tuple
+import typing as tp
+import types
 
 import numpy as np
 import jax
@@ -78,6 +81,7 @@ def where(cond: Array, x: Array, y: Array) -> Array:
     cond = jnp.expand_dims(cond, -1)
   return jnp.where(cond, x, y)
 
+# Flax NNX
 
 class MLP(nnx.Module):
 
@@ -107,3 +111,33 @@ class MLP(nnx.Module):
     for layer in self.layers:
       x = layer(x)
     return x
+
+# Misc
+
+def get_process_gpu_memory_gb(target_pid: tp.Optional[int] = None) -> float:
+  from pynvml import (
+      nvmlInit, nvmlShutdown,
+      nvmlDeviceGetHandleByIndex,
+      nvmlDeviceGetComputeRunningProcesses,
+  )
+
+  if target_pid is None:
+    target_pid = os.getpid()
+
+  nvmlInit()
+  try:
+    # Get handle for the first GPU (index 0)
+    handle = nvmlDeviceGetHandleByIndex(0)
+
+    # Get list of all compute processes on this GPU
+    # Note: Use nvmlDeviceGetGraphicsRunningProcesses for graphics apps
+    processes = nvmlDeviceGetComputeRunningProcesses(handle)
+
+    for proc in processes:
+      if proc.pid == target_pid:
+        # usedGpuMemory is returned in bytes
+        return proc.usedGpuMemory / 1024**3
+
+    return 0.0 # Process not found on GPU
+  finally:
+    nvmlShutdown()
