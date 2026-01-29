@@ -28,8 +28,6 @@ def swap_axes(t, axis1=0, axis2=1):
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
-  decay_rate: float = 0.
-  value_cost: float = 0.5
   reward_halflife: float = 4
 
 # TODO: move to jax_utils
@@ -58,17 +56,13 @@ class Learner(nnx.Module):
       self,
       policy: Policy,
       learning_rate: float,
-      value_cost: float,
       reward_halflife: float,
       value_function: vf_lib.ValueFunction,
-      decay_rate: Optional[float] = None,
       compile: bool = True,
   ):
     self.policy = policy
     self.value_function = value_function
-    self.value_cost = value_cost
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
-    self.decay_rate = decay_rate
     self.compile = compile
 
     # Create optimizers using optax
@@ -101,8 +95,7 @@ class Learner(nnx.Module):
     # Define loss function that takes policy as argument for gradient computation
     def policy_loss_fn(policy: Policy):
       policy_loss, policy_final_states, policy_metrics = policy.imitation_loss(
-          tm_frames, policy_initial_states,
-          self.value_cost, self.discount)
+          tm_frames, initial_states)
       return policy_loss, (policy_metrics, policy_final_states)
 
     # Define loss function for value function
