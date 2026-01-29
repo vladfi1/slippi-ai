@@ -11,8 +11,7 @@ from slippi_ai.jax.controller_heads import (
     DistanceOutputs,
     SampleOutputs,
 )
-from slippi_ai.jax.value_function import ValueOutputs
-from slippi_ai.jax import embed, networks, jax_utils, rl_lib
+from slippi_ai.jax import embed, networks
 from slippi_ai import data, types, utils
 
 Array = jax.Array
@@ -22,7 +21,6 @@ RecurrentState = networks.RecurrentState
 class UnrollOutputs(tp.NamedTuple):
   log_probs: Array  # [T, B]
   distances: DistanceOutputs  # Struct of [T, B]
-  value_outputs: ValueOutputs
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
@@ -39,20 +37,14 @@ class Policy(nnx.Module):
 
   def __init__(
       self,
-      rngs: nnx.Rngs,
       network: networks.StateActionNetwork,
       controller_head: ControllerHead,
-      hidden_size: int,
-      train_value_head: bool = True,
       delay: int = 0,
   ):
     self.network = network
     self.controller_head = controller_head
 
-    self.train_value_head = train_value_head
     self.delay = delay
-
-    self.value_head = nnx.Linear(hidden_size, 1, rngs=rngs)
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return self.network.initial_state(batch_size, rngs)
@@ -61,51 +53,10 @@ class Policy(nnx.Module):
   def controller_embedding(self) -> embed.Embedding[embed.Controller, data.Action]:
     return self.controller_head.controller_embedding()
 
-  def _value_outputs(
-      self,
-      outputs: Array,  # t = [0, T-1]
-      last_input: data.StateAction,  # t = T
-      is_resetting: Array,  # t = [0, T]
-      final_state: RecurrentState,  # t = T - 1
-      rewards: Array,  # t = [0, T-1]
-      discount: float,
-  ) -> ValueOutputs:
-    values = jnp.squeeze(self.value_head(outputs), -1)
-    last_output, _ = self.network.step_with_reset(
-        last_input, is_resetting[-1], final_state)
-    last_value = jnp.squeeze(self.value_head(last_output), -1)
-
-    discounts = jnp.where(is_resetting[1:], 0.0, discount)
-    value_targets = rl_lib.discounted_returns(
-        rewards=rewards,
-        discounts=discounts,
-        bootstrap=last_value)
-    value_targets = jax.lax.stop_gradient(value_targets)
-    advantages = value_targets - values
-    value_loss = jnp.square(advantages)
-
-    _, value_variance = jax_utils.mean_and_variance(value_targets)
-    uev = value_loss / (value_variance + 1e-8)
-
-    metrics = {
-        'reward': jax_utils.get_stats(rewards),
-        'loss': value_loss,
-        'return': value_targets,
-        'uev': uev,  # unexplained variance
-    }
-
-    return ValueOutputs(
-        returns=value_targets,
-        advantages=advantages,
-        loss=value_loss,
-        metrics=metrics,
-    )
-
   def unroll(
       self,
       frames: data.Frames,
       initial_state: RecurrentState,
-      discount: float = 0.99,
   ) -> UnrollOutputs:
     """Computes prediction loss on a batch of frames.
 
@@ -118,7 +69,6 @@ class Policy(nnx.Module):
       discount: Per-frame discount factor for returns.
     """
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
-    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
@@ -135,20 +85,12 @@ class Policy(nnx.Module):
 
     metrics = dict(
         loss=policy_loss,
-        controller=dict(
-            types.nt_to_nest(distances),
-        )
+        controller=types.nt_to_nest(distances),
     )
-
-    value_outputs = self._value_outputs(
-        outputs, last_input, frames.is_resetting, final_state,
-        frames.reward, discount)
-    metrics['value'] = value_outputs.metrics
 
     return UnrollOutputs(
         log_probs=log_probs,
         distances=distance_outputs,
-        value_outputs=value_outputs,
         final_state=final_state,
         metrics=metrics)
 
@@ -156,8 +98,6 @@ class Policy(nnx.Module):
       self,
       frames: data.Frames,
       initial_state: RecurrentState,
-      discount: float = 0.99,
-      value_cost: float = 0.5,
   ) -> tp.Tuple[Array, RecurrentState, dict]:
     # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
     # is D + 1). Then the first trajectory has game states [0, U + D] and the
@@ -184,17 +124,13 @@ class Policy(nnx.Module):
         reward=frames.reward[self.delay:],
     )
 
-    unroll_outputs = self.unroll(
-        frames, initial_state,
-        discount=discount,
-    )
-
+    unroll_outputs = self.unroll(frames, initial_state)
     metrics = unroll_outputs.metrics
 
+    # Take time-mean
+    # metrics = jax.tree.map(lambda t: jnp.mean(t, axis=0), metrics)
+
     total_loss = -jnp.mean(unroll_outputs.log_probs)
-    if self.train_value_head:
-      value_loss = jnp.mean(unroll_outputs.value_outputs.loss)
-      total_loss = total_loss + value_cost * value_loss
 
     metrics.update(
         total_loss=total_loss,
@@ -206,7 +142,6 @@ class Policy(nnx.Module):
       self,
       frames: data.Frames,
       initial_state: RecurrentState,
-      discount: float = 0.99,
   ) -> UnrollWithOutputs:
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
     last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
@@ -225,19 +160,12 @@ class Policy(nnx.Module):
 
     metrics = dict(
         loss=policy_loss,
-        controller=dict(
-            types.nt_to_nest(distances),
-        )
+        controller=types.nt_to_nest(distances),
     )
-
-    value_outputs = self._value_outputs(
-        outputs, last_input, frames.is_resetting, final_state,
-        frames.reward, discount)
-    metrics['value'] = value_outputs.metrics
 
     return UnrollWithOutputs(
         imitation_loss=policy_loss,
-        distances=distances,
+        distances=distance_outputs,
         outputs=outputs,
         final_state=final_state,
         metrics=metrics,
@@ -291,5 +219,4 @@ class Policy(nnx.Module):
 
 @dataclasses.dataclass
 class PolicyConfig:
-  train_value_head: bool = True
   delay: int = 0
