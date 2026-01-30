@@ -5,10 +5,9 @@ from typing import Tuple
 import typing as tp
 import types
 
-import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from flax import nnx
 
 Array = jax.Array
@@ -23,12 +22,12 @@ def get_mesh(axis_name: str = 'data') -> Mesh:
 
 def replicate_sharding(mesh: Mesh) -> NamedSharding:
   """Create a sharding that replicates data across all devices."""
-  return NamedSharding(mesh, P())
+  return NamedSharding(mesh, PartitionSpec())
 
 
 def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
-  return NamedSharding(mesh, P(axis_name))
+  return NamedSharding(mesh, PartitionSpec(axis_name))
 
 
 def shard_module(module: nnx.Module, sharding: NamedSharding):
