@@ -332,12 +332,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.info('not restoring any params')
 
-  # Initialize the best eval loss to infinity
+  # Training state. TODO: use orbax?
+  step = 0
+  train_time = 0.0
   best_eval_loss = float('inf')
+  total_frames = 0
 
   if restored:
     assert isinstance(combined_state, dict)
-    best_eval_loss = combined_state.get('best_eval_loss', float('inf'))
+    counters: dict = combined_state['counters']
+
+    step = counters['step']
+    best_eval_loss = counters['best_eval_loss']
+    train_time = counters['train_time']
+    total_frames: int = counters['total_frames']
 
     restore_config = flag_utils.dataclass_from_dict(
         Config, combined_state['config'])
@@ -469,13 +477,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   logging.info('loss initial: %f', _get_loss(train_stats))
   logging.info(f"Using {jax_utils.get_process_gpu_memory_gb():.2f} GB GPU memory")
 
-  # Step counter (using plain Python int since JAX doesn't have mutable variables)
-  step = 0
-
   def save(eval_loss=None):
     nonlocal best_eval_loss
     # Local Save
     state = learner.get_state()
+
+    counters = dict(
+        step=step,
+        total_frames=total_frames,
+        train_time=train_time,
+        best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
+    )
 
     # easier to always bundle the config with the state
     combined = dict(
@@ -483,8 +495,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         step=step,
         config=dataclasses.asdict(config),
         name_map=name_map,
-        best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
         dataset_metrics=dataset_metrics,
+        counters=counters,
     )
     pickled_state = pickle.dumps(combined)
 
@@ -495,7 +507,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if restored:
     assert isinstance(combined_state, dict)  # appease type checker
     learner.set_state(combined_state['state'])
-    step = combined_state.get('step', 0)
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
@@ -538,6 +549,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         test=test_stats,
         timings=timings,
         num_frames=num_frames,
+        total_frames=total_frames,
+        train_time=train_time,
     )
     log_stats(all_stats, total_steps)
 
@@ -597,11 +610,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     data_time = test_manager.data_profiler.mean_time()
     step_time = test_manager.step_profiler.mean_time()
 
-    total_frames = step * FRAMES_PER_STEP
     train_epoch = epoch_tracker.last
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,
+        train_time=train_time,
         data_time=data_time,
         step_time=step_time,
     )
@@ -665,8 +678,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   start_time = time.time()
 
+  train_profiler = utils.Profiler(burnin=0)
+
   while time.time() - start_time < runtime.max_runtime:
-    train_stats, _ = train_manager.step()
+    with train_profiler:
+      train_stats, _ = train_manager.step()
+
+    # Update counters
     step += 1
+    total_frames += FRAMES_PER_STEP
+    train_time += train_profiler.last_time
+
     maybe_log(train_stats)
     maybe_eval()
