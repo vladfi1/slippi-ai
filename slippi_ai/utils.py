@@ -48,8 +48,9 @@ class Profiler:
     self._enter_time = time.perf_counter()
 
   def __exit__(self, type, value, traceback):
+    self.last_time = time.perf_counter() - self._enter_time
+    self.cumtime += self.last_time
     self.num_calls += 1
-    self.cumtime += time.perf_counter() - self._enter_time
 
     if self.burnin > 0:
       self.burnin -= 1
