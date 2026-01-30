@@ -215,7 +215,7 @@ def train_test_split(
     raise ValueError("data_dir must be specified in DatasetConfig")
 
   filenames = sorted(os.listdir(config.data_dir))
-  print(f"Found {len(filenames)} files.")
+  logging.info(f"Found {len(filenames)} files.")
 
   replays: list[ReplayInfo] = []
 
