@@ -112,6 +112,21 @@ class MLP(nnx.Module):
       x = layer(x)
     return x
 
+P = tp.ParamSpec('P')
+T = tp.TypeVar('T')
+
+def eval_shape_method(
+    method: tp.Callable[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+  if not isinstance(method, types.MethodType):
+    raise TypeError('eval_shape_method can only be applied to methods.')
+
+  # TODO: handle functools.partial
+  return nnx.eval_shape(method.__func__, method.__self__, *args, **kwargs)
+
+
 # Misc
 
 def get_process_gpu_memory_gb(target_pid: tp.Optional[int] = None) -> float:

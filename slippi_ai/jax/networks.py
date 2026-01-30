@@ -1,8 +1,8 @@
 import abc
 import copy
+import functools
 from typing import Any, Callable, Optional, Tuple
 import typing as tp
-from types import MethodType
 
 import jax
 import jax.numpy as jnp
@@ -184,12 +184,22 @@ class MLP(Network[Array, Array]):
       width=128,
     )
 
-  def __init__(self, rngs: nnx.Rngs, input_size: int, depth: int, width: int):
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      depth: int,
+      width: int,
+      activation: tp.Callable[[Array], Array] = nnx.relu,
+      activation_final: bool = False,
+  ):
     self._width = width
     self._mlp = jax_utils.MLP(
         rngs=rngs,
         input_size=input_size,
         features=[width] * depth,
+        activation=activation,
+        activation_final=activation_final,
     )
 
   @property
@@ -210,9 +220,15 @@ class MLP(Network[Array, Array]):
 class RecurrentWrapper(Network[Array, Array]):
   """Wraps an RNN cell as a Network."""
 
-  def __init__(self, core: nnx.RNNCellBase, output_size: int):
+  def __init__(
+      self,
+      core: nnx.RNNCellBase,
+      output_size: int,
+      remat: bool = False,
+  ):
     self._core = core
     self._output_size = output_size
+    self._remat = remat
 
   @property
   def output_size(self) -> int:
@@ -223,11 +239,12 @@ class RecurrentWrapper(Network[Array, Array]):
     return self._core.initialize_carry(input_shape, rngs)
 
   def step(self, inputs, prev_state):
-    assert isinstance(inputs, Array)
     # flax's RNNCells have the arguments reversed
-    next_state, output = self._core(prev_state, inputs)
+    core = self._core
+    if self._remat:
+      core = nnx.remat(self._core, prevent_cse=False)
+    next_state, output = core(prev_state, inputs)
     return output, next_state
-
 
 class FFWWrapper(Network[InputTree, OutputTree]):
   """Wraps a feedforward module as a Network.
@@ -258,6 +275,13 @@ class FFWWrapper(Network[InputTree, OutputTree]):
   def scan(self, inputs, reset, initial_state):
     del reset, initial_state
     return self._module(inputs), ()
+
+class Linear(FFWWrapper[Array, Array]):
+  """Linear layer as a Network."""
+
+  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int):
+    linear = nnx.Linear(in_features, out_features, rngs=rngs)
+    super().__init__(linear, output_size=out_features)
 
 MidTree = tp.TypeVar('MidTree', bound=ArrayTree)
 
@@ -373,6 +397,34 @@ class ResidualWrapper(Network[InputTree, InputTree]):
     outputs, final_state = self._net.scan(inputs, reset, initial_state)
     return self._combine(inputs, outputs), final_state
 
+class RematWrapper(Network[InputTree, OutputTree]):
+
+  def __init__(self, net: Network[InputTree, OutputTree]):
+    self._net = net
+
+  @property
+  def output_size(self) -> int:
+    return self._net.output_size
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+    return self._net.initial_state(batch_size, rngs)
+
+  # Note: we can't directly use jax.remat on self._net.step as it raises issues
+  # with nnx stuff inside the method. We also have to use nnx.remat as a
+  # decorator on the _unbound_ function rather than the method.
+
+  @nnx.remat
+  def step(self, inputs, prev_state):
+    return self._net.step(inputs, prev_state)
+
+  @nnx.remat
+  def unroll(self, inputs, reset, initial_state):
+    return self._net.unroll(inputs, reset, initial_state)
+
+  @nnx.remat
+  def scan(self, inputs, reset, initial_state):
+    return self._net.scan(inputs, reset, initial_state)
+
 class GRU(RecurrentWrapper):
 
   @staticmethod
@@ -381,13 +433,14 @@ class GRU(RecurrentWrapper):
       hidden_size=128,
     )
 
-  def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int):
+  def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int, remat: bool = False):
     super().__init__(
         nnx.GRUCell(
             in_features=input_size,
             hidden_features=hidden_size,
             rngs=rngs),
-        output_size=hidden_size)
+        output_size=hidden_size,
+        remat=remat)
 
 class LSTM(RecurrentWrapper):
 
@@ -397,13 +450,14 @@ class LSTM(RecurrentWrapper):
       hidden_size=128,
     )
 
-  def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int):
+  def __init__(self, rngs: nnx.Rngs, input_size: int, hidden_size: int, remat: bool = False):
     super().__init__(
         nnx.LSTMCell(
             in_features=input_size,
             hidden_features=hidden_size,
             rngs=rngs),
-        output_size=hidden_size)
+        output_size=hidden_size,
+        remat=remat)
 
 
 class ResBlock(nnx.Module):
@@ -733,37 +787,8 @@ class GroupNetwork(Network[list[InputTree], list[OutputTree]]):
 P = tp.ParamSpec('P')
 T = tp.TypeVar('T')
 
-def vmap_method(
-    method: tp.Callable[P, T],
-    *,
-    in_axes: int | tp.Sequence[tp.Optional[int]] | None,
-    out_axes: int | tp.Sequence[tp.Optional[int]] | None,
-):
-  if not isinstance(method, MethodType):
-    raise TypeError('jit_method can only be applied to methods.')
-
-  if not isinstance(method.__self__, nnx.Module):
-    raise TypeError('vmap_method can only be applied to nnx.Module methods.')
-
-  graphdef, state = nnx.split(method.__self__)
-
-  def pure_method(state, *args: P.args, **kwargs: P.kwargs) -> T:
-    module = nnx.merge(graphdef, state)
-    return method.__func__(module, *args, **kwargs)
-
-  if isinstance(in_axes, int) or in_axes is None:
-    in_axes = (in_axes,)
-
-  vmapped = jax.vmap(
-      pure_method,
-      in_axes=(None,) + tuple(in_axes),
-      out_axes=out_axes,
-  )
-
-  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
-    return vmapped(state, *args, **kwargs)
-
-  return wrapped
+def apply(f: tp.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+  return f(*args, **kwargs)
 
 class StackedNetwork(Network[InputTree, OutputTree]):
 
@@ -780,8 +805,6 @@ class StackedNetwork(Network[InputTree, OutputTree]):
     stacked_builder = nnx.vmap(builder, in_axes=0, out_axes=0)
     split_rngs = rngs.fork(split=width)
     self._networks = stacked_builder(split_rngs)
-
-    nnx.vmap()
 
   @property
   def output_size(self) -> int:
@@ -932,6 +955,15 @@ class FrameTransformer(StateActionNetwork):
         num_layers=2,
         use_self_nana=False,
         rnn_cell='lstm',
+
+        remat_layers=False,
+        remat_controller_rnn=True,
+        stacked_rnns=True,
+        remat_rnns=False,
+
+        input_ffw=False,
+        skip_rnn=False,
+        skip_attention=False,
     )
 
   def __init__(
@@ -943,13 +975,27 @@ class FrameTransformer(StateActionNetwork):
       num_layers: int,
       use_self_nana: bool = False,
       rnn_cell: str = 'lstm',
+      # Stacked RNNs are faster but use more memory
+      stacked_rnns: bool = False,
+      # Remat each layer to save memory
+      remat_layers: bool = False,
+      # The controller_rnn is particularly important to remat
+      remat_controller_rnn: bool = True,
+      # Remat RNN cells during unroll to save memory
+      remat_rnns: bool = False,
+
+      # Below are just for testing memory usage
+      input_ffw: bool = False,
+      skip_rnn: bool = False,
+      skip_attention: bool = False,
   ):
     self._embed_state_action = embed_state_action
     self._hidden_size = hidden_size
     self._use_self_nana = use_self_nana
     self._num_layers = num_layers
     self._num_heads = num_heads
-    # self._embed_struct = embed_state_action.map(lambda e: e)
+    self._remat_layers = remat_layers
+    self._remat_controller_rnn = remat_controller_rnn
 
     embed_state_action_shallow = embed_state_action.map_shallow(
         lambda e: e)
@@ -969,25 +1015,21 @@ class FrameTransformer(StateActionNetwork):
     )
 
     dummy_state_action = embed_state_action.dummy(())
-    group_shapes: list = jax.eval_shape(self._make_groups, dummy_state_action)
+    # Need to use eval_shape_method because make_groups uses a ControllerRNN
+    group_shapes = tp.cast(
+        list[jax.ShapeDtypeStruct],
+        jax_utils.eval_shape_method(self._make_groups, dummy_state_action))
     self._num_groups = len(group_shapes)
 
     for g in group_shapes:
-      assert isinstance(g, jax.ShapeDtypeStruct)
       assert len(g.shape) == 1
     group_sizes: list[int] = [g.shape[0] for g in group_shapes]
-
-    # layers = []
 
     rnn_constructor = dict(
         lstm=LSTM,
         gru=GRU,
     )[rnn_cell]
-
-    # Initial per-attention RNNs take heterogeneous group sizes
-    initital_rnn = GroupNetwork([
-        rnn_constructor(rngs, input_size=s, hidden_size=hidden_size)
-        for s in group_sizes])
+    rnn_constructor = functools.partial(rnn_constructor, remat=remat_rnns)
 
     def stack_groups_fn(xs: list[Array]) -> Array:
       assert len(xs) == len(group_sizes)
@@ -1000,9 +1042,11 @@ class FrameTransformer(StateActionNetwork):
     unstack_groups_net = FFWWrapper(unstack_groups_fn, output_size=hidden_size)
 
     def recurrent_layer(rngs: nnx.Rngs, stacked: bool):
+      make_rnn = lambda r: rnn_constructor(r, input_size=hidden_size, hidden_size=hidden_size)
+
       if stacked:
         per_group_rnn = StackedNetwork(
-            builder=lambda r: rnn_constructor(r, input_size=hidden_size, hidden_size=hidden_size),
+            builder=make_rnn,
             width=len(group_sizes),
             rngs=rngs,
             axis=-2,
@@ -1011,36 +1055,43 @@ class FrameTransformer(StateActionNetwork):
 
       net = unstack_groups_net
       net = net.append(GroupNetwork([
-          ResidualWrapper(rnn_constructor(rngs, input_size=hidden_size, hidden_size=hidden_size))
+          ResidualWrapper(make_rnn(rngs))
           for _ in group_sizes]))
       net = net.append(stack_groups_net)
       return net
 
-    # Stack groups into a single tensor
-    net = initital_rnn.append(stack_groups_net)
+    # Initial per-attention RNNs take heterogeneous group sizes
+    def initial_embed_net(size: int) -> Network[Array, Array]:
+      if input_ffw:
+        return Linear(rngs, in_features=size, out_features=hidden_size)
+
+      return rnn_constructor(rngs, input_size=size, hidden_size=hidden_size)
+
+    initial_embed = GroupNetwork([initial_embed_net(s) for s in group_sizes])
+    net = initial_embed.append(stack_groups_net)
+
+    if remat_layers:
+      net = RematWrapper(net)
 
     for _ in range(num_layers):
-      # attention = nnx.MultiHeadAttention(
-      #     num_heads=num_heads,
-      #     in_features=hidden_size,
-      #     qkv_features=hidden_size,
-      #     out_features=hidden_size,
-      #     rngs=rngs,
-      #     decode=False,
-      # )
-      attention = IndependentMultiHeadAttention(
-          num_groups=self._num_groups,
-          features=hidden_size,
-          num_heads=num_heads,
-          rngs=rngs,
-      )
-      residual_attention = ResidualWrapper(FFWWrapper(attention, output_size=hidden_size))
-      # layers.append(residual_attention)
-      net = net.append(residual_attention)
+      if not skip_attention:
+        attention = IndependentMultiHeadAttention(
+            num_groups=self._num_groups,
+            features=hidden_size,
+            num_heads=num_heads,
+            rngs=rngs,
+        )
+        attention = ResidualWrapper(FFWWrapper(attention, output_size=hidden_size))
+        if remat_layers:
+          attention = RematWrapper(attention)
+        net = net.append(attention)
 
-      net = net.append(recurrent_layer(rngs, stacked=False))
+      if not skip_rnn:
+        rec_layer = recurrent_layer(rngs, stacked=stacked_rnns)
+        if remat_layers:
+          rec_layer = RematWrapper(rec_layer)
+        net = net.append(rec_layer)
 
-    # self._network = Sequential(layers)
     self._network = net
 
   @property
@@ -1083,6 +1134,11 @@ class FrameTransformer(StateActionNetwork):
 
     return groups
 
+  def _apply_controller_rnn(self, controller: Controller) -> Array:
+    if self._remat_controller_rnn:
+      return nnx.remat(apply)(self._controller_rnn, controller)
+    return self._controller_rnn(controller)
+
   def _make_groups(self, state_action: StateAction) -> list[Array]:
     state_action_embed = self._embed_state_action.map(
         lambda e, v: e(v), state_action)
@@ -1090,12 +1146,19 @@ class FrameTransformer(StateActionNetwork):
     groups = []
     game = state_action_embed.state
 
-    for player in [game.p0, game.p1]:
-      groups.extend(
-          self._player_groups(
-              player,
-              with_nana=self._use_self_nana,
-          ))
+    # Assuming we're training one character vs all others,
+    # we only include nana for ourselves if we're training as ICs,
+    # but we always include nana for the opponent.
+    groups.extend(
+        self._player_groups(
+            game.p0,
+            with_nana=self._use_self_nana,
+        ))
+    groups.extend(
+        self._player_groups(
+            game.p1,
+            with_nana=True,
+        ))
 
     groups.extend([
         game.stage,
@@ -1109,7 +1172,7 @@ class FrameTransformer(StateActionNetwork):
     groups.append(tp.cast(Array, state_action_embed.name))
 
     # Last group is the controller
-    groups.append(self._controller_rnn(state_action.action))
+    groups.append(self._apply_controller_rnn(state_action.action))
 
     def maybe_concat(g: Group) -> Array:
       if isinstance(g, Array):
@@ -1123,10 +1186,6 @@ class FrameTransformer(StateActionNetwork):
     return self._network.initial_state(batch_size, rngs)
 
   def _extract_output(self, outputs: Outputs) -> Array:
-    # assert isinstance(outputs, list)
-    # output = outputs[-1]
-    # assert isinstance(output, Array)
-    # return output
     assert isinstance(outputs, Array)
     assert outputs.shape[-1] == self._hidden_size
     assert outputs.shape[-2] == self._num_groups
@@ -1170,11 +1229,20 @@ SIMPLE_CONSTRUCTORS: dict[str, type[Network]] = dict(
     tx_like=TransformerLike,
 )
 
+OTHER_CONSTRUCTORS = [
+    FrameTransformer,
+]
+
+NAME_TO_CONSTRUCTOR: dict[str, type[StateActionNetwork]] = {
+    cls.name: cls for cls in OTHER_CONSTRUCTORS
+}
+
 DEFAULT_CONFIG: dict[str, Any] = dict(
     name='mlp',
     **{name: cls.default_config() for name, cls in SIMPLE_CONSTRUCTORS.items()},
 )
-DEFAULT_CONFIG[FrameTransformer.name] = FrameTransformer.default_config()
+for cls in OTHER_CONSTRUCTORS:
+  DEFAULT_CONFIG[cls.name] = cls.default_config()
 
 
 def default_config() -> dict[str, Any]:
@@ -1250,8 +1318,8 @@ def build_embed_network(
         network=network,
     )
 
-  if name == FrameTransformer.name:
-    return FrameTransformer(
+  if name in NAME_TO_CONSTRUCTOR:
+    return NAME_TO_CONSTRUCTOR[name](
         rngs=rngs,
         embed_state_action=embed_state_action,
         **network_config[name],
