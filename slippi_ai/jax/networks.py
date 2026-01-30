@@ -855,6 +855,7 @@ class IndependentMultiHeadAttention(nnx.Module):
       rngs: nnx.Rngs,
   ):
     self.num_groups = num_groups
+    self.num_heads = num_heads
     self.feature_dim = features
 
     if features % num_heads != 0:
@@ -872,6 +873,7 @@ class IndependentMultiHeadAttention(nnx.Module):
       rngs=rngs,
     )
 
+    # Create separate QKV linears for each group
     @nnx.vmap(in_axes=0, out_axes=0)
     def make_qkv_linear(r: nnx.Rngs) -> nnx.LinearGeneral:
         return nnx.LinearGeneral(
@@ -881,9 +883,21 @@ class IndependentMultiHeadAttention(nnx.Module):
         )
     self.qkv_linear = make_qkv_linear(rngs.fork(split=num_groups))
 
-  def __call__(self, inputs: Array) -> Array:
-    assert inputs.shape[-2] == self.num_groups
+    # Create separate output linears for each group
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def make_output_linear(r: nnx.Rngs) -> nnx.LinearGeneral:
+      return nnx.LinearGeneral(
+          in_features=features,
+          out_features=features,
+          rngs=r,
+      )
 
+    self.output_linear = make_output_linear(rngs.fork(split=num_groups))
+
+  def __call__(self, inputs: Array) -> Array:
+    assert inputs.shape[-2:] == (self.num_groups, self.feature_dim)
+
+    # Would einsum be better here?
     @nnx.vmap(in_axes=(0, -2), out_axes=-4)
     def qkv_single(qkv_linear: nnx.LinearGeneral, x: Array) -> Array:
       return qkv_linear(x)
@@ -891,12 +905,21 @@ class IndependentMultiHeadAttention(nnx.Module):
     qkv = qkv_single(self.qkv_linear, inputs)  # (..., num_groups, 3, num_heads, head_dim)
 
     queries, keys, values = jnp.unstack(qkv, axis=-3)
+    queries = self.query_ln(queries)
+    keys = self.key_ln(keys)
 
-    outputs = nnx.dot_product_attention(queries, keys, values)  # (..., num_groups, num_heads, head_dim)
+    head_outputs = nnx.dot_product_attention(queries, keys, values)  # (..., num_groups, num_heads, head_dim)
 
     # Concatenate heads back into feature dimension
-    return outputs.reshape(outputs.shape[:-2] + (self.feature_dim,))
+    head_outputs = head_outputs.reshape(head_outputs.shape[:-2] + (self.feature_dim,))
 
+    @nnx.vmap(in_axes=(0, -2), out_axes=-2)
+    def output_single(output_linear: nnx.LinearGeneral, x: Array) -> Array:
+      return output_linear(x)
+
+    outputs = output_single(self.output_linear, head_outputs)  # (..., num_groups, feature_dim)
+
+    return outputs
 
 class FrameTransformer(StateActionNetwork):
   name = 'frame_tx'
