@@ -145,6 +145,7 @@ class AutoRegressiveComponent(nnx.Module):
     residual = residual + self.decoder(sample_embedding)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
+  @nnx.remat
   def distance(
       self,
       residual: Array,
