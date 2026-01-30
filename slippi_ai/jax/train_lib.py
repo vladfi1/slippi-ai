@@ -140,7 +140,7 @@ class TrainManager:
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
-          frames, self.hidden_state, combined=True, **self.step_kwargs)
+          frames, self.hidden_state, combined=False, **self.step_kwargs)
       stats.update(learner_stats)
 
     return stats, batch
@@ -303,6 +303,9 @@ def train(config: Config):
 
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
+  # Giving XLA all available memory avoids fragmentation issues
+  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+
   tag = config.tag or get_experiment_tag()
   expt_dir = config.expt_dir
   if expt_dir is None:
@@ -446,7 +449,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       data_config,
       # Use more workers for test data to keep up with eval speed.
       num_workers=2 * config.data.num_workers,
-      batch_size=2 * config.data.batch_size,
+      # batch_size=2 * config.data.batch_size,
   )
   test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays  # free up memory
