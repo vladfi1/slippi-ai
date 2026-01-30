@@ -52,7 +52,7 @@ class TrainManager:
       learner: learner_lib.Learner,
       data_source: data_lib.AbstractDataSource,
       step_kwargs={},
-      prefetch: int = 8,
+      prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
       # TODO: pass in epoch offset when resuming from checkpoint
