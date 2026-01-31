@@ -1,10 +1,10 @@
 """JAX utilities."""
 
+import functools
 import os
 import typing as tp
 import types
 
-import tree
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
@@ -138,8 +138,35 @@ def eval_shape_method(
 InputTree = tp.TypeVar('InputTree')
 OutputTree = tp.TypeVar('OutputTree')
 
-RecurrentState = tp.Any
+RecurrentState = tp.TypeVar('RecurrentState')
 
+ScanAxis = int | None | type[nnx.Carry]
+ScanAxes = ScanAxis | tuple[ScanAxis, ...]
+
+def scan_method(
+    method: tp.Callable[P, T],
+    *,
+    in_axes: ScanAxes = (0, nnx.Carry),
+    out_axes: ScanAxes = (0, nnx.Carry),
+    **scan_kwargs,
+) -> tp.Callable[P, T]:
+  """Like nnx.scan but for bound methods.
+
+  Note the swapped order of input/output and carry.
+  """
+
+  # TODO: snoop inside functools.partial args for nnx Modules
+  unbound_f, bound_self, was_bound = _resolve_bound_callable(method)
+
+  if not was_bound:
+    raise ValueError('scan_method requires a bound method.')
+
+  if not isinstance(in_axes, tuple):
+    in_axes = (in_axes,)
+
+  in_axes = (None,) + in_axes
+
+  return functools.partial(nnx.scan(unbound_f, in_axes=in_axes, out_axes=out_axes, **scan_kwargs), bound_self)
 
 def dynamic_rnn(
     cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
@@ -157,14 +184,7 @@ def dynamic_rnn(
     outputs: Stacked outputs over time
     final_state: Final recurrent state
   """
-  unbound_f, bound_self, was_bound = _resolve_bound_callable(cell_fn)
-
-  if was_bound:
-    return nnx.scan(in_axes=(None, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
-        unbound_f)(bound_self, inputs, initial_state)
-
-  return nnx.scan(in_axes=(0, nnx.Carry), out_axes=(0, nnx.Carry))(
-      unbound_f)(inputs, initial_state)
+  return scan_method(cell_fn)(inputs, initial_state)
 
 
 def scan_rnn(
@@ -185,6 +205,9 @@ def scan_rnn(
   """
 
   unbound_f, bound_self, was_bound = _resolve_bound_callable(cell_fn)
+
+  if not was_bound:
+    raise ValueError('scan_rnn requires a bound method.')
 
   if was_bound:
     def unbound_output_hidden(module, x, state):
