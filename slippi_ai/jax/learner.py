@@ -42,13 +42,19 @@ T = tp.TypeVar('T')
 def jit_method(
     method: tp.Callable[P, T],
     *,
+    donate_argnums: Optional[int | tuple[int, ...]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ) -> tp.Callable[P, T]:
   if not isinstance(method, types.MethodType):
     raise TypeError('jit_method can only be applied to methods.')
 
+  if donate_argnums is None:
+    donate_argnums = ()
+  elif isinstance(donate_argnums, int):
+    donate_argnums = (donate_argnums,)
+
   jitted = nnx.jit(
-      donate_argnums=(0,),
+      donate_argnums=(0,) + tuple(i+1 for i in donate_argnums),
       static_argnames=static_argnames,
   )(method.__func__)
 
@@ -91,7 +97,7 @@ class Learner(nnx.Module):
       learning_rate: float,
       reward_halflife: float,
       value_function: vf_lib.ValueFunction,
-      mesh: jax.sharding.Mesh,
+      mesh: tp.Optional[jax.sharding.Mesh] = None,
       compile: bool = True,
       use_shard_map: bool = True,
       shard_module: bool = False,
@@ -115,38 +121,43 @@ class Learner(nnx.Module):
     self.jit_step_value_function = jit_method(
         self._step_value_function, static_argnames=('train',))
 
-    jax_utils.replicate_module(self, mesh)
+    if mesh is not None:
+      jax_utils.replicate_module(self, mesh)
 
-    # Train and run functions using shard_map. Empirically these have better
-    # performance for the frame_tx network than the above "jit_step" methods,
-    # which let XLA handle sharding automatically.
-    self.sharded_train_policy = jax_utils.data_parallel_train(
-        module=self.policy,
-        optimizer=self.policy_optimizer,
-        loss_fn=_policy_loss_fn,
-        mesh=mesh,
-        shard_module=shard_module,
-    )
+    if use_shard_map:
+      if mesh is None:
+        raise ValueError('mesh must be provided when use_shard_map is True.')
 
-    self.sharded_run_policy = jax_utils.shard_map_loss_fn(
-        module=self.policy,
-        loss_fn=_policy_loss_fn,
-        mesh=mesh,
-    )
+      # Train and run functions using shard_map. Empirically these have better
+      # performance for the frame_tx network than the above "jit_step" methods,
+      # which let XLA handle sharding automatically.
+      self.sharded_train_policy = jax_utils.data_parallel_train(
+          module=self.policy,
+          optimizer=self.policy_optimizer,
+          loss_fn=_policy_loss_fn,
+          mesh=mesh,
+          shard_module=shard_module,
+      )
 
-    self.sharded_train_value_function = jax_utils.data_parallel_train(
-        module=self.value_function,
-        optimizer=self.value_optimizer,
-        loss_fn=_value_loss_fn,
-        mesh=mesh,
-        shard_module=shard_module,
-    )
+      self.sharded_run_policy = jax_utils.shard_map_loss_fn(
+          module=self.policy,
+          loss_fn=_policy_loss_fn,
+          mesh=mesh,
+      )
 
-    self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
-        module=self.value_function,
-        loss_fn=_value_loss_fn,
-        mesh=mesh,
-    )
+      self.sharded_train_value_function = jax_utils.data_parallel_train(
+          module=self.value_function,
+          optimizer=self.value_optimizer,
+          loss_fn=_value_loss_fn,
+          mesh=mesh,
+          shard_module=shard_module,
+      )
+
+      self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
+          module=self.value_function,
+          loss_fn=_value_loss_fn,
+          mesh=mesh,
+      )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return (
@@ -172,7 +183,7 @@ class Learner(nnx.Module):
 
     if train:
       # Compute gradients for policy using value_and_grad to also get loss
-      (loss, (metrics, final_states)), grads = nnx.value_and_grad(
+      (loss, (tm_metrics, final_states)), grads = nnx.value_and_grad(
           loss_fn, has_aux=True)(self.policy)
 
       # jax.debug.inspect_array_sharding(final_states, callback=_sharding_callback)
@@ -182,10 +193,11 @@ class Learner(nnx.Module):
       self.policy_optimizer.update(self.policy, grads)
     else:
       # Just compute forward pass without gradients
-      loss, (metrics, final_states) = loss_fn(self.policy)
+      loss, (tm_metrics, final_states) = loss_fn(self.policy)
 
+    bm_metrics = jax.tree.map(swap_axes, tm_metrics)
 
-    return loss, metrics, final_states
+    return loss, bm_metrics, final_states
 
   def _step_value_function(
       self,
@@ -209,16 +221,18 @@ class Learner(nnx.Module):
 
     if train:
       # Compute gradients for value function
-      (loss, (metrics, final_states)), value_grads = nnx.value_and_grad(
+      (loss, (tm_metrics, final_states)), value_grads = nnx.value_and_grad(
           value_loss_fn, has_aux=True)(self.value_function)
 
       # Apply gradients
       self.value_optimizer.update(self.value_function, value_grads)
     else:
       # Just compute forward pass without gradients
-      loss, (metrics, final_states) = value_loss_fn(self.value_function)
+      loss, (tm_metrics, final_states) = value_loss_fn(self.value_function)
 
-    return loss, metrics, final_states
+    bm_metrics = jax.tree.map(swap_axes, tm_metrics)
+
+    return loss, bm_metrics, final_states
 
   def _step(
       self,

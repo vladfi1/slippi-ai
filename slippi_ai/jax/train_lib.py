@@ -372,24 +372,31 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   # Multi-device setup
   runtime = config.runtime
-  mesh = None
+  mesh: tp.Optional[jax.sharding.Mesh] = None
   data_sharding = None
+  num_devices = jax_utils.num_devices()
   if runtime.multi_device:
-    num_devices = jax_utils.num_devices()
-    if num_devices > 1:
-      logging.info('Multi-device training enabled with %d devices', num_devices)
-      if config.data.batch_size % num_devices != 0:
-        raise ValueError(
-            f'Batch size {config.data.batch_size} must be divisible by '
-            f'num_devices {num_devices}')
-      mesh = jax_utils.get_mesh()
-      data_sharding = jax_utils.data_sharding(mesh)
+    if num_devices == 1:
+      logging.warning(
+          'Multi-device training requested but only 1 device available.')
     else:
-      logging.info('Multi-device requested but only 1 device available')
+      logging.info('Multi-device training enabled with %d devices', num_devices)
+    if config.data.batch_size % num_devices != 0:
+      raise ValueError(
+          f'Batch size {config.data.batch_size} must be divisible by '
+          f'num_devices {num_devices}')
+    mesh = jax_utils.get_mesh()
+    data_sharding = jax_utils.data_sharding(mesh)
   else:
-    if jax_utils.num_devices() > 1:
+    if num_devices > 1:
       logging.warning(
           'Multiple devices detected but multi-device training not enabled.')
+
+    if config.learner.use_shard_map:
+      logging.warning(
+          'Learner.use_shard_map enabled without multi-device training; disabling.')
+      config.learner.use_shard_map = False
+
     logging.info('Single-device training')
 
 
