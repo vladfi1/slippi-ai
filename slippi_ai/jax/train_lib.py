@@ -586,25 +586,25 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
 
-    def time_mean(x):
-      # Stats are either scalars or (time, batch)-shaped.
-      if isinstance(x, jax.Array):
-        x = np.asarray(x)
-      if isinstance(x, (int, float)) or (hasattr(x, 'shape') and len(x.shape) == 0):
-        return x
-
-      return np.mean(x, axis=0)
+    def time_mean(x: jax.Array) -> np.ndarray:
+      return np.mean(x, axis=1)
 
     test_epoch = last_test_epoch
+    test_stats_jax = None
     while test_epoch - last_test_epoch < runtime.num_eval_epochs:
-      stats, batch = test_manager.step()
-      test_epoch = stats['epoch']
+      # Get _previous_ step's stats to allow jax runahead
+      if test_stats_jax is not None:
+        test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+        per_step_eval_stats.append(test_stats_np)
 
-      # Convert to numpy and take time-mean to free up memory.
-      stats = utils.map_single_structure(time_mean, stats)
+      test_stats_jax, batch = test_manager.step()
+      test_epoch = test_stats_jax.pop('epoch')  # the only non-array "stat"
 
-      per_step_eval_stats.append(stats)
       metas.append(batch.meta)
+
+    assert test_stats_jax is not None
+    test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+    per_step_eval_stats.append(test_stats_np)
 
     # [eval_steps, batch_size], mean taken over time
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)
