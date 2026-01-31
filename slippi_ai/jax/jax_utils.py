@@ -136,6 +136,10 @@ Loss = Array
 ModT = tp.TypeVar('ModT', bound=nnx.Module)
 Grads = tp.Any
 
+def pcast_module(module: ModT, axis_name: str, *, to: str) -> ModT:
+  graphdef, state = nnx.split(module)
+  pcasted_state = jax.lax.pcast(state, axis_name, to=to)
+  return nnx.merge(graphdef, pcasted_state)
 
 def data_parallel_train(
     module: ModT,
@@ -144,6 +148,7 @@ def data_parallel_train(
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
+    shard_module: bool = False,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
@@ -160,6 +165,10 @@ def data_parallel_train(
     @nnx.grad(has_aux=True)
     def grad_fn(module: ModT, data: Data, state: State) -> tuple[Loss, tuple[AuxT, State]]:
       loss, aux, state = loss_fn(module, data, state, *args, **kwargs)
+      # If the module is replicated, we need to average the loss across devices,
+      # otherwise the gradients will be multiplied by the number of devices.
+      if not shard_module:
+        loss = jax.lax.pmean(loss[None], axis_name=data_axis)[0]
       return loss, (aux, state)
 
     # Just for type checking; nnx.grad should have better type annotations.
@@ -176,8 +185,16 @@ def data_parallel_train(
         data: Data,
         state: State,
     ) -> tuple[AuxT, State]:
-      grads, (aux, new_state) = grad_fn(module, data, state)
-      grads = jax.lax.pmean(grads, axis_name=data_axis)
+      if shard_module:
+        sharded_module = pcast_module(module, data_axis, to='varying')
+        grads, (aux, new_state) = grad_fn(sharded_module, data, state)
+        grads = jax.lax.pmean(grads, axis_name=data_axis)
+      else:
+        grads, (aux, new_state) = grad_fn(module, data, state)
+
+      # Update optimizer independently on each device. This should keep the
+      # variables and optimizer states in sync since grads are the same on
+      # each device.
       optimizer.update(module, grads)
       return aux, new_state
 
