@@ -213,6 +213,7 @@ class Config:
 
   seed: int = 0
   version: int = 1
+  platform : str = 'jax'
 
 
 def _get_loss(stats: dict):
