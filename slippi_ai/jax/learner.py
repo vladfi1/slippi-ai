@@ -60,29 +60,27 @@ def _sharding_callback(sharding: tp.Optional[jax.sharding.Sharding]):
 Metrics = dict[str, tp.Any]
 
 def _policy_loss_fn(
-    policy: Policy, data: tuple[Frames, RecurrentState],
+    policy: Policy, frames: Frames, initial_states: RecurrentState,
 # ) -> tp.Tuple[Metrics, RecurrentState]:
-) -> tuple[jax_utils.Loss, tp.Tuple[Metrics, RecurrentState]]:
-  frames, initial_states = data
+) -> tuple[jax_utils.Loss, Metrics, RecurrentState]:
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
   loss, tm_metrics, final_states = policy.imitation_loss(tm_frames, initial_states)
-  # metrics = jax.tree.map(lambda t: jnp.mean(t, axis=0), metrics)
   bm_metrics = jax.tree.map(swap_axes, tm_metrics)
-  return loss, (bm_metrics, final_states)
+  return loss, bm_metrics, final_states
 
 def _value_loss_fn(
     value_function: vf_lib.ValueFunction,
-    data: tuple[Frames, RecurrentState],
+    frames: Frames,
+    initial_states: RecurrentState,
     discount: float,
 # ) -> tp.Tuple[Metrics, RecurrentState]:
-) -> tuple[jax_utils.Loss, tp.Tuple[Metrics, RecurrentState]]:
-  frames, initial_states = data
+) -> tuple[jax_utils.Loss, Metrics, RecurrentState]:
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
   value_outputs, final_states = value_function.loss(
       tm_frames, initial_states, discount)
   loss = jnp.mean(value_outputs.loss)
   bm_metrics = jax.tree.map(swap_axes, value_outputs.metrics)
-  return loss, (bm_metrics, final_states)
+  return loss, bm_metrics, final_states
 
 class Learner(nnx.Module):
 
@@ -233,14 +231,14 @@ class Learner(nnx.Module):
     if compile and self.use_shard_map:
       if train:
         policy_metrics, policy_final_states = self.sharded_train_policy(
-            (bm_frames, policy_initial_states))
+            bm_frames, policy_initial_states)
         value_metrics, value_final_states = self.sharded_train_value_function(
-            (bm_frames, value_initial_states), discount=self.discount)
+            bm_frames, value_initial_states, discount=self.discount)
       else:
         policy_metrics, policy_final_states = self.sharded_run_policy(
-            (bm_frames, policy_initial_states))
+            bm_frames, policy_initial_states)
         value_metrics, value_final_states = self.sharded_run_value_function(
-            (bm_frames, value_initial_states), discount=self.discount)
+            bm_frames, value_initial_states, discount=self.discount)
     else:
       if compile:
         step_policy_fn = self.jit_step_policy
