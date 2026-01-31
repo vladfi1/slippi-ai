@@ -67,7 +67,7 @@ if __name__ == '__main__':
       num_heads=ff.Integer(4),
       rnn_cell=ff.String('gru'),
       stacked_rnns=ff.Boolean(True),
-      remat_layers=ff.Boolean(False),
+      remat_layers=ff.Boolean(True),
       remat_rnns=ff.Boolean(False),
       remat_controller_rnn=ff.Boolean(True),
   )
