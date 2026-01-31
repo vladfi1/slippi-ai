@@ -216,7 +216,7 @@ class Config:
 
 
 def _get_loss(stats: dict):
-  loss = stats['total_loss']
+  loss = stats['policy']['loss']
   if isinstance(loss, jax.Array):
     loss = np.asarray(loss)
   if isinstance(loss, np.ndarray):
@@ -365,19 +365,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
 
-  # Initialize RNG
-  rngs = nnx.Rngs(config.seed)
-
-  # Build policy and value function
-  policy = policy_from_config(config, rngs)
-  value_function = value_function_from_config(config, rngs)
-
-  learner_kwargs = dataclasses.asdict(config.learner)
-  learner = learner_lib.Learner(
-      policy=policy,
-      value_function=value_function,
-      **learner_kwargs,
-  )
+  logging.info("Network configuration")
+  for comp in ['network', 'controller_head']:
+    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   # Multi-device setup
   runtime = config.runtime
@@ -392,7 +382,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
             f'Batch size {config.data.batch_size} must be divisible by '
             f'num_devices {num_devices}')
       mesh = jax_utils.get_mesh()
-      jax_utils.replicate_module(learner, mesh)
       data_sharding = jax_utils.data_sharding(mesh)
     else:
       logging.info('Multi-device requested but only 1 device available')
@@ -402,9 +391,21 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           'Multiple devices detected but multi-device training not enabled.')
     logging.info('Single-device training')
 
-  logging.info("Network configuration")
-  for comp in ['network', 'controller_head']:
-    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+
+  # Initialize RNG
+  rngs = nnx.Rngs(config.seed)
+
+  # Build policy and value function
+  policy = policy_from_config(config, rngs)
+  value_function = value_function_from_config(config, rngs)
+
+  learner_kwargs = dataclasses.asdict(config.learner)
+  learner = learner_lib.Learner(
+      policy=policy,
+      value_function=value_function,
+      mesh=mesh,
+      **learner_kwargs,
+  )
 
   ### Dataset Creation ###
   dataset_config = config.dataset

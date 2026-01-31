@@ -132,11 +132,8 @@ class Policy(nnx.Module):
 
     total_loss = -jnp.mean(unroll_outputs.log_probs)
 
-    metrics.update(
-        total_loss=total_loss,
-    )
-
-    return total_loss, unroll_outputs.final_state, metrics
+    # All metrics should have shape [T, B]
+    return total_loss, metrics, unroll_outputs.final_state
 
   def unroll_with_outputs(
       self,

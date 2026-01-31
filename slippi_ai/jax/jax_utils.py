@@ -7,7 +7,7 @@ import types
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
 from flax import nnx
 
 Array = jax.Array
@@ -15,19 +15,21 @@ Array = jax.Array
 
 # Multi-device utilities
 
-def get_mesh(axis_name: str = 'data') -> Mesh:
+DATA_AXIS = 'data'
+
+def get_mesh(axis_name: str = DATA_AXIS) -> Mesh:
   """Create a 1D device mesh for data parallelism."""
   return Mesh(jax.devices(), (axis_name,))
 
 
 def replicate_sharding(mesh: Mesh) -> NamedSharding:
   """Create a sharding that replicates data across all devices."""
-  return NamedSharding(mesh, PartitionSpec())
+  return NamedSharding(mesh, PS())
 
 
 def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
-  return NamedSharding(mesh, PartitionSpec(axis_name))
+  return NamedSharding(mesh, PS(axis_name))
 
 
 def shard_module(module: nnx.Module, sharding: NamedSharding):
@@ -125,6 +127,90 @@ def eval_shape_method(
   # TODO: handle functools.partial
   return nnx.eval_shape(method.__func__, method.__self__, *args, **kwargs)
 
+
+Data = tp.TypeVar('Data')
+GradsT = tp.TypeVar('GradsT')
+AuxT = tp.TypeVar('AuxT')
+Loss = Array
+ModT = tp.TypeVar('ModT', bound=nnx.Module)
+Grads = tp.Any
+
+
+def data_parallel_train(
+    module: ModT,
+    optimizer: nnx.Optimizer[ModT],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    mesh: jax.sharding.Mesh,
+    data_axis: str = DATA_AXIS,
+    static_argnames: tp.Optional[tp.Iterable[str]] = None,
+) -> tp.Callable[tp.Concatenate[Data, P], AuxT]:
+  if data_axis not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+
+  @nnx.jit(
+      donate_argnums=(0, 1),
+      static_argnames=static_argnames,
+  )
+  def train(
+      module: ModT, optimizer: nnx.Optimizer[ModT],
+      data: Data, *args: P.args, **kwargs: P.kwargs) -> AuxT:
+    # pmap the loss function over devices
+
+    @nnx.grad(has_aux=True)
+    def grad_fn(module: ModT, data: Data) -> tp.Tuple[Loss, AuxT]:
+      return loss_fn(module, data, *args, **kwargs)
+
+    grad_fn = tp.cast(tp.Callable[[ModT, Data], tuple[AuxT, Grads]], grad_fn)
+
+    @nnx.shard_map(
+        in_specs=(PS(), PS(), PS(data_axis)),
+        out_specs=PS(data_axis),
+        mesh=mesh,
+    )
+    def update_fn(
+        module: ModT,
+        optimizer: nnx.Optimizer[ModT],
+        data: Data,
+    ):
+      grads, aux = grad_fn(module, data)
+      grads = jax.lax.pmean(grads, axis_name=data_axis)
+      optimizer.update(module, grads)
+      return aux
+
+    return update_fn(module, optimizer, data)
+
+  return nnx.cached_partial(train, module, optimizer)
+
+def shard_map_loss_fn(
+    module: ModT,
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    mesh: jax.sharding.Mesh,
+    data_axis: str = DATA_AXIS,
+    static_argnames: tp.Optional[tp.Iterable[str]] = None,
+):
+  """Shard-mapped loss function for data-parallel training."""
+
+  if data_axis not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+
+  @nnx.jit(static_argnames=static_argnames)
+  def loss_fn_wrapper(module: ModT, data: Data, *args: P.args, **kwargs: P.kwargs):
+
+    @nnx.shard_map(
+        in_specs=(PS(), PS(data_axis)),
+        out_specs=PS(data_axis),
+        mesh=mesh,
+    )
+    def sharded_loss_fn(
+        module: ModT,
+        data: Data,
+    ) -> AuxT:
+      _, aux = loss_fn(module, data, *args, **kwargs)
+      return aux
+
+    return sharded_loss_fn(module, data)
+
+  return nnx.cached_partial(loss_fn_wrapper, module)
 
 # Misc
 
