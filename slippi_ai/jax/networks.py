@@ -283,6 +283,40 @@ class Linear(FFWWrapper[Array, Array]):
     linear = nnx.Linear(in_features, out_features, rngs=rngs)
     super().__init__(linear, output_size=out_features)
 
+class Identity(Network[InputTree, InputTree]):
+  """Identity network."""
+
+  def __init__(
+      self,
+      output_size: Optional[int] = None,
+      io_type: Optional[type[InputTree]] = None,
+  ) -> None:
+    del io_type
+    self._output_size = output_size
+
+  @property
+  def output_size(self) -> int:
+    if self._output_size is not None:
+      return self._output_size
+
+    raise NotImplementedError('Identity network has no fixed output size.')
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+    del batch_size, rngs
+    return ()
+
+  def step(self, inputs, prev_state):
+    del prev_state
+    return inputs, ()
+
+  def unroll(self, inputs, reset, initial_state):
+    del reset, initial_state
+    return inputs, ()
+
+  def scan(self, inputs, reset, initial_state):
+    del reset, initial_state
+    return inputs, ()
+
 MidTree = tp.TypeVar('MidTree', bound=ArrayTree)
 
 class Compose(Network[InputTree, OutputTree]):
@@ -336,9 +370,9 @@ class Compose(Network[InputTree, OutputTree]):
     outputs, hidden_second_state = self._second.scan(mid_outputs, reset, second_state)
     return outputs, (hidden_first_state, hidden_second_state)
 
-class Sequential(Network):
+class Sequential(Network[InputTree, InputTree]):
 
-  def __init__(self, layers: list[Network]):
+  def __init__(self, layers: list[Network[InputTree, InputTree]]):
     self._layers = nnx.List(layers)
 
   @property
@@ -790,7 +824,7 @@ T = tp.TypeVar('T')
 def apply(f: tp.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
   return f(*args, **kwargs)
 
-class StackedNetwork(Network[InputTree, OutputTree]):
+class StackedGroupNetwork(Network[InputTree, OutputTree]):
 
   def __init__(
       self,
@@ -863,6 +897,94 @@ class StackedNetwork(Network[InputTree, OutputTree]):
         inp: InputTree,
         state: RecurrentState,
     ) -> Tuple[OutputTree, RecurrentState]:
+      return net.scan(inp, reset, state)
+
+    return scan_single(self._networks, inputs, initial_state)
+
+class StackedSequential(Network[InputTree, InputTree]):
+
+  def __init__(
+      self,
+      builder: tp.Callable[[nnx.Rngs], Network[InputTree, InputTree]],
+      depth: int,
+      rngs: nnx.Rngs,
+  ):
+    self.depth = depth
+
+    stacked_builder = nnx.vmap(builder, in_axes=0, out_axes=0)
+    split_rngs = rngs.fork(split=depth)
+    self._networks = stacked_builder(split_rngs)
+
+  @property
+  def output_size(self) -> int:
+    return self._networks.output_size
+
+  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+
+    @nnx.vmap(in_axes=(0, 0), out_axes=1, axis_size=self.depth)
+    def init_single(net: Network, r: nnx.Rngs) -> RecurrentState:
+      return net.initial_state(batch_size, r)
+
+    return init_single(self._networks, rngs.fork(split=self.depth))
+
+  def step(
+      self,
+      inputs: InputTree,
+      prev_state: RecurrentState,  # [B, depth, ...]
+  ) -> tuple[InputTree, RecurrentState]:
+
+    @nnx.scan(
+        in_axes=(0, nnx.Carry, 1),
+        out_axes=(nnx.Carry, 1),
+        length=self.depth,
+    )
+    def step_single(
+        net: Network[InputTree, InputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> tuple[InputTree, RecurrentState]:
+      return net.step(inp, state)
+
+    return step_single(self._networks, inputs, prev_state)
+
+  def unroll(
+      self,
+      inputs: InputTree,
+      reset: jax.Array,
+      initial_state: RecurrentState,
+  ) -> tuple[InputTree, RecurrentState]:
+
+    @nnx.scan(
+        in_axes=(0, nnx.Carry, 1),
+        out_axes=(nnx.Carry, 1),
+        length=self.depth,
+    )
+    def unroll_single(
+        net: Network[InputTree, InputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> tuple[InputTree, RecurrentState]:
+      return net.unroll(inp, reset, state)
+
+    return unroll_single(self._networks, inputs, initial_state)
+
+  def scan(
+      self,
+      inputs: InputTree,
+      reset: jax.Array,
+      initial_state: RecurrentState,
+  ) -> tuple[InputTree, RecurrentState]:
+
+    @nnx.scan(
+        in_axes=(0, nnx.Carry, 1),
+        out_axes=(nnx.Carry, 2),
+        length=self.depth,
+    )
+    def scan_single(
+        net: Network[InputTree, InputTree],
+        inp: InputTree,
+        state: RecurrentState,
+    ) -> tuple[InputTree, RecurrentState]:
       return net.scan(inp, reset, state)
 
     return scan_single(self._networks, inputs, initial_state)
@@ -950,7 +1072,7 @@ class FrameTransformer(StateActionNetwork):
   @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
     return dict(
-        hidden_size=128,
+        hidden_size=64,
         num_heads=4,
         num_layers=2,
         use_self_nana=False,
@@ -960,6 +1082,7 @@ class FrameTransformer(StateActionNetwork):
         remat_controller_rnn=True,
         stacked_rnns=True,
         remat_rnns=False,
+        stack_layers=False,
 
         input_ffw=False,
         skip_rnn=False,
@@ -983,9 +1106,13 @@ class FrameTransformer(StateActionNetwork):
       remat_controller_rnn: bool = True,
       # Remat RNN cells during unroll to save memory
       remat_rnns: bool = False,
+      # Faster compilation
+      stack_layers: bool = False,
+
+      # Use a Linear layer instead of an RNN for the initial embedding
+      input_ffw: bool = False,
 
       # Below are just for testing memory usage
-      input_ffw: bool = False,
       skip_rnn: bool = False,
       skip_attention: bool = False,
   ):
@@ -1045,7 +1172,7 @@ class FrameTransformer(StateActionNetwork):
       make_rnn = lambda r: rnn_constructor(r, input_size=hidden_size, hidden_size=hidden_size)
 
       if stacked:
-        per_group_rnn = StackedNetwork(
+        per_group_rnn = StackedGroupNetwork(
             builder=make_rnn,
             width=len(group_sizes),
             rngs=rngs,
@@ -1073,7 +1200,9 @@ class FrameTransformer(StateActionNetwork):
     if remat_layers:
       net = RematWrapper(net)
 
-    for _ in range(num_layers):
+    def make_block(rngs: nnx.Rngs) -> Network[Array, Array]:
+      net = Identity(output_size=hidden_size, io_type=Array)
+
       if not skip_attention:
         attention = IndependentMultiHeadAttention(
             num_groups=self._num_groups,
@@ -1084,13 +1213,28 @@ class FrameTransformer(StateActionNetwork):
         attention = ResidualWrapper(FFWWrapper(attention, output_size=hidden_size))
         if remat_layers:
           attention = RematWrapper(attention)
+
         net = net.append(attention)
 
       if not skip_rnn:
         rec_layer = recurrent_layer(rngs, stacked=stacked_rnns)
         if remat_layers:
           rec_layer = RematWrapper(rec_layer)
+
         net = net.append(rec_layer)
+
+      return net
+
+    if stack_layers:
+      stacked_net = StackedSequential(
+          builder=make_block,
+          depth=num_layers,
+          rngs=rngs,
+      )
+      net = net.append(stacked_net)
+    else:
+      for _ in range(num_layers):
+        net = net.append(make_block(rngs.fork()))
 
     self._network = net
 
