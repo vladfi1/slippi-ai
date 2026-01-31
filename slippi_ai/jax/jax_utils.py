@@ -129,6 +129,7 @@ def eval_shape_method(
 
 
 Data = tp.TypeVar('Data')
+State = tp.TypeVar('State')
 GradsT = tp.TypeVar('GradsT')
 AuxT = tp.TypeVar('AuxT')
 Loss = Array
@@ -139,51 +140,54 @@ Grads = tp.Any
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
-    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
-) -> tp.Callable[tp.Concatenate[Data, P], AuxT]:
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
 
   @nnx.jit(
-      donate_argnums=(0, 1),
+      donate_argnums=(0, 1, 3),
       static_argnames=static_argnames,
   )
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
-      data: Data, *args: P.args, **kwargs: P.kwargs) -> AuxT:
-    # pmap the loss function over devices
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs) -> tuple[AuxT, State]:
+    # shard_map the loss function over devices
 
     @nnx.grad(has_aux=True)
-    def grad_fn(module: ModT, data: Data) -> tp.Tuple[Loss, AuxT]:
-      return loss_fn(module, data, *args, **kwargs)
+    def grad_fn(module: ModT, data: Data, state: State) -> tuple[Loss, tuple[AuxT, State]]:
+      loss, aux, state = loss_fn(module, data, state, *args, **kwargs)
+      return loss, (aux, state)
 
-    grad_fn = tp.cast(tp.Callable[[ModT, Data], tuple[AuxT, Grads]], grad_fn)
+    # Just for type checking; nnx.grad should have better type annotations.
+    grad_fn = tp.cast(tp.Callable[[ModT, Data, State], tuple[Grads, tuple[AuxT, State]]], grad_fn)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis)),
-        out_specs=PS(data_axis),
+        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)),
+        out_specs=(PS(data_axis), PS(data_axis)),
         mesh=mesh,
     )
     def update_fn(
         module: ModT,
         optimizer: nnx.Optimizer[ModT],
         data: Data,
-    ):
-      grads, aux = grad_fn(module, data)
+        state: State,
+    ) -> tuple[AuxT, State]:
+      grads, (aux, new_state) = grad_fn(module, data, state)
       grads = jax.lax.pmean(grads, axis_name=data_axis)
       optimizer.update(module, grads)
-      return aux
+      return aux, new_state
 
-    return update_fn(module, optimizer, data)
+    return update_fn(module, optimizer, data, state)
 
   return nnx.cached_partial(train, module, optimizer)
 
 def shard_map_loss_fn(
     module: ModT,
-    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
@@ -193,22 +197,26 @@ def shard_map_loss_fn(
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
 
-  @nnx.jit(static_argnames=static_argnames)
-  def loss_fn_wrapper(module: ModT, data: Data, *args: P.args, **kwargs: P.kwargs):
+  @nnx.jit(
+      donate_argnums=(2,),
+      static_argnames=static_argnames,
+  )
+  def loss_fn_wrapper(module: ModT, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis)),
-        out_specs=PS(data_axis),
+        in_specs=(PS(), PS(data_axis), PS(data_axis)),
+        out_specs=(PS(data_axis), PS(data_axis)),
         mesh=mesh,
     )
     def sharded_loss_fn(
         module: ModT,
         data: Data,
-    ) -> AuxT:
-      _, aux = loss_fn(module, data, *args, **kwargs)
-      return aux
+        state: State,
+    ) -> tuple[AuxT, State]:
+      _, aux, state = loss_fn(module, data, state, *args, **kwargs)
+      return aux, state
 
-    return sharded_loss_fn(module, data)
+    return sharded_loss_fn(module, data, state)
 
   return nnx.cached_partial(loss_fn_wrapper, module)
 

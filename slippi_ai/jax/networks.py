@@ -902,6 +902,7 @@ class StackedGroupNetwork(Network[InputTree, OutputTree]):
     return scan_single(self._networks, inputs, initial_state)
 
 class StackedSequential(Network[InputTree, InputTree]):
+  """Maintains a stack of networks, applied sequentially with scan."""
 
   def __init__(
       self,
