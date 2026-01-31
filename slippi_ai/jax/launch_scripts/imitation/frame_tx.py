@@ -10,7 +10,7 @@ import fancyflags as ff
 import wandb
 
 import melee
-from slippi_ai import flag_utils
+from slippi_ai import flag_utils, paths
 from slippi_ai.jax import train_lib, embed
 
 FRAME_TX = 'frame_tx'
@@ -23,7 +23,7 @@ def default_config():
   config.data.batch_size=512
   config.data.unroll_length=80
   config.data.damage_ratio=0.01
-  config.data.num_workers=2
+  config.data.num_workers=1
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
   config.learner.reward_halflife=8
@@ -71,6 +71,7 @@ if __name__ == '__main__':
       remat_rnns=ff.Boolean(False),
       remat_controller_rnn=ff.Boolean(True),
   )
+  TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
 
@@ -92,18 +93,28 @@ if __name__ == '__main__':
 
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
+    if TOY_DATA.value:
+      config.dataset.data_dir = str(paths.TOY_DATA_DIR)
+      config.dataset.meta_path = str(paths.TOY_META_PATH)
+      config.dataset.test_ratio = 0.5
+      char = 'all'
+      config.data.cached = True
+      config.data.num_workers = 0
+      config.runtime.log_interval = 15
+      config.runtime.num_evals_per_epoch = 0
+    else:
+      data_dir = config.dataset.data_dir
+      meta_path = config.dataset.meta_path
+      assert os.path.isdir(data_dir), data_dir
+      assert os.path.isfile(meta_path), meta_path
 
-    data_dir = config.dataset.data_dir
-    meta_path = config.dataset.meta_path
-    assert os.path.isdir(data_dir), data_dir
-    assert os.path.isfile(meta_path), meta_path
+      char = CHAR.value
 
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
     net_config = dict(NET.value)
     net = net_config.pop('name')
     delay = config.policy.delay
-    char = CHAR.value
 
     config.dataset.allowed_characters = char
 
@@ -119,6 +130,9 @@ if __name__ == '__main__':
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.tag
+      if TOY_DATA.value:
+        wandb_kwargs['mode'] = 'disabled'
+
     wandb.init(
         config=CONFIG.value,
         **wandb_kwargs,
