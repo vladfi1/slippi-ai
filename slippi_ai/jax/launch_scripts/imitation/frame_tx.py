@@ -93,6 +93,13 @@ if __name__ == '__main__':
 
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
+    config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
+
+    net_config = dict(NET.value)
+    net = net_config.pop('name')
+    delay = config.policy.delay
+
+
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
       config.dataset.meta_path = str(paths.TOY_META_PATH)
@@ -110,11 +117,8 @@ if __name__ == '__main__':
 
       char = CHAR.value
 
-    config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
-
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
-    delay = config.policy.delay
+      if config.tag is None:
+        config.tag = f"{char}_d{delay}_{net}"
 
     config.dataset.allowed_characters = char
 
@@ -123,9 +127,6 @@ if __name__ == '__main__':
 
     config.value_function.network['name'] = net
     config.value_function.network[net].update(net_config)
-
-    if config.tag is None:
-      config.tag = f"{char}_d{delay}_imitation_{net}"
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
