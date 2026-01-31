@@ -1,14 +1,15 @@
 """JAX utilities."""
 
 import os
-from typing import Tuple
 import typing as tp
 import types
 
+import tree
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
 from flax import nnx
+from flax.nnx.transforms.transforms import _resolve_bound_callable
 
 Array = jax.Array
 
@@ -59,7 +60,7 @@ def num_devices() -> int:
 
 # Other utilities
 
-def mean_and_variance(xs: Array) -> Tuple[Array, Array]:
+def mean_and_variance(xs: Array) -> tuple[Array, Array]:
   mean = jnp.mean(xs)
   variance = jnp.mean(jnp.square(xs - mean))
   return mean, variance
@@ -126,6 +127,79 @@ def eval_shape_method(
 
   # TODO: handle functools.partial
   return nnx.eval_shape(method.__func__, method.__self__, *args, **kwargs)
+
+# TODO: fix type inference
+# ArrayTree = tree.StructureKV[str, Array]
+# Inputs = ArrayTree
+# Outputs = ArrayTree
+# InputTree = tp.TypeVar('InputTree', bound=Inputs)
+# OutputTree = tp.TypeVar('OutputTree', bound=Outputs)
+
+InputTree = tp.TypeVar('InputTree')
+OutputTree = tp.TypeVar('OutputTree')
+
+RecurrentState = tp.Any
+
+
+def dynamic_rnn(
+    cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
+    inputs: InputTree,
+    initial_state: RecurrentState,
+) -> tuple[OutputTree, RecurrentState]:
+  """Unrolls an RNN over time, returning outputs and final state.
+
+  Args:
+    cell_fn: Function (inputs, state) -> (outputs, new_state)
+    inputs: Inputs with time as first axis
+    initial_state: Initial recurrent state
+
+  Returns:
+    outputs: Stacked outputs over time
+    final_state: Final recurrent state
+  """
+  unbound_f, bound_self, was_bound = _resolve_bound_callable(cell_fn)
+
+  if was_bound:
+    return nnx.scan(in_axes=(None, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        unbound_f)(bound_self, inputs, initial_state)
+
+  return nnx.scan(in_axes=(0, nnx.Carry), out_axes=(0, nnx.Carry))(
+      unbound_f)(inputs, initial_state)
+
+
+def scan_rnn(
+    cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
+    inputs: InputTree,
+    initial_state: RecurrentState,
+) -> tuple[OutputTree, RecurrentState]:
+  """Like dynamic_rnn but returns all intermediate hidden states.
+
+  Args:
+    cell_fn: Function (inputs, state) -> (outputs, new_state)
+    inputs: Inputs with time as first axis
+    initial_state: Initial recurrent state
+
+  Returns:
+    outputs: Stacked outputs over time
+    hidden_states: All intermediate hidden states
+  """
+
+  unbound_f, bound_self, was_bound = _resolve_bound_callable(cell_fn)
+
+  if was_bound:
+    def unbound_output_hidden(module, x, state):
+      y, state = unbound_f(module, x, state)
+      return (y, state), state
+
+    return nnx.scan(in_axes=(None, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        unbound_output_hidden)(bound_self, inputs, initial_state)[0]
+
+  def output_hidden(x, state):
+    y, state = unbound_f(x, state)
+    return (y, state), state
+
+  return nnx.scan(in_axes=(0, nnx.Carry), out_axes=(0, nnx.Carry))(
+      output_hidden)(inputs, initial_state)[0]
 
 
 Data = tp.TypeVar('Data')

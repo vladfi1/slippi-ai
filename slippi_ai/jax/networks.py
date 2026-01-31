@@ -29,53 +29,6 @@ InputTree = tp.TypeVar('InputTree', bound=Inputs)
 OutputTree = tp.TypeVar('OutputTree', bound=Outputs)
 OutputTree2 = tp.TypeVar('OutputTree2', bound=Outputs)
 
-def dynamic_rnn(
-    cell_fn: Callable[[InputTree, RecurrentState], Tuple[OutputTree, RecurrentState]],
-    inputs: InputTree,
-    initial_state: RecurrentState,
-) -> Tuple[OutputTree, RecurrentState]:
-  """Unrolls an RNN over time, returning outputs and final state.
-
-  Args:
-    cell_fn: Function (inputs, state) -> (outputs, new_state)
-    inputs: Inputs with time as first axis
-    initial_state: Initial recurrent state
-
-  Returns:
-    outputs: Stacked outputs over time
-    final_state: Final recurrent state
-  """
-  def scan_fn(state, x):
-    outputs, new_state = cell_fn(x, state)
-    return new_state, outputs
-
-  final_state, outputs = jax.lax.scan(scan_fn, initial_state, inputs)
-  return outputs, final_state
-
-
-def scan_rnn(
-    cell_fn: Callable[[InputTree, RecurrentState], Tuple[OutputTree, RecurrentState]],
-    inputs: InputTree,
-    initial_state: RecurrentState,
-) -> Tuple[OutputTree, RecurrentState]:
-  """Like dynamic_rnn but returns all intermediate hidden states.
-
-  Args:
-    cell_fn: Function (inputs, state) -> (outputs, new_state)
-    inputs: Inputs with time as first axis
-    initial_state: Initial recurrent state
-
-  Returns:
-    outputs: Stacked outputs over time
-    hidden_states: All intermediate hidden states
-  """
-  def scan_fn(state, x):
-    outputs, new_state = cell_fn(x, state)
-    return new_state, (outputs, new_state)
-
-  _, (outputs, hidden_states) = jax.lax.scan(scan_fn, initial_state, inputs)
-  return outputs, hidden_states
-
 
 class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
 
@@ -147,7 +100,7 @@ class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
       outputs: (time, batch, out_dim)
       final_state: (batch, state_dim)
     '''
-    return dynamic_rnn(
+    return jax_utils.dynamic_rnn(
         self._step_with_reset, (inputs, reset), initial_state)
 
   def scan(
@@ -167,7 +120,7 @@ class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
       outputs: (time, batch, out_dim)
       hidden_states: (time, batch, state_dim)
     '''
-    return scan_rnn(
+    return jax_utils.scan_rnn(
         self._step_with_reset, (inputs, reset), initial_state)
 
   def append(self, other: 'Network[OutputTree, OutputTree2]') -> 'Network[InputTree, OutputTree2]':
@@ -640,7 +593,7 @@ class StateActionNetwork(nnx.Module, abc.ABC):
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    return dynamic_rnn(
+    return jax_utils.dynamic_rnn(
         self._step_with_reset, (state_action, reset), initial_state)
 
   def scan(
@@ -649,7 +602,7 @@ class StateActionNetwork(nnx.Module, abc.ABC):
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    return scan_rnn(
+    return jax_utils.scan_rnn(
         self._step_with_reset, (state_action, reset), initial_state)
 
 
@@ -845,11 +798,9 @@ class StackedGroupNetwork(Network[InputTree, OutputTree]):
     return self._networks.output_size
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-
     @nnx.vmap(in_axes=(0, 0), out_axes=1, axis_size=self.width)
     def init_single(net: Network, r: nnx.Rngs) -> RecurrentState:
       return net.initial_state(batch_size, r)
-
     return init_single(self._networks, rngs.fork(split=self.width))
 
   def step(
@@ -1100,7 +1051,7 @@ class FrameTransformer(StateActionNetwork):
       use_self_nana: bool = False,
       rnn_cell: str = 'lstm',
       # Stacked RNNs are faster but use more memory
-      stacked_rnns: bool = False,
+      stacked_rnns: bool = True,
       # Remat each layer to save memory
       remat_layers: bool = False,
       # The controller_rnn is particularly important to remat
