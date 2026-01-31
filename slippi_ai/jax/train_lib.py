@@ -177,7 +177,7 @@ class RuntimeConfig:
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
-  prefetch: int = 8  # number of batches to prefetch in data loader
+  prefetch: int = 0  # number of batches to prefetch in data loader
 
 @dataclasses.dataclass
 class ValueFunctionConfig:
