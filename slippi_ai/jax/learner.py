@@ -33,6 +33,7 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
   use_shard_map: bool = True
+  shard_module: bool = False
 
 # TODO: move to jax_utils
 P = tp.ParamSpec('P')
@@ -93,6 +94,7 @@ class Learner(nnx.Module):
       mesh: jax.sharding.Mesh,
       compile: bool = True,
       use_shard_map: bool = True,
+      shard_module: bool = False,
   ):
     self.policy = policy
     self.value_function = value_function
@@ -123,6 +125,7 @@ class Learner(nnx.Module):
         optimizer=self.policy_optimizer,
         loss_fn=_policy_loss_fn,
         mesh=mesh,
+        shard_module=shard_module,
     )
 
     self.sharded_run_policy = jax_utils.shard_map_loss_fn(
@@ -136,6 +139,7 @@ class Learner(nnx.Module):
         optimizer=self.value_optimizer,
         loss_fn=_value_loss_fn,
         mesh=mesh,
+        shard_module=shard_module,
     )
 
     self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
