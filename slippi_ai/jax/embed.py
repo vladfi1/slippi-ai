@@ -616,6 +616,13 @@ class EmbedConfig:
         items_config=self.items,
     )
 
+  def make_state_action_embedding(self, num_names: int):
+    return get_state_action_embedding(
+        embed_game=self.make_game_embedding(),
+        embed_action=self.controller.make_embedding(),
+        num_names=num_names,
+    )
+
 NAME_DTYPE = np.int32
 
 def get_state_action_embedding(
