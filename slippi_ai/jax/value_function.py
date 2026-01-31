@@ -101,10 +101,11 @@ class ValueFunction(nnx.Module):
     uev = value_loss / (value_variance + 1e-8)
 
     metrics = {
-        'reward': jax_utils.get_stats(rewards),
-        'return': jax_utils.get_stats(value_targets),
+        # Scalar metrics aren't allowed in shard_map
+        # 'reward': jax_utils.get_stats(rewards),
+        # 'return': jax_utils.get_stats(value_targets),
         'loss': value_loss,
-        'variance': value_variance,
+        'variance': value_variance[None, None],
         'uev': uev,  # unexplained variance
     }
 
