@@ -69,6 +69,7 @@ if __name__ == '__main__':
       hidden_size=ff.Integer(64),
       num_heads=ff.Integer(4),
       rnn_cell=ff.String('gru'),
+      stack_layers=ff.Boolean(True),
       stacked_rnns=ff.Boolean(True),
       remat_layers=ff.Boolean(True),
       remat_rnns=ff.Boolean(False),
