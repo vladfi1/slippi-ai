@@ -37,7 +37,10 @@ def default_config():
   config.embed.with_fod = True
   config.embed.with_randall = True
 
-  config.network[FRAME_TX]['num_layers'] = 2
+  config.network[FRAME_TX].update(
+      num_layers=2,
+      stack_layers=True,
+  )
 
   config.value_function.separate_network_config = True
   config.value_function.network[FRAME_TX]['num_layers'] = 1

@@ -950,25 +950,30 @@ class IndependentMultiHeadAttention(nnx.Module):
       features: int,
       num_heads: int,
       rngs: nnx.Rngs,
+      normalize_qk: bool = True,
+      use_out_linear: bool = True,
   ):
     self.num_groups = num_groups
     self.num_heads = num_heads
     self.feature_dim = features
+    self.normalize_qk = normalize_qk
+    self.use_out_linear = use_out_linear
 
     if features % num_heads != 0:
       raise ValueError('features must be divisible by num_heads')
     self.head_dim = features // num_heads
 
-    self.query_ln = nnx.LayerNorm(
-      self.head_dim,
-      use_bias=False,
-      rngs=rngs,
-    )
-    self.key_ln = nnx.LayerNorm(
-      self.head_dim,
-      use_bias=False,
-      rngs=rngs,
-    )
+    if self.normalize_qk:
+      self.query_ln = nnx.LayerNorm(
+        self.head_dim,
+        use_bias=False,
+        rngs=rngs,
+      )
+      self.key_ln = nnx.LayerNorm(
+        self.head_dim,
+        use_bias=False,
+        rngs=rngs,
+      )
 
     # Create separate QKV linears for each group
     @nnx.vmap(in_axes=0, out_axes=0)
@@ -980,16 +985,18 @@ class IndependentMultiHeadAttention(nnx.Module):
         )
     self.qkv_linear = make_qkv_linear(rngs.fork(split=num_groups))
 
-    # Create separate output linears for each group
-    @nnx.vmap(in_axes=0, out_axes=0)
-    def make_output_linear(r: nnx.Rngs) -> nnx.LinearGeneral:
-      return nnx.LinearGeneral(
-          in_features=features,
-          out_features=features,
-          rngs=r,
-      )
+    if self.use_out_linear:
+      # Create separate output linears for each group
+      @nnx.vmap(in_axes=0, out_axes=0)
+      def make_output_linear(r: nnx.Rngs) -> nnx.LinearGeneral:
+        return nnx.LinearGeneral(
+            axis=(-2, -1),
+            in_features=(num_heads, self.head_dim),
+            out_features=features,
+            rngs=r,
+        )
 
-    self.output_linear = make_output_linear(rngs.fork(split=num_groups))
+      self.output_linear = make_output_linear(rngs.fork(split=num_groups))
 
   def __call__(self, inputs: Array) -> Array:
     assert inputs.shape[-2:] == (self.num_groups, self.feature_dim)
@@ -1002,19 +1009,23 @@ class IndependentMultiHeadAttention(nnx.Module):
     qkv = qkv_single(self.qkv_linear, inputs)  # (..., num_groups, 3, num_heads, head_dim)
 
     queries, keys, values = jnp.unstack(qkv, axis=-3)
-    queries = self.query_ln(queries)
-    keys = self.key_ln(keys)
+
+    if self.normalize_qk:
+      queries = self.query_ln(queries)
+      keys = self.key_ln(keys)
 
     head_outputs = nnx.dot_product_attention(queries, keys, values)  # (..., num_groups, num_heads, head_dim)
 
-    # Concatenate heads back into feature dimension
-    head_outputs = head_outputs.reshape(head_outputs.shape[:-2] + (self.feature_dim,))
+    if self.use_out_linear:
+      @nnx.vmap(in_axes=(0, -3), out_axes=-2)
+      def output_single(output_linear: nnx.LinearGeneral, x: Array) -> Array:
+        # x: (..., num_heads, head_dim)
+        return output_linear(x)  # (..., feature_dim)
 
-    @nnx.vmap(in_axes=(0, -2), out_axes=-2)
-    def output_single(output_linear: nnx.LinearGeneral, x: Array) -> Array:
-      return output_linear(x)
-
-    outputs = output_single(self.output_linear, head_outputs)  # (..., num_groups, feature_dim)
+      outputs = output_single(self.output_linear, head_outputs)  # (..., num_groups, feature_dim)
+    else:
+      # Concatenate heads back into feature dimension
+      outputs = head_outputs.reshape(head_outputs.shape[:-2] + (self.feature_dim,))
 
     return outputs
 
@@ -1035,6 +1046,9 @@ class FrameTransformer(StateActionNetwork):
         stacked_rnns=True,
         remat_rnns=False,
         stack_layers=False,
+
+        normalize_qk=True,
+        use_out_linear=True,
 
         input_ffw=False,
         skip_rnn=False,
@@ -1060,6 +1074,9 @@ class FrameTransformer(StateActionNetwork):
       remat_rnns: bool = False,
       # Faster compilation
       stack_layers: bool = False,
+
+      normalize_qk: bool = True,
+      use_out_linear: bool = True,
 
       # Use a Linear layer instead of an RNN for the initial embedding
       input_ffw: bool = False,
@@ -1161,6 +1178,8 @@ class FrameTransformer(StateActionNetwork):
             features=hidden_size,
             num_heads=num_heads,
             rngs=rngs,
+            normalize_qk=normalize_qk,
+            use_out_linear=use_out_linear,
         )
         attention = ResidualWrapper(FFWWrapper(attention, output_size=hidden_size))
         if remat_layers:
