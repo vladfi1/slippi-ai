@@ -271,6 +271,20 @@ def data_parallel_train(
     # Just for type checking; nnx.grad should have better type annotations.
     grad_fn = tp.cast(tp.Callable[[ModT, Data, State], tuple[Grads, tuple[AuxT, State]]], grad_fn)
 
+    if shard_module:
+      sharded_grad_fn = nnx.shard_map(
+          grad_fn,
+          in_specs=(PS(data_axis), PS(data_axis), PS(data_axis)),
+          out_specs=(PS(data_axis), (PS(data_axis), PS(data_axis))),
+          mesh=mesh)
+
+      sharded_module = pcast_module(module, data_axis, to='varying')
+      grads, (aux, new_state) = sharded_grad_fn(sharded_module, data, state)
+      grads = jax.lax.pmean(grads, axis_name=data_axis)
+
+      optimizer.update(module, grads)
+      return aux, new_state
+
     @nnx.shard_map(
         in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)),
         out_specs=(PS(data_axis), PS(data_axis)),
@@ -282,12 +296,7 @@ def data_parallel_train(
         data: Data,
         state: State,
     ) -> tuple[AuxT, State]:
-      if shard_module:
-        sharded_module = pcast_module(module, data_axis, to='varying')
-        grads, (aux, new_state) = grad_fn(sharded_module, data, state)
-        grads = jax.lax.pmean(grads, axis_name=data_axis)
-      else:
-        grads, (aux, new_state) = grad_fn(module, data, state)
+      grads, (aux, new_state) = grad_fn(module, data, state)
 
       # Update optimizer independently on each device. This should keep the
       # variables and optimizer states in sync since grads are the same on
