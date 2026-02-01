@@ -484,7 +484,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_stats, _ = train_manager.step()
   logging.info('loss initial: %f', _get_loss(train_stats))
-  logging.info(f"Using {jax_utils.get_process_gpu_memory_gb():.2f} GB GPU memory")
+
+  gpu_memory = jax_utils.get_process_gpu_memory_gb()
+  if gpu_memory is not None:
+    logging.info('initial GPU memory usage: %.2f GB', gpu_memory)
+  else:
+    logging.info('GPU memory usage not available (pynvml not installed)')
 
   def save(eval_loss=None):
     nonlocal best_eval_loss
