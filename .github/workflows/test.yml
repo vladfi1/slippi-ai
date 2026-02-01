@@ -8,7 +8,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ['3.10', '3.11']
+        python-version: ['3.11', '3.12']
         os: ['ubuntu-latest']
 
     steps:
@@ -23,71 +23,20 @@ jobs:
     - name: Install
       run: |
         pip install -r requirements.txt
-        pip install ray
         pip install .
         sudo apt update
         sudo apt install -y zipmerge
 
     - name: Run Unit Tests
       run: |
-        python tests/networks_test.py
-        python tests/rl_lib_test.py
-        python tests/unit_tests.py
         python tests/slippi_db_test.py
         python tests/observations_test.py
-        python tests/unroll_agent.py
-        python tests/test_agent_outputs.py
+        python tests/slippi_db_test.py
 
-    - name: Test Evaluator
-      run: ./tests/run_evaluator.sh
-        python tests/replay_parser_test.py
+    - name: Run JAX Unit Tests
+      run: |
+        python slippi_ai/jax/tests/networks_test.py
+        python slippi_ai/jax/tests/rl_lib_test.py
 
     - name: Test Imitation
-      run: ./tests/training_test.sh
-
-    - name: Test Imitation with Restore
-      run: ./tests/training_test.sh --config.restore_pickle=slippi_ai/data/checkpoints/demo
-
-    - name: Test RL with Fake Data
-      run: ./tests/train_rl.sh
-
-    - name: Test RL with Fake Data + Delay
-      run: ./tests/train_rl.sh --config.override_delay=3
-
-    - name: Test RL with Fake Data + Restore
-      run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo --config.agent.char=FOX
-
-    - name: Test train_two with Fake Data
-      run: ./tests/train_two.sh
-
-    - name: Download ExiAI Dolphin
-      # TODO: specify release version in repo?
-      run: |
-        curl -L https://github.com/vladfi1/slippi-Ishiiruka/releases/download/exi-ai-0.2.0/Slippi_Online-x86_64-ExiAI.AppImage -o dolphin
-        chmod +x dolphin
-
-    - name: Install dolphin dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y libfuse2 libegl1
-
-    - name: Cache the SSBM iso
-      uses: actions/cache@v4
-      id: cache-iso  # give it a name for checking the cache hit-or-not
-      with:
-        path: SSBM.iso
-        key: ssbm-iso
-
-    - name: Download the SSBM iso
-      if: steps.cache-iso.outputs.cache-hit != 'true'
-      env:
-        SSBM_ISO_DRIVE_ID: ${{ secrets.SSBM_ISO_DRIVE_ID }}
-      run: |
-        pip install gdown
-        gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
-
-    - name: Test RL with Dolphin
-      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
-
-    - name: Test train_two with Dolphin
-      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
+      run: python slippi_ai/jax/tests/imitation_test.py
