@@ -4,7 +4,13 @@ git+https://github.com/vladfi1/libmelee.git@v0.43.0
 wandb
 dnspython
 fancyflags
+# Don't include jax itself to allow users to choose their own version,
+# e.g. [cuda12] or [cuda13]
+flax>=0.12
 pyarrow
 py7zr
 parameterized
-peppi-py==0.8.1
+# TODO: upload peppi-py wheels with the features we need
+peppi-py
+portpicker
+tqdm
