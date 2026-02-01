@@ -2,6 +2,7 @@
 
 """Train a model using imitation learning."""
 
+import dataclasses
 import os
 
 from absl import app, flags
@@ -146,7 +147,7 @@ if __name__ == '__main__':
         wandb_kwargs['mode'] = 'disabled'
 
     wandb.init(
-        config=CONFIG.value,
+        config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
     train_lib.train(config)
