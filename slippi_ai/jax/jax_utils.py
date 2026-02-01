@@ -336,12 +336,15 @@ def shard_map_loss_fn(
 
 # Misc
 
-def get_process_gpu_memory_gb(target_pid: tp.Optional[int] = None) -> float:
-  from pynvml import (
-      nvmlInit, nvmlShutdown,
-      nvmlDeviceGetHandleByIndex,
-      nvmlDeviceGetComputeRunningProcesses,
-  )
+def get_process_gpu_memory_gb(target_pid: tp.Optional[int] = None) -> tp.Optional[float]:
+  try:
+    from pynvml import (
+        nvmlInit, nvmlShutdown,
+        nvmlDeviceGetHandleByIndex,
+        nvmlDeviceGetComputeRunningProcesses,
+    )
+  except ImportError:
+    return None
 
   if target_pid is None:
     target_pid = os.getpid()
