@@ -154,10 +154,11 @@ class MLP(Network[Array, Array]):
         activation=activation,
         activation_final=activation_final,
     )
+    self._output_size = width if depth > 0 else input_size
 
   @property
   def output_size(self) -> int:
-    return self._width
+    return self._output_size
 
   def initial_state(self, batch_size, rngs):
     return ()

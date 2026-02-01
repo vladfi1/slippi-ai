@@ -76,6 +76,8 @@ if __name__ == '__main__':
   )
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
+  TOY_VF = flags.DEFINE_bool('toy_vf', False, 'Use a toy value function for quick testing')
+
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
 
   NUM_DAYS = flags.DEFINE_float('num_days', 14, 'Number of days to train for')
@@ -128,8 +130,13 @@ if __name__ == '__main__':
     config.network['name'] = net
     config.network[net].update(net_config)
 
-    config.value_function.network['name'] = net
-    config.value_function.network[net].update(net_config)
+    vf_net_config = config.value_function.network
+    if TOY_VF.value:
+      vf_net_config['name'] = 'mlp'
+      vf_net_config['mlp'].update(depth=0)
+    else:
+      vf_net_config['name'] = net
+      vf_net_config[net].update(net_config)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:

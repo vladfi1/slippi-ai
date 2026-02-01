@@ -42,10 +42,7 @@ class ValueFunction(nnx.Module):
         num_names=num_names,
         network_config=network_config,
     )
-    # Get hidden size from network config
-    name = network_config['name']
-    hidden_size = network_config[name].get('hidden_size', network_config[name].get('width', 128))
-    self.value_head = nnx.Linear(hidden_size, 1, rngs=rngs)
+    self.value_head = nnx.Linear(self.network.output_size, 1, rngs=rngs)
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return self.network.initial_state(batch_size, rngs)
