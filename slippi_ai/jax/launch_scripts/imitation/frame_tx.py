@@ -52,8 +52,8 @@ def default_config():
   config.dataset.mirror = True
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
-  config.dataset.data_dir = os.environ["DATA_DIR"]
-  config.dataset.meta_path = os.environ["META_PATH"]
+  config.dataset.data_dir = os.environ.get("DATA_DIR")
+  config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
   config.runtime.num_evals_per_epoch = 4
 
