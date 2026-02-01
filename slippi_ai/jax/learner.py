@@ -186,7 +186,7 @@ class Learner(nnx.Module):
     def loss_fn(policy: Policy):
       loss, metrics, final_states = policy.imitation_loss(
           tm_frames, initial_states)
-      loss = jnp.mean(loss, axis=0)
+      loss = jnp.mean(loss)  # Mean over time and batch
       return loss, (metrics, final_states)
 
     if train:
