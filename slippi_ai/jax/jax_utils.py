@@ -32,25 +32,22 @@ def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
 
-
-def shard_module(module: nnx.Module, sharding: NamedSharding):
-  """Shard/replicate module parameters across devices in-place."""
-  _, state = nnx.split(module)
-  sharded_state = jax.tree.map(
-      lambda x: jax.device_put(x, sharding), state)
-  nnx.update(module, sharded_state)
-
-
-def replicate_module(module: nnx.Module, mesh: Mesh):
-  """Replicate module parameters across all devices in the mesh."""
-  shard_module(module, replicate_sharding(mesh))
-
-
 def shard_pytree(pytree, sharding: NamedSharding):
   """Shard a pytree of arrays with the given sharding."""
   def shard_leaf(x):
     return jax.device_put(x, sharding)
   return jax.tree.map(shard_leaf, pytree)
+
+
+def shard_module(module: nnx.Module, sharding: NamedSharding):
+  """Shard/replicate module parameters across devices in-place."""
+  state = nnx.state(module)
+  nnx.update(module, shard_pytree(state, sharding))
+
+def replicate_module(module: nnx.Module, mesh: Mesh):
+  """Replicate module parameters across all devices in the mesh."""
+  shard_module(module, replicate_sharding(mesh))
+
 
 
 def num_devices() -> int:
@@ -238,6 +235,78 @@ def pcast_module(module: ModT, axis_name: str, *, to: str) -> ModT:
   pcasted_state = jax.lax.pcast(state, axis_name, to=to)
   return nnx.merge(graphdef, pcasted_state)
 
+def loss_fn_with_mean(
+    loss_fn: tp.Callable[P, tp.Tuple[Loss, AuxT]],
+    take_pmean: bool = True,
+    data_axis: tp.Optional[str] = None,
+) -> tp.Callable[P, tp.Tuple[Loss, AuxT]]:
+
+  @functools.wraps(loss_fn)
+  def wrapped_loss_fn(*args: P.args, **kwargs: P.kwargs) -> tuple[Loss, AuxT]:
+    loss, aux = loss_fn(*args, **kwargs)
+    # First take the mean across the device-local batch.
+    loss = jnp.mean(loss, axis=0, keepdims=True)
+
+    if take_pmean:
+      if data_axis is None:
+        raise ValueError('data_axis must be specified when take_pmean is True.')
+
+      loss = jax.lax.pmean(loss, axis_name=data_axis)
+
+    return loss[0], aux
+
+  return wrapped_loss_fn
+
+
+def sharded_grads(
+    # Note: loss_fn should return loss of shape [B]
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    explicit_pmean: bool = True,
+    data_axis: str = DATA_AXIS,
+):
+  # If we let shard_map handle gradient communication across devices implicitly,
+  # then we need to make sure the loss is averaged across devices inside loss_fn.
+  sharded_loss_fn = loss_fn_with_mean(
+      loss_fn, take_pmean=not explicit_pmean, data_axis=data_axis)
+
+  grad_fn = nnx.grad(sharded_loss_fn, has_aux=True)
+  # Just for type checking; nnx.grad should have better type annotations.
+  grad_fn = tp.cast(tp.Callable[tp.Concatenate[ModT, Data, P], tuple[Grads, AuxT]], grad_fn)
+
+  def compute_grads(
+      module: ModT,
+      data: Data,
+      *args: P.args,
+      **kwargs: P.kwargs,
+  ) -> tuple[Grads, AuxT]:
+    # This prevent jax from inserting an implicit psum on gradients.
+    if explicit_pmean:
+      module = pcast_module(module, data_axis, to='varying')
+
+    grads, aux = grad_fn(module, data, *args, **kwargs)
+
+    if explicit_pmean:
+      grads = jax.lax.pmean(grads, axis_name=data_axis)
+
+    return grads, aux
+
+  return compute_grads
+
+def shard_map_grads(
+    # Note: loss_fn should return loss of shape [B]
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, P], tp.Tuple[Loss, AuxT]],
+    mesh: jax.sharding.Mesh,
+    explicit_pmean: bool = True,
+    data_axis: str = DATA_AXIS,
+):
+  return nnx.shard_map(
+      sharded_grads(loss_fn, explicit_pmean, data_axis),
+      in_specs=(PS(), PS(data_axis)),
+      out_specs=(PS(), PS(data_axis)),
+      mesh=mesh,
+  )
+
+
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
@@ -245,7 +314,8 @@ def data_parallel_train(
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
-    shard_module: bool = False,
+    explicit_pmean: bool = False,
+    smap_optimizer: bool = True,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
@@ -257,33 +327,24 @@ def data_parallel_train(
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs) -> tuple[AuxT, State]:
-    # shard_map the loss function over devices
 
-    @nnx.grad(has_aux=True)
-    def grad_fn(module: ModT, data: Data, state: State) -> tuple[Loss, tuple[AuxT, State]]:
-      loss, aux, state = loss_fn(module, data, state, *args, **kwargs)
-      # If the module is replicated, we need to average the loss across devices,
-      # otherwise the gradients will be multiplied by the number of devices.
-      if not shard_module:
-        loss = jax.lax.pmean(loss[None], axis_name=data_axis)[0]
-      return loss, (aux, state)
+    # Treat data and state as a single argument to shard_map_grads
+    def packed_loss_fn(module: ModT, data_and_state: tuple[Data, State]) -> tuple[Loss, tuple[AuxT, State]]:
+      data, state = data_and_state
+      loss, aux, new_state = loss_fn(module, data, state, *args, **kwargs)
+      return loss, (aux, new_state)
 
-    # Just for type checking; nnx.grad should have better type annotations.
-    grad_fn = tp.cast(tp.Callable[[ModT, Data, State], tuple[Grads, tuple[AuxT, State]]], grad_fn)
-
-    if shard_module:
-      sharded_grad_fn = nnx.shard_map(
-          grad_fn,
-          in_specs=(PS(data_axis), PS(data_axis), PS(data_axis)),
-          out_specs=(PS(data_axis), (PS(data_axis), PS(data_axis))),
-          mesh=mesh)
-
-      sharded_module = pcast_module(module, data_axis, to='varying')
-      grads, (aux, new_state) = sharded_grad_fn(sharded_module, data, state)
-      grads = jax.lax.pmean(grads, axis_name=data_axis)
+    if not smap_optimizer:
+      grads, (aux, new_state) = shard_map_grads(
+          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
+              module, (data, state), *args, **kwargs)
 
       optimizer.update(module, grads)
+
       return aux, new_state
+
+    sharded_grads_fn = sharded_grads(
+        packed_loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
 
     @nnx.shard_map(
         in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)),
@@ -296,11 +357,7 @@ def data_parallel_train(
         data: Data,
         state: State,
     ) -> tuple[AuxT, State]:
-      grads, (aux, new_state) = grad_fn(module, data, state)
-
-      # Update optimizer independently on each device. This should keep the
-      # variables and optimizer states in sync since grads are the same on
-      # each device.
+      grads, (aux, new_state) = sharded_grads_fn(module, (data, state))
       optimizer.update(module, grads)
       return aux, new_state
 

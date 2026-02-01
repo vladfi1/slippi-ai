@@ -130,10 +130,10 @@ class Policy(nnx.Module):
     # Take time-mean
     # metrics = jax.tree.map(lambda t: jnp.mean(t, axis=0), metrics)
 
-    total_loss = -jnp.mean(unroll_outputs.log_probs)
+    loss = -unroll_outputs.log_probs
 
-    # All metrics should have shape [T, B]
-    return total_loss, metrics, unroll_outputs.final_state
+    # All metrics and loss should have shape [T, B]
+    return loss, metrics, unroll_outputs.final_state
 
   def unroll_with_outputs(
       self,

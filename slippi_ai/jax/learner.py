@@ -33,7 +33,10 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
   use_shard_map: bool = True
-  shard_module: bool = False
+
+  # Options for shard_map
+  explicit_pmean: bool = False
+  smap_optimizer: bool = True
 
 # TODO: move to jax_utils
 P = tp.ParamSpec('P')
@@ -71,9 +74,10 @@ def _policy_loss_fn(
 # ) -> tp.Tuple[Metrics, RecurrentState]:
 ) -> tuple[jax_utils.Loss, Metrics, RecurrentState]:
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
-  loss, tm_metrics, final_states = policy.imitation_loss(tm_frames, initial_states)
+  tm_loss, tm_metrics, final_states = policy.imitation_loss(tm_frames, initial_states)
+  bm_loss = jnp.mean(tm_loss, axis=0)
   bm_metrics = jax.tree.map(swap_axes, tm_metrics)
-  return loss, bm_metrics, final_states
+  return bm_loss, bm_metrics, final_states
 
 def _value_loss_fn(
     value_function: vf_lib.ValueFunction,
@@ -85,7 +89,7 @@ def _value_loss_fn(
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
   value_outputs, final_states = value_function.loss(
       tm_frames, initial_states, discount)
-  loss = jnp.mean(value_outputs.loss)
+  loss = jnp.mean(value_outputs.loss, axis=0)
   bm_metrics = jax.tree.map(swap_axes, value_outputs.metrics)
   return loss, bm_metrics, final_states
 
@@ -100,7 +104,8 @@ class Learner(nnx.Module):
       mesh: tp.Optional[jax.sharding.Mesh] = None,
       compile: bool = True,
       use_shard_map: bool = True,
-      shard_module: bool = False,
+      explicit_pmean: bool = False,
+      smap_optimizer: bool = True,
   ):
     self.policy = policy
     self.value_function = value_function
@@ -136,7 +141,8 @@ class Learner(nnx.Module):
           optimizer=self.policy_optimizer,
           loss_fn=_policy_loss_fn,
           mesh=mesh,
-          shard_module=shard_module,
+          explicit_pmean=explicit_pmean,
+          smap_optimizer=smap_optimizer,
       )
 
       self.sharded_run_policy = jax_utils.shard_map_loss_fn(
@@ -150,7 +156,8 @@ class Learner(nnx.Module):
           optimizer=self.value_optimizer,
           loss_fn=_value_loss_fn,
           mesh=mesh,
-          shard_module=shard_module,
+          explicit_pmean=explicit_pmean,
+          smap_optimizer=smap_optimizer,
       )
 
       self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
@@ -179,6 +186,7 @@ class Learner(nnx.Module):
     def loss_fn(policy: Policy):
       loss, metrics, final_states = policy.imitation_loss(
           tm_frames, initial_states)
+      loss = jnp.mean(loss, axis=0)
       return loss, (metrics, final_states)
 
     if train:
