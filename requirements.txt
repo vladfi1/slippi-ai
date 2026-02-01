@@ -8,3 +8,5 @@ pyarrow
 py7zr
 parameterized
 peppi-py-vladfi
+portpicker
+tqdm

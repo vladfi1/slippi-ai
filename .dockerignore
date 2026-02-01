@@ -2,7 +2,7 @@
 *
 
 # allow only these
-!requirements.txt
+!*requirements.txt
 !slippi_ai/
 !tests/
 !scripts/
