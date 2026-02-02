@@ -33,6 +33,7 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
   use_shard_map: bool = True
+  combined: bool = False
 
   # Options for shard_map
   explicit_pmean: bool = False
@@ -103,6 +104,7 @@ class Learner(nnx.Module):
       value_function: vf_lib.ValueFunction,
       mesh: tp.Optional[jax.sharding.Mesh] = None,
       compile: bool = True,
+      combined: bool = False,
       use_shard_map: bool = True,
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
@@ -112,6 +114,7 @@ class Learner(nnx.Module):
     self.discount = 0.5 ** (1 / (reward_halflife * 60))
     self.compile = compile
     self.use_shard_map = use_shard_map
+    self.combined = combined
 
     # Create optimizers using optax
     self.policy_optimizer = nnx.Optimizer(
@@ -132,6 +135,9 @@ class Learner(nnx.Module):
     if use_shard_map:
       if mesh is None:
         raise ValueError('mesh must be provided when use_shard_map is True.')
+
+      if combined:
+        raise NotImplementedError('Combined shard_map not implemented yet.')
 
       # Train and run functions using shard_map. Empirically these have better
       # performance for the frame_tx network than the above "jit_step" methods,
@@ -292,7 +298,7 @@ class Learner(nnx.Module):
       initial_states: RecurrentState,
       train: bool = True,
       compile: Optional[bool] = None,
-      combined: bool = False,
+      combined: Optional[bool] = None,
   ) -> tuple[dict, RecurrentState]:
     """Training/eval step.
 
@@ -306,6 +312,7 @@ class Learner(nnx.Module):
       Tuple of (metrics dict, final recurrent states).
     """
     compile = self.compile if compile is None else compile
+    combined = self.combined if combined is None else combined
 
     if combined:
       if not compile:
