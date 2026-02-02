@@ -362,6 +362,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
+        if config.restore_path is None:
+          # In this case we are implicitly restoring from the same experiment,
+          # and it would be surprising to use the old config.
+          # TODO: improve this check, maybe ask the user for confirmation?
+          raise ValueError(
+              f'Requested {key} config doesn\'t match existing config.')
+
         logging.warning(
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
