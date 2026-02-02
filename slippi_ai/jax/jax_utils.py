@@ -114,6 +114,19 @@ class MLP(nnx.Module):
 P = tp.ParamSpec('P')
 T = tp.TypeVar('T')
 
+def remat_method(
+    method: tp.Callable[P, T],
+    **remat_kwargs,
+) -> tp.Callable[P, T]:
+  """Like nnx.remat but for bound methods."""
+  unbound_f, bound_self, was_bound = _resolve_bound_callable(method)
+
+  if not was_bound:
+    raise ValueError('remat_method requires a bound method.')
+
+  return functools.partial(nnx.remat(unbound_f, **remat_kwargs), bound_self)
+
+
 def eval_shape_method(
     method: tp.Callable[P, T],
     *args: P.args,
