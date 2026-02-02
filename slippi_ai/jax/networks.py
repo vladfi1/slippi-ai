@@ -1,6 +1,7 @@
 import abc
 import copy
 import functools
+import logging
 import math
 from typing import Any, Callable, Optional, Tuple
 import typing as tp
@@ -128,6 +129,10 @@ class BuildableNetwork(Network[InputTree, OutputTree], abc.ABC):
   """A Network that can be constructed from a config dict."""
 
   @classmethod
+  def name(cls) -> str:
+    return cls.__name__
+
+  @classmethod
   def from_config(
       cls,
       rngs: nnx.Rngs,
@@ -143,6 +148,10 @@ class BuildableNetwork(Network[InputTree, OutputTree], abc.ABC):
     '''Returns the default config for this Network.'''
 
 class MLP(BuildableNetwork[Array, Array]):
+
+  @classmethod
+  def name(cls) -> str:
+    return 'mlp'
 
   @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
@@ -340,7 +349,7 @@ class Compose(Network[InputTree, OutputTree]):
 
 class Sequential(Network[InputTree, InputTree]):
 
-  def __init__(self, layers: list[Network[InputTree, InputTree]]):
+  def __init__(self, layers: tp.Sequence[Network[InputTree, InputTree]]):
     self._layers = nnx.List(layers)
 
   @property
@@ -430,6 +439,10 @@ class RematWrapper(Network[InputTree, OutputTree]):
 class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
 
   @classmethod
+  def name(cls) -> str:
+    return 'gru'
+
+  @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
     return dict(
       hidden_size=128,
@@ -445,6 +458,9 @@ class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
         remat=remat)
 
 class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
+  @classmethod
+  def name(cls) -> str:
+    return 'lstm'
 
   @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
@@ -492,6 +508,10 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
   """Alternates recurrent and FFW layers."""
 
   @classmethod
+  def name(cls) -> str:
+    return 'tx_like'
+
+  @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
     return dict(
         hidden_size=128,
@@ -510,6 +530,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
       ffw_multiplier: int,
       recurrent_layer: str,
       activation: str,
+      remat: bool = False,
   ):
     self._hidden_size = hidden_size
     self._num_layers = num_layers
@@ -526,7 +547,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
         tanh=nnx.tanh,
     )[activation]
 
-    layers = []
+    layers: list[Network[Array, Array]] = []
 
     # We need to encode for the first residual
     encoder = nnx.Linear(input_size, hidden_size, rngs=rngs)
@@ -541,6 +562,9 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
           rngs, hidden_size, hidden_size * ffw_multiplier,
           activation=activation_fn)
       layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
+
+    if remat:
+      layers = [RematWrapper(layer) for layer in layers]
 
     super().__init__(layers)
 
@@ -680,9 +704,11 @@ class SimpleEmbedNetwork(StateActionNetwork):
       self,
       embed_module: EmbedModule,
       network: Network[Array, Array],
+      remat: bool = False,
   ):
     self._embed_module = embed_module
     self._network = network
+    self._remat = remat
 
   @property
   def output_size(self) -> int:
@@ -700,12 +726,17 @@ class SimpleEmbedNetwork(StateActionNetwork):
   def encode_game(self, game: Game) -> Game:
     return self._embed_module.encode_game(game)
 
+  def _embed(self, state_action: StateAction) -> Array:
+    if self._remat:
+      return nnx.remat(apply)(self._embed_module, state_action)
+    return self._embed_module(state_action)
+
   def step(
       self,
       state_action: StateAction,
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    embedded = self._embed_module(state_action)
+    embedded = self._embed(state_action)
     output, next_state = self._network.step(embedded, prev_state)
     assert isinstance(output, Array)
     return output, next_state
@@ -716,7 +747,7 @@ class SimpleEmbedNetwork(StateActionNetwork):
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    embedded = self._embed_module(state_action)
+    embedded = self._embed(state_action)
     output, final_state = self._network.unroll(embedded, reset, initial_state)
     assert isinstance(output, Array)
     return output, final_state
@@ -727,7 +758,7 @@ class SimpleEmbedNetwork(StateActionNetwork):
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    embedded = self._embed_module(state_action)
+    embedded = self._embed(state_action)
     output, final_state = self._network.scan(embedded, reset, initial_state)
     assert isinstance(output, Array)
     return output, final_state
@@ -1095,7 +1126,10 @@ class IndependentMultiHeadAttention(nnx.Module):
     return outputs
 
 class FrameTransformer(StateActionNetwork):
-  name = 'frame_tx'
+
+  @classmethod
+  def name(cls) -> str:
+    return 'frame_tx'
 
   @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
@@ -1426,8 +1460,16 @@ class MultiEmbed(nnx.Module):
 
 PlayerOrNana = tp.TypeVar('PlayerOrNana', Player, Nana)
 
-class EnhancedEmbedNetwork(nnx.Module, EmbedModule):
-  """Embeds the state and action using provided embedding module."""
+class EnhancedEmbedModule(nnx.Module, EmbedModule):
+
+  @classmethod
+  def default_config(cls) -> dict[str, tp.Any]:
+    return dict(
+        hidden_size=128,
+        rnn_cell='lstm',
+        use_self_nana=True,
+        use_controller_rnn=False,
+    )
 
   def __init__(
       self,
@@ -1436,6 +1478,7 @@ class EnhancedEmbedNetwork(nnx.Module, EmbedModule):
       hidden_size: int,
       rnn_cell: str = 'lstm',
       use_self_nana: bool = True,
+      use_controller_rnn: bool = False,
   ):
     self._embed_state_action = embed_state_action
     self._use_self_nana = use_self_nana
@@ -1459,12 +1502,14 @@ class EnhancedEmbedNetwork(nnx.Module, EmbedModule):
         rngs=rngs,
     )
 
-    self._controller_rnn = ControllerRNN(
-        rngs=rngs,
-        embed_controller=self._embed_controller,
-        hidden_size=hidden_size,
-        rnn_cell=rnn_cell,
-    )
+    self._use_controller_rnn = use_controller_rnn
+    if use_controller_rnn:
+      self._controller_rnn = ControllerRNN(
+          rngs=rngs,
+          embed_controller=self._embed_controller,
+          hidden_size=hidden_size,
+          rnn_cell=rnn_cell,
+      )
 
     # Assumes that p0 and p1 have the same embedding structure
     embed_char = tp.cast(
@@ -1566,25 +1611,28 @@ class EnhancedEmbedNetwork(nnx.Module, EmbedModule):
 
     parts.append(tp.cast(Array, default_state_action_embed.name))
 
-    parts.append(self._controller_rnn(state_action.action))
+    if self._use_controller_rnn:
+      parts.append(self._controller_rnn(state_action.action))
+    else:
+      parts.append(self._embed_controller(state_action.action))
 
     return jnp.concatenate(parts, axis=-1)
 
 # Factory functions for network construction
 
-SIMPLE_CONSTRUCTORS: dict[str, type[BuildableNetwork]] = dict(
-    mlp=MLP,
-    gru=GRU,
-    lstm=LSTM,
-    tx_like=TransformerLike,
-)
+_simple_networks: list[type[BuildableNetwork[Array, Array]]] = [
+    MLP, LSTM, GRU, TransformerLike,
+]
+SIMPLE_CONSTRUCTORS = {
+    cls.name(): cls for cls in _simple_networks
+}
 
 OTHER_CONSTRUCTORS = [
     FrameTransformer,
 ]
 
 NAME_TO_CONSTRUCTOR: dict[str, type[StateActionNetwork]] = {
-    cls.name: cls for cls in OTHER_CONSTRUCTORS
+    cls.name(): cls for cls in OTHER_CONSTRUCTORS
 }
 
 DEFAULT_CONFIG: dict[str, Any] = dict(
@@ -1592,16 +1640,12 @@ DEFAULT_CONFIG: dict[str, Any] = dict(
     **{name: cls.default_config() for name, cls in SIMPLE_CONSTRUCTORS.items()},
 )
 for cls in OTHER_CONSTRUCTORS:
-  DEFAULT_CONFIG[cls.name] = cls.default_config()
+  DEFAULT_CONFIG[cls.name()] = cls.default_config()
 
 DEFAULT_CONFIG['embed'] = dict(
     name='simple',
     simple={},
-    enhanced=dict(
-        hidden_size=128,
-        rnn_cell='lstm',
-        use_self_nana=True,
-    ),
+    enhanced=EnhancedEmbedModule.default_config(),
 )
 
 
@@ -1644,6 +1688,7 @@ def build_embed_module(
     embed_game: embed_lib.StructEmbedding[Game],
 ):
   name = config['name']
+  logging.info('Using embed module: %s', name)
 
   if name == 'simple':
     return SimpleEmbedModule(
@@ -1652,7 +1697,7 @@ def build_embed_module(
     )
 
   if name == 'enhanced':
-    return EnhancedEmbedNetwork(
+    return EnhancedEmbedModule(
         rngs=rngs,
         embed_state_action=embed_state_action,
         **config['enhanced'],
