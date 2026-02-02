@@ -1460,6 +1460,69 @@ class MultiEmbed(nnx.Module):
 
 PlayerOrNana = tp.TypeVar('PlayerOrNana', Player, Nana)
 
+class LinearStructEmbedding(nnx.Module, tp.Generic[T]):
+  """Embeds data using a Linear projection.
+
+  Optimizes one-hot embeddings by using nnx.Embed for them, which can save
+  potentially large matrix multiplications.
+  """
+
+  def __init__(
+      self,
+      embed: embed_lib.StructEmbedding[T],
+      out_features: int,
+      rngs: nnx.Rngs,
+  ):
+    self._embed = embed
+    self._embed_struct = embed.map(lambda e: e)
+
+    embed_flat = list(embed.flatten(self._embed_struct))
+    non_one_hot_size = sum(
+        e.size for e in embed_flat
+        if not isinstance(e, embed_lib.OneHotEmbedding))
+
+    self._linear = nnx.Linear(
+        in_features=non_one_hot_size,
+        out_features=out_features,
+        rngs=rngs,
+    )
+
+    def make_one_hot_embedding(e: embed_lib.Embedding):
+      if isinstance(e, embed_lib.OneHotEmbedding):
+        return nnx.Embed(
+            num_embeddings=e.size,
+            features=out_features,
+            rngs=rngs)
+      return nnx.data(None)
+
+    self._one_hot_embeddings = nnx.List(map(
+        make_one_hot_embedding, embed_flat))
+
+  def collect_non_one_hot(self, inputs: T) -> Array:
+    def _maybe_embed(e: embed_lib.Embedding, v: Array):
+      if isinstance(e, embed_lib.OneHotEmbedding):
+        return None
+      else:
+        return e(v)
+
+    embedded = self._embed.map(_maybe_embed, inputs)
+    embedded_flat = self._embed.flatten(embedded)
+    embedded_parts = [e for e in embedded_flat if e is not None]
+    return jnp.concatenate(embedded_parts, axis=-1)
+
+  def __call__(self, inputs: T) -> Array:
+    non_one_hot = self.collect_non_one_hot(inputs)
+    embedding = self._linear(non_one_hot)
+
+    for one_hot_embed, v in zip(
+        self._one_hot_embeddings,
+        self._embed.flatten(inputs)):
+      if isinstance(one_hot_embed, nnx.Embed):
+        embedding += one_hot_embed(v)
+
+    return embedding
+
+
 class EnhancedEmbedModule(nnx.Module, EmbedModule):
 
   @classmethod
