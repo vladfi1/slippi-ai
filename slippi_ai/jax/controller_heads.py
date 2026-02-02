@@ -145,7 +145,6 @@ class AutoRegressiveComponent(nnx.Module):
     residual = residual + self.decoder(sample_embedding)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
-  @nnx.remat
   def distance(
       self,
       residual: Array,
@@ -173,6 +172,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
     return dict(
         residual_size=128,
         component_depth=0,
+        remat=False,
     )
 
   def __init__(
@@ -182,11 +182,13 @@ class AutoRegressive(ControllerHead[ControllerType]):
       embed_controller: embed.Embedding[Controller, ControllerType],
       residual_size: int,
       component_depth: int,
+      remat: bool = False,
   ):
     self.embed_controller = embed_controller
     self.to_residual = nnx.Linear(input_size, residual_size, rngs=rngs)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
+    self.remat = remat
     self.res_blocks = nnx.List([
         AutoRegressiveComponent(
             rngs, e,
@@ -206,7 +208,8 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
     sample_outputs: list[SampleOutputs] = []
     for res_block, prev in zip(self.res_blocks, prev_controller_flat):
-      residual, sample = res_block.sample(
+      sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
+      residual, sample = sample_fn(
           rngs(), residual, prev, temperature=temperature)
       sample_outputs.append(sample)
 
@@ -224,7 +227,8 @@ class AutoRegressive(ControllerHead[ControllerType]):
     distance_outputs: list[DistanceOutputs] = []
     for res_block, prev, target in zip(
         self.res_blocks, prev_controller_flat, target_controller_flat):
-      residual, distance = res_block.distance(residual, prev, target)
+      distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
+      residual, distance = distance_fn(residual, prev, target)
       distance_outputs.append(distance)
 
     distances, logits = zip(*distance_outputs)
