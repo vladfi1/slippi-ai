@@ -125,7 +125,9 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
-        config.tag = f"{char}_d{delay}_{net}"
+        n = config.network[net]['num_layers']
+        h = net_config['hidden_size']
+        config.tag = f"{char}_d{delay}_{net}_{n}x{h}"
 
     config.dataset.allowed_characters = char
 
