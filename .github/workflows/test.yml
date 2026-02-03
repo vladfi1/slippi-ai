@@ -8,7 +8,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ['3.10', '3.11']
+        python-version: ['3.10', '3.11', '3.12']
         os: ['ubuntu-latest']
 
     steps:
@@ -23,24 +23,28 @@ jobs:
     - name: Install
       run: |
         pip install -r requirements.txt
-        pip install ray
         pip install .
         sudo apt update
         sudo apt install -y zipmerge
 
     - name: Run Unit Tests
       run: |
+        python tests/saving_test.py
         python tests/networks_test.py
         python tests/rl_lib_test.py
         python tests/unit_tests.py
-        python tests/slippi_db_test.py
         python tests/observations_test.py
         python tests/unroll_agent.py
         python tests/test_agent_outputs.py
 
+    - name: slippi_db tests
+      run: |
+        python tests/slippi_db_test.py
+        python tests/replay_parser_test.py
+        python tests/dataset_creation_test.py
+
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
-        python tests/replay_parser_test.py
 
     - name: Test Imitation
       run: ./tests/training_test.sh
