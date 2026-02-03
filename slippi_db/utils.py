@@ -131,6 +131,7 @@ class LocalFile(abc.ABC):
   def read(self) -> bytes:
     """Read the file bytes."""
 
+  @contextmanager
   @abc.abstractmethod
   def extract(self, tmpdir: str) -> tp.Generator[str, None, None]:
     """Extract the file to a temporary directory and return it."""

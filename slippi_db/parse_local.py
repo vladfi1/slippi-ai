@@ -157,6 +157,7 @@ def parse_files(
     num_threads: int = 1,
     compression_options: dict = {},
     log_interval: int = 30,
+    debug: bool = False,
 ) -> list[dict]:
   parse_slp_kwargs = dict(
       output_dir=output_dir,
@@ -167,7 +168,7 @@ def parse_files(
   if num_threads == 1:
     def results_iter():
       for f in files:
-        yield parse_slp(f, **parse_slp_kwargs)
+        yield parse_slp_safe(f, debug=debug, **parse_slp_kwargs)
 
     return _monitor_results(results_iter(), total_files=len(files), log_interval=log_interval)
 
@@ -310,6 +311,7 @@ def run_parsing(
     reprocess: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
+    debug: bool = False,
 ):
   # Cache tmp dir once
   tmpdir = utils.get_tmp_dir(in_memory=in_memory)
@@ -364,7 +366,12 @@ def run_parsing(
   # TODO: handle raw .slp and .slp.gz files
 
   zip_results = parse_files(
-      slp_files, output_dir, tmpdir, num_threads, compression_options, log_interval)
+      slp_files, output_dir,
+      tmpdir=tmpdir,
+      num_threads=num_threads,
+      compression_options=compression_options,
+      log_interval=log_interval,
+      debug=debug)
   assert len(zip_results) == len(slp_files)
 
   # Point back to raw file
@@ -421,6 +428,7 @@ if __name__ == '__main__':
   COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
   REPROCESS = flags.DEFINE_bool('reprocess', False, 'Reprocess raw archives.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
+  DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
   def main(_):
     run_parsing(
@@ -435,6 +443,7 @@ if __name__ == '__main__':
         reprocess=REPROCESS.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
+        debug=DEBUG.value,
     )
 
   app.run(main)

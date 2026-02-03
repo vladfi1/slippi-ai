@@ -3,7 +3,6 @@
 import os
 import tempfile
 import zipfile
-from pathlib import Path
 
 import requests
 from absl import app
@@ -12,7 +11,8 @@ from absl import flags
 from slippi_db import preprocessing
 from slippi_db import utils
 
-TEST_DATASET_URL = "https://www.dropbox.com/scl/fi/xbja5vqqlg3m8jutyjcn7/TestDataset-32.zip?rlkey=nha6ycc6npr3wmxzickeyqpfh&st=i87xxfxk&dl=1"
+# Note: need to change the dl=0 to dl=1 to get direct download link
+TEST_DATASET_URL = "https://www.dropbox.com/scl/fi/o4jyexehc4edcmzeu930i/TestDataset-31.zip?rlkey=89d9m574zygeo8460lla7wmji&st=oi5q5ba8&dl=1"
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('dataset_path', None, 'Path to the dataset to test')
