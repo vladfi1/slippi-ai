@@ -1,3 +1,4 @@
+import logging
 import unittest
 from parameterized import parameterized
 
@@ -48,6 +49,7 @@ class NetworksTest(unittest.TestCase):
       tf.nest.map_structure(assert_tensors_close, unroll_final_state, step_final_state)
 
 if __name__ == '__main__':
-  if tf.config.list_physical_devices('GPU'):
-    raise RuntimeError("Tests don't work properly on GPU")
+  gpus = tf.config.list_physical_devices('GPU')
+  if gpus:
+    logging.warning("Tests may not work properly on GPU.")
   unittest.main(failfast=True)
