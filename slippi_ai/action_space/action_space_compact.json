@@ -1,0 +1,4658 @@
+{
+  "actions": [
+    {
+      "index": 0,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 696046
+    },
+    {
+      "index": 1,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 305024
+    },
+    {
+      "index": 2,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 298800
+    },
+    {
+      "index": 3,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 121073
+    },
+    {
+      "index": 4,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 84189
+    },
+    {
+      "index": 5,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 46788
+    },
+    {
+      "index": 6,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 45720
+    },
+    {
+      "index": 7,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 40628
+    },
+    {
+      "index": 8,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 39933
+    },
+    {
+      "index": 9,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 37624
+    },
+    {
+      "index": 10,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 36053
+    },
+    {
+      "index": 11,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 35041
+    },
+    {
+      "index": 12,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 33878
+    },
+    {
+      "index": 13,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 29648
+    },
+    {
+      "index": 14,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 29578
+    },
+    {
+      "index": 15,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.8
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 29162
+    },
+    {
+      "index": 16,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 28031
+    },
+    {
+      "index": 17,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 25480
+    },
+    {
+      "index": 18,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 24646
+    },
+    {
+      "index": 19,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 19852
+    },
+    {
+      "index": 20,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 17789
+    },
+    {
+      "index": 21,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.3
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 17144
+    },
+    {
+      "index": 22,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 16940
+    },
+    {
+      "index": 23,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 16645
+    },
+    {
+      "index": 24,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15778
+    },
+    {
+      "index": 25,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.5,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15744
+    },
+    {
+      "index": 26,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15653
+    },
+    {
+      "index": 27,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15611
+    },
+    {
+      "index": 28,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15545
+    },
+    {
+      "index": 29,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15466
+    },
+    {
+      "index": 30,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 15405
+    },
+    {
+      "index": 31,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 14377
+    },
+    {
+      "index": 32,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 14264
+    },
+    {
+      "index": 33,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 14117
+    },
+    {
+      "index": 34,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 13921
+    },
+    {
+      "index": 35,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 13083
+    },
+    {
+      "index": 36,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 13037
+    },
+    {
+      "index": 37,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 12788
+    },
+    {
+      "index": 38,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 11898
+    },
+    {
+      "index": 39,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 11368
+    },
+    {
+      "index": 40,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 11251
+    },
+    {
+      "index": 41,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.9
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 9673
+    },
+    {
+      "index": 42,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 8443
+    },
+    {
+      "index": 43,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7624
+    },
+    {
+      "index": 44,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.09999999999999998,
+        0.3
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7439
+    },
+    {
+      "index": 45,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7365
+    },
+    {
+      "index": 46,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7166
+    },
+    {
+      "index": 47,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.9
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7090
+    },
+    {
+      "index": 48,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 7070
+    },
+    {
+      "index": 49,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 7035
+    },
+    {
+      "index": 50,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6759
+    },
+    {
+      "index": 51,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 6742
+    },
+    {
+      "index": 52,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6613
+    },
+    {
+      "index": 53,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6436
+    },
+    {
+      "index": 54,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6249
+    },
+    {
+      "index": 55,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.9
+      ],
+      "main_stick_normalized": [
+        0.2,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6218
+    },
+    {
+      "index": 56,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 6168
+    },
+    {
+      "index": 57,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 5940
+    },
+    {
+      "index": 58,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5868
+    },
+    {
+      "index": 59,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5854
+    },
+    {
+      "index": 60,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 5787
+    },
+    {
+      "index": 61,
+      "buttons": [
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5550
+    },
+    {
+      "index": 62,
+      "buttons": [
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5414
+    },
+    {
+      "index": 63,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.8,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5388
+    },
+    {
+      "index": 64,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 5359
+    },
+    {
+      "index": 65,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.8
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5344
+    },
+    {
+      "index": 66,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.3
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5117
+    },
+    {
+      "index": 67,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.5,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 5048
+    },
+    {
+      "index": 68,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 5007
+    },
+    {
+      "index": 69,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4808
+    },
+    {
+      "index": 70,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4762
+    },
+    {
+      "index": 71,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4743
+    },
+    {
+      "index": 72,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4698
+    },
+    {
+      "index": 73,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.09999999999999998,
+        0.8
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4585
+    },
+    {
+      "index": 74,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 4551
+    },
+    {
+      "index": 75,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4376
+    },
+    {
+      "index": 76,
+      "buttons": [
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 4327
+    },
+    {
+      "index": 77,
+      "buttons": [
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3998
+    },
+    {
+      "index": 78,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.7,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3848
+    },
+    {
+      "index": 79,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.5,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3727
+    },
+    {
+      "index": 80,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.8,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3589
+    },
+    {
+      "index": 81,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.3,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3520
+    },
+    {
+      "index": 82,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 3472
+    },
+    {
+      "index": 83,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3412
+    },
+    {
+      "index": 84,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.9
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.4
+      ],
+      "count": 3263
+    },
+    {
+      "index": 85,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.9
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.4
+      ],
+      "count": 3181
+    },
+    {
+      "index": 86,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3175
+    },
+    {
+      "index": 87,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 3108
+    },
+    {
+      "index": 88,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.09999999999999998,
+        0.3
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 3054
+    },
+    {
+      "index": 89,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2977
+    },
+    {
+      "index": 90,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 2886
+    },
+    {
+      "index": 91,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2870
+    },
+    {
+      "index": 92,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.9
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2772
+    },
+    {
+      "index": 93,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2740
+    },
+    {
+      "index": 94,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.9
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.4
+      ],
+      "count": 2689
+    },
+    {
+      "index": 95,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.8
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2684
+    },
+    {
+      "index": 96,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2513
+    },
+    {
+      "index": 97,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2451
+    },
+    {
+      "index": 98,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.7,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2446
+    },
+    {
+      "index": 99,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2348
+    },
+    {
+      "index": 100,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2326
+    },
+    {
+      "index": 101,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2325
+    },
+    {
+      "index": 102,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2307
+    },
+    {
+      "index": 103,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 2300
+    },
+    {
+      "index": 104,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2263
+    },
+    {
+      "index": 105,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 2203
+    },
+    {
+      "index": 106,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2164
+    },
+    {
+      "index": 107,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 2134
+    },
+    {
+      "index": 108,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2111
+    },
+    {
+      "index": 109,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 2100
+    },
+    {
+      "index": 110,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 2090
+    },
+    {
+      "index": 111,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1931
+    },
+    {
+      "index": 112,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.9
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1899
+    },
+    {
+      "index": 113,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1852
+    },
+    {
+      "index": 114,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1815
+    },
+    {
+      "index": 115,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1809
+    },
+    {
+      "index": 116,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1798
+    },
+    {
+      "index": 117,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1775
+    },
+    {
+      "index": 118,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1757
+    },
+    {
+      "index": 119,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.09999999999999998,
+        0.8
+      ],
+      "main_stick_normalized": [
+        -0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1692
+    },
+    {
+      "index": 120,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        1.0,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.5,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1642
+    },
+    {
+      "index": 121,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.9
+      ],
+      "main_stick_normalized": [
+        0.2,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1606
+    },
+    {
+      "index": 122,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.9,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1604
+    },
+    {
+      "index": 123,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1562
+    },
+    {
+      "index": 124,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1561
+    },
+    {
+      "index": 125,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1542
+    },
+    {
+      "index": 126,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.3,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1456
+    },
+    {
+      "index": 127,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.8,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1441
+    },
+    {
+      "index": 128,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 1434
+    },
+    {
+      "index": 129,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "c_stick": [
+        1.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.5,
+        0.0
+      ],
+      "count": 1418
+    },
+    {
+      "index": 130,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1413
+    },
+    {
+      "index": 131,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 1,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1408
+    },
+    {
+      "index": 132,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.19999999999999996,
+        0.9
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1374
+    },
+    {
+      "index": 133,
+      "buttons": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        1.0,
+        0.7
+      ],
+      "main_stick_normalized": [
+        0.5,
+        0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1358
+    },
+    {
+      "index": 134,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 1346
+    },
+    {
+      "index": 135,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.8,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.30000000000000004,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1323
+    },
+    {
+      "index": 136,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1322
+    },
+    {
+      "index": 137,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.0,
+        0.5
+      ],
+      "c_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "count": 1296
+    },
+    {
+      "index": 138,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.19999999999999996,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1282
+    },
+    {
+      "index": 139,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1281
+    },
+    {
+      "index": 140,
+      "buttons": [
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        1.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1268
+    },
+    {
+      "index": 141,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.19999999999999996,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.30000000000000004,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1251
+    },
+    {
+      "index": 142,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.3,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        -0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1216
+    },
+    {
+      "index": 143,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.8
+      ],
+      "main_stick_normalized": [
+        0.4,
+        0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1211
+    },
+    {
+      "index": 144,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.7,
+        0.09999999999999998
+      ],
+      "main_stick_normalized": [
+        0.2,
+        -0.4
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1196
+    },
+    {
+      "index": 145,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.3
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.2
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1179
+    },
+    {
+      "index": 146,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.5,
+        0.0
+      ],
+      "main_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "c_stick": [
+        0.5,
+        0.9
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.4
+      ],
+      "count": 1178
+    },
+    {
+      "index": 147,
+      "buttons": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.9,
+        0.19999999999999996
+      ],
+      "main_stick_normalized": [
+        0.4,
+        -0.30000000000000004
+      ],
+      "c_stick": [
+        0.5,
+        0.0
+      ],
+      "c_stick_normalized": [
+        0.0,
+        -0.5
+      ],
+      "count": 1165
+    },
+    {
+      "index": 148,
+      "buttons": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "shoulder_level": 0,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.9
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.4
+      ],
+      "count": 1165
+    },
+    {
+      "index": 149,
+      "buttons": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "shoulder_level": 2,
+      "main_stick": [
+        0.0,
+        0.5
+      ],
+      "main_stick_normalized": [
+        -0.5,
+        0.0
+      ],
+      "c_stick": [
+        0.5,
+        0.5
+      ],
+      "c_stick_normalized": [
+        0.0,
+        0.0
+      ],
+      "count": 1160
+    }
+  ],
+  "total_actions": 150,
+  "resolution": 0.1,
+  "notes": "X\u2192Y (both jump), L\u2192R (both shield)",
+  "coverage_100": 0.9217831542266036
+}
