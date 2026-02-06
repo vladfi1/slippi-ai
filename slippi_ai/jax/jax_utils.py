@@ -82,6 +82,17 @@ def where(cond: Array, x: Array, y: Array) -> Array:
 
 # Flax NNX
 
+def get_module_state(module: nnx.Module) -> dict:
+  """Get the state of a module as a pure dict."""
+  state = nnx.state(module)
+  return state.to_pure_dict()
+
+def set_module_state(module: nnx.Module, state_dict: dict):
+  """Set the state of a module from a pure dict."""
+  state = nnx.state(module)
+  nnx.replace_by_pure_dict(state, state_dict)
+  nnx.update(module, state)
+
 class MLP(nnx.Module):
 
   def __init__(
