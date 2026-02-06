@@ -5,9 +5,10 @@ import sonnet as snt
 
 from melee.enums import Action
 
-from slippi_ai import data, embed, networks, tf_utils, types, utils
-from slippi_ai.rl_lib import discounted_returns
-from slippi_ai.networks import RecurrentState
+from slippi_ai import data, types, utils
+from slippi_ai.tf.rl_lib import discounted_returns
+from slippi_ai.tf.networks import RecurrentState
+from slippi_ai.tf import embed, networks, tf_utils
 
 class ValueOutputs(tp.NamedTuple):
   returns: tf.Tensor  # [T, B]

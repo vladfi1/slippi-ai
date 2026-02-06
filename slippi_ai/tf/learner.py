@@ -7,9 +7,10 @@ import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai.data import Batch, Frames
-from slippi_ai.policies import Policy, RecurrentState
-from slippi_ai import value_function as vf_lib
-from slippi_ai import utils, tf_utils
+from slippi_ai.tf.policies import Policy, RecurrentState
+from slippi_ai.tf import value_function as vf_lib
+from slippi_ai import utils
+from slippi_ai.tf import tf_utils
 
 def swap_axes(t, axis1=0, axis2=1):
   permutation = list(range(len(t.shape)))

@@ -6,8 +6,9 @@ import numpy as np
 import tensorflow as tf
 
 from slippi_ai import (
-    learner, networks, data, tf_utils, embed
+    data
 )
+from slippi_ai.tf import embed, learner, networks, tf_utils
 
 def assert_tensors_close(t1: tf.Tensor, t2: tf.Tensor):
   # TODO: relax tolerance when running on GPU

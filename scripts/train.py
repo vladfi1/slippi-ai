@@ -6,7 +6,7 @@ import fancyflags as ff
 import wandb
 
 from slippi_ai import flag_utils
-from slippi_ai import train_lib
+from slippi_ai.tf import train_lib
 
 
 CONFIG = ff.DEFINE_dict(

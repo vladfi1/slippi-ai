@@ -8,11 +8,11 @@ import tree
 
 from slippi_ai import (
   data,
-  policies,
   reward,
   saving,
   utils,
 )
+from slippi_ai.tf import policies
 
 def get_frames(path: str) -> data.Frames:
   game = data.read_table(path, compressed=True)

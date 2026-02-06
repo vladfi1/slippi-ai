@@ -5,7 +5,7 @@ import typing as tp
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai import embed
+from slippi_ai.tf import embed
 
 ControllerType = tp.TypeVar('ControllerType')
 

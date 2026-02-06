@@ -17,14 +17,12 @@ from slippi_ai import (
     evaluators,
     flag_utils,
     nametags,
-    policies,
     reward,
     saving,
-    tf_utils,
-    train_lib,
     utils,
 )
 
+from slippi_ai.tf import policies, tf_utils, train_lib
 from slippi_ai.types import Game
 from slippi_ai.rl import learner as learner_lib
 

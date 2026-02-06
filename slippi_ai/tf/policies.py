@@ -5,14 +5,15 @@ import typing as tp
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai.controller_heads import (
+from slippi_ai.tf.controller_heads import (
     ControllerHead,
     DistanceOutputs,
     SampleOutputs,
 )
-from slippi_ai.rl_lib import discounted_returns
-from slippi_ai import data, networks, embed, types, tf_utils, utils
-from slippi_ai.value_function import ValueOutputs
+from slippi_ai.tf.rl_lib import discounted_returns
+from slippi_ai import data, types, utils
+from slippi_ai.tf import embed, networks, tf_utils
+from slippi_ai.tf.value_function import ValueOutputs
 
 Outputs = tf_utils.Outputs
 RecurrentState = networks.RecurrentState

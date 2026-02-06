@@ -7,13 +7,14 @@ import sonnet as snt
 import tensorflow as tf
 
 from slippi_ai.data import Frames
-from slippi_ai.embed import StateAction
-from slippi_ai.policies import Policy, UnrollOutputs, SampleOutputs
+from slippi_ai.tf.embed import StateAction
+from slippi_ai.tf.policies import Policy, UnrollOutputs, SampleOutputs
 from slippi_ai.evaluators import Trajectory
-from slippi_ai.networks import RecurrentState
-from slippi_ai.controller_heads import ControllerType
-from slippi_ai import value_function as vf_lib
-from slippi_ai import tf_utils, utils, reward as reward_lib
+from slippi_ai.tf.networks import RecurrentState
+from slippi_ai.tf.controller_heads import ControllerType
+from slippi_ai.tf import value_function as vf_lib
+from slippi_ai import utils, reward as reward_lib
+from slippi_ai.tf import tf_utils
 
 field = lambda f: dataclasses.field(default_factory=f)
 

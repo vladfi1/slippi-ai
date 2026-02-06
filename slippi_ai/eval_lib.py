@@ -15,12 +15,13 @@ import tensorflow as tf
 import melee
 
 from slippi_ai import (
-  embed, policies, dolphin, saving, data, utils, tf_utils, nametags,
+  dolphin, saving, data, utils, nametags,
   observations, flag_utils
 )
 import slippi_ai.mirror as mirror_lib
 from slippi_ai.controller_lib import send_controller
-from slippi_ai.controller_heads import SampleOutputs
+from slippi_ai.tf.controller_heads import SampleOutputs
+from slippi_ai.tf import embed, policies, tf_utils
 from slippi_db.parse_libmelee import Parser
 
 def disable_gpus():

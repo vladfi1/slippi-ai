@@ -4,15 +4,11 @@ import pickle
 import tree
 
 from slippi_ai import (
-    embed,
     observations,
-    policies,
-    networks,
-    controller_heads,
-    embed,
     data,
 )
 from slippi_ai.flag_utils import dataclass_from_dict
+from slippi_ai.tf import controller_heads, embed, networks, policies
 
 # v2: Added value function config
 # v3: Added embed config
@@ -77,7 +73,7 @@ def upgrade_config(config: dict):
     config['version'] = 5
 
   # Everything else is handled by the defaults in train_lib.Config
-  from slippi_ai.train_lib import Config  # avoid circular import
+  from slippi_ai.tf.train_lib import Config  # avoid circular import
   config_dc = dataclass_from_dict(Config, config)
   config = dataclasses.asdict(config_dc)
 

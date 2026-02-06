@@ -12,7 +12,7 @@ if __name__ == '__main__':
   import wandb
 
   from slippi_ai import flag_utils
-  from slippi_ai import train_q_lib
+  from slippi_ai.tf import train_q_lib
 
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_dataclass(train_q_lib.Config))
