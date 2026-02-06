@@ -30,8 +30,6 @@ jobs:
     - name: Run Unit Tests
       run: |
         python tests/saving_test.py
-        python tests/networks_test.py
-        python tests/rl_lib_test.py
         python tests/unit_tests.py
         python tests/observations_test.py
         python tests/unroll_agent.py
@@ -60,26 +58,31 @@ jobs:
         python tests/replay_parser_test.py --dataset_path=test_dataset_extracted
         python tests/dataset_creation_test.py --dataset_zip=test_dataset.zip
 
+    - name: Tensorflow Unit Tests
+      run: |
+        python slippi_ai/tf/tests/networks_test.py
+        python slippi_ai/tf/tests/rl_lib_test.py
+
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
 
     - name: Test Imitation
-      run: ./tests/training_test.sh
+      run: ./slippi_ai/tf/tests/training_test.sh
 
     - name: Test Imitation with Restore
-      run: ./tests/training_test.sh --config.restore_pickle=slippi_ai/data/checkpoints/demo
+      run: ./slippi_ai/tf/tests/training_test.sh --config.restore_pickle=slippi_ai/data/checkpoints/demo
 
     - name: Test RL with Fake Data
-      run: ./tests/train_rl.sh
+      run: ./slippi_ai/tf/tests/train_rl.sh
 
     - name: Test RL with Fake Data + Delay
-      run: ./tests/train_rl.sh --config.override_delay=3
+      run: ./slippi_ai/tf/tests/train_rl.sh --config.override_delay=3
 
     - name: Test RL with Fake Data + Restore
-      run: ./tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo --config.agent.char=FOX
+      run: ./slippi_ai/tf/tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo --config.agent.char=FOX
 
     - name: Test train_two with Fake Data
-      run: ./tests/train_two.sh
+      run: ./slippi_ai/tf/tests/train_two.sh
 
     - name: Download ExiAI Dolphin
       # TODO: specify release version in repo?
@@ -112,10 +115,10 @@ jobs:
       run: python scripts/test_inputs.py --dolphin.path=./dolphin --dolphin.iso=SSBM.iso
 
     - name: Test RL with Dolphin
-      run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
+      run: ./slippi_ai/tf/tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
 
     - name: Test train_two with Dolphin
-      run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
+      run: ./slippi_ai/tf/tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
 
     - name: JAX Unit Tests
       run: |
