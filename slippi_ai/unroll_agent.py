@@ -43,8 +43,7 @@ def unroll(
   frames = get_frames(input_path)
 
   frames = frames._replace(
-      state_action=policy.embed_state_action.from_state(
-          frames.state_action))
+      state_action=policy.network.encode(frames.state_action))
 
   # Add batch dimension
   frames = utils.map_nt(lambda x: np.expand_dims(x, 1), frames)
