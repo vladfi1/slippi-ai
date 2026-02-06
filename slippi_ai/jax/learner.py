@@ -329,12 +329,3 @@ class Learner(nnx.Module):
         train=train,
         compile=compile,
     )
-
-  def get_state(self):
-    _, state = nnx.split(self)
-    return state.to_pure_dict()
-
-  def set_state(self, state_dict):
-    _, state = nnx.split(self)
-    nnx.replace_by_pure_dict(state, state_dict)
-    nnx.update(self, state)

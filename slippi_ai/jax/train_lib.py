@@ -498,10 +498,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.info('GPU memory usage not available (pynvml not installed)')
 
+  # TODO: use orbax instead?
   def save(eval_loss=None):
     nonlocal best_eval_loss
     # Local Save
-    state = learner.get_state()
+    state = jax_utils.get_module_state(learner)
 
     counters = dict(
         step=step,
@@ -527,7 +528,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   if restored:
     assert isinstance(combined_state, dict)  # appease type checker
-    learner.set_state(combined_state['state'])
+    jax_utils.set_module_state(learner, combined_state['state'])
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
 
