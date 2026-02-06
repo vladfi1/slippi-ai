@@ -137,6 +137,8 @@ class RuntimeConfig:
   eval_at_start: bool = False  # do an eval at the start of training
   num_eval_epochs: float = 1  # number of test-set epochs per evaluation
 
+  max_eval_steps: tp.Optional[int] = None  # used in tests
+
 @dataclasses.dataclass
 class ValueFunctionConfig:
   train_separate_network: bool = True
@@ -499,7 +501,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info('Starting evaluation at train epoch %.3f', train_epoch)
     start_time = time.perf_counter()
     test_epoch = test_manager.last_epoch
-    while (test_manager.last_epoch - test_epoch) < runtime.num_eval_epochs:
+    while (
+      (test_manager.last_epoch - test_epoch) < runtime.num_eval_epochs
+      and (runtime.max_eval_steps is None or len(per_step_eval_stats) < runtime.max_eval_steps)):
       stats, batch = test_manager.step()
 
       # Convert to numpy and take time-mean to free up memory.
