@@ -2,7 +2,7 @@
 
 DATASET=slippi_ai/data/toy_dataset
 
-python scripts/train.py \
+python slippi_ai/tf/scripts/train.py \
   --config.dataset.data_dir=$DATASET/games \
   --config.dataset.meta_path=$DATASET/meta.json \
   --config.dataset.test_ratio=0.5 \
