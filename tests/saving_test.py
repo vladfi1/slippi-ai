@@ -1,6 +1,7 @@
 import unittest
 
-from slippi_ai import saving, paths
+from slippi_ai import paths
+from slippi_ai.tf import saving
 
 class SavingTest(unittest.TestCase):
 

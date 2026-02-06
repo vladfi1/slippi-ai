@@ -18,11 +18,10 @@ from slippi_ai import (
     flag_utils,
     nametags,
     reward,
-    saving,
     utils,
 )
 
-from slippi_ai.tf import policies, tf_utils, train_lib
+from slippi_ai.tf import policies, saving, tf_utils, train_lib
 from slippi_ai.types import Game
 from slippi_ai.rl import learner as learner_lib
 

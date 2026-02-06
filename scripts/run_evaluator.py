@@ -3,6 +3,8 @@
 # which uses a lot of memory.
 import math
 
+from slippi_ai.tf import saving
+
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
@@ -12,7 +14,7 @@ if __name__ == '__main__':
 
   import tensorflow as tf
 
-  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils, saving
+  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils
 
   default_dolphin_config = dolphin.DolphinConfig(
       infinite_time=False,

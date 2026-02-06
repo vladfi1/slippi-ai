@@ -9,10 +9,9 @@ import tree
 from slippi_ai import (
   data,
   reward,
-  saving,
   utils,
 )
-from slippi_ai.tf import policies
+from slippi_ai.tf import policies, saving
 
 def get_frames(path: str) -> data.Frames:
   game = data.read_table(path, compressed=True)
