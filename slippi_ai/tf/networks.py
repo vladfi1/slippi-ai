@@ -6,8 +6,8 @@ import tree
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai import tf_utils
-from slippi_ai import embed as embed_lib
+from slippi_ai.tf import tf_utils
+from slippi_ai.tf import embed as embed_lib
 from slippi_ai.data import StateAction
 from slippi_ai.types import Game
 

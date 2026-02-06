@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from slippi_ai import embed, utils, tf_utils
+from slippi_ai import utils
+from slippi_ai.tf import embed, tf_utils
 
 def static_rnn(core, inputs, initial_state):
   unroll_length = tf.nest.flatten(inputs)[0].shape[0]

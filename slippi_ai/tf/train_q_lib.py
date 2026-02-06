@@ -16,22 +16,18 @@ import tensorflow as tf
 import wandb
 
 from slippi_ai import (
-    controller_heads,
     evaluators,
     flag_utils,
     nametags,
-    networks,
-    policies,
     saving,
-    tf_utils,
-    train_lib,
     utils,
 )
-from slippi_ai import q_learner as learner_lib
+from slippi_ai.tf import policies, q_learner as learner_lib, tf_utils, train_lib
 from slippi_ai import data as data_lib
-from slippi_ai import q_function as q_lib
-from slippi_ai import embed as embed_lib
+from slippi_ai.tf import q_function as q_lib
+from slippi_ai.tf import embed as embed_lib, networks
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai.tf import controller_heads
 
 _field = utils.field
 

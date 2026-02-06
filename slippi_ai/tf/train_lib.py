@@ -24,21 +24,17 @@ import wandb
 import melee
 
 from slippi_ai import (
-    controller_heads,
     flag_utils,
     nametags,
-    networks,
-    policies,
     saving,
-    tf_utils,
-    train_lib,
     utils,
 )
-from slippi_ai import learner as learner_lib
+from slippi_ai.tf import learner as learner_lib, networks, policies, tf_utils, train_lib
 from slippi_ai import data as data_lib
-from slippi_ai import value_function as vf_lib
-from slippi_ai import embed as embed_lib
+from slippi_ai.tf import value_function as vf_lib
+from slippi_ai.tf import embed as embed_lib
 from slippi_ai import observations as obs_lib
+from slippi_ai.tf import controller_heads
 
 def get_experiment_tag():
   today = datetime.date.today()
