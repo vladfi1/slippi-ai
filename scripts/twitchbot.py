@@ -20,7 +20,7 @@ import ray
 
 import melee
 
-from slippi_ai import train_lib
+from slippi_ai.tf import train_lib
 from slippi_ai import saving
 from slippi_ai import flag_utils, eval_lib
 from slippi_ai import dolphin as dolphin_lib

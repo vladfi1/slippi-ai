@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from slippi_ai import rl_lib
+from slippi_ai.tf import rl_lib
 
 class RlLibTest(unittest.TestCase):
 

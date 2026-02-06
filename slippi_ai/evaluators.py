@@ -8,14 +8,13 @@ import numpy as np
 
 from slippi_ai import envs as env_lib
 from slippi_ai import (
-    embed,
     eval_lib,
-    policies,
     reward,
     utils,
 )
+from slippi_ai.tf import embed, policies
 from slippi_ai.types import Game
-from slippi_ai.controller_heads import SampleOutputs
+from slippi_ai.tf.controller_heads import SampleOutputs
 
 Port = int
 Timings = dict

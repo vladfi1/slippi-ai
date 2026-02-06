@@ -7,15 +7,12 @@ import os
 from absl import app, flags
 
 from slippi_ai import (
-  policies,
-  embed as embed_lib,
-  networks,
-  controller_heads,
   flag_utils,
   saving,
   observations as obs_lib,
   data as data_lib,
 )
+from slippi_ai.tf import controller_heads, embed as embed_lib, networks, policies
 
 def default_network_config():
   network_config = networks.default_config()

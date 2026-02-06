@@ -13,22 +13,20 @@ import tensorflow as tf
 from slippi_ai import (
     data,
     dolphin as dolphin_lib,
-    embed,
     evaluators,
     flag_utils,
     nametags,
     reward,
     saving,
-    tf_utils,
-    train_lib,
     utils,
 )
 
 import melee
 
-from slippi_ai import value_function as vf_lib
+from slippi_ai.tf import value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 from slippi_ai.rl import run_lib
+from slippi_ai.tf import embed, tf_utils, train_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
 
