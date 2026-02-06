@@ -14,7 +14,7 @@ python scripts/train.py \
   --config.runtime.log_interval=4 \
   --config.runtime.max_runtime=10 \
   --config.runtime.num_evals_per_epoch=1 \
-  --config.runtime.num_eval_epochs=1 \
+  --config.runtime.max_eval_steps=2 \
   --config.network.name=tx_like \
   --config.network.tx_like.hidden_size=2 \
   --config.value_function.separate_network_config=False \
