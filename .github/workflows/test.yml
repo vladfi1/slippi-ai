@@ -8,7 +8,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ['3.10', '3.11']
+        python-version: ['3.11', '3.12']
         os: ['ubuntu-latest']
 
     steps:
@@ -23,8 +23,7 @@ jobs:
     - name: Install
       run: |
         pip install -r requirements.txt
-        pip install ray
-        pip install .
+        pip install .[tf,jax]
         sudo apt update
         sudo apt install -y zipmerge
 
@@ -91,3 +90,11 @@ jobs:
 
     - name: Test train_two with Dolphin
       run: ./tests/train_two.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
+
+    - name: JAX Unit Tests
+      run: |
+        python slippi_ai/jax/tests/networks_test.py
+        python slippi_ai/jax/tests/rl_lib_test.py
+
+    - name: JAX Imitation
+      run: python slippi_ai/jax/tests/imitation_test.py
