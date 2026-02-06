@@ -26,10 +26,9 @@ import melee
 from slippi_ai import (
     flag_utils,
     nametags,
-    saving,
     utils,
 )
-from slippi_ai.tf import learner as learner_lib, networks, policies, tf_utils, train_lib
+from slippi_ai.tf import learner as learner_lib, networks, policies, saving, tf_utils, train_lib
 from slippi_ai import data as data_lib
 from slippi_ai.tf import value_function as vf_lib
 from slippi_ai.tf import embed as embed_lib

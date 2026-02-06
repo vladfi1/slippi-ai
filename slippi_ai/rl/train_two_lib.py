@@ -17,13 +17,12 @@ from slippi_ai import (
     flag_utils,
     nametags,
     reward,
-    saving,
     utils,
 )
 
 import melee
 
-from slippi_ai.tf import value_function as vf_lib
+from slippi_ai.tf import saving, value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 from slippi_ai.rl import run_lib
 from slippi_ai.tf import embed, tf_utils, train_lib

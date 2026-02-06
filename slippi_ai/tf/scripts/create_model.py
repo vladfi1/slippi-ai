@@ -8,11 +8,10 @@ from absl import app, flags
 
 from slippi_ai import (
   flag_utils,
-  saving,
   observations as obs_lib,
   data as data_lib,
 )
-from slippi_ai.tf import controller_heads, embed as embed_lib, networks, policies
+from slippi_ai.tf import controller_heads, embed as embed_lib, networks, policies, saving
 
 def default_network_config():
   network_config = networks.default_config()
