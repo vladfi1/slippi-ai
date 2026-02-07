@@ -534,20 +534,32 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,
-        data_time=data_time,
-        step_time=step_time,
+    )
+
+    timings = dict(
         sps=sps,
         mps=mps,
+        data=data_time,
+        step=step_time,
+        total=eval_time,
+        num_batches=len(per_step_eval_stats),
     )
 
     to_log = dict(
         counters,
         eval=utils.map_nt(mean, eval_stats),
+        eval_timings=timings,
     )
 
     # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
-    logging.info('eval loss: %.4f data: %.3f step: %.3f mps: %.1f', eval_loss, data_time, step_time, mps)
+
+    print(f'EVAL step={step} epoch={train_epoch:.3f} loss={eval_loss:.4f}')
+    print(f'sps={sps:.2f} mps={mps:.2f}'
+          f' data={data_time:.3f} step={step_time:.3f}'
+          f' total={eval_time:.1f}'
+          f' num_batches={len(per_step_eval_stats)}')
+    print()
 
     # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:

@@ -65,6 +65,7 @@ class TrainManager:
     self.step_profiler = utils.Profiler()
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
+    self.last_epoch = 0.
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -135,7 +136,7 @@ class TrainManager:
       else:
         batch, epoch, frames = self.fetch_batch()
 
-      stats.update(epoch=epoch)
+    self.last_epoch = epoch
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
@@ -535,7 +536,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step)
-  epoch_tracker = utils.Tracker(train_stats['epoch'])
+  epoch_tracker = utils.Tracker(train_manager.last_epoch)
   log_tracker = utils.Tracker(time.time())
 
   @utils.periodically(runtime.log_interval)
@@ -548,7 +549,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     steps = step_tracker.update(total_steps)
     num_frames = steps * FRAMES_PER_STEP
 
-    epoch = train_stats['epoch']
+    epoch = train_manager.last_epoch
     delta_epoch = epoch_tracker.update(epoch)
 
     sps = steps / elapsed_time
@@ -592,12 +593,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     allowed_characters = list(melee.Character)
 
   last_train_epoch_evaluated = 0.
-  last_test_epoch = 0.
 
   def maybe_eval():
-    nonlocal best_eval_loss, last_train_epoch_evaluated, last_test_epoch
+    nonlocal best_eval_loss, last_train_epoch_evaluated
 
-    train_epoch = train_stats['epoch']
+    train_epoch = train_manager.last_epoch
     if (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
       return
     last_train_epoch_evaluated = train_epoch
@@ -608,16 +608,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     def time_mean(x: jax.Array) -> np.ndarray:
       return np.mean(x, axis=1)
 
-    test_epoch = last_test_epoch
+    start_time = time.perf_counter()
+    initial_test_epoch = test_manager.last_epoch
     test_stats_jax = None
-    while test_epoch - last_test_epoch < runtime.num_eval_epochs:
+    while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
         test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
 
       test_stats_jax, batch = test_manager.step()
-      test_epoch = test_stats_jax.pop('epoch')  # the only non-array "stat"
 
       metas.append(batch.meta)
 
@@ -625,29 +625,50 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
+    eval_time = time.perf_counter() - start_time
+
     # [eval_steps, batch_size], mean taken over time
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)
 
     data_time = test_manager.data_profiler.mean_time()
     step_time = test_manager.step_profiler.mean_time()
 
+    sps = len(per_step_eval_stats) / eval_time
+    frames_per_step = test_data.batch_size * config.data.unroll_length
+    mps = sps * frames_per_step / FRAMES_PER_MINUTE
+
+
     train_epoch = epoch_tracker.last
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,
         train_time=train_time,
-        data_time=data_time,
-        step_time=step_time,
+    )
+
+    timings = dict(
+        sps=sps,
+        mps=mps,
+        data=data_time,
+        step=step_time,
+        total=eval_time,
+        num_batches=len(per_step_eval_stats),
     )
 
     to_log = dict(
         counters,
         eval=utils.map_nt(mean, eval_stats),
+        eval_timings=timings,
     )
 
     # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
-    logging.info('eval loss: %.4f data: %.3f step: %.3f', eval_loss, data_time, step_time)
+
+    print(f'EVAL step={step} epoch={train_epoch:.3f} loss={eval_loss:.4f}')
+    print(f'sps={sps:.2f} mps={mps:.2f}'
+          f' data={data_time:.3f} step={step_time:.3f}'
+          f' total={eval_time:.1f}'
+          f' num_batches={len(per_step_eval_stats)}')
+    print()
 
     # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:
