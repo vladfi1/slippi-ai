@@ -57,7 +57,7 @@ class RolloutWorker:
       num_envs: int,
       async_envs: bool = False,
       env_kwargs: dict = {},
-      use_gpu: bool = False,
+      use_gpu: bool = True,
       damage_ratio: float = 0,  # For rewards.
       use_fake_envs: bool = False,
   ):
@@ -163,7 +163,7 @@ class RolloutWorker:
     assert len(self._prev_agent_outputs) == 1 + self.env_runahead
     for agent_outputs in list(self._prev_agent_outputs)[1:]:
       decoded_actions = {
-          port: self._agents[port].embed_controller.decode(output.controller_state)
+          port: self._agents[port].decode_controller(output.controller_state)
           for port, output in agent_outputs.items()
       }
       with self._env_push_profiler:
@@ -179,7 +179,7 @@ class RolloutWorker:
     self._prev_agent_outputs.append(outputs)
 
     decoded_actions = {
-        port: self._agents[port].embed_controller.decode(action.controller_state)
+        port: self._agents[port].decode_controller(action.controller_state)
         for port, action in outputs.items()
     }
     with self._env_push_profiler:

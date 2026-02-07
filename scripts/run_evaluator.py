@@ -3,8 +3,6 @@
 # which uses a lot of memory.
 import math
 
-from slippi_ai.tf import saving
-
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
@@ -12,9 +10,7 @@ if __name__ == '__main__':
   from absl import app, flags
   import fancyflags as ff
 
-  import tensorflow as tf
-
-  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils
+  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils, saving
 
   default_dolphin_config = dolphin.DolphinConfig(
       infinite_time=False,
@@ -34,14 +30,13 @@ if __name__ == '__main__':
   INNER_BATCH_SIZE = flags.DEFINE_integer(
       'inner_batch_size', 1, 'Number of environments to run sequentially.')
 
-  USE_GPU = flags.DEFINE_boolean('use_gpu', False, 'Use GPU for inference.')
+  USE_GPU = flags.DEFINE_boolean('use_gpu', True, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
       'num_agent_steps', 0, 'Number of agent steps to batch.')
 
-  agent_flags = dict(
-      eval_lib.BATCH_AGENT_FLAGS,
-      jit_compile=ff.Boolean(True),
-  )
+  agent_flags = utils.deep_copy(eval_lib.BATCH_AGENT_FLAGS)
+  agent_flags['tf']['jit_compile'] = ff.Boolean(True)
+
   player_flags = dict(eval_lib.PLAYER_FLAGS, ai=agent_flags)
   PLAYER = ff.DEFINE_dict('player', **player_flags)
 
@@ -100,6 +95,7 @@ if __name__ == '__main__':
       evaluator.rollout(burnin_steps)
 
       if TF_PROFILE.value:
+        import tensorflow as tf
         tf.profiler.experimental.start('tf_profile')
 
       timer = utils.Profiler(burnin=0)
@@ -107,6 +103,7 @@ if __name__ == '__main__':
         stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value)
 
       if TF_PROFILE.value:
+        import tensorflow as tf
         tf.profiler.experimental.stop()
 
     num_frames = NUM_ENVS.value * ROLLOUT_LENGTH.value

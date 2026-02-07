@@ -116,6 +116,10 @@ def map_single_structure(f, nest: T) -> T:
   # Not a nest.
   return f(nest)
 
+def deep_copy(nest: T) -> T:
+  """Deep copy a nested structure of arrays."""
+  return map_single_structure(lambda x: x, nest)
+
 def map_nt(f, *nt: T) -> T:
   """Map over nested tuples and dicts.
 

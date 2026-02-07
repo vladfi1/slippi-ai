@@ -112,6 +112,7 @@ def load_policy_from_state(state: dict) -> policies.Policy:
 
   return policy
 
+# TODO: redirect to generic saving module
 def load_state_from_disk(path: str) -> dict:
   with open(path, 'rb') as f:
     return pickle.load(f)
