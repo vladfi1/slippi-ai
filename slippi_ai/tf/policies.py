@@ -66,6 +66,9 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
   def controller_head(self):
     return self._controller_head
 
+  def encode_game(self, game: data.Game) -> data.Game:
+    return self.network.encode_game(game)
+
   def initial_state(self, batch_size: int):
     return self.network.initial_state(batch_size)
 
@@ -314,6 +317,14 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
         batch_size=batch_size,
         **kwargs,
     )
+
+  def get_state(self):
+    return self.variables
+
+  def set_state(self, state):
+    for var, val in zip(self.variables, state):
+      var.assign(val)
+
 
 @dataclasses.dataclass
 class PolicyConfig:

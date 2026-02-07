@@ -6,8 +6,10 @@ from slippi_ai.controller_heads import (
     ControllerHead,
     ControllerType,
 )
-
+from slippi_ai.types import Game
 from slippi_ai.agents import BasicAgent, RecurrentState
+
+PolicyState = tp.Any
 
 # TODO: find a better place for this
 class Platform(enum.Enum):
@@ -25,12 +27,16 @@ class Policy(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
 
   @property
   @abc.abstractmethod
-  def controller_head(self) -> ControllerHead[ControllerType]:
+  def delay(self) -> int:
     pass
 
   @property
   @abc.abstractmethod
-  def delay(self) -> int:
+  def controller_head(self) -> ControllerHead[ControllerType]:
+    pass
+
+  @abc.abstractmethod
+  def encode_game(self, game: Game) -> Game:
     pass
 
   @abc.abstractmethod
@@ -40,3 +46,11 @@ class Policy(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   @abc.abstractmethod
   def build_agent(self, batch_size: int, **kwargs) -> BasicAgent[ControllerType, RecurrentState]:
     """Builds an agent for this policy."""
+
+  @abc.abstractmethod
+  def get_state(self) -> PolicyState:
+    """Returns the policy parameters."""
+
+  @abc.abstractmethod
+  def set_state(self, state: PolicyState):
+    """Sets the policy parameters."""
