@@ -1466,6 +1466,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
   def default_config(cls) -> dict[str, tp.Any]:
     return dict(
         hidden_size=128,
+        item_mlp_layers=2,
         rnn_cell='lstm',
         use_self_nana=True,
         use_controller_rnn=False,
@@ -1476,6 +1477,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
       rngs: nnx.Rngs,
       embed_state_action: embed_lib.StructEmbedding[StateAction],
       hidden_size: int,
+      item_mlp_layers: int,
       rnn_cell: str = 'lstm',
       use_self_nana: bool = True,
       use_controller_rnn: bool = False,
@@ -1500,6 +1502,11 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
         in_features=self._item_embedding.size,
         out_features=hidden_size,
         rngs=rngs,
+    )
+    self._item_mlp = jax_utils.MLP(
+        rngs=rngs,
+        input_size=self._item_embedding.size,
+        features=[hidden_size] * item_mlp_layers,
     )
 
     self._use_controller_rnn = use_controller_rnn
