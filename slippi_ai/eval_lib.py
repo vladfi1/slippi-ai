@@ -16,7 +16,7 @@ from slippi_ai import (
   observations, flag_utils, policies,
 )
 from slippi_ai.policies import RecurrentState
-from slippi_ai.types import Game
+from slippi_ai.types import Game, Controller
 from slippi_ai.agents import BasicAgent, BoolArray
 
 import slippi_ai.mirror as mirror_lib
@@ -39,10 +39,21 @@ class FakeAgent(BasicAgent[ControllerType, RecurrentState]):
   ):
     self._sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
     self._hidden_state = policy.initial_state(batch_size)
-    self._name_code = data.NAME_DTYPE(0)
+    self._batch_size = batch_size
+    self._name_code = np.zeros(batch_size, dtype=data.NAME_DTYPE)
 
   def hidden_state(self) -> RecurrentState:
     return super().hidden_state()
+
+  @property
+  def name_code(self):
+    return self._name_code
+
+  def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
+    if isinstance(name_code, int):
+      self._name_code = np.array([name_code] * self._batch_size, dtype=data.NAME_DTYPE)
+    else:
+      self._name_code = np.array(name_code, dtype=data.NAME_DTYPE)
 
   def step(
       self,
@@ -128,9 +139,12 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       outputs = utils.map_single_structure(np.asarray, outputs)
     return outputs
 
-  # @property
-  # def name_code(self) -> np.ndarray:
-  #   return self._agent._name_code
+  def decode_controller(self, controller: ControllerType) -> Controller:
+    return self.policy.controller_head.decode_controller(controller)
+
+  @property
+  def name_code(self):
+    return self._agent.name_code
 
   def step(
       self,
@@ -264,9 +278,12 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def hidden_state(self):
     return self._agent.hidden_state
 
-  # @property
-  # def name_code(self):
-  #   return self._agent._name_code
+  @property
+  def name_code(self):
+    return self._agent.name_code
+
+  def decode_controller(self, controller: ControllerType) -> Controller:
+    return self.policy.controller_head.decode_controller(controller)
 
   def start(self):
     if self._worker_thread:
@@ -524,8 +541,10 @@ BATCH_AGENT_FLAGS = dict(
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
     fake=ff.Boolean(False, 'Use fake agents.'),
     batch_steps=ff.Integer(0, 'Number of steps to batch (in time)'),
+
     # Platform-specific flags
-    platform=ff.EnumClass(None, policies.Platform, 'Framework to use.'),
+    # We only need to set the platform for old agents that don't have it saved.
+    platform=ff.EnumClass(None, policies.Platform, 'Platform to use.'),
     tf=dict(
         jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
         # Generally we want to set `run_on_cpu` once for all agents.

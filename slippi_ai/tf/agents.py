@@ -154,6 +154,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     return (states_spec, None, None)
 
+  @property
+  def name_code(self) -> np.ndarray[tuple[int], np.dtype[data.NAME_DTYPE]]:
+    return self._name_code
+
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     if isinstance(name_code, int):
       name_code = [name_code] * self._batch_size

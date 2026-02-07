@@ -24,11 +24,15 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       seed: int = 0,
       sample_kwargs: dict = {},
       compile: bool = True,
+      run_on_cpu: bool = False,
   ):
     self._policy = policy
     self._batch_size = batch_size
     self.set_name_code(name_code)
     self._compile = compile
+
+    if run_on_cpu:
+      raise NotImplementedError('run_on_cpu is not supported in JAX agents.')
 
     # The controller_head may discretize certain components of the action.
     # Agents only work with the discretized action space; you will need
@@ -113,6 +117,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     elif len(name_code) != self._batch_size:
       raise ValueError(f'name_code list must have length batch_size={self._batch_size}')
     self._name_code = np.array(name_code, dtype=data.NAME_DTYPE)
+
+  @property
+  def name_code(self) -> np.ndarray[tuple[int], np.dtype[data.NAME_DTYPE]]:
+    return self._name_code
 
   def warmup(self):
     """Warm up the agent by running a dummy step."""
