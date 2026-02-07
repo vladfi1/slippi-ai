@@ -19,6 +19,8 @@ python scripts/eval_two.py --dolphin.iso <path/to/ssbm.iso> --p1.type human --p2
 python scripts/eval_two.py --help  # to get a full list of options
 ```
 
+A model capable of playing 12 different characters is available [here](https://www.dropbox.com/scl/fi/lpi9krfei1knfvfw7up7v/medium-v2?rlkey=qmah3qfz5anwva93x48zcx01k&st=sxo8hbeb&dl=0). You can change the character by setting `--p2.character <fox/falco/marth/...>`.
+
 #### Notes
 * Tested with python 3.10 and 3.11.
 * By default phillip sets up human players as using Wii-U controller adapters. If you want to use your own dolphin configuration (including controller config) pass `--dolphin.copy_home_directory`. You still need to specify which player (p1 or p2) is human.
