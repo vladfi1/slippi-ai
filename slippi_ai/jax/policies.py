@@ -10,9 +10,10 @@ from slippi_ai.jax.controller_heads import (
     ControllerHead,
     DistanceOutputs,
     SampleOutputs,
+    ControllerType,
 )
 from slippi_ai.jax import embed, networks
-from slippi_ai import data, types, utils
+from slippi_ai import data, types, utils, policies
 
 Array = jax.Array
 RecurrentState = networks.RecurrentState
@@ -33,25 +34,35 @@ class UnrollWithOutputs(tp.NamedTuple):
   metrics: dict  # mixed
 
 
-class Policy(nnx.Module):
+class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
+
+  @property
+  def platform(self) -> policies.Platform:
+    return policies.Platform.JAX
 
   def __init__(
       self,
       network: networks.StateActionNetwork,
-      controller_head: ControllerHead,
+      controller_head: ControllerHead[ControllerType],
       delay: int = 0,
   ):
     self.network = network
-    self.controller_head = controller_head
+    self._controller_head = controller_head
 
-    self.delay = delay
-
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    return self.network.initial_state(batch_size, rngs)
+    self._delay = delay
 
   @property
-  def controller_embedding(self) -> embed.Embedding[embed.Controller, data.Action]:
-    return self.controller_head.controller_embedding()
+  def delay(self) -> int:
+    return self._delay
+
+  @property
+  def controller_head(self) -> ControllerHead[ControllerType]:
+    return self._controller_head
+
+  def initial_state(self, batch_size: int, rngs: tp.Optional[nnx.Rngs] = None) -> RecurrentState:
+    if rngs is None:
+      rngs = nnx.Rngs(0)
+    return self.network.initial_state(batch_size, rngs)
 
   def unroll(
       self,
@@ -77,7 +88,7 @@ class Policy(nnx.Module):
     prev_action = jax.tree.map(lambda t: t[:-1], action)
     next_action = jax.tree.map(lambda t: t[1:], action)
 
-    distance_outputs = self.controller_head.distance(
+    distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
     policy_loss = sum(jax.tree.leaves(distances))
@@ -109,19 +120,19 @@ class Policy(nnx.Module):
 
     state_action = frames.state_action
     # Includes "overlap" frame.
-    unroll_length = state_action.state.stage.shape[0] - self.delay
+    unroll_length = state_action.state.stage.shape[0] - self._delay
 
     frames = data.Frames(
         state_action=data.StateAction(
             state=jax.tree.map(
                 lambda t: t[:unroll_length], state_action.state),
             action=jax.tree.map(
-                lambda t: t[self.delay:], state_action.action),
-            name=state_action.name[self.delay:],
+                lambda t: t[self._delay:], state_action.action),
+            name=state_action.name[self._delay:],
         ),
         is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.
-        reward=frames.reward[self.delay:],
+        reward=frames.reward[self._delay:],
     )
 
     unroll_outputs = self.unroll(frames, initial_state)
@@ -150,7 +161,7 @@ class Policy(nnx.Module):
     prev_action = jax.tree.map(lambda t: t[:-1], action)
     next_action = jax.tree.map(lambda t: t[1:], action)
 
-    distance_outputs = self.controller_head.distance(
+    distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
     policy_loss = sum(jax.tree.leaves(distances))
@@ -184,7 +195,7 @@ class Policy(nnx.Module):
         state_action, is_resetting, initial_state)
 
     prev_action = state_action.action
-    next_action = self.controller_head.sample(
+    next_action = self._controller_head.sample(
         rngs, output, prev_action, **kwargs)
     return next_action, final_state
 
@@ -192,7 +203,7 @@ class Policy(nnx.Module):
       self,
       rngs: nnx.Rngs,
       states: list[embed.Game],  # time-indexed
-      prev_action: data.Action,  # only for first step
+      prev_action: ControllerType,  # only for first step
       name_code: int,
       initial_state: RecurrentState,
       **kwargs,
@@ -213,6 +224,9 @@ class Policy(nnx.Module):
 
     return actions, hidden_state
 
+  def build_agent(self, batch_size: int, **kwargs):
+    from slippi_ai.jax import agents  # avoid circular import
+    return agents.BasicAgent(self, batch_size, **kwargs)
 
 @dataclasses.dataclass
 class PolicyConfig:

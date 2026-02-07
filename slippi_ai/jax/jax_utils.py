@@ -13,7 +13,6 @@ from flax.nnx.transforms.transforms import _resolve_bound_callable
 
 Array = jax.Array
 
-
 # Multi-device utilities
 
 DATA_AXIS = 'data'
@@ -101,7 +100,7 @@ class MLP(nnx.Module):
       input_size: int,
       features: list[int],
       activation=nnx.relu,
-      activation_final: bool = False,
+      activate_final: bool = False,
   ):
     layers = []
     in_size = input_size
@@ -112,7 +111,7 @@ class MLP(nnx.Module):
       layers.append(layer)
       in_size = out_size
 
-    if activation_final:
+    if activate_final:
       layers.append(activation)
 
     self.layers = nnx.List(layers)

@@ -1,61 +1,73 @@
 import dataclasses
-from typing import Any, Tuple
 import typing as tp
 
 import sonnet as snt
 import tensorflow as tf
 
+from slippi_ai.agents import BoolArray
 from slippi_ai.tf.controller_heads import (
     ControllerHead,
     DistanceOutputs,
     SampleOutputs,
+    ControllerType,
 )
 from slippi_ai.tf.rl_lib import discounted_returns
-from slippi_ai import data, types, utils
+from slippi_ai import data, types, utils, policies
 from slippi_ai.tf import embed, networks, tf_utils
 from slippi_ai.tf.value_function import ValueOutputs
 
 Outputs = tf_utils.Outputs
 RecurrentState = networks.RecurrentState
 
-class UnrollOutputs(tp.NamedTuple):
+class UnrollOutputs(tp.NamedTuple, tp.Generic[ControllerType]):
   log_probs: tf.Tensor  # [T, B]
-  distances: DistanceOutputs  # Struct of [T, B]
+  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
   value_outputs: ValueOutputs
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
-class UnrollWithOutputs(tp.NamedTuple):
+class UnrollWithOutputs(tp.NamedTuple, tp.Generic[ControllerType]):
   imitation_loss: tf.Tensor  # [T, B]
-  distances: DistanceOutputs  # Struct of [T, B]
+  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
   outputs: tf.Tensor  # [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
-class Policy(snt.Module):
+class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
+
+  @property
+  def platform(self) -> policies.Platform:
+    return policies.Platform.TF
 
   def __init__(
       self,
       network: networks.StateActionNetwork,
-      controller_head: ControllerHead,
+      controller_head: ControllerHead[ControllerType],
       train_value_head: bool = True,
       delay: int = 0,
   ):
     super().__init__(name='Policy')
     self.network = network
-    self.controller_head = controller_head
+    self._controller_head = controller_head
 
     self.initial_state = self.network.initial_state
     self.train_value_head = train_value_head
-    self.delay = delay
+    self._delay = delay
 
     self.value_head = snt.Linear(1, name='value_head')
     if not train_value_head:
       self.value_head = snt.Sequential([tf.stop_gradient, self.value_head])
 
   @property
-  def controller_embedding(self) -> embed.Embedding[embed.Controller, embed.Action]:
-    return self.controller_head.controller_embedding()
+  def delay(self) -> int:
+    return self._delay
+
+  @property
+  def controller_head(self):
+    return self._controller_head
+
+  def initial_state(self, batch_size: int):
+    return self.network.initial_state(batch_size)
 
   def initialize_variables(self):
     T = 2 + self.delay
@@ -136,7 +148,7 @@ class Policy(snt.Module):
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
-    distance_outputs = self.controller_head.distance(
+    distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
     policy_loss = tf.add_n(tf.nest.flatten(distances))
@@ -167,7 +179,7 @@ class Policy(snt.Module):
       initial_state: RecurrentState,
       discount: float = 0.99,
       value_cost: float = 0.5,
-  ) -> tp.Tuple[tf.Tensor, RecurrentState, dict]:
+  ) -> tuple[tf.Tensor, RecurrentState, dict]:
     # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
     # is D + 1). Then the first trajectory has game states [0, U + D] and the
     # second trajectory has game states [U, 2U + D]. That means that we want to
@@ -227,7 +239,7 @@ class Policy(snt.Module):
     prev_action = tf.nest.map_structure(lambda t: t[:-1], action)
     next_action = tf.nest.map_structure(lambda t: t[1:], action)
 
-    distance_outputs = self.controller_head.distance(
+    distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
     policy_loss = tf.add_n(tf.nest.flatten(distances))
@@ -255,11 +267,11 @@ class Policy(snt.Module):
 
   def sample(
       self,
-      state_action: embed.StateAction,
+      state_action: data.StateAction[ControllerType],
       initial_state: RecurrentState,
-      is_resetting: tp.Optional[tf.Tensor] = None,
+      is_resetting: tp.Optional[BoolArray] = None,
       **kwargs,
-  ) -> tp.Tuple[SampleOutputs, RecurrentState]:
+  ) -> tuple[SampleOutputs[ControllerType], RecurrentState]:
     if is_resetting is None:
       batch_size = state_action.state.stage.shape[0]
       is_resetting = tf.fill([batch_size], False)
@@ -268,18 +280,18 @@ class Policy(snt.Module):
         state_action, is_resetting, initial_state)
 
     prev_action = state_action.action
-    next_action = self.controller_head.sample(
+    next_action = self._controller_head.sample(
         output, prev_action, **kwargs)
     return next_action, final_state
 
   def multi_sample(
       self,
       states: list[embed.Game],  # time-indexed
-      prev_action: embed.Action,  # only for first step
-      name_code: int,
+      prev_action: ControllerType,  # only for first step
+      name_code: data.NAME_DTYPE,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> Tuple[list[SampleOutputs], RecurrentState]:
+  ) -> tuple[list[SampleOutputs[ControllerType]], RecurrentState]:
     actions = []
     hidden_state = initial_state
     for game in states:
@@ -294,6 +306,14 @@ class Policy(snt.Module):
       prev_action = next_action.controller_state
 
     return actions, hidden_state
+
+  def build_agent(self, batch_size: int, **kwargs):
+    from slippi_ai.tf import agents  # avoid circular import
+    return agents.BasicAgent(
+        policy=self,
+        batch_size=batch_size,
+        **kwargs,
+    )
 
 @dataclasses.dataclass
 class PolicyConfig:

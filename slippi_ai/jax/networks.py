@@ -175,7 +175,7 @@ class MLP(BuildableNetwork[Array, Array]):
         input_size=input_size,
         features=[width] * depth,
         activation=activation,
-        activation_final=activation_final,
+        activate_final=activation_final,
     )
     self._output_size = width if depth > 0 else input_size
 

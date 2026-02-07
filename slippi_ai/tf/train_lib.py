@@ -28,11 +28,12 @@ from slippi_ai import (
     nametags,
     utils,
 )
-from slippi_ai.tf import learner as learner_lib, networks, policies, saving, tf_utils, train_lib
+from slippi_ai import observations as obs_lib
 from slippi_ai import data as data_lib
+from slippi_ai.policies import Platform
+from slippi_ai.tf import learner as learner_lib, networks, policies, saving, tf_utils, train_lib
 from slippi_ai.tf import value_function as vf_lib
 from slippi_ai.tf import embed as embed_lib
-from slippi_ai import observations as obs_lib
 from slippi_ai.tf import controller_heads
 
 def get_experiment_tag():
@@ -169,6 +170,7 @@ class Config:
 
   is_test: bool = False  # for db management
   version: int = saving.VERSION
+  platform: str = Platform.TF.value
 
 def _get_loss(stats: dict):
   return stats['total_loss'].numpy().mean()

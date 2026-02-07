@@ -7,21 +7,20 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
+from slippi_ai.controller_heads import (
+    SampleOutputs,
+    DistanceOutputs,
+    ControllerType,
+)
+from slippi_ai import controller_heads
+
 from slippi_ai.jax import embed, jax_utils
 from slippi_ai.types import Controller
 
 Array = jax.Array
-ControllerType = tp.TypeVar('ControllerType')
 
-class SampleOutputs(tp.NamedTuple):
-  controller_state: ControllerType
-  logits: ControllerType
 
-class DistanceOutputs(tp.NamedTuple):
-  distance: ControllerType
-  logits: ControllerType
-
-class ControllerHead(nnx.Module, abc.ABC, tp.Generic[ControllerType]):
+class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]):
 
   @abc.abstractmethod
   def sample(
@@ -42,9 +41,22 @@ class ControllerHead(nnx.Module, abc.ABC, tp.Generic[ControllerType]):
   ) -> DistanceOutputs:
     """A struct of distances (generally, negative log probs)."""
 
+  @property
   @abc.abstractmethod
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
     """Determines how controllers are embedded (e.g. discretized)."""
+
+  def dummy_controller(self, shape: tp.Sequence[int]) -> ControllerType:
+    return self.controller_embedding.dummy(shape)
+
+  def dummy_sample_outputs(self, shape: tp.Sequence[int]) -> SampleOutputs[ControllerType]:
+    return SampleOutputs(
+        controller_state=self.controller_embedding.dummy(shape),
+        logits=self.controller_embedding.dummy_embedding(shape),
+    )
+
+  def decode_controller(self, controller_state: ControllerType) -> Controller:
+    return self.controller_embedding.decode(controller_state)
 
   @classmethod
   @abc.abstractmethod
@@ -69,6 +81,7 @@ class Independent(ControllerHead[ControllerType]):
     self.to_controller_input = nnx.Linear(
         input_size, self.embed_controller.size, rngs=rngs)
 
+  @property
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
     return self.embed_controller
 
@@ -116,7 +129,7 @@ class AutoRegressiveComponent(nnx.Module):
         input_size=residual_size + embedder.size,
         features=[residual_size] * depth + [embedder.distribution_size()],
         activation=nnx.relu,
-        activation_final=False,
+        activate_final=False,
     )
 
     # The decoder doesn't need depth, because a single Linear decoding a one-hot
@@ -196,6 +209,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
         for e in self.embed_flat
     ])
 
+  @property
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
     return self.embed_controller
 

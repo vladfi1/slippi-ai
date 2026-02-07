@@ -21,10 +21,10 @@ from slippi_ai import (
     nametags,
     utils,
 )
-from slippi_ai.tf import policies, q_learner as learner_lib, saving, tf_utils, train_lib
+from slippi_ai.tf import embed as embed_lib, policies, q_learner as learner_lib, saving, tf_utils, train_lib
 from slippi_ai import data as data_lib
 from slippi_ai.tf import q_function as q_lib
-from slippi_ai.tf import embed as embed_lib, networks
+from slippi_ai.tf import networks
 from slippi_ai import dolphin as dolphin_lib
 from slippi_ai.tf import controller_heads
 

@@ -154,7 +154,7 @@ class Learner:
     # using the sample_policy.
     replicated_sample_policy_outputs = replicate_samples(sample_policy_outputs.outputs)
     replicated_prev_action = tf.nest.map_structure(replicate_samples, prev_action)
-    policy_samples = self.sample_policy.controller_head.sample(
+    policy_samples = self.sample_policy._controller_head.sample(
         replicated_sample_policy_outputs, replicated_prev_action)
 
     # Include the actual action taken among the samples.
@@ -281,7 +281,7 @@ class Learner:
       # Construct a target distribution over the subsample and regress the
       # q_policy to this target.
       replicated_q_policy_outputs = replicate_samples(q_policy_outputs.outputs)
-      q_policy_distances = self.q_policy.controller_head.distance(
+      q_policy_distances = self.q_policy._controller_head.distance(
           inputs=replicated_q_policy_outputs,
           prev_controller_state=replicate_samples(prev_action),
           target_controller_state=policy_samples,
