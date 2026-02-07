@@ -270,18 +270,17 @@ def dummy_trajectory(
     unroll_length: int,
     batch_size: int,
 ) -> evaluators.Trajectory:
-  embed_controller = policy.controller_embedding
   shape = (unroll_length + 1, batch_size)
   dummy_state_action = policy.network.dummy(shape)
   return evaluators.Trajectory(
       states=dummy_state_action.state,
       name=dummy_state_action.name,
-      actions=eval_lib.dummy_sample_outputs(embed_controller, shape),
+      actions=policy.controller_head.dummy_sample_outputs(shape),
       rewards=np.full([unroll_length, batch_size], 0, dtype=np.float32),
       is_resetting=np.full(shape, False),
       initial_state=policy.initial_state(batch_size),
       delayed_actions=[
-          eval_lib.dummy_sample_outputs(embed_controller, [batch_size])
+          policy.controller_head.dummy_sample_outputs([batch_size])
       ] * policy.delay,
   )
 

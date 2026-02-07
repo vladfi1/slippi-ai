@@ -11,28 +11,31 @@ from slippi_ai import (
     eval_lib,
     reward,
     utils,
+    policies,
 )
-from slippi_ai.tf import embed, policies
+from slippi_ai.data import NAME_DTYPE
 from slippi_ai.types import Game
-from slippi_ai.tf.controller_heads import SampleOutputs
+from slippi_ai.controller_heads import (
+    SampleOutputs, ControllerType as CT,
+)
+from slippi_ai.policies import RecurrentState as RS
 
 Port = int
 Timings = dict
-Params = tp.Sequence[np.ndarray]
 
 # Mimics data.Batch
-class Trajectory(tp.NamedTuple):
+class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
   # The [T+1, ...] arrays overlap in time by 1.
   states: Game  # [T+1, B]
   name: np.ndarray  # [T+1, B]
-  actions: SampleOutputs  # [T+1, B]
+  actions: SampleOutputs[CT]  # [T+1, B]
   rewards: np.ndarray  # [T, B]
   is_resetting: bool  # [T+1, B]
-  initial_state: policies.RecurrentState  # [B]
-  delayed_actions: list[SampleOutputs]  # [D, B]
+  initial_state: RS  # [B]
+  delayed_actions: list[SampleOutputs[CT]]  # [D, B]
 
   @classmethod
-  def batch(cls, trajectories: list['Trajectory']) -> 'Trajectory':
+  def batch(cls, trajectories: list[tp.Self]) -> tp.Self:
     # TODO: test?
     batch_dims = Trajectory(
         states=1,
@@ -262,11 +265,11 @@ class RolloutWorker:
       states = utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
           # TODO: Let the learner call from_state on game
-          states=agent.policy.network.encode_game(states),
+          states=agent.policy.encode_game(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
               agent.name_code,
-              dtype=embed.NAME_DTYPE),
+              dtype=NAME_DTYPE),
           actions=utils.batch_nest_nt(sample_outputs[port]),
           rewards=reward.compute_rewards(states, self._damage_ratio),
           is_resetting=is_resetting,
@@ -298,12 +301,10 @@ class RolloutWorker:
     return trajectories, metrics
 
   def update_variables(
-      self, updates: tp.Mapping[Port, Params],
+      self, updates: tp.Mapping[Port, policies.PolicyState],
   ):
     for port, values in updates.items():
-      policy = self._agents[port].policy
-      for var, val in zip(policy.variables, values):
-        var.assign(val)
+      self._agents[port].policy.set_state(values)
 
   @contextlib.contextmanager
   def run(self):
@@ -327,7 +328,7 @@ class RolloutMetrics(tp.NamedTuple):
   reward: float
 
   @classmethod
-  def from_trajectory(cls, trajectory: Trajectory) -> 'RolloutMetrics':
+  def from_trajectory(cls, trajectory: Trajectory) -> tp.Self:
     return cls(reward=np.sum(trajectory.rewards))
 
 
@@ -336,7 +337,7 @@ class Evaluator(RolloutWorker):
   def rollout(
       self,
       num_steps: int,
-      policy_vars: tp.Optional[tp.Mapping[Port, Params]] = None,
+      policy_vars: tp.Optional[tp.Mapping[Port, policies.PolicyState]] = None,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
     if policy_vars is not None:
       self.update_variables(policy_vars)

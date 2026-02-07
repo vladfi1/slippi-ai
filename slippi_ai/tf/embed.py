@@ -24,7 +24,7 @@ from slippi_ai.types import (
   Randall, FoDPlatforms, Item, Items,
 )
 from slippi_ai.controller_lib import LEGAL_BUTTONS
-from slippi_ai.data import Action, StateAction
+from slippi_ai.data import Action, StateAction, NAME_DTYPE
 
 float_type = tf.float32
 In = TypeVar('In')
@@ -693,8 +693,6 @@ class EmbedConfig:
         with_fod=self.with_fod,
         items_config=self.items,
     )
-
-NAME_DTYPE = np.int32
 
 def get_state_action_embedding(
   embed_game: Embedding[Game, Any],
