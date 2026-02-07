@@ -56,6 +56,10 @@ FLAGS = flags.FLAGS
 def main(_):
   eval_lib.disable_gpus()
 
+  if DOLPHIN.value['iso'] is None:
+    raise ValueError('Dolphin ISO path must be specified via --dolphin.iso or ISO_PATH env var')
+  # Note: libmelee will attempt find the dolphin path if it isn't given.
+
   players = {
       port: eval_lib.get_player(**player.value)
       for port, player in PLAYERS.items()

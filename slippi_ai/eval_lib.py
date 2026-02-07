@@ -1,293 +1,84 @@
 import contextlib
 import enum
-import functools
 import dataclasses
 import logging
 import os
 import threading, queue
-from typing import Callable, Optional, Tuple
 import typing as tp
 
 import numpy as np
 import fancyflags as ff
-import tensorflow as tf
 
 import melee
 
 from slippi_ai import (
   dolphin, data, utils, nametags,
-  observations, flag_utils
+  observations, flag_utils, policies,
 )
+from slippi_ai.policies import RecurrentState
+from slippi_ai.types import Game
+from slippi_ai.agents import BasicAgent, BoolArray
+
 import slippi_ai.mirror as mirror_lib
 from slippi_ai.controller_lib import send_controller
-from slippi_ai.tf.controller_heads import SampleOutputs
-from slippi_ai.tf import embed, policies, saving, tf_utils
+from slippi_ai.controller_heads import SampleOutputs, ControllerType
+from slippi_ai import saving
 from slippi_db.parse_libmelee import Parser
 
 def disable_gpus():
+  import tensorflow as tf
   tf.config.set_visible_devices([], 'GPU')
 
 
-Sample = Callable[
-    [embed.StateAction, policies.RecurrentState],
-    Tuple[embed.Action, policies.RecurrentState]]
-
-def dummy_sample_outputs(
-    controller_embedding: embed.Embedding[tp.Any, embed.Action],
-    shape: tp.Sequence[int],
-):
-  return SampleOutputs(
-      controller_state=controller_embedding.dummy(shape),
-      logits=controller_embedding.dummy_embedding(shape),
-  )
-
-class FakeAgent:
+class FakeAgent(BasicAgent[ControllerType, RecurrentState]):
 
   def __init__(
       self,
-      policy: policies.Policy,
+      policy: policies.Policy[ControllerType, RecurrentState],
       batch_size: int,
   ):
-    self._sample_outputs = dummy_sample_outputs(
-        policy.controller_embedding, [batch_size])
-    self.hidden_state = policy.initial_state(batch_size)
-    self._name_code = embed.NAME_DTYPE(0)
+    self._sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
+    self._hidden_state = policy.initial_state(batch_size)
+    self._name_code = data.NAME_DTYPE(0)
+
+  def hidden_state(self) -> RecurrentState:
+    return super().hidden_state()
 
   def step(
       self,
-      game: embed.Game,
+      game: Game,
       needs_reset: np.ndarray
-  ) -> SampleOutputs:
+  ) -> SampleOutputs[ControllerType]:
     del game, needs_reset
     return self._sample_outputs
 
   def multi_step(
       self,
-      states: list[tuple[embed.Game, np.ndarray]],
-  ) -> list[SampleOutputs]:
+      states: list[tuple[Game, np.ndarray]],
+  ) -> list[SampleOutputs[ControllerType]]:
     return [self._sample_outputs] * len(states)
 
-  def warmup(self):
-    pass
-
-class BasicAgent:
-  """Wraps a Policy to track hidden state."""
-
-  def __init__(
-      self,
-      policy: policies.Policy,
-      batch_size: int,
-      name_code: tp.Union[int, tp.Sequence[int]],
-      sample_kwargs: dict = {},
-      compile: bool = True,
-      jit_compile: bool = False,
-      run_on_cpu: bool = False,
-  ):
-    self._policy = policy
-    self._embed_controller = policy.controller_embedding
-    self._batch_size = batch_size
-    self.set_name_code(name_code)
-
-    # The controller_head may discretize certain components of the action.
-    # Agents only work with the discretized action space; you will need
-    # to call `decode` on the action before sending it to Dolphin.
-    default_controller = self._embed_controller.dummy([batch_size])
-    self._prev_controller = default_controller
-
-    def base_sample(
-        state_action: embed.StateAction,
-        prev_state: policies.RecurrentState,
-        needs_reset: tf.Tensor,
-    ) -> tuple[SampleOutputs, policies.RecurrentState]:
-      # Note: sample outputs are discretized by the controller_head.
-      return policy.sample(
-          state_action, prev_state, needs_reset, **sample_kwargs)
-
-    # Note that (compiled) multi_sample doesn't work with set_name_code
-    # because the name code is baked into the tensorflow graph.
-    # TODO: optimize with packed_compile
-    def base_multi_sample(
-        states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
-        prev_action: embed.Action,  # only for first step
-        initial_state: policies.RecurrentState,
-    ) -> Tuple[list[SampleOutputs], policies.RecurrentState]:
-      actions: list[SampleOutputs] = []
-      hidden_state = initial_state
-      for game, needs_reset in states:
-        state_action = embed.StateAction(
-            state=game,
-            action=prev_action,
-            name=self._name_code,
-        )
-        next_action, hidden_state = base_sample(
-            state_action, hidden_state, needs_reset)
-        actions.append(next_action)
-        prev_action = next_action.controller_state
-
-      return actions, hidden_state
-
-    sample_1 = base_sample
-    multi_sample_1 = base_multi_sample
-
-    if run_on_cpu:
-      if jit_compile and tf.config.list_physical_devices('GPU'):
-        raise UserWarning("jit compilation may ignore run_on_cpu")
-      sample_1 = tf_utils.run_on_cpu(base_sample)
-      multi_sample_1 = tf_utils.run_on_cpu(base_multi_sample)
-
-    if compile:
-      # compile_fn = tf.function(jit_compile=jit_compile, autograph=False)
-      # base_multi_sample = compile_fn(base_multi_sample)
-
-      # Packing significantly speeds up single-step inference, particularly
-      # when items are enabled.
-      sample_2 = tf_utils.packed_compile(
-          sample_1,
-          self.sample_signature(),
-          jit_compile=jit_compile,
-          autograph=False,
-      )
-
-      @functools.cache
-      def compile_multi_sample(num_steps: int):
-        return tf_utils.packed_compile(
-            multi_sample_1,
-            self.multi_sample_signature(num_steps),
-            jit_compile=jit_compile,
-            autograph=False,
-        )
-
-      def multi_sample_2(
-          states: list[tuple[embed.Game, tf.Tensor]],  # time-indexed
-          prev_action: embed.Action,  # only for first step
-          initial_state: policies.RecurrentState,
-      ) -> Tuple[list[SampleOutputs], policies.RecurrentState]:
-        compiled_fn = compile_multi_sample(len(states))
-        return compiled_fn(states, prev_action, initial_state)
-
-    else:
-      sample_2 = sample_1
-      multi_sample_2 = multi_sample_1
-
-    self._sample = sample_2
-    self._multi_sample = multi_sample_2
-
-    self.hidden_state = self._policy.initial_state(batch_size)
-
-  def sample_signature(self) -> tf_utils.Signature:
-    dummy_state_action = self._policy.network.dummy((self._batch_size,))
-    state_action_spec = utils.map_nt(
-        lambda x: tf_utils.ArraySpec(
-            shape=x.shape,
-            dtype=x.dtype,
-        ), dummy_state_action)
-
-    # Don't pack action and prev_state as they are already Tensors.
-    state_action_spec = state_action_spec._replace(action=None)
-    prev_state = None
-
-    needs_reset = tf_utils.ArraySpec(
-        shape=(self._batch_size,),
-        dtype=np.dtype('bool'),
-    )
-
-    return (state_action_spec, prev_state, needs_reset)
-
-  def multi_sample_signature(self, num_steps: int) -> tf_utils.Signature:
-    dummy_state_action = self._policy.network.dummy((self._batch_size,))
-    state_spec = utils.map_nt(
-        lambda x: tf_utils.ArraySpec(
-            shape=x.shape,
-            dtype=x.dtype,
-        ), dummy_state_action.state)
-
-    needs_reset_spec = tf_utils.ArraySpec(
-        shape=(self._batch_size,),
-        dtype=np.dtype('bool'),
-    )
-
-    states_spec = [(state_spec, needs_reset_spec)] * num_steps
-
-    return (states_spec, None, None)
-
-  def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
-    if isinstance(name_code, int):
-      name_code = [name_code] * self._batch_size
-    elif len(name_code) != self._batch_size:
-      raise ValueError(f'name_code list must have length batch_size={self._batch_size}')
-    self._name_code = np.array(name_code, dtype=embed.NAME_DTYPE)
-
-  def warmup(self):
-    """Warm up the agent by running a dummy step."""
-    game = self._policy.network.dummy((self._batch_size,)).state
-    needs_reset = np.full([self._batch_size], False)
-    self.step(game, needs_reset)
-
-  def step(
-      self,
-      game: embed.Game,
-      needs_reset: np.ndarray
-  ) -> SampleOutputs:
-    """Doesn't take into account delay."""
-    state_action = embed.StateAction(
-        state=self._policy.network.encode_game(game),
-        action=self._prev_controller,
-        name=self._name_code,
-    )
-
-    # Keep hidden state and prev_controller on device.
-    sample_outputs: SampleOutputs
-    sample_outputs, self.hidden_state = self._sample(
-        state_action, self.hidden_state, needs_reset)
-    self._prev_controller = sample_outputs.controller_state
-
-    return utils.map_single_structure(lambda t: t.numpy(), sample_outputs)
-
-  def multi_step(
-      self,
-      states: list[tuple[embed.Game, np.ndarray]],
-  ) -> list[SampleOutputs]:
-    states = [
-        (self._policy.network.encode_game(game), needs_reset)
-        for game, needs_reset in states
-    ]
-
-    # Keep hidden state and _prev_controller on device.
-    sample_outputs: list[SampleOutputs]
-    sample_outputs, self.hidden_state = self._multi_sample(
-        states, self._prev_controller, self.hidden_state)
-    self._prev_controller = sample_outputs[-1].controller_state
-
-    return utils.map_single_structure(lambda t: t.numpy(), sample_outputs)
-
-  def step_unbatched(
-      self,
-      game: embed.Game,
-      needs_reset: bool
-  ) -> SampleOutputs:
-    assert self._batch_size == 1
-    batched_game = tf.nest.map_structure(
-        lambda x: tf.expand_dims(x, 0), game)
-    batched_needs_reset = np.array([needs_reset])
-    batched_action = self.step(batched_game, batched_needs_reset)
-    return tf.nest.map_structure(lambda x: x.item(), batched_action)
-
 def build_basic_agent(
-    policy: policies.Policy,
+    policy: policies.Policy[ControllerType, RecurrentState],
     batch_size: int,
     fake: bool = False,
+    tf: dict[str, tp.Any] = {},
+    jax: dict[str, tp.Any] = {},
     **kwargs,
-) -> tp.Union[FakeAgent, BasicAgent]:
+) -> tp.Union[FakeAgent, BasicAgent[ControllerType, RecurrentState]]:
   if fake:
     return FakeAgent(policy, batch_size)
-  return BasicAgent(policy, batch_size, **kwargs)
 
-class DelayedAgent:
+  framework_kwargs = tf if policy.platform == policies.Platform.TF else jax
+
+  return policy.build_agent(batch_size, **kwargs, **framework_kwargs)
+
+class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   """Wraps a BasicAgent with delay."""
 
   def __init__(
       self,
-      policy: policies.Policy,
+      policy: policies.Policy[ControllerType, RecurrentState],
       observation_config: observations.ObservationConfig,
       batch_size: int,
       console_delay: int = 0,
@@ -303,8 +94,7 @@ class DelayedAgent:
         batch_size=batch_size,
         **agent_kwargs)
     self.warmup = self._agent.warmup
-    self._policy = policy
-    self.embed_controller = policy.controller_embedding
+    self.policy = policy
 
     if console_delay > policy.delay - (self.batch_steps - 1):
       raise ValueError(
@@ -312,16 +102,13 @@ class DelayedAgent:
           f' policy delay ({policy.delay}) - batch_steps ({self.batch_steps}) + 1')
 
     self.delay = policy.delay - console_delay
-    self._output_queue: utils.PeekableQueue[SampleOutputs] \
+    self._output_queue: utils.PeekableQueue[SampleOutputs[ControllerType]] \
       = utils.PeekableQueue()
 
-    self.dummy_sample_outputs = dummy_sample_outputs(
-        self.embed_controller, [batch_size])
+    self.dummy_sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
     for _ in range(self.delay):
       self._output_queue.put(self.dummy_sample_outputs)
 
-    # Break circular references.
-    self.pop = self._output_queue.get
     self.peek_n = self._output_queue.peek_n
 
     # TODO: put this in the BasicAgent?
@@ -332,25 +119,31 @@ class DelayedAgent:
     return self._batch_steps or 1
 
   @property
-  def hidden_state(self) -> policies.RecurrentState:
-    return self._agent.hidden_state
+  def hidden_state(self) -> RecurrentState:
+    return self._agent.hidden_state()
 
-  @property
-  def name_code(self) -> np.ndarray:
-    return self._agent._name_code
+  def pop(self) -> SampleOutputs[ControllerType]:
+    outputs = self._output_queue.get()
+    if self.policy.platform == policies.Platform.JAX:
+      outputs = utils.map_single_structure(np.asarray, outputs)
+    return outputs
+
+  # @property
+  # def name_code(self) -> np.ndarray:
+  #   return self._agent._name_code
 
   def step(
       self,
-      game: embed.Game,
-      needs_reset: np.ndarray
-  ) -> SampleOutputs:
+      game: Game,
+      needs_reset: np.ndarray[tuple[int], np.dtype[np.bool]],
+  ) -> SampleOutputs[ControllerType]:
     """Synchronous agent step."""
     self.push(game, needs_reset)
     delayed_controller = self.pop()
     return delayed_controller
 
   # Present the same interface as the async agent.
-  def push(self, game: embed.Game, needs_reset: np.ndarray):
+  def push(self, game: Game, needs_reset: np.ndarray):
     if self._batch_steps == 0:
       with self.step_profiler:
         sampled_controller = self._agent.step(game, needs_reset)
@@ -378,7 +171,7 @@ class DelayedAgent:
 
 
 def _run_agent(
-    agent: BasicAgent,
+    agent: BasicAgent[ControllerType, RecurrentState],
     state_queue: queue.Queue,
     controller_queue: queue.Queue,
     batch_steps: int,
@@ -389,7 +182,7 @@ def _run_agent(
   # Not needed anymore since we rely on context managers instead of __del__.
   while batch_steps == 0:
     with state_queue_profiler:
-      next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+      next_item: tp.Optional[tuple[Game, BoolArray]] = state_queue.get()
     if next_item is None:
       state_queue.task_done()
       return
@@ -403,7 +196,7 @@ def _run_agent(
     states = []
     for _ in range(batch_steps):
       with state_queue_profiler:
-        next_item: Optional[tuple[embed.Game, bool]] = state_queue.get()
+        next_item: tp.Optional[tuple[Game, BoolArray]] = state_queue.get()
       if next_item is None:
         state_queue.task_done()
         return
@@ -416,7 +209,7 @@ def _run_agent(
       controller_queue.put(controller)
       state_queue.task_done()
 
-class AsyncDelayedAgent:
+class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   """Delayed agent that runs inference asynchronously."""
 
   def __init__(
@@ -436,8 +229,7 @@ class AsyncDelayedAgent:
         batch_size=batch_size,
         **agent_kwargs)
     self.warmup = self._agent.warmup
-    self._policy = policy
-    self.embed_controller = policy.controller_embedding
+    self.policy = policy
 
     self.delay = policy.delay - console_delay
     headroom = self.delay - (self.batch_steps - 1)
@@ -449,11 +241,10 @@ class AsyncDelayedAgent:
     elif headroom == 0:
       logging.warning('No headroom, agent will effectively run synchronously.')
 
-    self._output_queue: utils.PeekableQueue[SampleOutputs] \
+    self._output_queue: utils.PeekableQueue[SampleOutputs[ControllerType]] \
       = utils.PeekableQueue()
 
-    self.dummy_sample_outputs = dummy_sample_outputs(
-        self.embed_controller, [batch_size])
+    self.dummy_sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
     for _ in range(self.delay):
       self._output_queue.put(self.dummy_sample_outputs)
 
@@ -473,9 +264,9 @@ class AsyncDelayedAgent:
   def hidden_state(self):
     return self._agent.hidden_state
 
-  @property
-  def name_code(self):
-    return self._agent._name_code
+  # @property
+  # def name_code(self):
+  #   return self._agent._name_code
 
   def start(self):
     if self._worker_thread:
@@ -506,7 +297,7 @@ class AsyncDelayedAgent:
     finally:
       self.stop()
 
-  def push(self, game: embed.Game, needs_reset: np.ndarray):
+  def push(self, game: Game, needs_reset: np.ndarray):
     self._state_queue.put((game, needs_reset))
 
   def __del__(self):
@@ -514,7 +305,7 @@ class AsyncDelayedAgent:
 
   def step(
       self,
-      game: embed.Game,
+      game: Game,
       needs_reset: np.ndarray
   ) -> SampleOutputs:
     self._state_queue.put((game, needs_reset))
@@ -527,7 +318,7 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
-def get_agent_config(state: dict) -> Optional[dict]:
+def get_agent_config(state: dict) -> tp.Optional[dict]:
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
     return state['rl_config']['agent']
@@ -535,7 +326,7 @@ def get_agent_config(state: dict) -> Optional[dict]:
     return state['agent_config']
   return None
 
-def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
+def get_name_from_rl_state(state: dict) -> tp.Optional[list[str]]:
   # For RL, we know the name that was used during training.
   agent_config = get_agent_config(state)
   if agent_config is None:
@@ -546,9 +337,10 @@ def get_name_from_rl_state(state: dict) -> Optional[list[str]]:
 def build_delayed_agent(
     state: dict,
     console_delay: int,
-    name: Optional[tp.Union[str, list[str]]] = None,
+    name: tp.Optional[tp.Union[str, list[str]]] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
+    platform: tp.Optional[policies.Platform] = None,
     **agent_kwargs,
 ) -> tp.Union[DelayedAgent, AsyncDelayedAgent]:
   """Build an [Async]DelayedAgent given a state dict.
@@ -557,7 +349,7 @@ def build_delayed_agent(
   does the slightly tricky task of figuring out whether to use the parameters
   from the state dict or the function arguments.
   """
-  imitation_config = saving.upgrade_config(state['config'])
+  imitation_config = saving.upgrade_config(state['config'], platform=platform)
   policy = saving.load_policy_from_state(state)
 
   rl_name = get_name_from_rl_state(state)
@@ -683,13 +475,13 @@ class Agent:
     if self.mirror:
       game = mirror_lib.mirror_game(game)
     game = self._observation_filter.filter(game)
-    game = utils.map_nt(lambda x: np.expand_dims(x, 0), game)
+    game = utils.map_single_structure(lambda x: np.expand_dims(x, 0), game)
 
     sample_outputs = self._agent.step(game, needs_reset)
     action = sample_outputs.controller_state
     # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
-    action = utils.map_nt(lambda x: x[0], action)
-    action = self._agent.embed_controller.decode(action)
+    action = utils.map_single_structure(lambda x: x[0], action)
+    action = self._agent.policy.controller_head.decode_controller(action)
     if self.mirror:
       action = mirror_lib.mirror_controller(action)
 
@@ -702,11 +494,14 @@ def build_agent(
     name: str = nametags.DEFAULT_NAME,
     port: tp.Optional[int] = None,
     controller: tp.Optional[melee.Controller] = None,
-    state: Optional[dict] = None,
-    path: Optional[str] = None,
+    state: tp.Optional[dict] = None,
+    path: tp.Optional[str] = None,
     **agent_kwargs,
 ) -> Agent:
   if state is None:
+    if path is None:
+      raise ValueError('Must provide either state or path.')
+
     state = saving.load_state_from_disk(path)
 
   return Agent(
@@ -724,14 +519,21 @@ BATCH_AGENT_FLAGS = dict(
     path=ff.String(None, 'Local path to pickled agent state.'),
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
-    jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
     name=ff.String(nametags.DEFAULT_NAME, 'Name of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
     fake=ff.Boolean(False, 'Use fake agents.'),
-    # Generally we want to set `run_on_cpu` once for all agents.
-    # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
     batch_steps=ff.Integer(0, 'Number of steps to batch (in time)'),
+    # Platform-specific flags
+    platform=ff.EnumClass(None, policies.Platform, 'Framework to use.'),
+    tf=dict(
+        jit_compile=ff.Boolean(False, 'Jit-compile the sample function.'),
+        # Generally we want to set `run_on_cpu` once for all agents.
+        # run_on_cpu=ff.Boolean(False, 'Run the agent on the CPU.'),
+    ),
+    jax=dict(
+        seed=ff.Integer(0, 'Random seed for JAX agents.'),
+    ),
 )
 
 AGENT_FLAGS = dict(
@@ -837,7 +639,7 @@ class AgentSummary:
 
 def get_imitation_agents(
     models_path: str,
-    delay: Optional[int],
+    delay: tp.Optional[int],
 ) -> dict[melee.Character, str]:
   models = os.listdir(models_path)
 
@@ -935,8 +737,8 @@ class EnsembleAgent:
     self._agent_kwargs = agent_kwargs.copy()
     self._agent_kwargs['opponent_port'] = opponent_port
 
-    self.current_model: Optional[str] = None
-    self._agent: Optional[Agent] = None
+    self.current_model: tp.Optional[str] = None
+    self._agent: tp.Optional[Agent] = None
 
   def set_ports(self, port, opponent_port):
     if self._agent is not None:

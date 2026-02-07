@@ -29,15 +29,14 @@ from slippi_ai import (
     nametags,
     utils,
 )
+from slippi_ai import data as data_lib
+from slippi_ai import observations as obs_lib
+from slippi_ai.policies import Platform
+from slippi_ai.jax import networks, controller_heads, jax_utils
 from slippi_ai.jax import learner as learner_lib
-from slippi_ai.jax import networks
-from slippi_ai.jax import controller_heads
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import policies as policies_lib
 from slippi_ai.jax import value_function as vf_lib
-from slippi_ai.jax import jax_utils
-from slippi_ai import data as data_lib
-from slippi_ai import observations as obs_lib
 
 
 def get_experiment_tag():
@@ -213,7 +212,7 @@ class Config:
 
   seed: int = 0
   version: int = 1
-  platform : str = 'jax'
+  platform: str = Platform.JAX.value
 
 
 def _get_loss(stats: dict):
@@ -462,7 +461,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
-      extra_frames=1 + policy.delay,
+      extra_frames=1 + policy._delay,
       name_map=name_map,
       observation_config=config.observation,
       **char_filters,

@@ -22,10 +22,10 @@ from slippi_ai import (
 
 import melee
 
-from slippi_ai.tf import saving, value_function as vf_lib
+from slippi_ai.tf import embed, saving, value_function as vf_lib
 from slippi_ai.rl import learner as learner_lib
 from slippi_ai.rl import run_lib
-from slippi_ai.tf import embed, tf_utils, train_lib
+from slippi_ai.tf import tf_utils, train_lib
 
 field = lambda f: dataclasses.field(default_factory=f)
 
