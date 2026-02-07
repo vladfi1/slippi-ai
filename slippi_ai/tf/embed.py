@@ -62,7 +62,7 @@ class Embedding(Generic[In, Out], abc.ABC, snt.Module):
     """A dummy value."""
     return np.zeros(shape, self.dtype)
 
-  def dummy_embedding(self, shape: Sequence[int] = ()):
+  def dummy_embedding(self, shape: Sequence[int]) -> Out:
     return np.zeros(list(shape) + [self.size], np.float32)
 
   def sample(self, embedded: tf.Tensor, **kwargs) -> Out:

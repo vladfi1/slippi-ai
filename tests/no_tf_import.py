@@ -1,7 +1,8 @@
-"""Tests that tensorflow is not imported in the main module."""
+"""Tests that tensorflow is not imported when importing neutral or jax code."""
 
 import sys
-from slippi_ai import envs  # pylint: disable=unused-import
+from slippi_ai import envs, saving, eval_lib, data, utils
+from slippi_ai.jax import *
 
 if __name__ == '__main__':
   assert 'tensorflow' not in sys.modules

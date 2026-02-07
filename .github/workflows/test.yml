@@ -34,6 +34,8 @@ jobs:
         python tests/observations_test.py
         python tests/unroll_agent.py
         python tests/test_agent_outputs.py
+        python tests/no_tf_import.py
+        python tests/no_jax_import.py
 
     - name: Cache the test dataset
       uses: actions/cache@v4

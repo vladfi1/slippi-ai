@@ -262,7 +262,7 @@ class RolloutWorker:
       states = utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
           # TODO: Let the learner call from_state on game
-          states=agent._policy.network.encode_game(states),
+          states=agent.policy.network.encode_game(states),
           name=np.full(
               [num_steps + 1, self._num_envs],
               agent.name_code,
@@ -301,7 +301,7 @@ class RolloutWorker:
       self, updates: tp.Mapping[Port, Params],
   ):
     for port, values in updates.items():
-      policy = self._agents[port]._policy
+      policy = self._agents[port].policy
       for var, val in zip(policy.variables, values):
         var.assign(val)
 

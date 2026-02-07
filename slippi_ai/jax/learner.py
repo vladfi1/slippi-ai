@@ -225,7 +225,7 @@ class Learner(nnx.Module):
 
     # Define loss function for value function
     def value_loss_fn(value_function: vf_lib.ValueFunction):
-      delay = self.policy.delay
+      delay = self.policy._delay
       # Value function sees non-delayed actions
       value_frames = jax.tree.map(
           lambda t: t[:t.shape[0] - delay] if delay > 0 else t, tm_frames)

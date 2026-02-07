@@ -14,6 +14,7 @@ from typing import (
     Any, Callable, Iterable, List, Optional, Set, Tuple, Iterator, NamedTuple,
     Union,
 )
+import typing as tp
 import zlib
 
 import numpy as np
@@ -72,10 +73,12 @@ class ChunkMeta(NamedTuple):
   end: int
   info: ReplayInfo
 
-# Action = TypeVar('Action')
-Action = Controller
+Action = tp.TypeVar('Action')
+# Action = Controller
 
-class StateAction(NamedTuple):
+NAME_DTYPE = np.int32
+
+class StateAction(NamedTuple, tp.Generic[Action]):
   state: Game
   # The action could actually be an "encoded" action type,
   # which might discretize certain components of the controller
@@ -85,10 +88,10 @@ class StateAction(NamedTuple):
   action: Action
 
   # Encoded name
-  name: int
+  name: NAME_DTYPE
 
-class Frames(NamedTuple):
-  state_action: StateAction
+class Frames(NamedTuple, tp.Generic[Action]):
+  state_action: StateAction[Action]
   is_resetting: bool
   # The reward will have length one less than the states and actions.
   reward: np.float32
@@ -97,8 +100,8 @@ class Chunk(NamedTuple):
   frames: Frames
   meta: ChunkMeta
 
-class Batch(NamedTuple):
-  frames: Frames
+class Batch(NamedTuple, tp.Generic[Action]):
+  frames: Frames[Action]
   count: int  # For reproducing batches
   meta: ChunkMeta
 
@@ -203,7 +206,8 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
       replays.append(ReplayInfo(replay_path, swap, replay_meta))
 
-  print('Banned names:', banned_counts)
+  if banned_counts:
+    print('Banned names:', banned_counts)
 
   return replays
 

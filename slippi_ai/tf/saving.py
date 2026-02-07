@@ -3,10 +3,7 @@ import pickle
 
 import tree
 
-from slippi_ai import (
-    observations,
-    data,
-)
+from slippi_ai import observations
 from slippi_ai.flag_utils import dataclass_from_dict
 from slippi_ai.tf import controller_heads, embed, networks, policies
 
@@ -114,7 +111,6 @@ def load_policy_from_state(state: dict) -> policies.Policy:
       policy.variables, params)
 
   return policy
-
 
 def load_state_from_disk(path: str) -> dict:
   with open(path, 'rb') as f:
