@@ -105,14 +105,14 @@ def update_rewards(
   rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
   return trajectory._replace(rewards=rewards)
 
-class Learner:
+class Learner(tp.Generic[ControllerType]):
   """Implements A2C."""
 
   def __init__(
       self,
       config: LearnerConfig,
-      policy: Policy,
-      teacher: Policy,
+      policy: Policy[ControllerType],
+      teacher: Policy[ControllerType],
       learning_rate: tp.Optional[tf.Variable] = None,
       value_function: tp.Optional[vf_lib.ValueFunction] = None,
   ) -> None:
@@ -121,6 +121,8 @@ class Learner:
     self._teacher = teacher
     self._use_separate_vf = value_function is not None
     self._value_function = value_function or vf_lib.FakeValueFunction()
+
+    self._controller_embedding = policy.controller_head.controller_embedding
 
     if learning_rate is None:
       learning_rate = tf.Variable(config.learning_rate, trainable=False)
@@ -156,25 +158,23 @@ class Learner:
   def _get_distribution(self, logits: ControllerType):
     """Returns a Controller-shaped structure of distributions."""
     # TODO: return an actual JointDistribution instead?
-    return self._policy.controller_embedding.map(
+    return self._controller_embedding.map(
         lambda e, t: e.distribution(t), logits)
 
   def _compute_kl(self, dist1: ControllerType, dist2: ControllerType):
-    kls = self._policy.controller_embedding.map(
+    kls = self._controller_embedding.map(
         lambda _, d1, d2: d1.kl_divergence(d2),
         dist1, dist2)
-    return tf.add_n(list(self._policy.controller_embedding.flatten(kls)))
+    return tf.add_n(list(self._controller_embedding.flatten(kls)))
 
   def _get_log_prob(self, logits: ControllerType, action: ControllerType):
-    controller_embedding = self._policy.controller_embedding
-    distances = controller_embedding.map(
+    distances = self._controller_embedding.map(
         lambda e, t, a: e.distance(t, a), logits, action)
-    return - tf.add_n(list(controller_embedding.flatten(distances)))
+    return - tf.add_n(list(self._controller_embedding.flatten(distances)))
 
   def _compute_entropy(self, dist: ControllerType):
-    controller_embedding = self._policy.controller_embedding
-    entropies = controller_embedding.map(lambda _, d: d.entropy(), dist)
-    return tf.add_n(list(controller_embedding.flatten(entropies)))
+    entropies = self._controller_embedding.map(lambda _, d: d.entropy(), dist)
+    return tf.add_n(list(self._controller_embedding.flatten(entropies)))
 
   def unroll(
       self,

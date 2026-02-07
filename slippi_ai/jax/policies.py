@@ -12,7 +12,7 @@ from slippi_ai.jax.controller_heads import (
     SampleOutputs,
     ControllerType,
 )
-from slippi_ai.jax import embed, networks
+from slippi_ai.jax import embed, networks, jax_utils
 from slippi_ai import data, types, utils, policies
 
 Array = jax.Array
@@ -58,6 +58,9 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   @property
   def controller_head(self) -> ControllerHead[ControllerType]:
     return self._controller_head
+
+  def encode_game(self, game: data.Game) -> data.Game:
+    return self.network.encode_game(game)
 
   def initial_state(self, batch_size: int, rngs: tp.Optional[nnx.Rngs] = None) -> RecurrentState:
     if rngs is None:
@@ -227,6 +230,12 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def build_agent(self, batch_size: int, **kwargs):
     from slippi_ai.jax import agents  # avoid circular import
     return agents.BasicAgent(self, batch_size, **kwargs)
+
+  def get_state(self):
+    return jax_utils.get_module_state(self)
+
+  def set_state(self, state):
+    jax_utils.set_module_state(self, state)
 
 @dataclasses.dataclass
 class PolicyConfig:
