@@ -42,7 +42,7 @@ class ChainObservationFilter(ObservationFilter):
     return game
 
 ActionDType = np.uint16
-assert types.Player.__annotations__['action'] is ActionDType
+assert types.Player.__annotations__['action'].__args__[1].__args__[0] is ActionDType
 
 # TODO: what about missed tech?
 N_TECH, F_TECH, B_TECH = [
