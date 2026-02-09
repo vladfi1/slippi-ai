@@ -41,7 +41,7 @@ def get_controller(cs: melee.ControllerState) -> Controller:
 
 def get_base_player(player: melee.PlayerState) -> dict:
   return dict(
-      percent=np.uint16(player.percent),
+      percent=player.percent,
       facing=player.facing,
       x=player.position.x,
       y=player.position.y,

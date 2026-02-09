@@ -7,120 +7,174 @@ time and/or batch dimension.
 TODO: use the "returns" library + mypy to get higher-kinded types working.
 """
 
-
 import functools
-from typing import Mapping, NamedTuple, TypeVar, Union
+from types import GenericAlias
+from typing import Mapping, NamedTuple, TypeVar, Union, Generic
+import typing as tp
 import numpy as np
 
 import pyarrow as pa
 from melee.enums import Button
 
+S = TypeVar('S', bound=tuple[int, ...])
 T = TypeVar('T')
 Nest = Union[Mapping[str, 'Nest'], T]
 
 # we define NamedTuples for python typechecking and IDE integration
 
-class Buttons(NamedTuple):
-  A: np.bool_
-  B: np.bool_
-  X: np.bool_
-  Y: np.bool_
-  Z: np.bool_
-  L: np.bool_
-  R: np.bool_
-  D_UP: np.bool_
+BoolDType = np.dtype[np.bool]
+FloatDType = np.dtype[np.float32]
+Int32DType = np.dtype[np.int32]
+
+BoolArray: tp.TypeAlias = np.ndarray[S, BoolDType]
+FloatArray: tp.TypeAlias =  np.ndarray[S, FloatDType]
+Int32Array: tp.TypeAlias =  np.ndarray[S, Int32DType]
+UInt8Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint8]]
+UInt16Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint16]]
+
+class Buttons(NamedTuple, Generic[S]):
+  A: BoolArray
+  B: BoolArray
+  X: BoolArray
+  Y: BoolArray
+  Z: BoolArray
+  L: BoolArray
+  R: BoolArray
+  D_UP: BoolArray
 
 LIBMELEE_BUTTONS = {name: Button(name) for name in Buttons._fields}
 
-class Stick(NamedTuple):
-  x: np.float32
-  y: np.float32
+class Stick(NamedTuple, Generic[S]):
+  x: FloatArray
+  y: FloatArray
 
-class Controller(NamedTuple):
-  main_stick: Stick
-  c_stick: Stick
-  shoulder: np.float32
-  buttons: Buttons
+class Controller(NamedTuple, Generic[S]):
+  main_stick: Stick[S]
+  c_stick: Stick[S]
+  shoulder: FloatArray
+  buttons: Buttons[S]
 
-class Nana(NamedTuple):
-  exists: np.bool_
-  percent: np.uint16
-  facing: np.bool_
-  x: np.float32
-  y: np.float32
-  action: np.uint16
-  invulnerable: np.bool_
-  character: np.uint8
-  jumps_left: np.uint8
-  shield_strength: np.float32
-  on_ground: np.bool_
+class Nana(NamedTuple, Generic[S]):
+  exists: BoolArray
+  percent: FloatArray
+  facing: BoolArray
+  x: FloatArray
+  y: FloatArray
+  action: UInt16Array
+  invulnerable: BoolArray
+  character: UInt8Array
+  jumps_left: UInt8Array
+  shield_strength: FloatArray
+  on_ground: BoolArray
 
-class Player(NamedTuple):
-  percent: np.uint16
-  facing: np.bool_
-  x: np.float32
-  y: np.float32
-  action: np.uint16
-  invulnerable: np.bool_
-  character: np.uint8
-  jumps_left: np.uint8
-  shield_strength: np.float32
-  on_ground: np.bool_
-  controller: Controller
-  nana: Nana
+class Player(NamedTuple, Generic[S]):
+  percent: FloatArray
+  facing: BoolArray
+  x: FloatArray
+  y: FloatArray
+  action: UInt16Array
+  invulnerable: BoolArray
+  character: UInt8Array
+  jumps_left: UInt8Array
+  shield_strength: FloatArray
+  on_ground: BoolArray
+  controller: Controller[S]
+  nana: Nana[S]
 
-class Randall(NamedTuple):
-  x: np.float32
-  y: np.float32
+class Randall(NamedTuple, Generic[S]):
+  x: FloatArray
+  y: FloatArray
 
-class FoDPlatforms(NamedTuple):
-  left: np.float32
-  right: np.float32
+class FoDPlatforms(NamedTuple, Generic[S]):
+  left: FloatArray
+  right: FloatArray
 
 MAX_ITEMS = 15  # Maximum number of items per frame
 
-class Item(NamedTuple):
-  exists: bool  # Is the Item slot used
-  type: np.uint16
-  state: np.uint8
+class Item(NamedTuple, Generic[S]):
+  exists: BoolArray  # Is the Item slot used
+  type: UInt16Array
+  state: UInt8Array
   # owner?
-  # facing: np.float32
-  x: np.float32
-  y: np.float32
+  # facing: np.ndarray[S, FloatDType]
+  x: FloatArray
+  y: FloatArray
 
+# TODO: this is inelegant
+class Items(NamedTuple, Generic[S]):
+  item_0: Item[S]
+  item_1: Item[S]
+  item_2: Item[S]
+  item_3: Item[S]
+  item_4: Item[S]
+  item_5: Item[S]
+  item_6: Item[S]
+  item_7: Item[S]
+  item_8: Item[S]
+  item_9: Item[S]
+  item_10: Item[S]
+  item_11: Item[S]
+  item_12: Item[S]
+  item_13: Item[S]
+  item_14: Item[S]
 
-Items = NamedTuple('Items', [
-    (f'item_{i}', Item) for i in range(MAX_ITEMS)
-])
+# Items = NamedTuple('Items', [
+#     (f'item_{i}', Item) for i in range(MAX_ITEMS)
+# ])
 
-class Game(NamedTuple):
-  p0: Player
-  p1: Player
+class Game(NamedTuple, Generic[S]):
+  p0: Player[S]
+  p1: Player[S]
 
-  stage: np.uint8
-  randall: Randall
-  fod_platforms: FoDPlatforms
+  stage: UInt8Array[S]
+  randall: Randall[S]
+  fod_platforms: FoDPlatforms[S]
 
-  items: Items
-
+  items: Items[S]
 
 # maps pyarrow types back to NamedTuples
 PA_TO_NT = {}
 
+Leaf = type[np.generic]
+Node = list[tuple[str, type]]
+
+@functools.cache
+def get_node_or_leaf(t: type | GenericAlias | tp._GenericAlias) -> Node | Leaf:
+  if isinstance(t, GenericAlias):
+    assert t.__origin__ is np.ndarray
+
+    generic_dtype = t.__args__[1]
+
+    if not isinstance(generic_dtype, GenericAlias) or generic_dtype.__origin__ is not np.dtype:
+      raise ValueError(f"Expected a numpy dtype as the second argument of the GenericAlias, got {generic_dtype}")
+
+    dtype = generic_dtype.__args__[0]
+    assert issubclass(dtype, np.generic)
+    return dtype
+
+  if isinstance(t, tp._GenericAlias):
+    t = t.__origin__
+
+  assert issubclass(t, tuple)
+
+  return [(name, t.__annotations__[name]) for name in t._fields]
+
+
 @functools.lru_cache
-def nt_to_pa(nt: type) -> pa.StructType:
+def nt_to_pa(nt: type | GenericAlias) -> pa.StructType:
   """Convert and register a NamedTuple (or numpy) type."""
 
-  if not issubclass(nt, tuple):
-    return pa.from_numpy_dtype(nt)
+  node_or_leaf = get_node_or_leaf(nt)
+  if isinstance(node_or_leaf, list):
+    struct_type = pa.struct([
+        (name, nt_to_pa(field_type))
+        for name, field_type in node_or_leaf
+    ])
 
-  struct_type = pa.struct([
-      (name, nt_to_pa(nt.__annotations__[name]))
-      for name in nt._fields
-  ])
+    PA_TO_NT[struct_type] = nt
+    return struct_type
 
-  PA_TO_NT[struct_type] = nt
-  return struct_type
+  return pa.from_numpy_dtype(node_or_leaf)
 
 BUTTONS_TYPE = nt_to_pa(Buttons)
 STICK_TYPE = nt_to_pa(Stick)
@@ -160,17 +214,19 @@ def array_to_nest(val: pa.Array) -> Nest[np.ndarray]:
     return val.to_numpy(zero_copy_only=False)
 
 def array_to_nt(nt: type[T], val: pa.Array) -> T:
-  if issubclass(nt, tuple):
-    assert isinstance(val.type, pa.StructType)
+  node_or_leaf = get_node_or_leaf(nt)
+
+  if isinstance(node_or_leaf, list):
     result = {}
-    for name in nt._fields:
-      result[name] = array_to_nt(
-          nt.__annotations__[name],
-          val.field(name))
+    for name, field_type in node_or_leaf:
+      result[name] = array_to_nt(field_type, val.field(name))
     return nt(**result)
 
+  # Player percent was cast to uint16 in the past.
+  # assert val.type.to_pandas_dtype() == node_or_leaf
+
   assert val.type.num_fields == 0
-  return val.to_numpy(zero_copy_only=False)
+  return val.to_numpy(zero_copy_only=False).astype(node_or_leaf)
 
 def game_array_to_nt(game: pa.StructArray) -> Game:
   result = array_to_nt(Game, game)
