@@ -80,14 +80,85 @@ def analyze_button_equivalences(data: dict) -> dict:
   }
 
 
-def analyze_shoulder_button_relationship(data: dict) -> dict:
-  """Analyze if L/R button always coincides with full shoulder press.
+def _print_shoulder_button_analysis(
+    LR_btn: np.ndarray,
+    shoulder: np.ndarray,
+    n_frames: int,
+    full_shoulder_threshold: float,
+    label: str,
+) -> dict:
+  """Print shoulder vs L/R button analysis for a subset of frames.
 
   Args:
-      data: Raw (unnormalized) controller data.
+      LR_btn: Boolean array of L|R button presses.
+      shoulder: Array of shoulder analog values.
+      n_frames: Total number of frames in the subset.
+      full_shoulder_threshold: Threshold for full press.
+      label: Label for this subset (e.g. "All frames", "Z pressed").
 
   Returns:
       Dict with analysis results.
+  """
+  full_press = shoulder > full_shoulder_threshold
+
+  btn_and_full = int((LR_btn & full_press).sum())
+  btn_no_full = int((LR_btn & ~full_press).sum())
+  full_no_btn = int((full_press & ~LR_btn).sum())
+  neither = int((~LR_btn & ~full_press).sum())
+
+  lr_total = int(LR_btn.sum())
+  full_total = int(full_press.sum())
+
+  print(f"\n  [{label}] ({n_frames:,} frames)")
+  print(f"  L/R button vs full shoulder press (>{full_shoulder_threshold:.2f}):")
+  print(
+      f"    L/R btn AND full press:  {btn_and_full:,} ({btn_and_full/n_frames*100:.3f}%)")
+  print(
+      f"    L/R btn, NO full press:  {btn_no_full:,} ({btn_no_full/n_frames*100:.3f}%)")
+  print(
+      f"    Full press, NO L/R btn:  {full_no_btn:,} ({full_no_btn/n_frames*100:.3f}%)")
+  print(
+      f"    Neither:                 {neither:,} ({neither/n_frames*100:.3f}%)")
+  print(f"    -> L/R btn = full press: {btn_no_full == 0 and full_no_btn == 0}")
+
+  if lr_total > 0 and full_total > 0:
+    print(f"  Conditional probabilities:")
+    print(f"    P(not full press | L/R btn) = {btn_no_full/lr_total*100:.3f}%")
+    print(f"    P(no L/R btn | full press) = {full_no_btn/full_total*100:.3f}%")
+
+  # Also check light press
+  light_press = (shoulder > 0.3) & (shoulder <= full_shoulder_threshold)
+  light_with_btn = int((light_press & LR_btn).sum())
+  light_no_btn = int((light_press & ~LR_btn).sum())
+
+  print(f"  Light shoulder press (0.3 < shoulder <= {full_shoulder_threshold:.1f}):")
+  print(f"    Light press with L/R btn: {light_with_btn:,}")
+  print(f"    Light press, no L/R btn:  {light_no_btn:,}")
+  if lr_total > 0:
+    print(f"    P(light press | L/R btn) = {light_with_btn/lr_total*100:.3f}%")
+
+  return {
+      'btn_and_full': btn_and_full,
+      'btn_no_full': btn_no_full,
+      'full_no_btn': full_no_btn,
+      'btn_equals_full': btn_no_full == 0 and full_no_btn == 0,
+  }
+
+
+def analyze_shoulder_button_relationship(
+    data: dict,
+    full_shoulder_threshold: float = 0.9,
+) -> dict:
+  """Analyze if L/R button always coincides with full shoulder press.
+
+  Splits analysis by whether Z button is pressed.
+
+  Args:
+      data: Raw (unnormalized) controller data.
+      full_shoulder_threshold: Threshold for full shoulder press.
+
+  Returns:
+      Dict with analysis results per split.
   """
   buttons = data['buttons']
   shoulder = data['shoulder']
@@ -96,48 +167,25 @@ def analyze_shoulder_button_relationship(data: dict) -> dict:
   L_btn = buttons[:, 5].astype(bool)
   R_btn = buttons[:, 6].astype(bool)
   LR_btn = L_btn | R_btn
-
-  n_frames = len(buttons)
-
-  # Define "full press" threshold
-  full_press = shoulder > 0.9
-
-  # Check relationship
-  btn_and_full = (LR_btn & full_press).sum()
-  btn_no_full = (LR_btn & ~full_press).sum()
-  full_no_btn = (full_press & ~LR_btn).sum()
-  neither = (~LR_btn & ~full_press).sum()
+  Z_btn = buttons[:, 4].astype(bool)
 
   print("\n" + "="*60)
   print("L/R BUTTON vs SHOULDER PRESS ANALYSIS")
   print("="*60)
 
-  print(f"\nL/R button vs full shoulder press (>0.9):")
-  print(
-      f"  L/R btn AND full press:  {btn_and_full:,} ({btn_and_full/n_frames*100:.3f}%)")
-  print(
-      f"  L/R btn, NO full press:  {btn_no_full:,} ({btn_no_full/n_frames*100:.3f}%)")
-  print(
-      f"  Full press, NO L/R btn:  {full_no_btn:,} ({full_no_btn/n_frames*100:.3f}%)")
-  print(
-      f"  Neither:                 {neither:,} ({neither/n_frames*100:.3f}%)")
-  print(f"  -> L/R btn = full press: {btn_no_full == 0 and full_no_btn == 0}")
+  results = {}
+  for label, mask in [
+      ("All frames", np.ones(len(buttons), dtype=bool)),
+      ("Z not pressed", ~Z_btn),
+      ("Z pressed", Z_btn),
+  ]:
+    n = int(mask.sum())
+    if n == 0:
+      continue
+    results[label] = _print_shoulder_button_analysis(
+        LR_btn[mask], shoulder[mask], n, full_shoulder_threshold, label)
 
-  # Also check light press
-  light_press = (shoulder > 0.3) & (shoulder <= 0.9)
-  light_with_btn = (light_press & LR_btn).sum()
-  light_no_btn = (light_press & ~LR_btn).sum()
-
-  print(f"\nLight shoulder press (0.3 < shoulder <= 0.9):")
-  print(f"  Light press with L/R btn: {light_with_btn:,}")
-  print(f"  Light press, no L/R btn:  {light_no_btn:,}")
-
-  return {
-      'btn_and_full': btn_and_full,
-      'btn_no_full': btn_no_full,
-      'full_no_btn': full_no_btn,
-      'btn_equals_full': btn_no_full == 0 and full_no_btn == 0,
-  }
+  return results
 
 
 def analyze_z_button_relationship(data: dict, shoulder_threshold: float = 0.3) -> dict:
@@ -218,6 +266,8 @@ def main():
                       help='Random seed for sampling')
   parser.add_argument('--num_workers', type=int, default=1,
                       help='Number of parallel workers for extraction')
+  parser.add_argument('--full_shoulder_threshold', type=float, default=0.9,
+                      help='Threshold for defining full shoulder press in analysis')
   args = parser.parse_args()
 
   if not args.data_dir or not args.meta_path:
@@ -248,7 +298,8 @@ def main():
 
   # Run analyses
   xy_results = analyze_button_equivalences(data)
-  shoulder_results = analyze_shoulder_button_relationship(data)
+  shoulder_results = analyze_shoulder_button_relationship(
+      data, full_shoulder_threshold=args.full_shoulder_threshold)
   z_results = analyze_z_button_relationship(data)
 
   # Summary
@@ -271,7 +322,8 @@ def main():
     print("   -> Merging L→R is a DESIGN CHOICE, not a data property")
 
   print("\n3. L/R button vs full shoulder press:")
-  if shoulder_results['btn_equals_full']:
+  all_results = shoulder_results.get('All frames', {})
+  if all_results.get('btn_equals_full'):
     print("   -> L/R button = full shoulder press (perfectly correlated)")
     print("   -> L/R button is REDUNDANT with analog shoulder value")
   else:

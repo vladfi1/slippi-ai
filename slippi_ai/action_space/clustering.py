@@ -18,6 +18,13 @@ import melee
 from melee import Character as C
 
 from slippi_ai.data import read_table
+from slippi_ai.action_space.custom_v1 import (
+    AnalogShoulder,
+    bucket_analog_shoulder,
+    a_and_shoulder_bucketer,
+    Z_LABEL,
+    Z_A_SHOULDER_SIZE,
+)
 
 
 @dataclass
@@ -54,12 +61,15 @@ class ButtonDataInfo:
   """Info returned by get_button_data."""
   button_names: list[str]
   n_binary_buttons: int
-  light_shoulder_idx: int
+  z_a_shoulder_idx: int
   c_stick_idx: int
-  light_press_freq: float
+  z_a_shoulder_counts: dict[int, int]
   c_stick_at_origin: int
   c_stick_buckets_used: int
   c_stick_total_buckets: int
+  c_stick_polar_info: Optional['PolarBucketInfo'] = None
+  # Maps re-ordered label -> raw polar label
+  c_stick_label_to_raw: Optional[dict[int, int]] = None
 
 
 @dataclass
@@ -101,7 +111,7 @@ def sample_replays_by_character(
     allowed_characters: set[melee.Character] = ALLOWED_CHARACTERS,
     samples_per_character: int = 100,
     seed: int = 42,
-) -> list:
+) -> list[dict[str, tp.Any]]:
   """Sample replays to get balanced representation across characters."""
   allowed_character_values = {char.value for char in allowed_characters}
 
@@ -232,10 +242,11 @@ def _extract_single_replay(
       or None if the replay could not be read.
   """
   path = os.path.join(data_dir, row['slp_md5'])
-  try:
-    game = read_table(path, compressed=True)
-  except Exception:
-    return None
+  game = read_table(path, compressed=True)
+  # try:
+  #   game = read_table(path, compressed=True)
+  # except Exception:
+  #   return None
 
   # Use seed if provided (for reproducibility in multiprocessing)
   rng = np.random.RandomState(seed)
@@ -444,11 +455,10 @@ def analyze_buttons(
   print("="*60)
 
   buttons = data['buttons']
-  button_names = ['A', 'B', 'X', 'Y', 'Z', 'L', 'R', 'D_UP']
 
-  # Individual button frequencies
+  # Individual button frequencies (all 8 columns, before dropping X/L/R)
   print("\nIndividual button press frequencies:")
-  for i, name in enumerate(button_names):
+  for i, name in enumerate(ALL_BUTTON_NAMES):
     freq = buttons[:, i].mean()
     print(f"  {name}: {freq:.4f} ({freq*100:.2f}%)")
 
@@ -456,9 +466,13 @@ def analyze_buttons(
   combined_buttons, button_counter, info = get_button_data(
       data, c_stick_n_log_radius=c_stick_n_log_radius, c_stick_n_angle=c_stick_n_angle)
 
-  # Print light shoulder stats
-  print(
-      f"\nLight shoulder press frequency: {info.light_press_freq:.4f} ({info.light_press_freq*100:.2f}%)")
+  # Print z_a_shoulder bucket stats
+  n_frames = len(buttons)
+  print(f"\nZ/A/shoulder buckets:")
+  for bucket in range(Z_A_SHOULDER_SIZE):
+    count = info.z_a_shoulder_counts.get(bucket, 0)
+    name = Z_A_SHOULDER_DISPLAY_NAMES.get(bucket) or '(none)'
+    print(f"  {name:>10}: {count:>10,} ({count/n_frames*100:.2f}%)")
 
   # Print c-stick stats
   print(
@@ -467,6 +481,26 @@ def analyze_buttons(
       f"  At origin (bucket 0): {info.c_stick_at_origin:,} ({info.c_stick_at_origin/len(buttons)*100:.2f}%)")
   print(
       f"  Total buckets used: {info.c_stick_buckets_used} / {info.c_stick_total_buckets}")
+
+  # Top 10 c-stick buckets by frequency
+  polar_info = info.c_stick_polar_info
+  label_to_raw = info.c_stick_label_to_raw
+  if polar_info is not None and label_to_raw is not None:
+    c_stick_counts = collections.Counter(combined_buttons[:, info.c_stick_idx])
+    print(f"\n  Top 10 c-stick buckets (by frequency):")
+    print(f"  {'rank':>4}  {'label':>5}  {'radius':>8}  {'angle':>7}  {'x':>6}  {'y':>6}  {'count':>10}  {'pct':>7}")
+    for rank, (label, count) in enumerate(c_stick_counts.most_common(10), 1):
+      pct = count / n_frames * 100
+      raw_label = label_to_raw[label]
+      polar = decode_polar_label(raw_label, polar_info)
+      if polar is None:
+        print(f"  {rank:>4}  c{label:<4}  {'origin':>8}  {'-':>7}  {'0.00':>6}  {'0.00':>6}  {count:>10,}  {pct:>6.2f}%")
+      else:
+        radius, angle_deg = polar
+        angle_rad = np.radians(angle_deg)
+        x = 2 * radius * np.cos(angle_rad)
+        y = 2 * radius * np.sin(angle_rad)
+        print(f"  {rank:>4}  c{label:<4}  {radius:>8.4f}  {angle_deg:>6.1f}\u00b0  {x:>6.3f}  {y:>6.3f}  {count:>10,}  {pct:>6.2f}%")
 
   print(f"\nTotal frames: {len(buttons):,}")
   print(f"Unique button combinations: {len(button_counter)}")
@@ -711,6 +745,42 @@ def bucket_sticks_polar(
   )
 
   return labels, info
+
+
+def decode_polar_label(
+    label: int,
+    info: PolarBucketInfo,
+) -> tuple[float, float] | None:
+  """Decode a polar bucket label into (radius, angle_degrees).
+
+  Args:
+      label: Bucket label from bucket_sticks_polar (0 = origin).
+      info: PolarBucketInfo from bucket_sticks_polar.
+
+  Returns:
+      (radius, angle_degrees) or None if label is 0 (origin).
+      Radius is in [0, 1] (distance from center), angle in [-180, 180].
+  """
+  if label == 0:
+    return None
+  remaining = label - 1  # Remove origin offset
+  for r_bucket, n_ang in enumerate(info.n_angle_per_radius):
+    if remaining < n_ang:
+      # Compute radius: min_r * ratio^(r_bucket/(n-1))
+      n_r = info.n_log_radius
+      if n_r > 1 and info.max_radius > 0:
+        ratio = info.max_radius / info.min_radius
+        radius = info.min_radius * ratio ** (r_bucket / (n_r - 1))
+      else:
+        radius = info.min_radius
+
+      # Compute angle: bucket center in [-180, 180]
+      angle_normalized = remaining / n_ang  # [0, 1)
+      angle_degrees = angle_normalized * 360 - 180
+
+      return (radius, angle_degrees)
+    remaining -= n_ang
+  raise ValueError(f"Label {label} out of range")
 
 
 def analyze_stick_polar(
@@ -1006,8 +1076,13 @@ def analyze_stick_deltas(
   return {'counter': counter, 'unique_deltas': len(unique_deltas), 'data': deltas}
 
 
-BUTTON_NAMES = ['A', 'B', 'X', 'Y', 'Z', 'L', 'R', 'D_UP']
-N_BINARY_BUTTONS = len(BUTTON_NAMES)
+ALL_BUTTON_NAMES = ['A', 'B', 'X', 'Y', 'Z', 'L', 'R', 'D_UP']
+# After normalization, X is always 0 (merged into Y) and L is always 0
+# (merged into R). A, Z, and shoulder are combined into z_a_shoulder.
+# Remaining binary buttons: B, Y, LR (merged L|R from col 6), D_UP.
+BINARY_BUTTON_COLS = [1, 3, 6, 7]  # B, Y, LR, D_UP
+BINARY_BUTTON_NAMES = ['B', 'Y', 'LR', 'D_UP']
+N_BINARY_BUTTONS = len(BINARY_BUTTON_NAMES)
 
 
 def get_button_data(
@@ -1015,7 +1090,7 @@ def get_button_data(
     c_stick_n_log_radius: int = 3,
     c_stick_n_angle: int = 8,
 ) -> tuple[np.ndarray, collections.Counter, ButtonDataInfo]:
-  """Get combined button data including shoulder and c-stick.
+  """Get combined button data including z_a_shoulder and c-stick.
 
   Args:
       data: Dict with 'buttons', 'shoulder', 'c_stick'.
@@ -1024,15 +1099,22 @@ def get_button_data(
 
   Returns:
       (combined_buttons, button_counter, info) where:
-      - combined_buttons: array with buttons, light_shoulder, c_stick bucket
+      - combined_buttons: array with binary buttons, z_a_shoulder, c_stick bucket
       - button_counter: Counter of button tuples
       - info: ButtonDataInfo with metadata for display
   """
-  buttons = data['buttons']
+  all_buttons = data['buttons']
 
-  # Light shoulder press
-  shoulder_labels = bucket_shoulder(data['shoulder'])
-  light_press = (shoulder_labels == 1).astype(np.uint8)
+  # Z/A/shoulder bucketing: 7 levels (6 for A x shoulder, + 1 for Z)
+  z = all_buttons[:, 4].astype(bool)  # Z column
+  a = all_buttons[:, 0].astype(bool)  # A column
+  shoulder_bucket = bucket_analog_shoulder(data['shoulder'])
+  a_and_shoulder = a_and_shoulder_bucketer.flatten((a, shoulder_bucket))
+  z_a_shoulder_labels = a_and_shoulder.copy()
+  z_a_shoulder_labels[z] = Z_LABEL
+
+  # Binary buttons: B, Y, LR, D_UP
+  buttons = all_buttons[:, BINARY_BUTTON_COLS]
 
   # C-stick polar bucket (re-ordered by frequency)
   c_stick_labels_raw, c_stick_polar_info = bucket_sticks_polar(
@@ -1044,14 +1126,16 @@ def get_button_data(
                      for label, count in label_counts.items() if label != 0]
   non_zero_labels.sort(key=lambda x: -x[1])
   label_map = {0: 0}
+  reverse_label_map = {0: 0}
   for new_label, (old_label, _) in enumerate(non_zero_labels, start=1):
     label_map[old_label] = new_label
+    reverse_label_map[new_label] = old_label
   c_stick_labels = np.array([label_map[l]
                             for l in c_stick_labels_raw], dtype=np.int32)
 
   combined_buttons = np.concatenate([
       buttons,
-      light_press[:, None],
+      z_a_shoulder_labels[:, None],
       c_stick_labels[:, None],
   ], axis=1)
   button_tuples = [tuple(row) for row in combined_buttons]
@@ -1059,19 +1143,42 @@ def get_button_data(
   # Count button combinations
   button_counter = collections.Counter(button_tuples)
 
+  # Z/A/shoulder bucket counts
+  z_a_shoulder_counter = collections.Counter(z_a_shoulder_labels.tolist())
+
   # Info for display
   info = ButtonDataInfo(
-      button_names=BUTTON_NAMES + ['light_shoulder', 'c_stick'],
+      button_names=BINARY_BUTTON_NAMES + ['z_a_shoulder', 'c_stick'],
       n_binary_buttons=N_BINARY_BUTTONS,
-      light_shoulder_idx=N_BINARY_BUTTONS,
+      z_a_shoulder_idx=N_BINARY_BUTTONS,
       c_stick_idx=N_BINARY_BUTTONS + 1,
-      light_press_freq=float(light_press.mean()),
+      z_a_shoulder_counts=dict(z_a_shoulder_counter),
       c_stick_at_origin=int((c_stick_labels == 0).sum()),
       c_stick_buckets_used=len(label_counts),
       c_stick_total_buckets=c_stick_polar_info.total_classes,
+      c_stick_polar_info=c_stick_polar_info,
+      c_stick_label_to_raw=reverse_label_map,
   )
 
   return combined_buttons, button_counter, info
+
+
+# Display names for z_a_shoulder buckets.
+# Buckets 0-5 are A x AnalogShoulder (flattened), bucket 6 is Z.
+Z_A_SHOULDER_DISPLAY_NAMES = {}
+for _a_val in range(2):
+  for _sh in AnalogShoulder:
+    _label = int(a_and_shoulder_bucketer.flatten(
+        (np.array([_a_val]), np.array([_sh], dtype=np.uint8)))[0])
+    _parts = []
+    if _a_val:
+      _parts.append('A')
+    if _sh == AnalogShoulder.LIGHT:
+      _parts.append('light_sh')
+    elif _sh == AnalogShoulder.FULL:
+      _parts.append('full_sh')
+    Z_A_SHOULDER_DISPLAY_NAMES[_label] = '+'.join(_parts) if _parts else None
+Z_A_SHOULDER_DISPLAY_NAMES[int(Z_LABEL)] = 'Z'
 
 
 def format_button_combo(combo: tuple, info: ButtonDataInfo) -> str:
@@ -1082,25 +1189,27 @@ def format_button_combo(combo: tuple, info: ButtonDataInfo) -> str:
       info: ButtonDataInfo from get_button_data.
 
   Returns:
-      String like "A+B+light_shoulder+c3" or "(none)".
+      String like "A+B+light_sh+c3" or "(none)".
   """
   parts = []
   n_binary = info.n_binary_buttons
+  z_a_shoulder_idx = info.z_a_shoulder_idx
   c_stick_idx = info.c_stick_idx
 
   for i, v in enumerate(combo):
     if i < n_binary:
       # Binary buttons: include if pressed
       if v:
-        parts.append(BUTTON_NAMES[i])
+        parts.append(BINARY_BUTTON_NAMES[i])
+    elif i == z_a_shoulder_idx:
+      # Z/A/shoulder: display name based on bucket
+      name = Z_A_SHOULDER_DISPLAY_NAMES.get(v)
+      if name is not None:
+        parts.append(name)
     elif i == c_stick_idx:
       # C-stick: include if not neutral (bucket > 0)
       if v > 0:
         parts.append(f'c{v}')
-    else:
-      # light_shoulder: include if pressed
-      if v:
-        parts.append('light_sh')
 
   return '+'.join(parts) if parts else '(none)'
 

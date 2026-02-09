@@ -278,22 +278,22 @@ class TestDataclasses(unittest.TestCase):
   def test_button_data_info_creation(self):
     """ButtonDataInfo should be creatable with all required fields."""
     info = ButtonDataInfo(
-        button_names=['A', 'B', 'Y', 'Z', 'R', 'light_shoulder', 'c_stick'],
-        n_binary_buttons=5,
-        light_shoulder_idx=5,
-        c_stick_idx=6,
-        light_press_freq=0.15,
+        button_names=['B', 'Y', 'LR', 'D_UP', 'z_a_shoulder', 'c_stick'],
+        n_binary_buttons=4,
+        z_a_shoulder_idx=4,
+        c_stick_idx=5,
+        z_a_shoulder_counts={0: 700, 1: 150, 2: 100, 6: 50},
         c_stick_at_origin=800,
         c_stick_buckets_used=12,
         c_stick_total_buckets=25,
     )
-    self.assertEqual(info.n_binary_buttons, 5)
-    self.assertEqual(len(info.button_names), 7)
+    self.assertEqual(info.n_binary_buttons, 4)
+    self.assertEqual(len(info.button_names), 6)
 
   def test_combo_cluster_result_creation(self):
     """ComboClusterResult should be creatable with all required fields."""
     result = ComboClusterResult(
-        combo=(1, 0, 0, 0, 0, 0, 0),
+        combo=(1, 0, 0, 0, 0, 0),
         count=1000,
         n_stick_clusters=15,
         scaled_exclude_pct=2.5,
@@ -305,17 +305,17 @@ class TestDataclasses(unittest.TestCase):
   def test_hierarchical_cluster_result_creation(self):
     """HierarchicalClusterResult should be creatable with all required fields."""
     button_info = ButtonDataInfo(
-        button_names=['A', 'B', 'Y', 'Z', 'R', 'light_shoulder', 'c_stick'],
-        n_binary_buttons=5,
-        light_shoulder_idx=5,
-        c_stick_idx=6,
-        light_press_freq=0.15,
+        button_names=['B', 'Y', 'LR', 'D_UP', 'z_a_shoulder', 'c_stick'],
+        n_binary_buttons=4,
+        z_a_shoulder_idx=4,
+        c_stick_idx=5,
+        z_a_shoulder_counts={0: 700, 1: 150, 2: 100, 6: 50},
         c_stick_at_origin=800,
         c_stick_buckets_used=12,
         c_stick_total_buckets=25,
     )
     combo_result = ComboClusterResult(
-        combo=(0, 0, 0, 0, 0, 0, 0),
+        combo=(0, 0, 0, 0, 0, 0),
         count=500,
         n_stick_clusters=10,
         scaled_exclude_pct=1.5,
