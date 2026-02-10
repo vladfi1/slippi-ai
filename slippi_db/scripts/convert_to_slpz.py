@@ -50,7 +50,7 @@ flags.DEFINE_enum_class('output_type', OutputType.SLPZ, OutputType, 'Output type
 flags.DEFINE_string('tmp_dir', None, 'Optional directory for temporary files (defaults to system temp directory)')
 
 def convert_slp_to_slpp_gz(
-    zip_file: utils.ZipFile,
+    zip_file: utils.SlpZipFile,
     output_path: str,
 ) -> Optional[str]:
   """Convert a single .slp file from zip archive to .slpp.gz format.
@@ -105,7 +105,7 @@ def convert_slp_to_slpp_gz(
 
 
 def convert_slp_to_slpz(
-    zip_file: utils.ZipFile,
+    zip_file: utils.SlpZipFile,
     output_path: str,
 ) -> Optional[str]:
   try:
@@ -126,7 +126,7 @@ conversion_functions = {
 }
 
 def process_file(
-    zip_file: utils.ZipFile,
+    zip_file: utils.SlpZipFile,
     output_path: str,
     output_type: OutputType,
 ) -> Tuple[str, Optional[str]]:
@@ -167,7 +167,7 @@ def convert_zip_archive(
 
   # Create temporary directory for output files (not in shared memory)
   with tempfile.TemporaryDirectory(dir=tmp_dir) as temp_output_dir:
-    todo: list[tuple[utils.ZipFile, str]] = []
+    todo: list[tuple[utils.SlpZipFile, str]] = []
     skipped_count = 0
     output_dirs = set()  # Track output directories to create
     files = utils.traverse_slp_files_zip(input_zip_path)

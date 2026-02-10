@@ -24,8 +24,8 @@ class CheckResult:
 
 def _check_worker(
     name: str,
-    input_file: utils.ZipFile,
-    output_file: utils.ZipFile,
+    input_file: utils.SlpZipFile,
+    output_file: utils.SlpZipFile,
     debug: bool = False,
     check_if_needed: bool = False,
 ) -> CheckResult:
@@ -56,8 +56,8 @@ def _check_worker(
 
 def _check_worker_safe(
     name: str,
-    input_file: utils.ZipFile,
-    output_file: utils.ZipFile,
+    input_file: utils.SlpZipFile,
+    output_file: utils.SlpZipFile,
     debug: bool = False,
     **kwargs,
 ) -> CheckResult:
@@ -159,9 +159,9 @@ CHECK_IF_NEEDED = flags.DEFINE_bool('check_if_needed', False, 'Check if the file
 LIMIT = flags.DEFINE_integer('limit', None, 'Maximum number of files to check. When set, samples files intelligently across archives.')
 
 def sample_files(
-    archives_todo: dict[str, list[tuple[str, utils.ZipFile, utils.ZipFile]]],
+    archives_todo: dict[str, list[tuple[str, utils.SlpZipFile, utils.SlpZipFile]]],
     limit: int
-) -> list[tuple[str | None, str, utils.ZipFile, utils.ZipFile]]:
+) -> list[tuple[str | None, str, utils.SlpZipFile, utils.SlpZipFile]]:
   """Sample files from archives using a mixed strategy.
 
   Takes half of the limit evenly from each archive, and the other half
@@ -249,8 +249,8 @@ def main(_):
   check_if_needed = CHECK_IF_NEEDED.value
   limit = LIMIT.value
 
-  todo: list[tuple[str | None, str, utils.ZipFile, utils.ZipFile]] = []
-  archives_todo: dict[str, list[tuple[str, utils.ZipFile, utils.ZipFile]]] = {}
+  todo: list[tuple[str | None, str, utils.SlpZipFile, utils.SlpZipFile]] = []
+  archives_todo: dict[str, list[tuple[str, utils.SlpZipFile, utils.SlpZipFile]]] = {}
 
   if input_path.is_file():
     # Process single file

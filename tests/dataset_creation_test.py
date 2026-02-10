@@ -37,7 +37,7 @@ def download_test_dataset(raw_dir, temp_dir):
     download_file(TEST_DATASET_URL, zip_path)
 
 
-def test_dataset_creation(threads=1) -> dict[str, dict]:
+def create_dataset(threads=1) -> dict[str, dict]:
   """Test the dataset creation functions in slippi_db."""
   with tempfile.TemporaryDirectory() as temp_dir:
     root_dir, raw_dir, parsed_dir = setup_dataset_root(temp_dir)
@@ -76,22 +76,19 @@ def test_dataset_creation(threads=1) -> dict[str, dict]:
 
     return {row['slp_md5']: row for row in parsed_data}
 
-
-def main(_):
-  """Main function to run the tests."""
+def test_parallel_consistency(num_threads=4):
   print("Running single-threaded test...")
-  single_thread_data = test_dataset_creation(threads=1)
+  single_thread_data = create_dataset(threads=1)
 
   print("\nRunning parallel test...")
-  parallel_data = test_dataset_creation(threads=FLAGS.threads)
+  parallel_data = create_dataset(threads=num_threads)
 
   assert single_thread_data == parallel_data, (
       "Data mismatch between single-threaded and multi-threaded processing"
   )
 
-  print("\nAll tests passed!")
-  return 0
-
+def main(_):
+  test_parallel_consistency(num_threads=FLAGS.threads)
 
 if __name__ == "__main__":
   app.run(main)

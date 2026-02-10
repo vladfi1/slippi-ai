@@ -191,7 +191,7 @@ class ItemStats:
       'archive_path': self.archive_path,
     }
 
-def process_slp_file(local_file: utils.ZipFile, in_memory: bool) -> Optional[ItemStats]:
+def process_slp_file(local_file: utils.SlpZipFile, in_memory: bool) -> Optional[ItemStats]:
   """Process a single SLP file and return its statistics."""
   try:
     tmp_parent_dir = utils.get_tmp_dir(in_memory=in_memory)
@@ -247,7 +247,7 @@ def analyze_archive(
       continue
 
     if utils.is_slp_file(zip_info.filename):
-      slp_files.append(utils.ZipFile(input_path, zip_info.filename))
+      slp_files.append(utils.SlpZipFile(input_path, zip_info.filename))
 
       if limit and len(slp_files) >= limit:
         break
