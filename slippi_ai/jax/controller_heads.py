@@ -41,6 +41,19 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
   ) -> DistanceOutputs:
     """A struct of distances (generally, negative log probs)."""
 
+  @classmethod
+  @abc.abstractmethod
+  def default_config(cls) -> dict[str, tp.Any]:
+    """Returns the default config for this ControllerHead."""
+
+  @classmethod
+  def construct(cls, **kwargs) -> tp.Self:
+    """Constructs a ControllerHead from config."""
+    return cls(**kwargs)
+
+class EmbeddingControllerHead(ControllerHead[ControllerType]):
+  """ControllerHead that uses an embed.Embedding."""
+
   @property
   @abc.abstractmethod
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
@@ -58,13 +71,8 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
   def decode_controller(self, controller_state: ControllerType) -> Controller:
     return self.controller_embedding.decode(controller_state)
 
-  @classmethod
-  @abc.abstractmethod
-  def default_config(cls) -> dict[str, tp.Any]:
-    """Returns the default config for this ControllerHead."""
 
-
-class Independent(ControllerHead[ControllerType]):
+class Independent(EmbeddingControllerHead[ControllerType]):
   """Models each component of the controller independently."""
 
   @classmethod
@@ -177,7 +185,7 @@ class AutoRegressiveComponent(nnx.Module):
     return residual, DistanceOutputs(distance=distance, logits=logits)
 
 
-class AutoRegressive(ControllerHead[ControllerType]):
+class AutoRegressive(EmbeddingControllerHead[ControllerType]):
   """Samples components sequentially conditioned on past samples."""
 
   @classmethod
@@ -251,7 +259,6 @@ class AutoRegressive(ControllerHead[ControllerType]):
         logits=self.embed_controller.unflatten(iter(logits)),
     )
 
-
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,
     autoregressive=AutoRegressive,
@@ -269,7 +276,7 @@ def construct(
     embed_controller: embed.Embedding[Controller, ControllerType],
     name: str,
     **config,
-) -> ControllerHead:
+) -> ControllerHead[ControllerType]:
   """Construct a controller head from config.
 
   Args:
@@ -282,10 +289,11 @@ def construct(
   Returns:
     Constructed controller head.
   """
+  ch_type = CONSTRUCTORS[name]
   kwargs = dict(
       config[name],
       rngs=rngs,
       input_size=input_size,
       embed_controller=embed_controller,
   )
-  return CONSTRUCTORS[name](**kwargs)
+  return ch_type.construct(**kwargs)
