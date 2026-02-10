@@ -69,7 +69,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll(
       self,
-      frames: data.Frames,
+      frames: data.Frames[ControllerType],
       initial_state: RecurrentState,
   ) -> UnrollOutputs:
     """Computes prediction loss on a batch of frames.
@@ -110,7 +110,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def imitation_loss(
       self,
-      frames: data.Frames,
+      frames: data.Frames[ControllerType],
       initial_state: RecurrentState,
   ) -> tp.Tuple[Array, RecurrentState, dict]:
     # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
@@ -151,7 +151,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll_with_outputs(
       self,
-      frames: data.Frames,
+      frames: data.Frames[ControllerType],
       initial_state: RecurrentState,
   ) -> UnrollWithOutputs:
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
@@ -185,7 +185,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def sample(
       self,
       rngs: nnx.Rngs,
-      state_action: data.StateAction,
+      state_action: data.StateAction[ControllerType],
       initial_state: RecurrentState,
       is_resetting: Optional[Array] = None,
       **kwargs,

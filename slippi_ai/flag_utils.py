@@ -24,6 +24,7 @@ TYPE_TO_ITEM: dict[Type, ItemConstructor] = {
     # TODO: decide whether to handle these here or in handle_list
     list[str]: ff.StringList,
     tuple[int, ...]: ff.Sequence,
+    tp.Sequence[int]: ff.Sequence,
 }
 
 def maybe_undo_optional(t: Type) -> Type:
@@ -46,7 +47,7 @@ def undo_list(t: Type) -> tp.Optional[Type]:
 
 def _issubclass(cls: Type, class_or_tuple: tp.Union[type, tuple[type, ...]]) -> bool:
   """Like issubclass but works generics like dict[int, str]."""
-  if isinstance(cls, types.GenericAlias):
+  if isinstance(cls, (types.GenericAlias, tp._GenericAlias)):
     cls = cls.__origin__
 
   return issubclass(cls, class_or_tuple)
