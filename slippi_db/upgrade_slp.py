@@ -232,7 +232,7 @@ def needs_upgrade(
 @dataclasses.dataclass(slots=True)
 class UpgradeResult:
   """Result of upgrading a Slippi replay."""
-  local_file: utils.ZipFile
+  local_file: utils.SlpZipFile
   error: Optional[str] = None
   skipped: bool = False
   slippi_version: Optional[str] = None
@@ -434,7 +434,7 @@ def errors_to_str(errors: list[tuple[Any, str]]) -> str:
   return f'{len(errors)} errors, first at {path}: {msg}'
 
 def _upgrade_slp_in_archive(
-    local_file: utils.ZipFile,
+    local_file: utils.SlpZipFile,
     output_path: str,
     dolphin_config: DolphinConfig,
     in_memory: bool = True,
@@ -508,7 +508,7 @@ def _upgrade_slp_in_archive(
       result_version=result_version)
 
 def _upgrade_slp_in_archive_safe(
-    local_file: utils.ZipFile,
+    local_file: utils.SlpZipFile,
     debug: bool = False,
     **kwargs):
   if debug:
@@ -626,7 +626,7 @@ def upgrade_archive(
   zf = zipfile.ZipFile(input_path, 'r')
   total_size = 0
   skipped_files = 0
-  todo: list[tuple[utils.ZipFile, str]] = []
+  todo: list[tuple[utils.SlpZipFile, str]] = []
   to_remove: list[str] = []
 
   skip_reasons = collections.Counter()
@@ -642,7 +642,7 @@ def upgrade_archive(
     if not utils.is_slp_file(zip_info.filename):
       continue
 
-    local_file = utils.ZipFile(input_path, zip_info.filename)
+    local_file = utils.SlpZipFile(input_path, zip_info.filename)
     output_filename = _safe_path(local_file.base_name) + utils.SLPZ_SUFFIX
 
     if output_filename in existing_outputs:

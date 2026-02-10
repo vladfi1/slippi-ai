@@ -157,17 +157,13 @@ def process_item(todo: tuple[str, str, bytes]) -> Tuple[str, str, int]:
   """Process a single file item."""
   # Handle compressed files using the ZipFile utility
   archive_path, file_name, content = todo
-  file_obj = utils.ZipFile(archive_path, file_name)
+  file_obj = utils.SlpZipFile(archive_path, file_name)
   processed_content = file_obj.from_raw(content)
 
   return process_file_content(file_name, processed_content)
 
 
-def streaming_method(
-    archive_paths: List[str],
-    num_processes: int,
-    file_limit: typing.Optional[int] = None,
-) -> Tuple[List[Tuple], float]:
+def streaming_method(archive_paths: List[str], num_processes: int, file_limit: int = None) -> Tuple[List[Tuple], float]:
   """Process multiple zip archives using streaming with unzip -p.
 
   A single producer process streams all files from all archives using `unzip -p` and puts them
@@ -223,7 +219,7 @@ def streaming_method(
   return results, elapsed
 
 
-def process_single_file(file_obj: utils.ZipFile) -> Tuple[str, str, int]:
+def process_single_file(file_obj: utils.SlpZipFile) -> Tuple[str, str, int]:
   """Process a single file from the archive."""
   try:
     content = file_obj.read()
