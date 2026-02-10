@@ -42,13 +42,12 @@ DEFAULT_CONFIG = train_lib.Config(
     value_function=train_lib.ValueFunctionConfig(
         separate_network_config=False,
     ),
-    controller_head=dict(
-        name='autoregressive',
-        autoregressive=dict(
-            residual_size=2,
-            component_depth=0,
-        ),
-    ),
+)
+
+DEFAULT_CONFIG.controller_head['name'] = 'autoregressive'
+DEFAULT_CONFIG.controller_head['autoregressive'].update(
+    residual_size=2,
+    component_depth=0,
 )
 
 if __name__ == '__main__':

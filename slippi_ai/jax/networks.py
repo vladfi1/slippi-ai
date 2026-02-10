@@ -13,7 +13,7 @@ import tree
 
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
-from slippi_ai.data import StateAction
+from slippi_ai.data import StateAction, Action
 from slippi_ai.types import Controller, Game, Player, Nana, Item
 
 Array = jax.Array
@@ -764,13 +764,13 @@ class SimpleEmbedNetwork(StateActionNetwork):
     return output, final_state
 
 # TODO: unify with controller_heads
-class ControllerRNN(nnx.Module):
+class ControllerRNN(nnx.Module, tp.Generic[Action]):
   """Embed controller using an RNN over its components."""
 
   def __init__(
       self,
       rngs: nnx.Rngs,
-      embed_controller: embed_lib.StructEmbedding[Controller],
+      embed_controller: embed_lib.Embedding[Controller, Action],
       hidden_size: int,
       rnn_cell: str = 'lstm',
   ):
@@ -797,8 +797,9 @@ class ControllerRNN(nnx.Module):
     self._initial_state_fn = cells[0].initialize_carry
     self._cells = nnx.List(cells)
 
-  def __call__(self, controller: Controller) -> Array:
-    input_shape = controller.main_stick.x.shape + (self._embed_flat[0].size,)
+  def __call__(self, controller: Action) -> Array:
+    input_flat: list[Array] = list(self._embed_controller.flatten(controller))
+    input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
 
     # TODO: pass rngs properly? maybe reuse from __init__?
     hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))

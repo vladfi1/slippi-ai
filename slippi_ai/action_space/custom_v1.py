@@ -306,6 +306,10 @@ class CombinedButtonBucketer:
     c_stick = self.c_stick_bucketer.decode(button_combination.c_stick)
     return button_combination, c_stick
 
+class ControllerV1(tp.NamedTuple, tp.Generic[S]):
+  buttons: UInt16Array[S]
+  main_stick: UInt16Array[S]
+
 
 class ControllerBucketer:
 
@@ -314,14 +318,14 @@ class ControllerBucketer:
     self.main_stick_bucketer = main_stick_config.create_bucketer()
     self.axis_sizes = (self.button_bucketer.num_labels, self.main_stick_bucketer.num_labels)
 
-  def bucket(self, controller: Controller[S]) -> tuple[UInt16Array[S], UInt16Array[S]]:
-    button_label = self.button_bucketer.bucket(controller)
-    main_stick_label = self.main_stick_bucketer.bucket(controller.main_stick)
-    return button_label, main_stick_label
+  def bucket(self, controller: Controller[S]) -> ControllerV1[S]:
+    buttons = self.button_bucketer.bucket(controller)
+    main_stick = self.main_stick_bucketer.bucket(controller.main_stick)
+    return ControllerV1(buttons=buttons, main_stick=main_stick)
 
-  def decode(self, button_label: UInt16Array[S], main_stick_label: UInt16Array[S]) -> Controller[S]:
-    button_combination, c_stick = self.button_bucketer.from_label(button_label)
-    main_stick = self.main_stick_bucketer.decode(main_stick_label)
+  def decode(self, labels: ControllerV1[S]) -> Controller[S]:
+    button_combination, c_stick = self.button_bucketer.from_label(labels.buttons)
+    main_stick = self.main_stick_bucketer.decode(labels.main_stick)
 
     z, a, shoulder = decode_z_a_shoulder(button_combination.z_a_shoulder)
 

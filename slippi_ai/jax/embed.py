@@ -24,6 +24,7 @@ from slippi_ai.types import (
 )
 from slippi_ai.controller_lib import LEGAL_BUTTONS
 from slippi_ai.data import Action, StateAction
+from slippi_ai.action_space import custom_v1 as cv1
 
 Array = jax.Array
 In = TypeVar('In')
@@ -285,7 +286,7 @@ class StructEmbedding(Embedding[NT, NT]):
     return self.builder({k: e.unflatten(seq) for k, e in self.embedding})
 
   def from_state(self, state: NT) -> NT:
-    return self.map(lambda e, x: e.from_state(x), state)
+    return self.map_shallow(lambda e, x: e.from_state(x), state)
 
   def __call__(self, struct: NT, **kwargs) -> Array:
     embed = []
@@ -590,7 +591,7 @@ def get_controller_embedding(
       ], Controller)
 
 @dataclasses.dataclass
-class ControllerConfig:
+class DefaultControllerConfig:
   axis_spacing: int = 16
   shoulder_spacing: int = 4
 
@@ -599,6 +600,99 @@ class ControllerConfig:
         axis_spacing=self.axis_spacing,
         shoulder_spacing=self.shoulder_spacing,
     )
+
+Mid = tp.TypeVar("Mid")
+
+class CompoundEmbedding(Embedding[In, Out]):
+
+  def __init__(
+      self,
+      encode: Callable[[In], Mid],
+      decode: Callable[[Mid], In],
+      embed_mid: Embedding[Mid, Out],
+  ):
+    self._encode = encode
+    self._decode = decode
+    self._embed_mid = embed_mid
+
+  @property
+  def dtype(self) -> type:
+    return self._embed_mid.dtype
+
+  @property
+  def size(self) -> int:
+    return self._embed_mid.size
+
+  def from_state(self, state: In) -> Out:
+    mid = self._encode(state)
+    return self._embed_mid.from_state(mid)
+
+  def __call__(self, x: Out) -> Array:
+    return self._embed_mid(x)
+
+  def map(self, f, *args: Out) -> Out:
+    return self._embed_mid.map(f, *args)
+
+  def flatten(self, struct: Out) -> Iterator[Any]:
+    yield from self._embed_mid.flatten(struct)
+
+  def unflatten(self, seq: Iterator[Any]) -> Out:
+    return self._embed_mid.unflatten(seq)
+
+  def decode(self, out: Out) -> In:
+    """Inverse of `from_state`."""
+    mid = self._embed_mid.decode(out)
+    return self._decode(mid)
+
+  def dummy(self, shape: Sequence[int] = ()) -> Out:
+    return self._embed_mid.dummy(shape)
+
+  def dummy_embedding(self, shape: Sequence[int] = ()) -> Out:
+    return self._embed_mid.dummy_embedding(shape)
+
+  def distribution_size(self) -> int:
+    return self._embed_mid.distribution_size()
+
+  def sample(self, rng: jax.Array, distribution: Array, **kwargs) -> Out:
+    return self._embed_mid.sample(rng, distribution, **kwargs)
+
+  def distance(self, distribution: Array, target: Out) -> Out:
+    return self._embed_mid.distance(distribution, target)
+
+def make_custom_v1_embedding(
+    config: cv1.Config,
+) -> Embedding[Controller, cv1.ControllerV1]:
+  bucketer = config.create_bucketer()
+  buttons_size, main_stick_size = bucketer.axis_sizes
+
+  embed_custom_v1 = ordered_struct_embedding(
+      name="custom_v1",
+      embedding=[
+          ('buttons', OneHotEmbedding('buttons', buttons_size, dtype=np.uint16)),
+          ('main_stick', OneHotEmbedding('main_stick', main_stick_size, dtype=np.uint16)),
+      ],
+      nt_type=cv1.ControllerV1,
+  )
+
+  return CompoundEmbedding(
+      encode=bucketer.bucket,
+      decode=bucketer.decode,
+      embed_mid=embed_custom_v1,
+  )
+
+@dataclasses.dataclass
+class ControllerConfig:
+  type: str = "default"
+  default: DefaultControllerConfig = utils.field(DefaultControllerConfig)
+  custom_v1: cv1.Config = utils.field(cv1.Config.default)
+
+  def make_embedding(self):
+    if self.type == "default":
+      return self.default.make_embedding()
+    elif self.type == "custom_v1":
+      return make_custom_v1_embedding(self.custom_v1)
+    else:
+      raise ValueError(f"Unknown controller type: {self.type}")
 
 @dataclasses.dataclass
 class EmbedConfig:
@@ -639,20 +733,3 @@ def get_state_action_embedding(
           one_hot_policy=OneHotPolicy.EMPTY),
   )
   return struct_embedding_from_nt("state_action", embedding)
-
-def _stick_to_str(stick):
-  return f'({stick[0].item():.2f}, {stick[1].item():.2f})'
-
-def controller_to_str(controller):
-  """Pretty-prints a sampled controller."""
-  buttons = [b.value for b in LEGAL_BUTTONS if controller['button'][b.value].item()]
-
-  components = [
-      f'Main={_stick_to_str(controller["main_stick"])}',
-      f'C={_stick_to_str(controller["c_stick"])}',
-      ' '.join(buttons),
-      f'LS={controller["l_shoulder"].item():.2f}',
-      f'RS={controller["r_shoulder"].item():.2f}',
-  ]
-
-  return ' '.join(components)
