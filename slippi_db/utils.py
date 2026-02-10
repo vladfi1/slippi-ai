@@ -226,6 +226,34 @@ class ZipFile(LocalFile):
     self.root = root
     self.path = path
 
+  @property
+  def name(self) -> str:
+    return self.path
+
+  def read(self) -> bytes:
+    try:
+      result = subprocess.run(
+          ['unzip', '-p', self.root, self.path],
+          check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+      raise FileReadException(e.stderr.decode()) from e
+    return result.stdout
+
+  @contextmanager
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    with tempfile.NamedTemporaryFile(dir=tmpdir, delete_on_close=False) as tmpfile:
+      tmpfile.write(self.read())
+      tmpfile.close()
+      yield tmpfile.name
+
+class SlpZipFile(ZipFile):
+  """Slp file inside a zip archive."""
+
+  def __init__(self, root: str, path: str):
+    self.root = root
+    self.path = path
+    super().__init__(root, path)
+
     suffix_found = False
     for suffix in VALID_SUFFIXES:
       if path.endswith(suffix):
@@ -238,6 +266,7 @@ class ZipFile(LocalFile):
 
     self.base_name = self.path.removesuffix(self.suffix)
 
+    # TODO: remove gzip support
     self.is_gzipped = path.endswith(GZ_SUFFIX)
     self.is_slpz = path.endswith(SLPZ_SUFFIX)
 
@@ -246,13 +275,7 @@ class ZipFile(LocalFile):
     return self.base_name + _SLP_SUFFIX
 
   def read_raw(self) -> bytes:
-    try:
-      result = subprocess.run(
-          ['unzip', '-p', self.root, self.path],
-          check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-      raise FileReadException(e.stderr.decode()) from e
-    return result.stdout
+    return super().read()
 
   def from_raw(self, data: bytes) -> bytes:
     if self.is_gzipped:
@@ -268,14 +291,6 @@ class ZipFile(LocalFile):
 
   def read(self) -> bytes:
     return self.from_raw(self.read_raw())
-
-  @contextmanager
-  def extract(self, tmpdir: str) -> Generator[str, None, None]:
-    with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
-      path = os.path.join(tmpdir, 'game.slp')
-      with open(path, 'wb') as f:
-        f.write(self.read())
-      yield path
 
 def traverse_slp_files(root: str) -> list[LocalFile]:
   files = []
@@ -401,12 +416,12 @@ def is_slp_file(path: str) -> bool:
   """Check if the file is a valid Slippi replay file."""
   return any(path.endswith(s) for s in VALID_SUFFIXES)
 
-def traverse_slp_files_zip(root: str) -> list[ZipFile]:
+def traverse_slp_files_zip(root: str) -> list[SlpZipFile]:
   files = []
   relpaths = zipfile.ZipFile(root).namelist()
   for path in relpaths:
     if is_slp_file(path):
-      files.append(ZipFile(root, path))
+      files.append(SlpZipFile(root, path))
   return files
 
 def extract_zip_files(source_zip: str, file_names: list[str], dest_zip: str) -> None:

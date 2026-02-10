@@ -195,7 +195,7 @@ def worker_function(file_queue: mp.Queue, results_queue: mp.Queue):
     # Process the content (applying any decompression if needed)
     try:
       # Handle compressed files using the ZipFile utility
-      file_obj = utils.ZipFile(archive_path, file_name)
+      file_obj = utils.SlpZipFile(archive_path, file_name)
       processed_content = file_obj.from_raw(content)
 
       result = process_file_content(file_name, processed_content)
@@ -292,7 +292,7 @@ def streaming_method(archive_paths: List[str], num_processes: int, file_limit: i
   return results, elapsed
 
 
-def process_single_file(file_obj: utils.ZipFile) -> Tuple[str, str, int]:
+def process_single_file(file_obj: utils.SlpZipFile) -> Tuple[str, str, int]:
   """Process a single file from the archive."""
   try:
     content = file_obj.read()
