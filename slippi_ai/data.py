@@ -16,6 +16,7 @@ from typing import (
 )
 import typing as tp
 import zlib
+import zipfile
 
 import numpy as np
 import pyarrow
@@ -24,8 +25,10 @@ import pyarrow.parquet as pq
 import melee
 
 from slippi_ai import reward, utils, nametags, paths, observations
-from slippi_ai.types import Game, game_array_to_nt, Controller
+from slippi_ai.types import Game, game_array_to_nt
 from slippi_ai.mirror import mirror_game
+
+from slippi_db import utils as file_utils
 
 class PlayerMeta(NamedTuple):
   character: int
@@ -42,6 +45,7 @@ class ReplayMeta(NamedTuple):
   p1: PlayerMeta
   stage: int
   slp_md5: str
+  zlib: bool
 
   @classmethod
   def from_metadata(cls, metadata: dict) -> 'ReplayMeta':
@@ -50,10 +54,12 @@ class ReplayMeta(NamedTuple):
         p0=PlayerMeta.from_metadata(metadata['players'][0], raw),
         p1=PlayerMeta.from_metadata(metadata['players'][1], raw),
         stage=metadata['stage'],
-        slp_md5=metadata['slp_md5'])
+        slp_md5=metadata['slp_md5'],
+        zlib=metadata['compression'] == 'zlib',
+    )
 
 class ReplayInfo(NamedTuple):
-  path: str
+  path: file_utils.LocalFile | str
   swap: bool
   # We use empty tuple instead of None to play nicely with Tensorflow.
   meta: Union[ReplayMeta, Tuple[()]] = ()
@@ -67,6 +73,29 @@ class ReplayInfo(NamedTuple):
           lambda p0, p1: np.where(self.swap, p1, p0),
           self.meta.p0, self.meta.p1)
     return self.meta.p1 if self.swap else self.meta.p0
+
+  def read_game(self) -> Game:
+    if isinstance(self.path, str):
+      with open(self.path, 'rb') as f:
+        contents = f.read()
+    else:
+      contents = self.path.read()
+
+    if self.meta.zlib:
+      contents = zlib.decompress(contents)
+    reader = pyarrow.BufferReader(contents)
+    table = pq.read_table(reader)
+
+    game_struct = table['root'].combine_chunks()
+    game = game_array_to_nt(game_struct)
+
+    if self.swap:
+      game = swap_players(game)
+
+    if self.mirror:
+      game = mirror_game(game)
+
+    return game
 
 class ChunkMeta(NamedTuple):
   start: int
@@ -113,10 +142,16 @@ def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
 ALL = 'all'
 NONE = 'none'
 
+# Within a dataset archive
+GAMES_DIR = 'games'
+META_PATH = 'meta.json'
+
 @dataclasses.dataclass
 class DatasetConfig:
   data_dir: Optional[str] = None  # required
   meta_path: Optional[str] = None
+  archive: Optional[str] = None
+
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
   allowed_characters: str = ALL
@@ -128,6 +163,38 @@ class DatasetConfig:
   swap: bool = True  # yield swapped versions of each replay
   mirror: bool = False  # mirror left/right in each replay
   seed: int = 0
+
+  def validate(self):
+    if self.archive is None:
+      if self.data_dir is None:
+        raise ValueError("Missing data_dir.")
+
+      if self.meta_path is None:
+        raise ValueError("Missing meta_path.")
+    else:
+      if not self.archive.endswith('.zip'):
+        raise ValueError(f"Archive must be a .zip file, got: {self.archive}")
+
+      # TODO: validate archive structure
+
+      if self.data_dir is not None or self.meta_path is not None:
+        logging.warning("Archive specified, ignoring data_dir and meta_path.")
+
+  def read_meta(self) -> list[dict[str, Any]]:
+    if self.archive is not None:
+      meta_file = file_utils.ZipFile(self.archive, META_PATH)
+      return json.loads(meta_file.read().decode('utf-8'))
+
+    assert self.meta_path is not None
+    with open(self.meta_path) as f:
+      return json.load(f)
+
+  def get_replay(self, slp_md5: str) -> str | file_utils.LocalFile:
+    if self.archive is not None:
+      return file_utils.ZipFile(self.archive, GAMES_DIR + '/' + slp_md5)
+
+    assert self.data_dir is not None
+    return os.path.join(self.data_dir, slp_md5)
 
 def create_name_filter(
     allowed_names: str,
@@ -153,10 +220,11 @@ def create_name_filter(
   return is_allowed
 
 def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
+  config.validate()
+
   replays = []
 
-  with open(config.meta_path) as f:
-    meta_rows: list[dict] = json.load(f)
+  meta_rows = config.read_meta()
 
   allowed_characters = _charset(chars_from_string(config.allowed_characters))
   allowed_opponents = _charset(chars_from_string(config.allowed_opponents))
@@ -166,7 +234,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   for row in meta_rows:
     replay_meta = ReplayMeta.from_metadata(row)
-    replay_path = os.path.join(config.data_dir, replay_meta.slp_md5)
+    replay_path = config.get_replay(replay_meta.slp_md5)
 
     if not config.swap:
       is_banned = False
@@ -215,32 +283,34 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 def train_test_split(
     config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
-  if config.data_dir is None:
-    raise ValueError("data_dir must be specified in DatasetConfig")
-
-  filenames = sorted(os.listdir(config.data_dir))
-  logging.info(f"Found {len(filenames)} files.")
-
-  replays: list[ReplayInfo] = []
-
-  if config.meta_path is not None:
+  if config.archive is not None:
     replays = replays_from_meta(config)
-
-    # check that we have the right metadata
-    filenames_set = set(filenames)
-    assert all(info.meta.slp_md5 in filenames_set for info in replays)
   else:
-    if not (config.allowed_characters == ALL
-            and config.allowed_opponents == ALL):
-      raise ValueError(
-          "Can't filter by character without metadata. "
-          "Please provide a metadata file.")
+    if config.data_dir is None:
+      raise ValueError("data_dir must be specified in DatasetConfig")
 
-    for filename in filenames:
-      replay_path = os.path.join(config.data_dir, filename)
-      replays.append(ReplayInfo(replay_path, False))
-      if config.swap:
-        replays.append(ReplayInfo(replay_path, True))
+    filenames = sorted(os.listdir(config.data_dir))
+    logging.info(f"Found {len(filenames)} files.")
+
+    if config.meta_path is not None:
+      replays = replays_from_meta(config)
+
+      # check that we have the right metadata
+      filenames_set = set(filenames)
+      assert all(info.meta.slp_md5 in filenames_set for info in replays)
+    else:
+      if not (config.allowed_characters == ALL
+              and config.allowed_opponents == ALL):
+        raise ValueError(
+            "Can't filter by character without metadata. "
+            "Please provide a metadata file.")
+      replays: list[ReplayInfo] = []
+
+      for filename in filenames:
+        replay_path = os.path.join(config.data_dir, filename)
+        replays.append(ReplayInfo(replay_path, False))
+        if config.swap:
+          replays.append(ReplayInfo(replay_path, True))
 
   # TODO: stable partition
   if len(replays) < 2:
@@ -309,19 +379,10 @@ class TrajectoryManager:
     self.frame: int = None
     self.info: ReplayInfo = None
 
-  def load_game(self, info: ReplayInfo) -> Game:
-    game = read_table(info.path, compressed=self.compressed)
-    if info.swap:
-      game = swap_players(game)
-    if info.mirror:
-      # Also mirrors the controller inputs, which is what we want.
-      game = mirror_game(game)
-    return game
-
   def find_game(self):
     while True:
       info = next(self.source)
-      game = self.load_game(info)
+      game = info.read_game()
       if game_len(game) < self.unroll_length:
         continue
       if not self.game_filter(game):
@@ -374,6 +435,7 @@ class TrajectoryManager:
 def swap_players(game: Game) -> Game:
   return game._replace(p0=game.p1, p1=game.p0)
 
+# TODO: this is redundant with ReplayInfo.read_game, but used in some places
 def read_table(path: str, compressed: bool) -> Game:
   if compressed:
     with open(path, 'rb') as f:

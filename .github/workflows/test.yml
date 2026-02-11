@@ -54,6 +54,9 @@ jobs:
     - name: Test Imitation
       run: ./slippi_ai/tf/tests/training_test.sh
 
+    - name: Test Imitation from Archive
+      run: ./slippi_ai/tf/tests/training_test.sh --config.archive=slippi_ai/data/toy_dataset/Dataset.zip
+
     - name: Test Imitation with Restore
       run: ./slippi_ai/tf/tests/training_test.sh --config.restore_pickle=slippi_ai/data/checkpoints/demo
 
