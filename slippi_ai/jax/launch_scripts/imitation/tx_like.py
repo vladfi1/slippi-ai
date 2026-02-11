@@ -126,11 +126,6 @@ if __name__ == '__main__':
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
-      data_dir = config.dataset.data_dir
-      meta_path = config.dataset.meta_path
-      assert os.path.isdir(data_dir), data_dir
-      assert os.path.isfile(meta_path), meta_path
-
       char = CHAR.value
 
       if config.tag is None:
