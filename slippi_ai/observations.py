@@ -1,5 +1,7 @@
 import abc
 import dataclasses
+import typing as tp
+
 import numpy as np
 
 import melee
@@ -198,6 +200,38 @@ class AnimationFilter(ObservationFilter):
 
     return utils.replace_nt(game, ['p1', 'action'], masked_actions)
 
+def floor_mod(a: np.ndarray, b: int) -> np.ndarray:
+  """Replaces each x with the largest multiple of b less than or equal to x."""
+  return a - np.mod(a, b)
+
+class FrameSkipFilter(ObservationFilter):
+  """Keeps only every N-th frame, except for the controller."""
+
+  def __init__(self, skip: int):
+    self.skip = skip
+    self.reset()
+
+  def reset(self):
+    self.index = 0
+
+  def filter(self, game: types.Game) -> types.Game:
+
+    if self.index % self.skip == 0:
+      self.last_state = game
+      self.index += 1
+      return game
+
+    self.index += 1
+    return utils.replace_nt(
+        self.last_state, ['p0', 'controller'], game.p0.controller)
+
+  def filter_time(self, game: types.Game) -> types.Game:
+    game_len = len(game.stage)
+    indices = floor_mod(np.arange(game_len), self.skip)
+    frame_skipped = utils.map_nt(lambda arr: arr[indices], game)
+    return utils.replace_nt(
+        frame_skipped, ['p0', 'controller'], game.p0.controller)
+
 field = lambda x: dataclasses.field(default_factory=x)
 
 @dataclasses.dataclass
@@ -205,8 +239,13 @@ class AnimationConfig:
   mask: bool = True
 
 @dataclasses.dataclass
+class FrameSkipConfig:
+  skip: int = 0
+
+@dataclasses.dataclass
 class ObservationConfig:
   animation: AnimationConfig = field(AnimationConfig)
+  frame_skip: FrameSkipConfig = field(FrameSkipConfig)
 
 # Mimics behavior pre-observation filtering
 NULL_OBSERVATION_CONFIG = ObservationConfig(
@@ -220,4 +259,6 @@ def build_observation_filter(
   filters = []
   if config.animation.mask:
     filters.append(AnimationFilter())
+  if config.frame_skip.skip > 1:
+    filters.append(FrameSkipFilter(skip=config.frame_skip.skip))
   return ChainObservationFilter(filters)

@@ -2,6 +2,9 @@ import functools
 import json
 import unittest
 
+import tree
+import numpy as np
+
 from slippi_ai import data, paths, observations, utils
 from slippi_ai.types import Game
 
@@ -14,7 +17,8 @@ def load_toy_game() -> Game:
   replay_path = paths.TOY_DATA_DIR / replay_meta.slp_md5
   return data.read_table(str(replay_path), compressed=True)
 
-def test_filter_time(filter: observations.ObservationFilter):
+# Name needs to start with _ to not be pickup by pytest as a test case.
+def _test_filter_time(filter: observations.ObservationFilter):
   """Test that time-batched and sequential filtering gives the same result."""
   game = load_toy_game()
   filter.reset()
@@ -27,7 +31,7 @@ class AnimationFilterTest(unittest.TestCase):
 
   def test_filter_time(self):
     filter = observations.AnimationFilter()
-    test_filter_time(filter)
+    _test_filter_time(filter)
 
   def test_null_filter(self):
     filter = observations.build_observation_filter(
@@ -35,6 +39,38 @@ class AnimationFilterTest(unittest.TestCase):
     game = load_toy_game()
     filtered_game = filter.filter_time(game)
     assert filtered_game == game
+
+class FrameSkipFilterTest(unittest.TestCase):
+
+  def test_filter_time(self):
+    filter = observations.FrameSkipFilter(skip=4)
+    _test_filter_time(filter)
+
+  def test_control_preservation(self):
+    filter = observations.FrameSkipFilter(skip=4)
+    game = load_toy_game()
+    filtered_game = filter.filter_time(game)
+
+    # Check that the controller is preserved for all frames
+    utils.map_nt(
+        np.testing.assert_array_equal,
+        game.p0.controller, filtered_game.p0.controller)
+
+  def test_frame_skipping(self):
+    skip = 4
+    filter = observations.FrameSkipFilter(skip=skip)
+    game = load_toy_game()
+    filtered_game = filter.filter_time(game)
+
+    for index in range(100):
+      reference_index = index - index % skip
+
+      def maybe_check_arrays_equal(path: tuple[str], arr1: np.ndarray, arr2: np.ndarray):
+        if path[:2] == ('p0', 'controller'):
+          return
+        assert arr1[index] == arr2[reference_index], f"Mismatch at path {path} for index {index}"
+
+      tree.map_structure_with_path(maybe_check_arrays_equal, filtered_game, game)
 
 if __name__ == '__main__':
   unittest.main()
