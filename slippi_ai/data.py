@@ -29,6 +29,7 @@ from slippi_ai.types import Game, game_array_to_nt
 from slippi_ai.mirror import mirror_game
 
 from slippi_db import utils as file_utils
+from slippi_db.utils import is_remote, FsspecFile
 
 class PlayerMeta(NamedTuple):
   character: int
@@ -151,6 +152,7 @@ class DatasetConfig:
   data_dir: Optional[str] = None  # required
   meta_path: Optional[str] = None
   archive: Optional[str] = None
+  dataset_path: Optional[str] = None
 
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
@@ -165,13 +167,10 @@ class DatasetConfig:
   seed: int = 0
 
   def validate(self):
-    if self.archive is None:
-      if self.data_dir is None:
-        raise ValueError("Missing data_dir.")
-
-      if self.meta_path is None:
-        raise ValueError("Missing meta_path.")
-    else:
+    if self.dataset_path is not None:
+      if self.data_dir is not None or self.meta_path is not None or self.archive is not None:
+        logging.warning("dataset_path specified, ignoring data_dir, meta_path, and archive.")
+    elif self.archive is not None:
       if not self.archive.endswith('.zip'):
         raise ValueError(f"Archive must be a .zip file, got: {self.archive}")
 
@@ -179,8 +178,22 @@ class DatasetConfig:
 
       if self.data_dir is not None or self.meta_path is not None:
         logging.warning("Archive specified, ignoring data_dir and meta_path.")
+    else:
+      if self.data_dir is None:
+        raise ValueError("Missing data_dir.")
+
+      if self.meta_path is None:
+        raise ValueError("Missing meta_path.")
 
   def read_meta(self) -> list[dict[str, Any]]:
+    if self.dataset_path is not None:
+      meta_uri = self.dataset_path.rstrip('/') + '/' + META_PATH
+      if is_remote(self.dataset_path):
+        return json.loads(FsspecFile(meta_uri).read().decode('utf-8'))
+      else:
+        with open(meta_uri) as f:
+          return json.load(f)
+
     if self.archive is not None:
       meta_file = file_utils.ZipFile(self.archive, META_PATH)
       return json.loads(meta_file.read().decode('utf-8'))
@@ -190,6 +203,13 @@ class DatasetConfig:
       return json.load(f)
 
   def get_replay(self, slp_md5: str) -> str | file_utils.LocalFile:
+    if self.dataset_path is not None:
+      game_uri = self.dataset_path.rstrip('/') + '/' + GAMES_DIR + '/' + slp_md5
+      if is_remote(self.dataset_path):
+        return FsspecFile(game_uri)
+      else:
+        return game_uri
+
     if self.archive is not None:
       return file_utils.ZipFile(self.archive, GAMES_DIR + '/' + slp_md5)
 
@@ -283,7 +303,9 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 def train_test_split(
     config: DatasetConfig,
 ) -> Tuple[List[ReplayInfo], List[ReplayInfo]]:
-  if config.archive is not None:
+  # For dataset_path and archive modes, we get replays entirely from metadata
+  # (no os.listdir verification, which isn't available for remote/archive).
+  if config.dataset_path is not None or config.archive is not None:
     replays = replays_from_meta(config)
   else:
     if config.data_dir is None:
@@ -304,6 +326,7 @@ def train_test_split(
         raise ValueError(
             "Can't filter by character without metadata. "
             "Please provide a metadata file.")
+
       replays: list[ReplayInfo] = []
 
       for filename in filenames:
