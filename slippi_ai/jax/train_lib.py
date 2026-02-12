@@ -4,6 +4,7 @@ import collections
 import contextlib
 import dataclasses
 import datetime
+import functools
 import json
 import os
 import pickle
@@ -57,6 +58,7 @@ class TrainManager:
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
       # TODO: pass in epoch offset when resuming from checkpoint
       epoch_offset: float = 0,
+      cached: bool = False,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -67,6 +69,7 @@ class TrainManager:
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
+    self.cached = cached
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -82,6 +85,8 @@ class TrainManager:
       self.stop_requested = threading.Event()
       self.data_thread = threading.Thread(target=self.fetch_batches)
       self.data_thread.start()
+
+    self.cached_fetch_batch = functools.cache(self.fetch_batch)
 
   def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
     batch, epoch = next(self.data_source)
@@ -148,7 +153,8 @@ class TrainManager:
         stats.update(frames_queue_size=self.frames_queue.qsize())
         batch, epoch, frames = self.frames_queue.get()
       else:
-        batch, epoch, frames = self.fetch_batch()
+        batch_fn = self.cached_fetch_batch if self.cached else self.fetch_batch
+        batch, epoch, frames = batch_fn()
 
     self.last_epoch = epoch
 
@@ -492,12 +498,19 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays  # free up memory
 
+  manager_kwargs = dict(
+      rngs=rngs,
+      data_sharding=data_sharding,
+      prefetch=runtime.prefetch,
+      cached=config.data.cached,
+  )
+
   train_manager = TrainManager(
       learner, train_data, dict(train=True, compile=runtime.compile),
-      rngs=rngs, data_sharding=data_sharding, prefetch=runtime.prefetch)
+      **manager_kwargs)
   test_manager = TrainManager(
       learner, test_data, dict(train=False, compile=runtime.compile),
-      rngs=rngs, data_sharding=data_sharding, prefetch=runtime.prefetch)
+      **manager_kwargs)
 
   # TrainManager should probably be a proper context manager.
   exit_stack.callback(train_manager.stop)
