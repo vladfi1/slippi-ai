@@ -1,10 +1,12 @@
 import os
+import pickle
 import shutil
 import tempfile
 import unittest
 import zipfile
 
 from slippi_db import utils
+from slippi_db.utils import is_remote, FsspecFile
 
 class CopyZipFilesTest(unittest.TestCase):
 
@@ -145,6 +147,64 @@ class DeleteFromZipTest(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             utils.delete_from_zip(nonexistent_zip, ['file1.txt'])
+
+
+class IsRemoteTest(unittest.TestCase):
+
+    def test_s3_is_remote(self):
+        self.assertTrue(is_remote('s3://bucket/path'))
+
+    def test_gs_is_remote(self):
+        self.assertTrue(is_remote('gs://bucket/path'))
+
+    def test_http_is_remote(self):
+        self.assertTrue(is_remote('https://example.com/data'))
+
+    def test_local_path_not_remote(self):
+        self.assertFalse(is_remote('/data/my-dataset'))
+
+    def test_relative_path_not_remote(self):
+        self.assertFalse(is_remote('data/my-dataset'))
+
+    def test_file_uri_not_remote(self):
+        self.assertFalse(is_remote('file:///data/my-dataset'))
+
+
+class FsspecFileTest(unittest.TestCase):
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.test_file = os.path.join(self.test_dir, 'test.bin')
+        self.test_content = b'hello fsspec'
+        with open(self.test_file, 'wb') as f:
+            f.write(self.test_content)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_fsspec_file_local_read(self):
+        ff = FsspecFile(self.test_file)
+        self.assertEqual(ff.read(), self.test_content)
+
+    def test_fsspec_file_name(self):
+        ff = FsspecFile('s3://bucket/games/abc123')
+        self.assertEqual(ff.name, 'abc123')
+
+    def test_fsspec_file_pickling(self):
+        ff = FsspecFile('s3://bucket/games/abc123')
+        ff2 = pickle.loads(pickle.dumps(ff))
+        self.assertEqual(ff2.uri, ff.uri)
+
+    def test_fsspec_file_extract(self):
+        ff = FsspecFile(self.test_file)
+        extract_dir = tempfile.mkdtemp()
+        try:
+            with ff.extract(extract_dir) as path:
+                with open(path, 'rb') as f:
+                    self.assertEqual(f.read(), self.test_content)
+            self.assertFalse(os.path.exists(path))
+        finally:
+            shutil.rmtree(extract_dir)
 
 
 if __name__ == '__main__':
