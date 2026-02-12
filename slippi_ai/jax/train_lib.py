@@ -35,6 +35,7 @@ from slippi_ai.policies import Platform
 from slippi_ai.jax import networks, controller_heads, jax_utils
 from slippi_ai.jax import learner as learner_lib
 from slippi_ai.jax import embed as embed_lib
+
 from slippi_ai.jax import policies as policies_lib
 from slippi_ai.jax import value_function as vf_lib
 
@@ -115,6 +116,8 @@ class TrainManager:
     if self.data_sharding is not None:
       frames = jax_utils.shard_pytree(frames, self.data_sharding)
     else:
+      # In principle this shouldn't be needed due to jax runahead, but
+      # empirically it results in a ~10% increase in performance.
       frames = utils.map_nt(jnp.asarray, frames)
 
     return (batch, epoch, frames)
