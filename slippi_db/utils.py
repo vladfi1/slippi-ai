@@ -20,6 +20,10 @@ import py7zr
 
 T = tp.TypeVar('T')
 
+def is_remote(path: str) -> bool:
+  """Returns True if path is a remote URI (has :// scheme other than file://)."""
+  return '://' in path and not path.startswith('file://')
+
 class Timer:
 
   def __init__(self, name: str, verbose=True):
@@ -291,6 +295,31 @@ class SlpZipFile(ZipFile):
 
   def read(self) -> bytes:
     return self.from_raw(self.read_raw())
+
+class FsspecFile(LocalFile):
+  """A file accessed via fsspec (local or remote). Picklable for multiprocessing."""
+
+  def __init__(self, uri: str):
+    self.uri = uri
+
+  @property
+  def name(self) -> str:
+    return self.uri.rsplit('/', 1)[-1]
+
+  def read(self) -> bytes:
+    import fsspec
+    with fsspec.open(self.uri, 'rb') as f:
+      return f.read()
+
+  @contextmanager
+  def extract(self, tmpdir: str) -> Generator[str, None, None]:
+    try:
+      path = os.path.join(tmpdir, self.name)
+      with open(path, 'wb') as f:
+        f.write(self.read())
+      yield path
+    finally:
+      os.remove(path)
 
 def traverse_slp_files(root: str) -> list[LocalFile]:
   files = []
