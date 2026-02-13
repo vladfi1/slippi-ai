@@ -8,6 +8,9 @@ from melee.enums import Action
 from slippi_ai import types
 from slippi_ai import utils
 
+Game0 = types.Game[tuple[()]]
+Game1 = types.Game[tuple[int]]
+
 class ObservationFilter(abc.ABC):
 
   def reset(self):
@@ -15,11 +18,11 @@ class ObservationFilter(abc.ABC):
     pass
 
   @abc.abstractmethod
-  def filter(self, game: types.Game) -> types.Game:
+  def filter(self, game: Game0) -> Game0:
     """Filter a single unbatched frame."""
 
   @abc.abstractmethod
-  def filter_time(self, game: types.Game) -> types.Game:
+  def filter_time(self, game: Game1) -> Game1:
     """Filter a time-batched game."""
 
 class ChainObservationFilter(ObservationFilter):
@@ -31,12 +34,12 @@ class ChainObservationFilter(ObservationFilter):
     for filter in self.filters:
       filter.reset()
 
-  def filter(self, game: types.Game) -> types.Game:
+  def filter(self, game: Game0) -> Game0:
     for filter in self.filters:
       game = filter.filter(game)
     return game
 
-  def filter_time(self, game: types.Game) -> types.Game:
+  def filter_time(self, game: Game1) -> Game1:
     for filter in self.filters:
       game = filter.filter_time(game)
     return game
@@ -114,8 +117,11 @@ INDISTINGUISHABLE_ACTIONS: dict[int, list[ActionSet]] = {
     ],
 }
 
+DEFAULT_TECH_MASK_WINDOW = 7
+TECH_ACTIONS = (N_TECH, F_TECH, B_TECH)
+
 # TODO: fill in data for all characters
-DEFAULT_ACTION_DATA = [((N_TECH, F_TECH, B_TECH), 7)]
+DEFAULT_ACTION_DATA = [(TECH_ACTIONS, DEFAULT_TECH_MASK_WINDOW)]
 
 def get_masks(action_data: list[ActionSet]):
   action_to_masked: dict[ActionDType, list[ActionDType]] = {}
@@ -133,6 +139,7 @@ ACTION_MASKS = {
     char: get_masks(action_data) for char, action_data
     in INDISTINGUISHABLE_ACTIONS.items()
 }
+ACTION_MASKS = {}
 
 def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
   """Mask actions that are indistinguishable.
@@ -167,17 +174,27 @@ class AnimationFilter(ObservationFilter):
 
     return mask_tech_action(char, action, self.count)
 
-  def filter(self, game: types.Game) -> types.Game:
+  def filter(self, game: Game0) -> Game0:
     masked_action = self.update(game.p1.character, game.p1.action)
     if masked_action != game.p1.action:
       return utils.replace_nt(game, ['p1', 'action'], masked_action)
     return game
 
-  def filter_time(self, game: types.Game) -> types.Game:
-    masked_actions = np.copy(game.p1.action)
+  def filter_time(self, game: Game1) -> Game1:
+    actions = np.concatenate([np.full([1], self.prev_action), game.p1.action])
 
-    for i, (char, action) in enumerate(zip(game.p1.character, game.p1.action)):
-      masked_actions[i] = self.update(char, action)
+    same_action = actions[:-1] == actions[1:]
+    cumsum = np.cumsum(same_action) + self.count
+    reset_values = np.maximum.accumulate(np.where(same_action, 0, cumsum))
+    action_frames = cumsum - reset_values
+    self.count = action_frames[-1]
+
+    # TODO: re-enable per-character masking
+    is_tech_action = np.isin(game.p1.action, TECH_ACTIONS)
+    should_mask = is_tech_action & (action_frames <= DEFAULT_TECH_MASK_WINDOW)
+
+    masked_actions = np.where(
+        should_mask, TECH_ACTIONS[0], game.p1.action)
 
     return utils.replace_nt(game, ['p1', 'action'], masked_actions)
 
