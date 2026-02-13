@@ -78,7 +78,7 @@ class TestCustomV1(unittest.TestCase):
   def test_controller_distance(self):
     toy_data = data.toy_data_source(batch_size=1, unroll_length=3000)
     batch, _ = next(toy_data)
-    game = batch.frames.state_action.state
+    game = batch.game
     c0 = game.p0.controller
     d0 = controller_distance(c0, c0)
     np.testing.assert_array_equal(d0, 0.0)
@@ -93,7 +93,7 @@ class TestCustomV1(unittest.TestCase):
 
     toy_data = data.toy_data_source(batch_size=1, unroll_length=3000)
     batch, _ = next(toy_data)
-    game = batch.frames.state_action.state
+    game = batch.game
     game = utils.map_nt(lambda arr: arr[0], game)  # Unbatch
 
     for c_old in [game.p0.controller, game.p1.controller]:

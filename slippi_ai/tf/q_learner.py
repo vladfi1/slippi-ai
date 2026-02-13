@@ -6,7 +6,7 @@ import numpy as np
 import sonnet as snt
 import tensorflow as tf
 
-from slippi_ai.data import Batch, Frames
+from slippi_ai.data import Batch, Frames, StateAction
 from slippi_ai.tf.policies import Policy, RecurrentState
 from slippi_ai.tf import q_function as q_lib
 from slippi_ai.tf import tf_utils
@@ -361,9 +361,14 @@ class Learner:
 
     # Here we assume that the sample policy, q function, and q policy all have
     # the same state and action embeddings.
-    frames = batch.frames._replace(
+    state_action = StateAction(
+        batch.game, batch.game.p0.controller, batch.name)
+    frames = Frames(
         state_action=self.sample_policy.embed_state_action.from_state(
-            batch.frames.state_action))
+            state_action),
+        is_resetting=batch.is_resetting,
+        reward=batch.reward,
+    )
 
     # switch axes to time-major
     tm_frames: Frames = tf.nest.map_structure(

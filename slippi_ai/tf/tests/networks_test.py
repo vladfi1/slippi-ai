@@ -28,8 +28,8 @@ def default_data_source():
 
 def get_inputs(data_source: data.DataSource):
   batch = next(data_source)[0]
-  bm_state = embed_game.from_state(batch.frames.state_action.state)
-  inputs = embed_game(bm_state), batch.frames.is_resetting
+  bm_state = embed_game.from_state(batch.game)
+  inputs = embed_game(bm_state), batch.is_resetting
   return tf.nest.map_structure(learner.swap_axes, inputs)
 
 class NetworksTest(unittest.TestCase):

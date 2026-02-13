@@ -646,7 +646,7 @@ class ReplayBatchedEnvironment:
 
     gamestates = {}
     for i, p in enumerate(self.players):
-      game = batch.frames.state_action.state
+      game = batch.game
       swap = i % 2 == 1
       if swap:
         game = data.swap_players(game)
@@ -654,7 +654,7 @@ class ReplayBatchedEnvironment:
 
     output = EnvOutput(
         gamestates=gamestates,  # [B=1, T=1]
-        needs_reset=batch.frames.is_resetting,  # [B=1, T=1]
+        needs_reset=batch.is_resetting,  # [B=1, T=1]
     )
     output = utils.map_nt(np.squeeze, output)  # []
     output = utils.map_nt(lambda x: np.tile(x, [self.batch_size]), output)
