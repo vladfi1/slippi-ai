@@ -351,9 +351,10 @@ def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
     return None
   return [name_to_character[c] for c in chars.split(',')]
 
+Rank1 = tuple[int]
 
-def game_len(game: Game):
-  return len(game.stage)
+def game_len(game: Game[Rank1]) -> int:
+  return game.stage.shape[0]
 
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
@@ -365,7 +366,7 @@ class TrajectoryManager:
       encode_name: Callable[[str], int],
       overlap: int = 1,
       compressed: bool = True,
-      game_filter: Optional[Callable[[Game], bool]] = None,
+      game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
   ):
@@ -378,10 +379,7 @@ class TrajectoryManager:
     self.reward_kwargs = reward_kwargs
     self.encode_name = encode_name
 
-    self.game: Game = None
-    self.reward: np.ndarray = None
-    self.frame: int = None
-    self.info: ReplayInfo = None
+    self.needs_game = True
 
   def find_game(self):
     while True:
@@ -403,13 +401,14 @@ class TrajectoryManager:
     self.frame = 0
     self.info = info
     self.name_code = self.encode_name(info.main_player.name)
+    self.needs_game = False
 
-  def grab_chunk(self) -> Batch:
+  def grab_chunk(self) -> Batch[Rank1]:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
 
     needs_reset = (
-        self.game is None or
+        self.needs_game or
         self.frame + self.unroll_length > game_len(self.game))
 
     if needs_reset:
@@ -437,11 +436,11 @@ class TrajectoryManager:
         meta=ChunkMeta(start, end, self.info),
     )
 
-def swap_players(game: Game) -> Game:
+def swap_players(game: Game[S]) -> Game[S]:
   return game._replace(p0=game.p1, p1=game.p0)
 
 # TODO: this is redundant with ReplayInfo.read_game, but used in some places
-def read_table(path: str, compressed: bool) -> Game:
+def read_table(path: str, compressed: bool) -> Game[Rank1]:
   if compressed:
     with open(path, 'rb') as f:
       contents = f.read()
@@ -456,10 +455,12 @@ def read_table(path: str, compressed: bool) -> Game:
 
 Shape = tp.TypeVarTuple('Shape')
 
+Rank2 = tuple[int, int]
+
 class AbstractDataSource(abc.ABC):
 
   @abc.abstractmethod
-  def __next__(self) -> tuple[Batch, float]:
+  def __next__(self) -> tuple[Batch[Rank2], float]:
     """Returns the next batch and epoch number."""
 
   def shutdown(self):
@@ -552,18 +553,18 @@ class DataSource(AbstractDataSource):
       self.replay_counter += 1
       yield replay
 
-  def is_allowed(self, game: Game) -> bool:
+  def is_allowed(self, game: Game[Rank1]) -> bool:
     # TODO: handle Zelda/Sheik transformation
     return (
         game.p0.character[0] in self.allowed_characters
         and
         game.p1.character[0] in self.allowed_opponents)
 
-  def process_batch(self, batches: list[Batch[*Shape]]) -> Batch[tuple[int, *Shape]]:
-    return utils.cached_zip_map_nt(Batch)(np.stack, batches)
+  def process_batch(self, batches: list[Batch[Rank1]]) -> Batch[Rank2]:
+    return utils.cached_zip_map_nt(Batch)(np.stack, batches)  # type: ignore
 
-  def __next__(self) -> Tuple[Batch, float]:
-    batch: Batch = self.process_batch(
+  def __next__(self) -> Tuple[Batch[Rank2], float]:
+    batch = self.process_batch(
         [m.grab_chunk() for m in self.managers])
     # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)
@@ -589,7 +590,7 @@ class TimeBatchedDataSource(AbstractDataSource):
     self.extra_frames = extra_frames
     self._current_index = unroll_chunks
 
-  def __next__(self) -> tuple[Batch, float]:
+  def __next__(self) -> tuple[Batch[Rank2], float]:
     if self._current_index == self.unroll_chunks:
       self._current_batch_and_epoch = next(self.data_source)
       self._current_index = 0
@@ -651,7 +652,7 @@ class DataSourceMP(AbstractDataSource):
     self.batch_queue.close()
     self.process.terminate()
 
-  def __next__(self) -> tuple[Batch, float]:
+  def __next__(self) -> tuple[Batch[Rank2], float]:
     return self.batch_queue.get()
 
   def __del__(self):
@@ -691,7 +692,7 @@ class MultiDataSourceMP(AbstractDataSource):
   def batch_size(self) -> int:
     return self._batch_size
 
-  def __next__(self) -> tuple[Batch, float]:
+  def __next__(self) -> tuple[Batch[Rank2], float]:
     results = [next(source) for source in self.sources]
     batches, epochs = zip(*results)
     epoch = np.mean(epochs)
