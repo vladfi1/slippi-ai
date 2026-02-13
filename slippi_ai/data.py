@@ -571,8 +571,59 @@ class DataSource(AbstractDataSource):
     assert batch.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
+class TimeBatchedDataSource(AbstractDataSource):
+
+  def __init__(
+      self,
+      unroll_chunks: int,
+      unroll_length: int,
+      extra_frames: int = 1,
+      **kwargs,
+  ):
+    self.data_source = DataSource(
+        unroll_length=unroll_chunks * unroll_length,
+        extra_frames=extra_frames,
+        **kwargs)
+    self.unroll_chunks = unroll_chunks
+    self.unroll_length = unroll_length
+    self.extra_frames = extra_frames
+    self._current_index = unroll_chunks
+
+  def __next__(self) -> tuple[Batch, float]:
+    if self._current_index == self.unroll_chunks:
+      self._current_batch_and_epoch = next(self.data_source)
+      self._current_index = 0
+
+    batch, epoch = self._current_batch_and_epoch
+
+    start = self._current_index * self.unroll_length
+    end = start + self.unroll_length + self.extra_frames
+    slice = lambda a: a[:, start:end]
+
+    self._current_index += 1
+
+    return Batch(
+        game=utils.cached_map_nt(Game)(slice, batch.game),
+        name=slice(batch.name),
+        is_resetting=slice(batch.is_resetting),
+        reward=batch.reward[:, start:end - 1],
+        meta=ChunkMeta(
+            start=batch.meta.start + start,
+            end=batch.meta.start + end,
+            info=batch.meta.info,
+        ),
+    ), epoch
+
+  def shutdown(self):
+    self.data_source.shutdown()
+
+  @property
+  def batch_size(self) -> int:
+    return self.data_source.batch_size
+
+
 def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
-  data_source = DataSource(**data_source_kwargs)
+  data_source = make_source(num_workers=0, **data_source_kwargs)
   while True:
     batch_queue.put(next(data_source))
 
@@ -669,6 +720,7 @@ class DataConfig:
   num_workers: int = 0
   balance_characters: bool = False
   cached: bool = False
+  unroll_chunks: int = 0
 
 def make_source(
     num_workers: int,
@@ -677,6 +729,10 @@ def make_source(
   if num_workers == 0:
     if cached:
       return CachedDataSource(**kwargs)
+
+    unroll_chunks: int = kwargs.pop('unroll_chunks')
+    if unroll_chunks > 0:
+      return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
 
     return DataSource(**kwargs)
 
