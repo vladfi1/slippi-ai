@@ -33,20 +33,20 @@ UInt8Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint8]]
 UInt16Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint16]]
 
 class Buttons(NamedTuple, Generic[S]):
-  A: BoolArray
-  B: BoolArray
-  X: BoolArray
-  Y: BoolArray
-  Z: BoolArray
-  L: BoolArray
-  R: BoolArray
-  D_UP: BoolArray
+  A: BoolArray[S]
+  B: BoolArray[S]
+  X: BoolArray[S]
+  Y: BoolArray[S]
+  Z: BoolArray[S]
+  L: BoolArray[S]
+  R: BoolArray[S]
+  D_UP: BoolArray[S]
 
 LIBMELEE_BUTTONS = {name: Button(name) for name in Buttons._fields}
 
 class Stick(NamedTuple, Generic[S]):
-  x: FloatArray
-  y: FloatArray
+  x: FloatArray[S]
+  y: FloatArray[S]
 
 class Controller(NamedTuple, Generic[S]):
   main_stick: Stick[S]
@@ -55,50 +55,50 @@ class Controller(NamedTuple, Generic[S]):
   buttons: Buttons[S]
 
 class Nana(NamedTuple, Generic[S]):
-  exists: BoolArray
-  percent: UInt16Array
-  facing: BoolArray
-  x: FloatArray
-  y: FloatArray
-  action: UInt16Array
-  invulnerable: BoolArray
-  character: UInt8Array
-  jumps_left: UInt8Array
-  shield_strength: FloatArray
-  on_ground: BoolArray
+  exists: BoolArray[S]
+  percent: UInt16Array[S]
+  facing: BoolArray[S]
+  x: FloatArray[S]
+  y: FloatArray[S]
+  action: UInt16Array[S]
+  invulnerable: BoolArray[S]
+  character: UInt8Array[S]
+  jumps_left: UInt8Array[S]
+  shield_strength: FloatArray[S]
+  on_ground: BoolArray[S]
 
 class Player(NamedTuple, Generic[S]):
-  percent: UInt16Array
-  facing: BoolArray
-  x: FloatArray
-  y: FloatArray
-  action: UInt16Array
-  invulnerable: BoolArray
-  character: UInt8Array
-  jumps_left: UInt8Array
-  shield_strength: FloatArray
-  on_ground: BoolArray
+  percent: UInt16Array[S]
+  facing: BoolArray[S]
+  x: FloatArray[S]
+  y: FloatArray[S]
+  action: UInt16Array[S]
+  invulnerable: BoolArray[S]
+  character: UInt8Array[S]
+  jumps_left: UInt8Array[S]
+  shield_strength: FloatArray[S]
+  on_ground: BoolArray[S]
   controller: Controller[S]
   nana: Nana[S]
 
 class Randall(NamedTuple, Generic[S]):
-  x: FloatArray
-  y: FloatArray
+  x: FloatArray[S]
+  y: FloatArray[S]
 
 class FoDPlatforms(NamedTuple, Generic[S]):
-  left: FloatArray
-  right: FloatArray
+  left: FloatArray[S]
+  right: FloatArray[S]
 
 MAX_ITEMS = 15  # Maximum number of items per frame
 
 class Item(NamedTuple, Generic[S]):
-  exists: BoolArray  # Is the Item slot used
-  type: UInt16Array
-  state: UInt8Array
+  exists: BoolArray[S]  # Is the Item slot used
+  type: UInt16Array[S]
+  state: UInt8Array[S]
   # owner?
   # facing: np.ndarray[S, FloatDType]
-  x: FloatArray
-  y: FloatArray
+  x: FloatArray[S]
+  y: FloatArray[S]
 
 # TODO: this is inelegant
 class Items(NamedTuple, Generic[S]):
