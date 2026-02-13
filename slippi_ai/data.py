@@ -419,7 +419,8 @@ class TrajectoryManager:
     end = start + self.unroll_length
     slice = lambda a: a[start:end]
     # faster than tree.map_structure
-    states = utils.map_nt(slice, self.game)
+    # states = utils.map_nt(slice, self.game)
+    states = utils.cached_map_nt(Game)(slice, self.game)
     self.frame = end - self.overlap
 
     # Rewards could be deferred to the learner.
@@ -559,7 +560,7 @@ class DataSource(AbstractDataSource):
         game.p1.character[0] in self.allowed_opponents)
 
   def process_batch(self, batches: list[Batch[*Shape]]) -> Batch[tuple[int, *Shape]]:
-    return utils.batch_nest_nt(batches)
+    return utils.cached_zip_map_nt(Batch)(np.stack, batches)
 
   def __next__(self) -> Tuple[Batch, float]:
     batch: Batch = self.process_batch(
@@ -642,7 +643,8 @@ class MultiDataSourceMP(AbstractDataSource):
   def __next__(self) -> tuple[Batch, float]:
     results = [next(source) for source in self.sources]
     batches, epochs = zip(*results)
-    return utils.concat_nest_nt(batches), np.mean(epochs)
+    epoch = np.mean(epochs)
+    return utils.cached_zip_map_nt(Batch)(np.concatenate, batches), epoch
 
   def shutdown(self):
     for source in self.sources:
