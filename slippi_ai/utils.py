@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import functools
 import gc
 import logging
 import platform
@@ -136,6 +137,52 @@ def map_nt(f, *nt: T) -> T:
     return [map_nt(f, *vs) for vs in zip(*nt)]
   # Not a nest.
   return f(*nt)
+
+class IdFn(tp.Protocol):
+
+  def __call__(self, x: T) -> T: ...
+
+class MultiIdFn(tp.Protocol):
+
+  def __call__(self, xs: tp.Sequence[T]) -> T: ...
+
+class Mapper(tp.Protocol[T]):
+
+  def __call__(self, fn: IdFn, x: T) -> T: ...
+
+from slippi_ai.types import get_node_or_leaf
+
+@functools.cache
+def cached_map_nt(t: type[T]) -> tp.Callable[[IdFn, T], T]:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    field_fns = [cached_map_nt(subtype) for _, subtype in node_or_leaf]
+
+    def map_fn(f: IdFn, x: T) -> T:
+      return t(*(sub_fn(f, v) for sub_fn, v in zip(field_fns, x)))
+
+    return map_fn
+
+  return lambda f, x: f(x)
+
+@functools.cache
+def cached_zip_map_nt(t: type[T]) -> tp.Callable[[MultiIdFn, tp.Sequence[T]], T]:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    field_fns = [cached_zip_map_nt(subtype) for _, subtype in node_or_leaf]
+
+    def map_fn(f: MultiIdFn, xs: tp.Sequence[T]) -> T:
+      return t(*(sub_fn(f, vs) for sub_fn, *vs in zip(field_fns, *xs)))
+
+    # def map_fn(f: MultiIdFn, xs: tp.Sequence[T]) -> T:
+    #   return t(*(sub_fn(f, vs) for sub_fn, vs in zip(field_fns, zip(*xs))))
+
+    return map_fn
+
+  return lambda f, xs: f(xs)
+
 
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
