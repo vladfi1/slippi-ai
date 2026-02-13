@@ -235,3 +235,27 @@ def game_array_to_nt(game: pa.StructArray) -> Game:
 
 class InvalidGameError(Exception):
   """Base class for invalid game exceptions."""
+
+# Training-layer types: used by networks, policies, learners, etc.
+
+Action = TypeVar('Action')
+
+NAME_DTYPE = np.int32
+
+class StateAction(NamedTuple, Generic[Action]):
+  state: Game
+  # The action could actually be an "encoded" action type,
+  # which might discretize certain components of the controller
+  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
+  # generic. We could use a dataclass instead, but TF can't trace them.
+  # Note that this is the action taken on the _previous_ frame.
+  action: Action
+
+  # Encoded name
+  name: NAME_DTYPE
+
+class Frames(NamedTuple, Generic[Action]):
+  state_action: StateAction[Action]
+  is_resetting: bool
+  # The reward will have length one less than the states and actions.
+  reward: np.float32

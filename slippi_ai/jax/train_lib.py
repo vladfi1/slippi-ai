@@ -85,10 +85,16 @@ class TrainManager:
   def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
     batch, epoch = next(self.data_source)
     epoch += self.epoch_offset
-    frames = batch.frames
 
-    if np.any(frames.is_resetting[:, 1:]):
+    if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
+
+    # Construct StateAction from raw batch data
+    state_action = data_lib.StateAction(
+        state=batch.game,
+        action=batch.game.p0.controller,
+        name=batch.name,
+    )
 
     # Encode frames using the policy's network
     # TODO: when prefetching, calling network.encode can result strange
@@ -97,8 +103,13 @@ class TrainManager:
     # I believe this is due to a race condition with flax's in-place Module
     # updates, which can briefly cause members of the modules to disappear.
     # This should be mitigated by the use of nnx.cached_partial in the Learner.
-    frames = frames._replace(
-        state_action=self._encode_state_action(frames.state_action))
+    state_action = self._encode_state_action(state_action)
+
+    frames = data_lib.Frames(
+        state_action=state_action,
+        is_resetting=batch.is_resetting,
+        reward=batch.reward,
+    )
 
     # Convert to JAX arrays (and shard if multi-device)
     if self.data_sharding is not None:
