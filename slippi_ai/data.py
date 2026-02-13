@@ -68,8 +68,7 @@ class ReplayMeta(NamedTuple):
 class ReplayInfo(NamedTuple):
   path: file_utils.LocalFile | str
   swap: bool
-  # We use empty tuple instead of None to play nicely with Tensorflow.
-  meta: Union[ReplayMeta, Tuple[()]] = ()
+  meta: ReplayMeta
 
   mirror: bool = False
 
