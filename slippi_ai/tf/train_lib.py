@@ -67,13 +67,19 @@ class TrainManager:
   def produce_frames(self):
     while not self.stop_requested.is_set():
       batch, epoch = next(self.data_source)
-      frames = batch.frames
 
-      if np.any(frames.is_resetting[:, 1:]):
+      if np.any(batch.is_resetting[:, 1:]):
         raise ValueError("Unexpected mid-episode reset.")
 
-      frames = frames._replace(
-          state_action=self.learner.policy.network.encode(frames.state_action))
+      state_action = data_lib.StateAction(
+          batch.game, batch.game.p0.controller, batch.name)
+      state_action = self.learner.policy.network.encode(state_action)
+
+      frames = data_lib.Frames(
+          state_action=state_action,
+          is_resetting=batch.is_resetting,
+          reward=batch.reward,
+      )
       frames = utils.map_nt(tf.convert_to_tensor, frames)
       data = (batch, epoch, frames)
 

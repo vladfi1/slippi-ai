@@ -25,7 +25,13 @@ import pyarrow.parquet as pq
 import melee
 
 from slippi_ai import reward, utils, nametags, paths, observations
-from slippi_ai.types import Game, game_array_to_nt
+from slippi_ai.types import (
+    S, Game, game_array_to_nt,
+    BoolArray, FloatArray, Int32Array,
+    # Re-exported for backward compatibility; canonical home is types.py.
+    Action, NAME_DTYPE, StateAction, Frames,
+)
+from typing import Generic
 from slippi_ai.mirror import mirror_game
 
 from slippi_db import utils as file_utils
@@ -103,36 +109,12 @@ class ChunkMeta(NamedTuple):
   end: int
   info: ReplayInfo
 
-Action = tp.TypeVar('Action')
-# Action = Controller
 
-NAME_DTYPE = np.int32
-
-class StateAction(NamedTuple, tp.Generic[Action]):
-  state: Game
-  # The action could actually be an "encoded" action type,
-  # which might discretize certain components of the controller
-  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
-  # generic. We could use a dataclass instead, but TF can't trace them.
-  # Note that this is the action taken on the _previous_ frame.
-  action: Action
-
-  # Encoded name
-  name: NAME_DTYPE
-
-class Frames(NamedTuple, tp.Generic[Action]):
-  state_action: StateAction[Action]
-  is_resetting: bool
-  # The reward will have length one less than the states and actions.
-  reward: np.float32
-
-class Chunk(NamedTuple):
-  frames: Frames
-  meta: ChunkMeta
-
-class Batch(NamedTuple, tp.Generic[Action]):
-  frames: Frames[Action]
-  count: int  # For reproducing batches
+class Batch(NamedTuple, Generic[S]):
+  game: Game[S]
+  name: Int32Array[S]
+  is_resetting: BoolArray[S]
+  reward: FloatArray[S]
   meta: ChunkMeta
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
@@ -423,7 +405,7 @@ class TrajectoryManager:
     self.info = info
     self.name_code = self.encode_name(info.main_player.name)
 
-  def grab_chunk(self) -> Chunk:
+  def grab_chunk(self) -> Batch:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
 
@@ -443,17 +425,17 @@ class TrajectoryManager:
 
     # Rewards could be deferred to the learner.
     rewards = self.reward[start:end - 1]
-    name_codes = np.full([self.unroll_length], self.name_code, np.int32)
-    state_action = StateAction(states, states.p0.controller, name_codes)
+    name = np.full([self.unroll_length], self.name_code, np.int32)
     is_resetting = np.full([self.unroll_length], False)
     is_resetting[0] = needs_reset
-    frames = Frames(
-        state_action=state_action,
-        reward=rewards,
-        is_resetting=is_resetting,
-    )
 
-    return Chunk(frames, ChunkMeta(start, end, self.info))
+    return Batch(
+        game=states,
+        name=name,
+        is_resetting=is_resetting,
+        reward=rewards,
+        meta=ChunkMeta(start, end, self.info),
+    )
 
 def swap_players(game: Game) -> Game:
   return game._replace(p0=game.p1, p1=game.p0)
@@ -471,6 +453,8 @@ def read_table(path: str, compressed: bool) -> Game:
 
   game_struct = table['root'].combine_chunks()
   return game_array_to_nt(game_struct)
+
+Shape = tp.TypeVarTuple('Shape')
 
 class AbstractDataSource(abc.ABC):
 
@@ -508,7 +492,7 @@ class DataSource(AbstractDataSource):
     self.chunk_size = unroll_length + extra_frames
     self.damage_ratio = damage_ratio
     self.compressed = compressed
-    self.batch_counter = 0
+
     self.balance_characters = balance_characters
 
     def build_observation_filter():
@@ -575,15 +559,7 @@ class DataSource(AbstractDataSource):
         and
         game.p1.character[0] in self.allowed_opponents)
 
-  def process_batch(self, chunks: list[Chunk]) -> Batch:
-    batches: List[Batch] = []
-
-    for chunk in chunks:
-      batches.append(Batch(
-          frames=chunk.frames,
-          count=self.batch_counter,
-          meta=chunk.meta))
-
+  def process_batch(self, batches: list[Batch[*Shape]]) -> Batch[tuple[int, *Shape]]:
     return utils.batch_nest_nt(batches)
 
   def __next__(self) -> Tuple[Batch, float]:
@@ -591,9 +567,8 @@ class DataSource(AbstractDataSource):
         [m.grab_chunk() for m in self.managers])
     # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)
-    self.batch_counter += 1
-    assert batch.frames.state_action.state.stage.shape[-1] == self.chunk_size
-    assert batch.frames.reward.shape[-1] == self.chunk_size - 1
+    assert batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
 def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
