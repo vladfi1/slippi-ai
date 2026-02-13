@@ -155,9 +155,11 @@ def get_node_or_leaf(t: type | GenericAlias | tp._GenericAlias) -> Node | Leaf:
   if isinstance(t, tp._GenericAlias):
     t = t.__origin__
 
-  assert issubclass(t, tuple)
+  # assert issubclass(t, tuple)
+  if isinstance(t, type) and issubclass(t, tuple):
+    return [(name, t.__annotations__[name]) for name in t._fields]
 
-  return [(name, t.__annotations__[name]) for name in t._fields]
+  return t
 
 
 @functools.lru_cache
