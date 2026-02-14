@@ -218,18 +218,6 @@ def replace_nt(nt: T, path: list[str], value: tp.Any) -> T:
 
   return nt._replace(**{path[0]: replace_nt(getattr(nt, path[0]), path[1:], value)})
 
-def reify_tuple_type(t: type[T]) -> T:
-  """Takes a tuple type and returns a structure with types at the leaves."""
-  # TODO: support typing.Tuple
-
-  if issubclass(t, tuple):  # namedtuple
-    return t(*[
-        reify_tuple_type(t.__annotations__[name])
-        for name in t._fields])
-
-  # A leaf type
-  return t
-
 def peek_deque(d: collections.deque, n: int) -> list:
   """Peek at the last n elements of a deque."""
   assert len(d) >= n
