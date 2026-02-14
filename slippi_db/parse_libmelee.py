@@ -19,19 +19,22 @@ from slippi_ai.types import (
   FoDPlatforms,
   Item, Items, MAX_ITEMS,
   nt_to_nest,
+  reify_tuple_type,
 )
 from slippi_db import parsing_utils
 
-def get_stick(stick: tuple[float, ...]) -> Stick:
+Rank0 = tuple[()]
+
+def get_stick(stick: tuple[float, ...]) -> Stick[Rank0]:
   return Stick(*map(np.float32, stick))
 
-def get_buttons(button: Dict[melee.Button, bool]) -> Buttons:
+def get_buttons(button: Dict[melee.Button, bool]) -> Buttons[Rank0]:
   return Buttons(**{
       name: np.bool(button[lm_button])
       for name, lm_button in LIBMELEE_BUTTONS.items()
   })
 
-def get_controller(cs: melee.ControllerState) -> Controller:
+def get_controller(cs: melee.ControllerState) -> Controller[Rank0]:
   return Controller(
       main_stick=get_stick(cs.main_stick),
       c_stick=get_stick(cs.c_stick),
@@ -62,11 +65,11 @@ def get_base_player(player: melee.PlayerState) -> dict:
 
 _EMPTY_NANA = utils.map_nt(
     lambda t: t(0),
-    utils.reify_tuple_type(Nana)
+    reify_tuple_type(Nana)
 )
 assert not _EMPTY_NANA.exists
 
-def get_player(player: melee.PlayerState) -> Player:
+def get_player(player: melee.PlayerState) -> Player[Rank0]:
 
   if player.nana is not None:
     nana_dict = get_base_player(player.nana)
@@ -81,17 +84,17 @@ def get_player(player: melee.PlayerState) -> Player:
 
 _EMPTY_ITEM = utils.map_nt(
   lambda t: t(0),
-  utils.reify_tuple_type(Item)
+  reify_tuple_type(Item)
 )
 assert not _EMPTY_ITEM.exists
 
 # TODO: have an actual flag for unused items?
 _EMPTY_ITEMS = utils.map_nt(
     lambda t: t(0),
-    utils.reify_tuple_type(Items)
+    reify_tuple_type(Items)
 )
 
-def get_item(projectile: melee.Projectile) -> Item:
+def get_item(projectile: melee.Projectile) -> Item[Rank0]:
   return Item(
       exists=True,
       type=np.uint16(projectile.type.value),
@@ -109,7 +112,7 @@ class Parser:
   def get_game(
       self,
       game: melee.GameState,
-  ) -> Game:
+  ) -> Game[Rank0]:
     ports_this_frame = sorted(game.players)
     assert len(ports_this_frame) == 2
     if self.ports is None:

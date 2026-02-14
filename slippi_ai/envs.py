@@ -15,7 +15,7 @@ from melee import GameState, Stage
 
 from slippi_ai import dolphin, utils, observations
 from slippi_ai.controller_lib import send_controller
-from slippi_ai.types import Controller, Game
+from slippi_ai.types import Controller, Game, reify_tuple_type
 from slippi_ai import data
 from slippi_db.parse_libmelee import Parser
 
@@ -584,7 +584,7 @@ class AsyncBatchedEnvironmentMP:
     return self._state_queue[-1]
 
 
-reified_game = utils.reify_tuple_type(Game)
+reified_game = reify_tuple_type(Game)
 
 class FakeBatchedEnvironment:
   def __init__(

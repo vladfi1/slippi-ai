@@ -161,6 +161,13 @@ def get_node_or_leaf(t: type | GenericAlias | tp._GenericAlias) -> Node | Leaf:
 
   return t
 
+def reify_tuple_type(t: type[T] | GenericAlias | tp._GenericAlias) -> T:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    return t(*(reify_tuple_type(field_type) for _, field_type in node_or_leaf))
+
+  return node_or_leaf
 
 @functools.lru_cache
 def nt_to_pa(nt: type | GenericAlias) -> pa.StructType:

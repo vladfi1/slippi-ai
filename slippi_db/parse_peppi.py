@@ -74,7 +74,7 @@ def get_base_player_data(data: peppi_py.frame.Data, handle_nulls: bool = False) 
       on_ground=np.logical_not(to_numpy_safe(post.airborne)),
   )
 
-_NANA_TYPE = utils.reify_tuple_type(types.Nana)
+_NANA_TYPE = types.reify_tuple_type(types.Nana)
 
 def get_player(player: peppi_py.frame.PortData, game_length: int) -> types.Player:
   # Get the base player data for Popo/main player
@@ -124,7 +124,7 @@ RANDALL_HLR = np.array([
     for frame in range(RANDALL_INTERVAL)
 ])
 
-_ITEM_TYPE_STRUCT = utils.reify_tuple_type(types.Item)
+_ITEM_TYPE_STRUCT = types.reify_tuple_type(types.Item)
 
 def parse_items(
     game_length: int,
