@@ -7,12 +7,13 @@ import tqdm
 
 from melee.enums import Button, Stage
 from slippi_ai import dolphin as dolphin_lib
-from slippi_ai import flag_utils
+from slippi_ai import flag_utils, controller_lib
 
 dolphin_config = dolphin_lib.DolphinConfig(
     headless=True,
     infinite_time=True,
     stage=Stage.FINAL_DESTINATION,
+    emulation_speed=0,
 )
 
 DOLPHIN = ff.DEFINE_dict(
@@ -20,63 +21,47 @@ DOLPHIN = ff.DEFINE_dict(
 
 FLAGS = flags.FLAGS
 
-# TODO: use methods from controller_lib
-
 # TODO: test combination of digital and analog presses
 def test_triggers(dolphin: dolphin_lib.Dolphin, port: int):
   controller = dolphin.controllers[port]
 
-  for raw in range(141):
-    x = raw / 140
+  for raw in range(controller_lib.TRIGGER_SPACING + 1):
+    x = controller_lib.from_raw_trigger(raw)
     controller.press_shoulder(Button.BUTTON_L, x)
     gamestate = dolphin.step()
     output = gamestate.players[port].controller_state.l_shoulder
 
-    expected_raw = 0 if raw < 43 else raw
+    expected_raw = 0 if raw < controller_lib.TRIGGER_DEADZONE else raw
 
-    assert round(output * 140) == expected_raw, f"{raw} {output}"
+    assert round(output * controller_lib.TRIGGER_SPACING) == expected_raw, f"{raw} {output}"
   print("all triggers match")
 
-Raw = int
+Raw = controller_lib.RawAxis
 
-def naive_raw_to_float(x: Raw) -> float:
-  return x / 160 + 0.5
+def test_sticks(
+    dolphin: dolphin_lib.Dolphin,
+    port: int,
+    stick: Button = Button.BUTTON_MAIN,
+):
+  assert stick in [Button.BUTTON_MAIN, Button.BUTTON_C]
 
-def output_to_raw(x: float) -> Raw:
-  return round(x * 160 - 80)
-
-def is_deadzone(x: Raw) -> bool:
-  return x != 0 and abs(x) < 23
-
-def is_valid_raw(xy) -> bool:
-  x, y = xy
-
-  if x * x + y * y > 80 * 80:
-    return False
-
-  if is_deadzone(x) or is_deadzone(y):
-    return False
-
-  return True
-
-all_raw = [(x, y) for x in range(-80, 81) for y in range(-80, 81)]
-valid_raw = list(filter(is_valid_raw, all_raw))
-
-def test_sticks(dolphin: dolphin_lib.Dolphin, port: int):
   controller = dolphin.controllers[port]
 
   def test_xy(raw_xy: tuple[Raw, Raw]):
     raw_x, raw_y = raw_xy
-    x = naive_raw_to_float(raw_x)
-    y = naive_raw_to_float(raw_y)
-    controller.tilt_analog(Button.BUTTON_MAIN, x, y)
+    x = controller_lib.from_raw_axis(raw_x)
+    y = controller_lib.from_raw_axis(raw_y)
+    controller.tilt_analog(stick, x, y)
     gamestate = dolphin.step()
-    outputs = gamestate.players[port].controller_state.main_stick
+    if stick == Button.BUTTON_MAIN:
+      outputs = gamestate.players[port].controller_state.main_stick
+    else:
+      outputs = gamestate.players[port].controller_state.c_stick
     out_x, out_y = outputs
-    assert output_to_raw(out_x) == raw_x, (raw_xy, outputs)
-    assert output_to_raw(out_y) == raw_y, (raw_xy, outputs)
+    assert controller_lib.to_raw_axis(out_x) == raw_x, (raw_xy, outputs)
+    assert controller_lib.to_raw_axis(out_y) == raw_y, (raw_xy, outputs)
 
-  for raw_xy in tqdm.tqdm(valid_raw):
+  for raw_xy in tqdm.tqdm(controller_lib.VALID_RAW_STICKS):
     test_xy(raw_xy)
 
   print("all sticks match")
@@ -135,7 +120,11 @@ def main(_):
   controller.release_all()
   dolphin.step()
 
-  test_sticks(dolphin, PORT)
+  for stick in [Button.BUTTON_MAIN, Button.BUTTON_C]:
+    print(f'Testing {stick} stick')
+    test_sticks(dolphin, PORT, stick=stick)
+
+  # TODO: test combinations of inputs
 
   dolphin.stop()
 

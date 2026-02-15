@@ -34,30 +34,34 @@ def send_controller(controller: melee.Controller, controller_state: Controller):
 
 RawTrigger = int
 TRIGGER_DEADZONE = 43
+TRIGGER_SPACING = 140
 
-RAW_TRIGGERS = [0] + list(range(TRIGGER_DEADZONE, 141))
+RAW_TRIGGERS = [0] + list(range(TRIGGER_DEADZONE, TRIGGER_SPACING + 1))
 
 def from_raw_trigger(x: RawTrigger) -> float:
-  return x / 140
+  return x / TRIGGER_SPACING
 
 def to_raw_trigger(x: float) -> RawTrigger:
-  return np.round(x * 140).astype(np.int32)
+  return np.round(x * TRIGGER_SPACING).astype(np.int32)
 
 RawAxis = int
+AXIS_SPACING = 160
+AXIS_RADIUS = AXIS_SPACING // 2
+AXIS_DEADZONE = 23
 
 def from_raw_axis(x: RawAxis) -> float:
-  return (x + 80) / 160
+  return x / AXIS_SPACING + 0.5
 
 def to_raw_axis(x: float) -> RawAxis:
-  return np.round(x * 160 - 80).astype(np.int32)
+  return np.round((x - 0.5) * AXIS_SPACING).astype(np.int32)
 
 def is_deadzone(x: RawAxis) -> bool:
-  return x != 0 and abs(x) < 23
+  return x != 0 and abs(x) < AXIS_DEADZONE
 
-def is_valid_raw_stick(xy) -> bool:
+def is_valid_raw_stick(xy: tuple[RawAxis, RawAxis]) -> bool:
   x, y = xy
 
-  if x * x + y * y > 80 * 80:
+  if x * x + y * y > AXIS_RADIUS * AXIS_RADIUS:
     return False
 
   if is_deadzone(x) or is_deadzone(y):
@@ -65,7 +69,7 @@ def is_valid_raw_stick(xy) -> bool:
 
   return True
 
-all_raw = [(x, y) for x in range(-80, 81) for y in range(-80, 81)]
+all_raw = [(x, y) for x in range(-AXIS_RADIUS, AXIS_RADIUS + 1) for y in range(-AXIS_RADIUS, AXIS_RADIUS + 1)]
 VALID_RAW_STICKS = list(filter(is_valid_raw_stick, all_raw))
 
 def to_raw_controller(c: Controller):
