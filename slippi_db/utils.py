@@ -455,7 +455,8 @@ def copy_zip_files(
     with tempfile.TemporaryDirectory(dir=tmpdir) as tmpdir:
       tmp_zip = os.path.join(tmpdir, 'tmp.zip')
       extract_zip_files(source_zip, file_names, tmp_zip)
-      subprocess.check_call(['zipmerge', '-k', dest_zip, tmp_zip])
+      # TODO: add -k for libzip >= 1.10.0 to keep uncompressed files uncompressed
+      subprocess.check_call(['zipmerge', dest_zip, tmp_zip])
 
   else:
     extract_zip_files(source_zip, file_names, dest_zip)
@@ -483,7 +484,8 @@ def copy_multi_zip_files(
       extract_zip_files(source_zip, file_names, tmp_zip)
       tmp_zips.append(tmp_zip)
 
-    subprocess.check_call(['zipmerge', '-k', dest_zip, *tmp_zips])
+    # TODO: add -k for libzip >= 1.10.0 to keep uncompressed files uncompressed
+    subprocess.check_call(['zipmerge', dest_zip, *tmp_zips])
 
 def rename_within_zip(zip_path: str, to_rename: list[tuple[str, str]]) -> None:
   """Renames files within a zip archive.
