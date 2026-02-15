@@ -90,6 +90,9 @@ jobs:
         pip install gdown
         gdown "https://drive.google.com/uc?id=$SSBM_ISO_DRIVE_ID" -O SSBM.iso
 
+    - name: Dolphin Input Tests
+      run: python scripts/test_inputs.py --dolphin.path=./dolphin --dolphin.iso=SSBM.iso
+
     - name: Test RL with Dolphin
       run: ./tests/train_rl.sh --config.dolphin.path=./dolphin --config.dolphin.iso=SSBM.iso --config.actor.use_fake_envs=False --config.actor.async_envs
 
