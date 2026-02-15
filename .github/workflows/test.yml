@@ -67,7 +67,8 @@ jobs:
     - name: Download ExiAI Dolphin
       # TODO: specify release version in repo?
       run: |
-        curl -L https://github.com/vladfi1/slippi-Ishiiruka/releases/download/exi-ai-0.2.0/Slippi_Online-x86_64-ExiAI.AppImage -o dolphin
+        curl -L https://github.com/vladfi1/slippi-Ishiiruka/releases/download/exi-ai-0.2.0/Slippi_Online-x86_64-ExiAI.AppImage -o ishiiruka
+        curl -L https://github.com/vladfi1/dolphin/releases/download/4.0.0-mainline-beta.14-ExiAI/Slippi_Netplay_Mainline_ExiAI-x86_64.AppImage -o dolphin
         chmod +x dolphin
 
     - name: Install dolphin dependencies
