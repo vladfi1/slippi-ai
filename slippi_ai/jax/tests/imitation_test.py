@@ -12,7 +12,7 @@ from slippi_ai.jax import train_lib, networks
 network_config = networks.default_config()
 network_config['name'] = 'tx_like'
 network_config['tx_like'].update(
-    hidden_size=2,
+    hidden_size=1,
     num_layers=1,
     ffw_multiplier=4,
     recurrent_layer='lstm',

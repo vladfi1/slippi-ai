@@ -132,3 +132,6 @@ jobs:
 
     - name: JAX Imitation
       run: python slippi_ai/jax/tests/imitation_test.py
+
+    - name: JAX Evaluator
+      run: ./tests/run_evaluator.sh --player.ai.path=slippi_ai/data/checkpoints/jax_demo --player.ai.name="Diamond Player"
