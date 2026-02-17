@@ -138,3 +138,6 @@ jobs:
 
     - name: JAX Evaluator
       run: ./tests/run_evaluator.sh --player.ai.path=slippi_ai/data/checkpoints/jax_demo --player.ai.name="Diamond Player"
+
+    - name: JAX Q-Learning
+      run: python slippi_ai/jax/tests/q_learning_test.py

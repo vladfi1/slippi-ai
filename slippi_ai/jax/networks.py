@@ -1720,7 +1720,8 @@ def build_embed_network(
     embed_config: embed_lib.EmbedConfig,
     num_names: int,
     network_config: dict,
-) -> StateActionNetwork:
+    embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
+) -> StateActionNetwork[Action]:
   """Build a SimpleEmbedNetwork from config.
 
   Args:
@@ -1735,7 +1736,7 @@ def build_embed_network(
   embed_game = embed_config.make_game_embedding()
   embed_state_action = embed_lib.get_state_action_embedding(
       embed_game=embed_game,
-      embed_action=embed_config.controller.make_embedding(),
+      embed_action=embed_action or embed_config.controller.make_embedding(),
       num_names=num_names,
   )
 
