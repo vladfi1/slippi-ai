@@ -13,6 +13,9 @@ from flax.nnx.transforms.transforms import _resolve_bound_callable
 
 Array = jax.Array
 
+P = tp.ParamSpec('P')
+T = tp.TypeVar('T')
+
 # Multi-device utilities
 
 DATA_AXIS = 'data'
@@ -31,7 +34,7 @@ def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
 
-def shard_pytree(pytree, sharding: NamedSharding):
+def shard_pytree(pytree: T, sharding: NamedSharding) -> T:
   """Shard a pytree of arrays with the given sharding."""
   def shard_leaf(x):
     return jax.device_put(x, sharding)
@@ -120,9 +123,6 @@ class MLP(nnx.Module):
     for layer in self.layers:
       x = layer(x)
     return x
-
-P = tp.ParamSpec('P')
-T = tp.TypeVar('T')
 
 def remat_method(
     method: tp.Callable[P, T],
@@ -253,6 +253,15 @@ Loss = Array
 ModT = tp.TypeVar('ModT', bound=nnx.Module)
 Grads = tp.Any
 
+
+def grad_with_aux(
+    f: tp.Callable[P, tp.Tuple[Loss, AuxT]],
+    argums: int | tp.Sequence[int] = 0,
+) -> tp.Callable[P, tuple[AuxT, Grads]]:
+  """Adds type signature to nnx.grad."""
+  return nnx.grad(f, argnums=argums, has_aux=True)
+
+
 def pcast_module(module: ModT, axis_name: str, *, to: str) -> ModT:
   graphdef, state = nnx.split(module)
   pcasted_state = jax.lax.pcast(state, axis_name, to=to)
@@ -292,9 +301,7 @@ def sharded_grads(
   sharded_loss_fn = loss_fn_with_mean(
       loss_fn, take_pmean=not explicit_pmean, data_axis=data_axis)
 
-  grad_fn = nnx.grad(sharded_loss_fn, has_aux=True)
-  # Just for type checking; nnx.grad should have better type annotations.
-  grad_fn = tp.cast(tp.Callable[tp.Concatenate[ModT, Data, P], tuple[Grads, AuxT]], grad_fn)
+  grad_fn = grad_with_aux(sharded_loss_fn)
 
   def compute_grads(
       module: ModT,
@@ -302,7 +309,7 @@ def sharded_grads(
       *args: P.args,
       **kwargs: P.kwargs,
   ) -> tuple[Grads, AuxT]:
-    # This prevent jax from inserting an implicit psum on gradients.
+    # This prevents jax from inserting an implicit psum on gradients.
     if explicit_pmean:
       module = pcast_module(module, data_axis, to='varying')
 
@@ -329,6 +336,46 @@ def shard_map_grads(
       mesh=mesh,
   )
 
+# Better type hints for nnx.cached_partial
+In1 = tp.TypeVar('In1')
+In2 = tp.TypeVar('In2')
+In3 = tp.TypeVar('In3')
+
+@tp.overload
+def cached_partial(
+    func: tp.Callable[tp.Concatenate[In1, P], T],
+    arg1: In1,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def cached_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, P], T],
+    arg1: In1, arg2: In2,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def cached_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, P], T],
+    arg1: In1, arg2: In2, arg3: In3,
+) -> tp.Callable[P, T]: ...
+
+def cached_partial(func, *args):  # type: ignore
+  return nnx.cached_partial(func, *args)
+
+@jax.tree_util.register_pytree_node_class
+class PSpecCache(tp.Generic[P]):
+
+  def __init__(self, *args: P.args, **kwargs: P.kwargs):
+    self.args = args
+    self.kwargs = kwargs
+
+  def tree_flatten(self):
+    return (self.args, self.kwargs), None
+
+  @classmethod
+  def tree_unflatten(cls, aux_data, children):
+    args, kwargs = children
+    return cls(*args, **kwargs)
 
 def data_parallel_train(
     module: ModT,
@@ -352,15 +399,19 @@ def data_parallel_train(
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs) -> tuple[AuxT, State]:
 
     # Treat data and state as a single argument to shard_map_grads
-    def packed_loss_fn(module: ModT, data_and_state: tuple[Data, State]) -> tuple[Loss, tuple[AuxT, State]]:
+    def packed_loss_fn(
+        module: ModT,
+        data_and_state: tuple[Data, State],
+        extras: PSpecCache[P],
+    ) -> tuple[Loss, tuple[AuxT, State]]:
       data, state = data_and_state
-      loss, aux, new_state = loss_fn(module, data, state, *args, **kwargs)
+      loss, aux, new_state = loss_fn(module, data, state, *extras.args, **extras.kwargs)
       return loss, (aux, new_state)
 
     if not smap_optimizer:
       grads, (aux, new_state) = shard_map_grads(
           packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
-              module, (data, state), *args, **kwargs)
+              module, (data, state), PSpecCache(*args, **kwargs))
 
       optimizer.update(module, grads)
 
@@ -370,7 +421,7 @@ def data_parallel_train(
         packed_loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)),
+        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis), PS()),
         out_specs=(PS(data_axis), PS(data_axis)),
         mesh=mesh,
     )
@@ -379,14 +430,15 @@ def data_parallel_train(
         optimizer: nnx.Optimizer[ModT],
         data: Data,
         state: State,
+        extras: PSpecCache[P],
     ) -> tuple[AuxT, State]:
-      grads, (aux, new_state) = sharded_grads_fn(module, (data, state))
+      grads, (aux, new_state) = sharded_grads_fn(module, (data, state), extras)
       optimizer.update(module, grads)
       return aux, new_state
 
-    return update_fn(module, optimizer, data, state)
+    return update_fn(module, optimizer, data, state, PSpecCache(*args, **kwargs))
 
-  return nnx.cached_partial(train, module, optimizer)
+  return cached_partial(train, module, optimizer)
 
 def shard_map_loss_fn(
     module: ModT,
@@ -407,7 +459,7 @@ def shard_map_loss_fn(
   def loss_fn_wrapper(module: ModT, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis), PS(data_axis)),
+        in_specs=(PS(), PS(data_axis), PS(data_axis), PS()),
         out_specs=(PS(data_axis), PS(data_axis)),
         mesh=mesh,
     )
@@ -415,13 +467,14 @@ def shard_map_loss_fn(
         module: ModT,
         data: Data,
         state: State,
+        extras: PSpecCache[P],
     ) -> tuple[AuxT, State]:
-      _, aux, state = loss_fn(module, data, state, *args, **kwargs)
+      _, aux, state = loss_fn(module, data, state, *extras.args, **extras.kwargs)
       return aux, state
 
-    return sharded_loss_fn(module, data, state)
+    return sharded_loss_fn(module, data, state, PSpecCache(*args, **kwargs))
 
-  return nnx.cached_partial(loss_fn_wrapper, module)
+  return cached_partial(loss_fn_wrapper, module)
 
 # Misc
 
