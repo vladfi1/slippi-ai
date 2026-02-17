@@ -6,7 +6,7 @@ import numpy as np
 from flax import nnx
 
 from slippi_ai import utils, data, agents
-from slippi_ai.types import Game
+from slippi_ai.types import Game, S
 from slippi_ai.data import StateAction
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 from slippi_ai.jax import policies
@@ -45,7 +45,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     def sample(
         policy: policies.Policy[ControllerType],
         rngs: nnx.Rngs,
-        state_action: StateAction[ControllerType],
+        state_action: StateAction[S, ControllerType],
         needs_reset: jax.Array,
         prev_state: policies.RecurrentState,
     ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
@@ -62,7 +62,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     def multi_sample(
         policy: policies.Policy[ControllerType],
         rngs: nnx.Rngs,
-        states_and_resets: list[tuple[Game, jax.Array]],  # time-indexed
+        states_and_resets: list[tuple[Game[S], jax.Array]],  # time-indexed
         name_code: jax.Array,
         prev_action: ControllerType,  # only for first step
         initial_state: policies.RecurrentState,

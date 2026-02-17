@@ -29,7 +29,7 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
       inputs: Array,
       prev_controller_state: ControllerType,
       temperature: tp.Optional[float] = None,
-  ) -> SampleOutputs:
+  ) -> SampleOutputs[ControllerType]:
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod
@@ -38,7 +38,7 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
       inputs: Array,
       prev_controller_state: ControllerType,
       target_controller_state: ControllerType,
-  ) -> DistanceOutputs:
+  ) -> DistanceOutputs[ControllerType]:
     """A struct of distances (generally, negative log probs)."""
 
   @classmethod

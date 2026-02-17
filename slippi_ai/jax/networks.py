@@ -14,9 +14,11 @@ import tree
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.data import StateAction, Action
-from slippi_ai.types import Controller, Game, Player, Nana, Item
+from slippi_ai.types import Controller, Game, Player, Nana, Item, S
 
 Array = jax.Array
+
+Rank = tuple[int, ...]
 
 RecurrentState = Any
 ArrayTree = tree.StructureKV[str, Array]
@@ -569,7 +571,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
     super().__init__(layers)
 
 
-class StateActionNetwork(nnx.Module, abc.ABC):
+class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
   """Like a network, but takes StateAction as input."""
 
   @property
@@ -578,15 +580,15 @@ class StateActionNetwork(nnx.Module, abc.ABC):
     """Returns the output size of the network."""
 
   @abc.abstractmethod
-  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+  def dummy(self, shape: S) -> StateAction[S, Action]:
     """Returns a dummy input of the given shape."""
 
   @abc.abstractmethod
-  def encode(self, state_action: StateAction) -> StateAction:
+  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     """Encodes the state and action into a form suitable for the network."""
 
   @abc.abstractmethod
-  def encode_game(self, game: Game) -> Game:
+  def encode_game(self, game: Game[S]) -> Game[S]:
     """Like encode but only the gamestate.
 
     Useful for agents who already have encoded actions.
@@ -600,14 +602,14 @@ class StateActionNetwork(nnx.Module, abc.ABC):
   @abc.abstractmethod
   def step(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     pass
 
   def step_with_reset(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       reset: Array,
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
@@ -619,7 +621,7 @@ class StateActionNetwork(nnx.Module, abc.ABC):
 
   def _step_with_reset(
       self,
-      inputs: tuple[StateAction, Array],
+      inputs: tuple[StateAction[S, Action], Array],
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     """Used for unroll/scan."""
@@ -628,7 +630,7 @@ class StateActionNetwork(nnx.Module, abc.ABC):
 
   def unroll(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
@@ -637,14 +639,14 @@ class StateActionNetwork(nnx.Module, abc.ABC):
 
   def scan(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     return jax_utils.scan_rnn(
         self._step_with_reset, (state_action, reset), initial_state)
 
-class EmbedModule(abc.ABC):
+class EmbedModule(abc.ABC, tp.Generic[Action]):
 
   @property
   @abc.abstractmethod
@@ -652,15 +654,15 @@ class EmbedModule(abc.ABC):
     """Returns the output size of the network."""
 
   @abc.abstractmethod
-  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+  def dummy(self, shape: S) -> StateAction[S, Action]:
     """Returns a dummy input of the given shape."""
 
   @abc.abstractmethod
-  def encode(self, state_action: StateAction) -> StateAction:
+  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     """Encodes the state and action into a form suitable for the network."""
 
   @abc.abstractmethod
-  def encode_game(self, game: Game) -> Game:
+  def encode_game(self, game: Game[S]) -> Game[S]:
     """Like encode but only the gamestate.
 
     Useful for agents who already have encoded actions.
@@ -668,15 +670,15 @@ class EmbedModule(abc.ABC):
     """
 
   @abc.abstractmethod
-  def __call__(self, state_action: StateAction) -> Array:
+  def __call__(self, state_action: StateAction[S, Action]) -> Array:
     """Embeds the state and action into an Array suitable for the network."""
 
-class SimpleEmbedModule(EmbedModule):
+class SimpleEmbedModule(EmbedModule[Action]):
 
   def __init__(
       self,
-      embed_game: embed_lib.Embedding[Game, Game],
-      embed_state_action: embed_lib.Embedding[StateAction, StateAction],
+      embed_game: embed_lib.Embedding[Game[Rank], Game[Rank]],
+      embed_state_action: embed_lib.Embedding[StateAction[Rank, Controller], StateAction[Rank, Action]],
   ):
     self._embed_game = embed_game
     self._embed_state_action = embed_state_action
@@ -685,24 +687,24 @@ class SimpleEmbedModule(EmbedModule):
   def output_size(self) -> int:
     return self._embed_state_action.size
 
-  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+  def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_state_action.dummy(shape)
 
-  def encode(self, state_action: StateAction) -> StateAction:
+  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     return self._embed_state_action.from_state(state_action)
 
-  def encode_game(self, game: Game) -> Game:
+  def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_game.from_state(game)
 
-  def __call__(self, state_action: StateAction) -> Array:
+  def __call__(self, state_action: StateAction[S, Action]) -> Array:
     return self._embed_state_action(state_action)
 
-class SimpleEmbedNetwork(StateActionNetwork):
+class SimpleEmbedNetwork(StateActionNetwork[Action]):
   """Embeds the state and action using provided embedding module."""
 
   def __init__(
       self,
-      embed_module: EmbedModule,
+      embed_module: EmbedModule[Action],
       network: Network[Array, Array],
       remat: bool = False,
   ):
@@ -714,26 +716,26 @@ class SimpleEmbedNetwork(StateActionNetwork):
   def output_size(self) -> int:
     return self._network.output_size
 
-  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+  def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_module.dummy(shape)
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return self._network.initial_state(batch_size, rngs)
 
-  def encode(self, state_action: StateAction) -> StateAction:
+  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     return self._embed_module.encode(state_action)
 
-  def encode_game(self, game: Game) -> Game:
+  def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_module.encode_game(game)
 
-  def _embed(self, state_action: StateAction) -> Array:
+  def _embed(self, state_action: StateAction[S, Action]) -> Array:
     if self._remat:
       return nnx.remat(apply)(self._embed_module, state_action)
     return self._embed_module(state_action)
 
   def step(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed(state_action)
@@ -743,7 +745,7 @@ class SimpleEmbedNetwork(StateActionNetwork):
 
   def unroll(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
@@ -754,7 +756,7 @@ class SimpleEmbedNetwork(StateActionNetwork):
 
   def scan(
       self,
-      state_action: StateAction,
+      state_action: StateAction[S, Action],
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
