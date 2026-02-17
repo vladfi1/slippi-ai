@@ -15,17 +15,11 @@ from slippi_ai.jax.policies import Policy
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import value_function as vf_lib
 from slippi_ai.jax import jax_utils
+from slippi_ai.jax.jax_utils import swap_axes
+
 
 PS = jax.sharding.PartitionSpec
 Array = jax.Array
-
-
-def swap_axes(t, axis1=0, axis2=1):
-  """Swap two axes of a tensor."""
-  permutation = list(range(len(t.shape)))
-  permutation[axis2] = axis1
-  permutation[axis1] = axis2
-  return jnp.transpose(t, permutation)
 
 
 @dataclasses.dataclass

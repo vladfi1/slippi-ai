@@ -82,6 +82,21 @@ def where(cond: Array, x: Array, y: Array) -> Array:
     cond = jnp.expand_dims(cond, -1)
   return jnp.where(cond, x, y)
 
+
+def swap_axes(t, axis1=0, axis2=1):
+  """Swap two axes of a tensor."""
+  permutation = list(range(len(t.shape)))
+  permutation[axis2] = axis1
+  permutation[axis1] = axis2
+  return jnp.transpose(t, permutation)
+
+def add_n(xs: tp.Iterable[Array]) -> Array:
+  xs_iter = iter(xs)
+  total = next(xs_iter)
+  for x in xs_iter:
+    total += x
+  return total
+
 # Flax NNX
 
 def get_module_state(module: nnx.Module) -> dict:
