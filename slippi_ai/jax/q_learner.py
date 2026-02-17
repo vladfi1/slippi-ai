@@ -11,6 +11,7 @@ from slippi_ai.data import Batch, Frames, StateAction
 from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax import q_function as q_lib
 from slippi_ai.jax import embed, rl_lib, jax_utils
+from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 
 @dataclasses.dataclass
 class LearnerConfig:
@@ -51,9 +52,17 @@ class ShardingKwargs(tp.TypedDict):
   explicit_pmean: bool
   smap_optimizer: bool
 
+class ShardingSpecs(tp.TypedDict):
+  extra_in_specs: tp.Optional[tp.Sequence[PS]]
+  extra_out_specs: tp.Optional[tp.Sequence[PS]]
+
 SAMPLE_POLICY = 'sample_policy'
 Q_FUNCTION = 'q_function'
 Q_POLICY = 'q_policy'
+
+class QFunctionData(tp.NamedTuple, tp.Generic[embed.Action]):
+  frames: Frames[Rank2, embed.Action]
+  policy_samples: embed.Action  # [T, B]
 
 class Learner(nnx.Module, tp.Generic[embed.Action]):
 
@@ -64,6 +73,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       q_function: q_lib.QFunction[embed.Action],
       sample_policy: Policy[embed.Action],  # trained via imitation
       q_policy: Policy[embed.Action],  # trained to maximize q_function outputs
+      rngs: nnx.Rngs,  # used for sampling
       num_samples: int,
       mesh: jax.sharding.Mesh,
       data_sharding: jax.sharding.NamedSharding,
@@ -96,6 +106,8 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.delay = q_policy.delay
     assert sample_policy.delay == self.delay
 
+    jax_utils.replicate_module(self, mesh)
+
     self.data_sharding = data_sharding
     sharding_kwargs = ShardingKwargs(
         mesh=mesh,
@@ -103,17 +115,33 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         smap_optimizer=smap_optimizer,
     )
 
-    self.train_sample_policy = jax_utils.data_parallel_train(
-        module=self.sample_policy,
-        optimizer=self.sample_policy_optimizer,
-        loss_fn=self._unroll_sample_policy,
-        **sharding_kwargs,
+    time_major = PS(None, DATA_AXIS)
+
+    sample_policy_specs = ShardingSpecs(
+        extra_in_specs=None,
+        extra_out_specs=(time_major,),  # policy samples
     )
 
-    self.run_sample_policy = jax_utils.shard_map_loss_fn(
+    self.train_sample_policy = jax_utils.data_parallel_train_with_rngs(
         module=self.sample_policy,
+        optimizer=self.sample_policy_optimizer,
+        rngs=rngs,
+        loss_fn=self._unroll_sample_policy,
+        **sharding_kwargs,
+        **sample_policy_specs,
+    )
+
+    self.run_sample_policy = jax_utils.shard_map_loss_fn_with_rngs(
+        module=self.sample_policy,
+        rngs=rngs,
         loss_fn=self._unroll_sample_policy,
         mesh=mesh,
+        **sample_policy_specs,
+    )
+
+    q_function_specs = ShardingSpecs(
+        extra_in_specs=(time_major,),  # policy samples
+        extra_out_specs=(time_major,),  # q_function outputs
     )
 
     self.train_q_function = jax_utils.data_parallel_train(
@@ -121,12 +149,19 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         optimizer=self.q_function_optimizer,
         loss_fn=self._unroll_q_function,
         **sharding_kwargs,
+        **q_function_specs,
     )
 
     self.run_q_function = jax_utils.shard_map_loss_fn(
         module=self.q_function,
         loss_fn=self._unroll_q_function,
         mesh=mesh,
+        **q_function_specs,
+    )
+
+    q_policy_specs = ShardingSpecs(
+        extra_in_specs=(time_major, time_major),  # policy samples, q_function outputs
+        extra_out_specs=None,
     )
 
     self.train_q_policy = jax_utils.data_parallel_train(
@@ -134,12 +169,14 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         optimizer=self.q_policy_optimizer,
         loss_fn=self._unroll_q_policy,
         **sharding_kwargs,
+        **q_policy_specs,
     )
 
     self.run_q_policy = jax_utils.shard_map_loss_fn(
         module=self.q_policy,
         loss_fn=self._unroll_q_policy,
         mesh=mesh,
+        **q_policy_specs,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -185,11 +222,11 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
   def _unroll_sample_policy(
       self,
       sample_policy: Policy[embed.Action],
-      tm_frames: Frames[Rank2, embed.Action],
+      bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
-  ) -> tuple[Loss, tuple[embed.Action, dict], RecurrentState]:
-    frames = jax.tree.map(jax_utils.swap_axes, tm_frames)
+  ) -> tuple[Loss, dict, RecurrentState, embed.Action]:
+    frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
     action = frames.state_action.action
@@ -221,19 +258,21 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     return (
         bm_loss,
-        (policy_samples, bm_metrics),
+        bm_metrics,
         sample_policy_outputs.final_state,
+        policy_samples,
     )
 
   def _unroll_q_function(
       self,
       q_function: q_lib.QFunction[embed.Action],
-      tm_frames: Frames[Rank2, embed.Action],
+      bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
       policy_samples: embed.Action,
+      *,
       optimize: bool = True,  # Don't recompute q-values of taken actions
-  ) -> tuple[Loss, tuple[QFunctionOutputs, dict], RecurrentState]:
-    frames = jax.tree.map(jax_utils.swap_axes, tm_frames)
+  ) -> tuple[Loss, dict, RecurrentState, QFunctionOutputs]:
+    frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
     q_outputs, final_state = q_function.loss(frames, initial_states, self.discount)
@@ -270,17 +309,17 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     bm_loss = jnp.mean(q_outputs.loss, axis=0)
     bm_metrics = jax.tree.map(jax_utils.swap_axes, q_outputs.metrics)
 
-    return bm_loss, (outputs, bm_metrics), final_state
+    return bm_loss, bm_metrics, final_state, outputs
 
   def _unroll_q_policy(
       self,
       q_policy: Policy[embed.Action],
-      tm_frames: Frames[Rank2, embed.Action],
+      bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
       policy_samples: embed.Action,
       q_function_outputs: QFunctionOutputs,
   ) -> tuple[Loss, dict, RecurrentState]:
-    frames = jax.tree.map(jax_utils.swap_axes, tm_frames)
+    frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
     sample_q_values = q_function_outputs.sample_q_values
@@ -358,7 +397,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       self,
       batch: Batch,
       initial_state: RecurrentState,
-      rngs: nnx.Rngs,
       train: bool = True,
   ):
     state_action = StateAction(
@@ -372,9 +410,9 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     # TODO: properly fork rngs for shard_map
     if train:
-      return self.train_sample_policy(frames, initial_state, rngs)
+      return self.train_sample_policy(frames, initial_state)
     else:
-      return self.run_sample_policy(frames, initial_state, rngs)
+      return self.run_sample_policy(frames, initial_state)
 
   def step_q_function(
       self,
@@ -417,18 +455,14 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     if train:
       return self.train_q_policy(
           frames, initial_state,
-          policy_samples=policy_samples,
-          q_function_outputs=q_function_outputs)
+          policy_samples, q_function_outputs)
     else:
       return self.run_q_policy(
           frames, initial_state,
-          policy_samples=policy_samples,
-          q_function_outputs=q_function_outputs)
-
+          policy_samples, q_function_outputs)
 
   def step(
       self,
-      rngs: nnx.Rngs,
       batch: Batch,
       initial_states: RecurrentState,
       train: bool = True,
@@ -438,15 +472,17 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     metrics = {}
 
     (
-      (policy_samples, metrics[SAMPLE_POLICY]),
+      metrics[SAMPLE_POLICY],
       final_states[SAMPLE_POLICY],
+      policy_samples,
     ) = self.step_sample_policy(
-        batch, initial_states[SAMPLE_POLICY], rngs,
+        batch, initial_states[SAMPLE_POLICY],
         train=train and self.should_train_sample_policy)
 
     (
-      (q_function_outputs, metrics[Q_FUNCTION]),
+      metrics[Q_FUNCTION],
       final_states[Q_FUNCTION],
+      q_function_outputs,
     ) = self.step_q_function(
         batch, initial_states[Q_FUNCTION], policy_samples,
         train=train)

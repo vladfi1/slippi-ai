@@ -29,16 +29,21 @@ from slippi_ai import (
     flag_utils,
     nametags,
     utils,
+    data as data_lib,
+    observations as obs_lib,
 )
 from slippi_ai import data as data_lib
 from slippi_ai import observations as obs_lib
 from slippi_ai.policies import Platform
-from slippi_ai.jax import networks, controller_heads, jax_utils
-from slippi_ai.jax import learner as learner_lib
-from slippi_ai.jax import embed as embed_lib
 
-from slippi_ai.jax import policies as policies_lib
-from slippi_ai.jax import value_function as vf_lib
+from slippi_ai.jax import(
+    networks, controller_heads,
+    jax_utils, saving,
+    embed as embed_lib,
+    learner as learner_lib,
+    policies as policies_lib,
+    value_function as vf_lib,
+)
 
 
 def get_experiment_tag():
@@ -270,37 +275,6 @@ def create_name_map(
   return name_map
 
 
-def policy_from_config(
-    config: Config,
-    rngs: nnx.Rngs,
-) -> policies_lib.Policy:
-  """Build a Policy from configuration."""
-  embed_config = config.embed
-  embed_controller = embed_config.controller.make_embedding()
-
-  network = networks.build_embed_network(
-      rngs=rngs,
-      embed_config=embed_config,
-      num_names=config.max_names,
-      network_config=config.network,
-  )
-
-  controller_head = controller_heads.construct(
-      rngs=rngs,
-      input_size=network.output_size,
-      embed_controller=embed_controller,
-      **config.controller_head,
-  )
-
-  policy = policies_lib.Policy(
-      network=network,
-      controller_head=controller_head,
-      delay=config.policy.delay,
-  )
-
-  return policy
-
-
 def value_function_from_config(
     config: Config,
     rngs: nnx.Rngs,
@@ -431,7 +405,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   rngs = nnx.Rngs(config.seed)
 
   # Build policy and value function
-  policy = policy_from_config(config, rngs)
+  policy = saving.policy_from_configs(
+      network_config=config.network,
+      controller_head_config=config.controller_head,
+      embed_config=config.embed,
+      policy_config=config.policy,
+      max_name=config.max_names,
+      rngs=rngs,
+  )
   value_function = value_function_from_config(config, rngs)
 
   learner_kwargs = dataclasses.asdict(config.learner)
