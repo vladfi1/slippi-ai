@@ -51,9 +51,6 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
     """Constructs a ControllerHead from config."""
     return cls(**kwargs)
 
-class EmbeddingControllerHead(ControllerHead[ControllerType]):
-  """ControllerHead that uses an embed.Embedding."""
-
   @property
   @abc.abstractmethod
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
@@ -72,7 +69,7 @@ class EmbeddingControllerHead(ControllerHead[ControllerType]):
     return self.controller_embedding.decode(controller_state)
 
 
-class Independent(EmbeddingControllerHead[ControllerType]):
+class Independent(ControllerHead[ControllerType]):
   """Models each component of the controller independently."""
 
   @classmethod
@@ -185,7 +182,7 @@ class AutoRegressiveComponent(nnx.Module):
     return residual, DistanceOutputs(distance=distance, logits=logits)
 
 
-class AutoRegressive(EmbeddingControllerHead[ControllerType]):
+class AutoRegressive(ControllerHead[ControllerType]):
   """Samples components sequentially conditioned on past samples."""
 
   @classmethod
