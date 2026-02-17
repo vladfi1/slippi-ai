@@ -164,7 +164,6 @@ class TrainManager:
       self.data_thread.start()
 
     self.cached_fetch_batch = functools.cache(self.fetch_batch)
-    self.cached_step = jax_utils.cached_partial(self.learner.step, self.rngs)
 
   def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
     batch, epoch = next(self.data_source)
@@ -209,19 +208,21 @@ class TrainManager:
     self.last_epoch = epoch
 
     with self.step_profiler:
-      learner_stats, self.hidden_state = self.cached_step(
+      learner_stats, self.hidden_state = self.learner.step(
           batch, self.hidden_state, **self.step_kwargs)
       stats.update(learner_stats)
 
     return stats, batch
 
 def print_losses(name: str, stats: dict):
-  sample_policy_loss = stats[learner_lib.SAMPLE_POLICY]['loss']
+  spl = stats[learner_lib.SAMPLE_POLICY]['loss']
   v_uev = stats[learner_lib.Q_FUNCTION]['v']['uev']
   q_uev = stats[learner_lib.Q_FUNCTION]['q']['uev']
-  q_policy_loss = stats[learner_lib.Q_POLICY]['q_loss']
+  qpl = stats[learner_lib.Q_POLICY]['q_loss']
 
-  print(f'{name}: spl={sample_policy_loss:.4f} v_uev={v_uev:.4f} q_uev={q_uev:.4f} qpl={q_policy_loss:.4f}')
+  spl, v_uev, q_uev, qpl = map(train_lib.mean, (spl, v_uev, q_uev, qpl))
+
+  print(f'{name}: spl={spl:.4f} v_uev={v_uev:.4f} q_uev={q_uev:.4f} qpl={qpl:.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
@@ -240,69 +241,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   runtime = config.runtime
 
-  if config.initialize_policies_from:
-    logging.info(f'Initializing policies from {config.initialize_policies_from}')
-    with open(config.initialize_policies_from, 'rb') as f:
-      imitation_state = pickle.load(f)
+  # Training state. TODO: use orbax?
+  step = 0
+  train_time = 0.0
+  best_eval_loss = float('inf')
+  total_frames = 0
 
-    sample_policy = saving.load_policy_from_state(imitation_state)
-    q_policy = saving.load_policy_from_state(imitation_state)
-
-    # Overwrite policy config
-    imitation_config = saving.upgrade_config(imitation_state['config'])
-    config.policy = flag_utils.dataclass_from_dict(
-        policies.PolicyConfig, imitation_config['policy'])
-    config.network = imitation_config['network']
-    config.controller_head = imitation_config['controller_head']
-    config.embed = flag_utils.dataclass_from_dict(
-        embed_lib.EmbedConfig, imitation_config['embed'])
-
-    if config.learner.train_sample_policy:
-      logging.warning('Continuing to train sample policy')
-
-  else:
-    config_dict = dataclasses.asdict(config)
-    sample_policy = saving.policy_from_config(config_dict)
-    q_policy = saving.policy_from_config(config_dict)
-
-  q_function = q_lib.QFunction(
-      rngs=nnx.Rngs(config.seed),
-      network_config=config.q_function.network,
-      embed_action=q_policy.controller_head.controller_embedding,
-      embed_config=config.embed,
-      num_names=config.max_names,
-  )
-
-  # Multi-device setup
-  runtime = config.runtime
-  mesh: tp.Optional[jax.sharding.Mesh] = None
-  data_sharding = None
-  num_devices = jax_utils.num_devices()
-  if num_devices == 1:
-    logging.warning(
-        'Multi-device training requested but only 1 device available.')
-  else:
-    logging.info('Multi-device training enabled with %d devices', num_devices)
-  if config.data.batch_size % num_devices != 0:
-    raise ValueError(
-        f'Batch size {config.data.batch_size} must be divisible by '
-        f'num_devices {num_devices}')
-  mesh = jax_utils.get_mesh()
-  data_sharding = jax_utils.data_sharding(mesh)
-
-  learner_kwargs = dataclasses.asdict(config.learner)
-  learner = learner_lib.Learner(
-      q_function=q_function,
-      sample_policy=sample_policy,
-      q_policy=q_policy,
-      mesh=mesh,
-      data_sharding=data_sharding,
-      **learner_kwargs,
-  )
-
-  logging.info("Network configuration")
-  for comp in ['network', 'controller_head']:
-    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+  name_map: tp.Optional[dict[str, int]] = None  # initialized later, after train/test split
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
@@ -310,68 +255,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   restored = False
   if config.restore_path:
     logging.info('restoring from %s', config.restore_path)
-    with open(config.restore_path, 'rb') as f:
-      combined_state = pickle.load(f)
+    combined_state = saving.load_state_from_disk(config.restore_path)
     restored = True
   elif os.path.exists(pickle_path):
     logging.info('restoring from %s', pickle_path)
-    with open(pickle_path, 'rb') as f:
-      combined_state = pickle.load(f)
+    combined_state = saving.load_state_from_disk(pickle_path)
     restored = True
   else:
     logging.info('not restoring any params')
-
-  ### Dataset Creation ###
-  dataset_config = config.dataset
-
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
-  if restored:
-    name_map: dict[str, int] = combined_state['name_map']
-  elif config.initialize_policies_from:
-    name_map: dict[str, int] = imitation_state['name_map']
-  else:
-    name_map = train_lib.create_name_map(train_replays, config.max_names)
-
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
-  # Record name map
-  print(name_map)
-  with open(name_map_path, 'w') as f:
-    json.dump(name_map, f)
-  wandb.save(name_map_path, policy='now')
-
-  num_codes = nametags.max_name_code(name_map) + 1
-  encode_name = nametags.name_encoder(name_map)
-  encode_name_uint8 = lambda name: np.uint8(encode_name(name))
-  batch_encode_name = np.vectorize(encode_name_uint8)
-
-  # Create data sources for train and test.
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + q_policy.delay,
-      name_map=name_map,
-  )
-  train_data = data_lib.make_source(replays=train_replays, **data_config)
-  test_data = data_lib.make_source(replays=test_replays, **data_config)
-  del train_replays, test_replays
-
-  train_manager = TrainManager(learner, train_data, dict(train=True))
-  test_manager = TrainManager(learner, test_data, dict(train=False))
-
-  # TrainManager should probably be a proper context manager.
-  exit_stack.callback(train_manager.stop)
-  exit_stack.callback(test_manager.stop)
-
-  stats, _ = train_manager.step()
-  logging.info('loss initial: %f', _get_loss(stats))
-  del stats
-
-  # Training state. TODO: use orbax?
-  step = 0
-  train_time = 0.0
-  best_eval_loss = float('inf')
-  total_frames = 0
 
   if restored:
     assert isinstance(combined_state, dict)
@@ -407,6 +298,124 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
 
+  if not restored and config.initialize_policies_from:
+    logging.info(f'Initializing policies from {config.initialize_policies_from}')
+    imitation_state = saving.load_state_from_disk(config.initialize_policies_from)
+
+    sample_policy = saving.load_policy_from_state(imitation_state)
+    q_policy = saving.load_policy_from_state(imitation_state)
+
+    # Overwrite policy config
+    imitation_config = flag_utils.dataclass_from_dict(
+        train_lib.Config,
+        saving.upgrade_config(imitation_state['config'])
+    )
+    for key in ['policy', 'network', 'controller_head', 'embed']:
+      setattr(config, key, getattr(imitation_config, key))
+
+    if config.learner.train_sample_policy:
+      logging.warning('Continuing to train sample policy')
+
+    name_map = imitation_state['name_map']
+    del imitation_state
+  else:
+    config_dict = dataclasses.asdict(config)
+    sample_policy = saving.policy_from_config_dict(config_dict)
+    q_policy = saving.policy_from_config_dict(config_dict)
+
+  rngs = nnx.Rngs(config.seed)
+
+  q_function = q_lib.QFunction(
+      rngs=rngs,
+      network_config=config.q_function.network,
+      embed_action=q_policy.controller_head.controller_embedding,
+      embed_config=config.embed,
+      num_names=config.max_names,
+  )
+
+  # Multi-device setup
+  runtime = config.runtime
+  mesh: tp.Optional[jax.sharding.Mesh] = None
+  data_sharding = None
+  num_devices = jax_utils.num_devices()
+  if num_devices == 1:
+    logging.warning(
+        'Multi-device training requested but only 1 device available.')
+  else:
+    logging.info('Multi-device training enabled with %d devices', num_devices)
+  if config.data.batch_size % num_devices != 0:
+    raise ValueError(
+        f'Batch size {config.data.batch_size} must be divisible by '
+        f'num_devices {num_devices}')
+
+  mesh = jax_utils.get_mesh()
+  data_sharding = jax_utils.data_sharding(mesh)
+
+  learner_kwargs = dataclasses.asdict(config.learner)
+  learner = learner_lib.Learner(
+      q_function=q_function,
+      sample_policy=sample_policy,
+      q_policy=q_policy,
+      rngs=rngs,
+      mesh=mesh,
+      data_sharding=data_sharding,
+      **learner_kwargs,
+  )
+
+  logging.info("Network configuration")
+  for comp in ['network', 'controller_head']:
+    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+
+  ### Dataset Creation ###
+  dataset_config = config.dataset
+
+  train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+
+  if name_map is None:
+    name_map = train_lib.create_name_map(train_replays, config.max_names)
+
+  name_map_path = os.path.join(expt_dir, 'name_map.json')
+  # Record name map
+  print(name_map)
+  with open(name_map_path, 'w') as f:
+    json.dump(name_map, f)
+  wandb.save(name_map_path, policy='now')
+
+  num_codes = nametags.max_name_code(name_map) + 1
+  encode_name = nametags.name_encoder(name_map)
+  encode_name_uint8 = lambda name: np.uint8(encode_name(name))
+  batch_encode_name = np.vectorize(encode_name_uint8)
+
+  # Create data sources for train and test.
+  data_config = dict(
+      dataclasses.asdict(config.data),
+      extra_frames=1 + q_policy.delay,
+      name_map=name_map,
+  )
+  train_data = data_lib.make_source(replays=train_replays, **data_config)
+  test_data = data_lib.make_source(replays=test_replays, **data_config)
+  del train_replays, test_replays
+
+  train_manager = TrainManager(
+      learner, train_data, dict(train=True),
+      rngs=rngs, data_sharding=data_sharding)
+  test_manager = TrainManager(
+      learner, test_data, dict(train=False),
+      rngs=rngs, data_sharding=data_sharding)
+
+  # TrainManager should probably be a proper context manager.
+  exit_stack.callback(train_manager.stop)
+  exit_stack.callback(test_manager.stop)
+
+  print_losses('initial', train_manager.step()[0])
+
+  if restored:
+    assert isinstance(combined_state, dict)  # appease type checker
+    jax_utils.set_module_state(learner, combined_state['state'])
+    print_losses('post-restore', train_manager.step()[0])
+    del combined_state
+
   # TODO: use orbax instead?
   def save(eval_loss=None):
     nonlocal best_eval_loss
@@ -420,7 +429,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
     )
 
-    # easier to always bundle the config with the state
     combined = dict(
         state=jax_state,
         step=step,
@@ -434,12 +442,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info('saving state to %s', pickle_path)
     with open(pickle_path, 'wb') as f:
       f.write(pickled_state)
-
-  if restored:
-    assert isinstance(combined_state, dict)  # appease type checker
-    jax_utils.set_module_state(learner, combined_state['state'])
-    train_loss = _get_loss(train_manager.step()[0])
-    logging.info('loss post-restore: %f', train_loss)
 
   FRAMES_PER_MINUTE = 60 * 60
   FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
