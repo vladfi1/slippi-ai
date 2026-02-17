@@ -14,6 +14,7 @@ from slippi_ai.jax.controller_heads import (
 )
 from slippi_ai.jax import embed, networks, jax_utils
 from slippi_ai import data, types, utils, policies
+from slippi_ai.types import S
 
 Array = jax.Array
 RecurrentState = networks.RecurrentState
@@ -33,6 +34,8 @@ class UnrollWithOutputs(tp.NamedTuple):
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
+Rank1 = tuple[int]
+Rank2 = tuple[int, int]
 
 class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
@@ -69,7 +72,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll(
       self,
-      frames: data.Frames[ControllerType],
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
   ) -> UnrollOutputs:
     """Computes prediction loss on a batch of frames.
@@ -110,7 +113,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def imitation_loss(
       self,
-      frames: data.Frames[ControllerType],
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
   ) -> tp.Tuple[Array, RecurrentState, dict]:
     # Let's say that delay is D and total unroll-length is U + D + 1 (overlap
@@ -151,7 +154,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll_with_outputs(
       self,
-      frames: data.Frames[ControllerType],
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
   ) -> UnrollWithOutputs:
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
@@ -185,11 +188,11 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def sample(
       self,
       rngs: nnx.Rngs,
-      state_action: data.StateAction[ControllerType],
+      state_action: data.StateAction[S, ControllerType],
       initial_state: RecurrentState,
       is_resetting: Optional[Array] = None,
       **kwargs,
-  ) -> tp.Tuple[SampleOutputs, RecurrentState]:
+  ) -> tp.Tuple[SampleOutputs[ControllerType], RecurrentState]:
     if is_resetting is None:
       batch_size = state_action.state.stage.shape[0]
       is_resetting = jnp.zeros([batch_size], dtype=jnp.bool_)
@@ -210,7 +213,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       name_code: int,
       initial_state: RecurrentState,
       **kwargs,
-  ) -> Tuple[list[SampleOutputs], RecurrentState]:
+  ) -> Tuple[list[SampleOutputs[ControllerType]], RecurrentState]:
     # TODO: use scan?
     actions = []
     hidden_state = initial_state

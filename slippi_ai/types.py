@@ -251,8 +251,8 @@ Action = TypeVar('Action')
 
 NAME_DTYPE = np.int32
 
-class StateAction(NamedTuple, Generic[Action]):
-  state: Game
+class StateAction(NamedTuple, Generic[S, Action]):
+  state: Game[S]
   # The action could actually be an "encoded" action type,
   # which might discretize certain components of the controller
   # such as the sticks and shoulder. Unfortunately NamedTuples can't be
@@ -261,10 +261,10 @@ class StateAction(NamedTuple, Generic[Action]):
   action: Action
 
   # Encoded name
-  name: NAME_DTYPE
+  name: np.ndarray[S, np.dtype[NAME_DTYPE]]
 
-class Frames(NamedTuple, Generic[Action]):
-  state_action: StateAction[Action]
-  is_resetting: bool
+class Frames(NamedTuple, Generic[S, Action]):
+  state_action: StateAction[S, Action]
+  is_resetting: BoolArray[S]
   # The reward will have length one less than the states and actions.
-  reward: np.float32
+  reward: FloatArray[S]
