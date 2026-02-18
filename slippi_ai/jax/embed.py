@@ -680,19 +680,22 @@ def make_custom_v1_embedding(
       embed_mid=embed_custom_v1,
   )
 
+class ControllerType(enum.Enum):
+  DEFAULT = 'default'
+  CUSTOM_V1 = 'custom_v1'
+
 @dataclasses.dataclass
 class ControllerConfig:
-  type: str = "default"
+  type: str = ControllerType.DEFAULT.value  # make this an enum?
   default: DefaultControllerConfig = utils.field(DefaultControllerConfig)
   custom_v1: cv1.Config = utils.field(cv1.Config.default)
 
   def make_embedding(self):
-    if self.type == "default":
-      return self.default.make_embedding()
-    elif self.type == "custom_v1":
-      return make_custom_v1_embedding(self.custom_v1)
-    else:
-      raise ValueError(f"Unknown controller type: {self.type}")
+    match ControllerType(self.type):
+      case ControllerType.DEFAULT:
+        return self.default.make_embedding()
+      case ControllerType.CUSTOM_V1:
+        return make_custom_v1_embedding(self.custom_v1)
 
 @dataclasses.dataclass
 class EmbedConfig:

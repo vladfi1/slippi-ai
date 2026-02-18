@@ -463,7 +463,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
-      extra_frames=1 + policy._delay,
+      extra_frames=1 + policy.delay,
       name_map=name_map,
       observation_config=config.observation,
       **char_filters,

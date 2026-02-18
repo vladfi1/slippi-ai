@@ -18,7 +18,7 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
 
-  train_sample_policy: bool = True
+  train_sample_policy: bool = False
 
   num_samples: int = 1
   q_policy_imitation_weight: float = 0
@@ -59,10 +59,6 @@ class ShardingSpecs(tp.TypedDict):
 SAMPLE_POLICY = 'sample_policy'
 Q_FUNCTION = 'q_function'
 Q_POLICY = 'q_policy'
-
-class QFunctionData(tp.NamedTuple, tp.Generic[embed.Action]):
-  frames: Frames[Rank2, embed.Action]
-  policy_samples: embed.Action  # [T, B]
 
 class Learner(nnx.Module, tp.Generic[embed.Action]):
 
