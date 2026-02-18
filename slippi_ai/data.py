@@ -728,10 +728,11 @@ def make_source(
     cached: bool = False,
     **kwargs):
   if num_workers == 0:
+    unroll_chunks: int = kwargs.pop('unroll_chunks')
+
     if cached:
       return CachedDataSource(**kwargs)
 
-    unroll_chunks: int = kwargs.pop('unroll_chunks')
     if unroll_chunks > 0:
       return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
 
