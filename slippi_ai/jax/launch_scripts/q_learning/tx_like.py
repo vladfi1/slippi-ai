@@ -1,35 +1,32 @@
 #!/usr/bin/env python
-
-"""Train a model using imitation learning."""
+"""Test imitation learning training loop - JAX version."""
 
 import dataclasses
 import os
 
 from absl import app, flags
-import fancyflags as ff
-
 import wandb
+import fancyflags as ff
 
 import melee
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import train_lib, embed, networks
+from slippi_ai.jax import train_q_lib, embed
 
-NET_NAME = networks.TransformerLike.name()
+NET_NAME = 'tx_like'
 
 def default_config():
-  config = train_lib.Config()
+  config = train_q_lib.Config()
 
   config.max_names = 128
   config.policy.delay = 21
-  config.data.batch_size=512
-  config.data.unroll_length=80
-  config.data.damage_ratio=0.01
-  config.data.num_workers=1
-  config.data.balance_characters=True
-  config.learner.learning_rate=1e-4
-  config.learner.reward_halflife=8
-  config.embed.controller.default.axis_spacing=32
-  config.embed.controller.default.shoulder_spacing=10
+  config.data.batch_size = 512
+  config.data.unroll_length = 80
+  config.data.damage_ratio = 0.01
+  config.data.num_workers = 1
+  config.data.balance_characters = True
+  config.learner.learning_rate = 1e-4
+  config.learner.reward_halflife = 8
+  config.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
   config.embed.player.with_nana = True
   # MLP Items embed not yet implemented for JAX
   config.embed.items.type = embed.ItemsType.FLAT
@@ -38,28 +35,24 @@ def default_config():
   config.embed.with_fod = True
   config.embed.with_randall = True
 
-  config.network[NET_NAME].update(
-      num_layers=3,
+  net_config =  config.q_function.network
+  net_config['name'] = NET_NAME
+  net_config[NET_NAME].update(
+      num_layers=2,
       hidden_size=512,
   )
-
-  config.value_function.separate_network_config = True
-  config.value_function.network[NET_NAME].update(
-      num_layers=1,
-      hidden_size=512,
+  net_config['embed']['name'] = 'enhanced'
+  net_config['embed']['enhanced'].update(
+      use_controller_rnn=True,
   )
 
-  ch_name = 'autoregressive'
-  config.controller_head['name'] = ch_name
-  config.controller_head[ch_name]['component_depth'] = 2
-  config.controller_head[ch_name]['residual_size'] = 128
   config.dataset.mirror = True
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
-  config.runtime.num_evals_per_epoch = 4
+  config.runtime.num_evals_per_epoch = 8
 
   return config
 
@@ -67,7 +60,6 @@ if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
 
-  # Config overrides for policy and value networks.
   NET = ff.DEFINE_dict(
       'net',
       name=ff.String(NET_NAME),
@@ -86,7 +78,6 @@ if __name__ == '__main__':
       ),
   )
 
-  TOY_VF = flags.DEFINE_bool('toy_vf', False, 'Use a toy value function for quick testing')
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
@@ -101,20 +92,18 @@ if __name__ == '__main__':
       'wandb',
       project=ff.String('slippi-ai'),
       mode=ff.Enum('online', ['online', 'offline', 'disabled']),
-      group=ff.String('imitation'),
+      group=ff.String('q_learning'),
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
   )
 
   def main(_):
-    config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
+    config = flag_utils.dataclass_from_dict(train_q_lib.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
     net_config = dict(NET.value)
     net = net_config.pop('name')
-    delay = config.policy.delay
-
 
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
@@ -129,15 +118,16 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
-        n = config.network[net]['num_layers']
+        n = config.q_function.network[net]['num_layers']
         h = net_config['hidden_size']
-        config.tag = f"{char}_d{delay}_{net}_{n}x{h}"
+        config.tag = f"{char}_{net}_{n}x{h}"
 
     config.dataset.allowed_characters = char
 
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
     embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
+    embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
 
     def update_embed_config(config: dict):
       config['name'] = embed_name
@@ -148,15 +138,7 @@ if __name__ == '__main__':
       config[net].update(net_config)
       update_embed_config(config['embed'])
 
-    update_network_config(config.network)
-
-    vf_net_config = config.value_function.network
-    if TOY_VF.value:
-      vf_net_config['name'] = 'mlp'
-      vf_net_config['mlp'].update(depth=0)
-      vf_net_config['embed']['name'] = 'simple'
-    else:
-      update_network_config(vf_net_config)
+    update_network_config(config.q_function.network)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
@@ -168,6 +150,6 @@ if __name__ == '__main__':
         config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
-    train_lib.train(config)
+    train_q_lib.train(config)
 
   app.run(main)
