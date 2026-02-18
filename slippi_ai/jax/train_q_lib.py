@@ -25,6 +25,7 @@ from slippi_ai import (
     utils,
     data as data_lib,
     dolphin as dolphin_lib,
+    observations as obs_lib,
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
@@ -95,6 +96,8 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
+
   max_names: int = 16
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
@@ -120,9 +123,6 @@ class Config:
   seed: int = 0
   version: int = saving.VERSION
   platform: str = Platform.JAX.value
-
-def _get_loss(stats: dict):
-  return np.asarray(stats['total_loss']).mean()
 
 
 class TrainManager:
@@ -218,11 +218,13 @@ def print_losses(name: str, stats: dict):
   spl = stats[learner_lib.SAMPLE_POLICY]['loss']
   v_uev = stats[learner_lib.Q_FUNCTION]['v']['uev']
   q_uev = stats[learner_lib.Q_FUNCTION]['q']['uev']
+  v_loss = stats[learner_lib.Q_FUNCTION]['v']['loss']
+  q_loss = stats[learner_lib.Q_FUNCTION]['q']['loss']
   qpl = stats[learner_lib.Q_POLICY]['q_loss']
 
-  spl, v_uev, q_uev, qpl = map(train_lib.mean, (spl, v_uev, q_uev, qpl))
+  spl, v_uev, q_uev, v_loss, q_loss, qpl = map(train_lib.mean, (spl, v_uev, q_uev, v_loss, q_loss, qpl))
 
-  print(f'{name}: spl={spl:.4f} v_uev={v_uev:.4f} q_uev={q_uev:.4f} qpl={qpl:.4f}')
+  print(f'{name}: spl={spl:.4f} v_uev={v_uev:.4f} q_uev={q_uev:.4f} v_loss={v_loss:.4f} q_loss={q_loss:.4f} qpl={qpl:.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
@@ -310,7 +312,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         train_lib.Config,
         saving.upgrade_config(imitation_state['config'])
     )
-    for key in ['policy', 'network', 'controller_head', 'embed']:
+    for key in ['policy', 'network', 'controller_head', 'embed', 'observation']:
       setattr(config, key, getattr(imitation_config, key))
 
     if config.learner.train_sample_policy:
@@ -322,6 +324,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     config_dict = dataclasses.asdict(config)
     sample_policy = saving.policy_from_config_dict(config_dict)
     q_policy = saving.policy_from_config_dict(config_dict)
+
+  if not config.initialize_policies_from and not config.learner.train_sample_policy:
+    if restored:
+      logging.warning('Not training uninitialized sample_policy.')
+    else:
+      config.learner.train_sample_policy = True
+      logging.warning('Training sample policy.')
 
   rngs = nnx.Rngs(config.seed)
 
@@ -392,6 +401,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       dataclasses.asdict(config.data),
       extra_frames=1 + q_policy.delay,
       name_map=name_map,
+      observation_config=config.observation,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
   test_data = data_lib.make_source(replays=test_replays, **data_config)
