@@ -151,3 +151,6 @@ setup.sh
 saved_models/
 pickled_models/
 test_models/
+
+# git worktrees
+.worktrees/
