@@ -56,7 +56,7 @@ class Controller(NamedTuple, Generic[S]):
 
 class Nana(NamedTuple, Generic[S]):
   exists: BoolArray
-  percent: FloatArray
+  percent: UInt16Array
   facing: BoolArray
   x: FloatArray
   y: FloatArray
@@ -68,7 +68,7 @@ class Nana(NamedTuple, Generic[S]):
   on_ground: BoolArray
 
 class Player(NamedTuple, Generic[S]):
-  percent: FloatArray
+  percent: UInt16Array
   facing: BoolArray
   x: FloatArray
   y: FloatArray

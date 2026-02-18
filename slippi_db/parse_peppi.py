@@ -62,7 +62,7 @@ def get_base_player_data(data: peppi_py.frame.Data, handle_nulls: bool = False) 
     hurtbox_state_np = to_numpy_safe(hurtbox_state)
 
   return dict(
-      percent=to_numpy_safe(post.percent),
+      percent=to_numpy_safe(post.percent).astype(np.uint16),
       facing=to_numpy_safe(post.direction) > 0,
       x=to_numpy_safe(position.x),
       y=to_numpy_safe(position.y),
