@@ -300,6 +300,7 @@ class DolphinConfig:
   render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
   save_replays: bool = False  # Save slippi replays to the usual location.
   replay_dir: Optional[str] = None  # Directory to save replays to.
+  replay_monthly_folders: Optional[bool] = None  # Whether to save replays in monthly subfolders.
   gfx_backend: str = ''  # Graphics backend to use.
   disable_audio: bool = False  # Disable dolphin audio.
   audio_backend: str = ''  # Audio backend to use.
