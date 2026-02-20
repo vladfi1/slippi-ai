@@ -5,6 +5,8 @@ import pickle
 
 from absl import app, flags
 
+from slippi_ai import saving
+
 SRC = flags.DEFINE_string(
     'src', 'pickled_models',
     'Path to the directory containing the models to strip')
@@ -28,26 +30,27 @@ def needs_copy(src, dst):
   return src_time > dst_time
 
 def run(src: str, dst: str, verbose: bool = False):
-  os.makedirs(dst, exist_ok=True)
-  models = os.listdir(src)
+  for dirpath, dirnames, filenames in os.walk(src):
+    rel_dir = os.path.relpath(dirpath, src)
+    dst_dir = os.path.join(dst, rel_dir)
+    os.makedirs(dst_dir, exist_ok=True)
 
-  for model in models:
-    src_path = os.path.join(src, model)
-    dst_path = os.path.join(dst, model)
+    for filename in filenames:
+      src_path = os.path.join(dirpath, filename)
+      dst_path = os.path.join(dst_dir, filename)
 
-    if not needs_copy(src_path, dst_path):
-      continue
+      if not needs_copy(src_path, dst_path):
+        continue
 
-    with open(src_path, 'rb') as f:
-      combined_state = pickle.load(f)
+      combined_state = saving.load_state_from_disk(src_path)
+      combined_state['state'] = strip_state(combined_state['state'])
 
-    combined_state['state'] = strip_state(combined_state['state'])
+      with open(dst_path, 'wb') as f:
+        pickle.dump(combined_state, f)
 
-    with open(dst_path, 'wb') as f:
-      pickle.dump(combined_state, f)
-
-    if verbose:
-      print(f'Stripped {model}')
+      if verbose:
+        rel_path = os.path.relpath(src_path, src)
+        print(f'Stripped {rel_path}')
 
 def main(_):
   run(SRC.value, DST.value, VERBOSE.value)
