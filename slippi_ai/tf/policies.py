@@ -13,11 +13,14 @@ from slippi_ai.tf.controller_heads import (
 )
 from slippi_ai.tf.rl_lib import discounted_returns
 from slippi_ai import data, types, utils, policies
+from slippi_ai.types import S
 from slippi_ai.tf import embed, networks, tf_utils
 from slippi_ai.tf.value_function import ValueOutputs
 
 Outputs = tf_utils.Outputs
 RecurrentState = networks.RecurrentState
+
+Rank2 = tuple[int, int]
 
 class UnrollOutputs(tp.NamedTuple, tp.Generic[ControllerType]):
   log_probs: tf.Tensor  # [T, B]
@@ -126,7 +129,7 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll(
       self,
-      frames: data.Frames,
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
       discount: float = 0.99,
   ) -> UnrollOutputs:
@@ -178,7 +181,7 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def imitation_loss(
       self,
-      frames: data.Frames,
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
       discount: float = 0.99,
       value_cost: float = 0.5,
@@ -228,7 +231,7 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll_with_outputs(
       self,
-      frames: data.Frames,
+      frames: data.Frames[Rank2, ControllerType],
       initial_state: RecurrentState,
       discount: float = 0.99,
   ):
@@ -270,7 +273,7 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def sample(
       self,
-      state_action: data.StateAction[ControllerType],
+      state_action: data.StateAction[S, ControllerType],
       initial_state: RecurrentState,
       is_resetting: tp.Optional[BoolArray] = None,
       **kwargs,
