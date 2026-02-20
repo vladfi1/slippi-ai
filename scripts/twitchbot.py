@@ -80,10 +80,18 @@ BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
 
 DEFAULT_AGENT = flags.DEFINE_string('default_agent', None, 'Name of default agent.')
 
+BOTMATCH_REPLAY_DIR = flags.DEFINE_string(
+    'botmatch_replay_dir', 'Replays/BotMatch',
+    'Base directory for user bot-match replays.')
+BOTMATCH_MAX_GAMES = flags.DEFINE_integer(
+    'botmatch_max_games', 25,
+    'Max games per bot-match session before it auto-stops.')
+
 @dataclasses.dataclass
 class SessionStatus:
   num_menu_frames: int
   is_alive: bool
+  games_completed: int = 0
 
 Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
 
@@ -251,6 +259,7 @@ class BotSession:
       agent_configs: dict[int, AgentConfig],
       extra_dolphin_kwargs: dict = {},
       run_on_cpu: bool = False,
+      max_games: Optional[int] = None,
   ):
     logging.basicConfig(level=logging.INFO)
 
@@ -261,6 +270,7 @@ class BotSession:
 
     self.dolphin_config = dolphin_config
     self.stop_requested = threading.Event()
+    self._games_completed = 0
 
     ports = agent_configs.keys()
     dolphin_kwargs = dolphin_config.to_kwargs()
@@ -292,11 +302,22 @@ class BotSession:
       for agent in agents.values():
         agent.start()
       try:
+        was_in_game = False
         while not self.stop_requested.is_set():
           gamestate = next(gamestates)
-          if not dolphin_lib.is_menu_state(gamestate):
+          in_game = not dolphin_lib.is_menu_state(gamestate)
+          if in_game:
             for agent in agents.values():
               agent.step(gamestate)
+          # Detect game-end transition: was in game, now in menu.
+          if was_in_game and not in_game:
+            self._games_completed += 1
+            if max_games is not None:
+              logging.info(f'Bot session: game {self._games_completed} completed.')
+              if self._games_completed >= max_games:
+                logging.info(f'Bot session: reached max_games={max_games}, stopping.')
+                break
+          was_in_game = in_game
       finally:
         for agent in agents.values():
           agent.stop()
@@ -313,6 +334,7 @@ class BotSession:
     return SessionStatus(
         num_menu_frames=0,
         is_alive=self._thread.is_alive(),
+        games_completed=self._games_completed,
     )
 
 RemoteBotSession = ray.remote(num_gpus=0)(BotSession)
@@ -434,6 +456,7 @@ HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
 !agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker, and the medium-* agents are in the middle.
 !agent <name>: Select an agent to play against.
+!botmatch <agent1> [<agent2>]: Start an off-stream bot-vs-bot match ({botmatch_max_games} games).
 !more: Show extra commands.
 At most {max_players} players can be active at once, with one player on stream. If no one is playing, bots may be on stream.
 """.strip()
@@ -457,10 +480,10 @@ Melee AI trained with a combination of imitation learning from slippi replays an
 
 @dataclasses.dataclass
 class SessionInfo:
-  session: Session  # actually a RemoteSession
+  session: Session  # actually a RemoteSession or RemoteBotSession
   start_time: datetime.datetime
   twitch_name: str
-  connect_code: str
+  connect_code: Optional[str]
   agent: str
 
 def format_td(td: datetime.timedelta) -> str:
@@ -524,6 +547,8 @@ class Bot(commands.Bot):
       bot2: Optional[str] = None,
       auto_delay: int = 18,
       default_agent: Optional[str] = None,
+      botmatch_replay_dir: str = 'Replays/BotMatch',
+      botmatch_max_games: int = 10,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -543,6 +568,8 @@ class Bot(commands.Bot):
     self._bot_session_interval = bot_session_interval
 
     self._auto_delay = auto_delay
+    self._botmatch_replay_dir = botmatch_replay_dir
+    self._botmatch_max_games = botmatch_max_games
 
     self._sessions: dict[str, SessionInfo] = {}
     self._streaming_against: Optional[str] = None
@@ -557,6 +584,7 @@ class Bot(commands.Bot):
     self.help_message = HELP_MESSAGE.format(
         max_players=max_sessions,
         bot_code=user_json['connectCode'],
+        botmatch_max_games=botmatch_max_games,
     )
 
     self._models_path = models_path
@@ -903,6 +931,57 @@ class Bot(commands.Bot):
     await self._play(ctx)
 
   @commands.command()
+  async def botmatch(self, ctx: commands.Context):
+    with self.lock:
+      name = ctx.author.name
+      assert isinstance(name, str)
+      words = ctx.message.content.split(' ')[1:]
+
+      if len(words) == 1:
+        agent1_name = agent2_name = words[0]
+      elif len(words) == 2:
+        agent1_name, agent2_name = words
+      else:
+        await ctx.send('Usage: !botmatch agent1 [agent2]')
+        return
+
+      agent1_config = self._agents.get(agent1_name)
+      if agent1_config is None:
+        await ctx.send(f'Unknown agent: {agent1_name}')
+        return
+
+      agent2_config = self._agents.get(agent2_name)
+      if agent2_config is None:
+        await ctx.send(f'Unknown agent: {agent2_name}')
+        return
+
+      if name in self._sessions:
+        await ctx.send(f'{name}, you already have an active session.')
+        return
+
+      await self._gc_sessions()
+
+      if len(self._sessions) == self._max_sessions:
+        await ctx.send('Sorry, too many sessions already active.')
+        return
+
+      agent_configs = {1: agent1_config, 2: agent2_config}
+      session = self._start_user_bot_session(
+          agent_configs, max_games=self._botmatch_max_games)
+
+      agent_label = f'{agent1_name} vs {agent2_name}'
+      self._sessions[name] = SessionInfo(
+          session=session,
+          start_time=datetime.datetime.now(),
+          twitch_name=name,
+          connect_code=None,
+          agent=agent_label,
+      )
+      await ctx.send(
+          f'Started bot match: {agent_label}'
+          f' ({self._botmatch_max_games} games).')
+
+  @commands.command()
   async def reset(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
@@ -967,6 +1046,36 @@ class Bot(commands.Bot):
         config, self._bot_configs,
         extra_dolphin_kwargs=extra_dolphin_kwargs,
         run_on_cpu=self.run_on_cpu,
+    )
+
+  def _start_user_bot_session(
+      self,
+      agent_configs: dict[int, AgentConfig],
+      max_games: int,
+  ) -> BotSession:
+    config = dataclasses.replace(self.dolphin_config)
+    config.slippi_port = portpicker.pick_unused_port()
+    config.connect_code = None
+    config.render = False
+    config.headless = True
+    config.save_replays = True
+
+    sorted_names = sorted(ac.name for ac in agent_configs.values())
+    config.replay_dir = os.path.join(
+        self._botmatch_replay_dir,
+        f'{sorted_names[0]}_vs_{sorted_names[1]}')
+    config.replay_monthly_folders = False
+    os.makedirs(config.replay_dir, exist_ok=True)
+
+    config.online_delay = min(
+        ac.target_console_delay for ac in agent_configs.values())
+
+    session_class = RemoteBotSession if self.run_on_cpu else RemoteGpuBotSession
+
+    return session_class.remote(
+        config, agent_configs,
+        run_on_cpu=self.run_on_cpu,
+        max_games=max_games,
     )
 
   async def _maybe_start_bot_session(self) -> bool:
@@ -1056,15 +1165,24 @@ class Bot(commands.Bot):
       now = datetime.datetime.now()
       for session_info in self._sessions.values():
         timedelta = format_td(now - session_info.start_time)
-        is_stream = session_info.twitch_name == self._streaming_against
-        on_off = "on" if is_stream else "off"
-        menu_frames = ray.get(session_info.session.num_menu_frames.remote())
-        menu_time = format_td(datetime.timedelta(seconds=menu_frames / 60))
         player = session_info.twitch_name
         agent = session_info.agent
-        await ctx.send(
-            f'Playing against {player} as {agent} {on_off} stream'
-            f' for {timedelta} (in menu for {menu_time}).')
+
+        if session_info.connect_code is None:
+          # Bot-match session
+          status: SessionStatus = ray.get(session_info.session.status.remote())
+          await ctx.send(
+              f'Bot match: {agent} for {timedelta},'
+              f' {status.games_completed} games completed'
+              f' (requested by {player}).')
+        else:
+          is_stream = player == self._streaming_against
+          on_off = "on" if is_stream else "off"
+          menu_frames = ray.get(session_info.session.num_menu_frames.remote())
+          menu_time = format_td(datetime.timedelta(seconds=menu_frames / 60))
+          await ctx.send(
+              f'Playing against {player} as {agent} {on_off} stream'
+              f' for {timedelta} (in menu for {menu_time}).')
 
   def _stop_sessions(self, infos: list[SessionInfo]):
     """All (non-bot) session stops go through this method."""
@@ -1186,6 +1304,8 @@ def main(_):
       bot=BOT.value,
       bot2=BOT2.value,
       default_agent=DEFAULT_AGENT.value,
+      botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
+      botmatch_max_games=BOTMATCH_MAX_GAMES.value,
   )
 
   try:
