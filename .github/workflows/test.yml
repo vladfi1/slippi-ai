@@ -86,6 +86,9 @@ jobs:
     - name: Test RL with Fake Data + Restore
       run: ./slippi_ai/tf/tests/train_rl.sh --config.teacher="" --config.restore=slippi_ai/data/checkpoints/rl_demo --config.agent.char=FOX
 
+    - name: Train RL vs JAX
+      run: ./slippi_ai/tf/tests/train_rl_vs_jax.sh
+
     - name: Test train_two with Fake Data
       run: ./slippi_ai/tf/tests/train_two.sh
 

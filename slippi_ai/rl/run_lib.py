@@ -56,15 +56,20 @@ class ActorConfig:
   use_fake_envs: bool = False
 
 @dataclasses.dataclass
+class TFConfig:
+  jit_compile: bool = False
+
+@dataclasses.dataclass
 class AgentConfig:
   # TODO: merge with ActorConfig?
   path: tp.Optional[str] = None  # Only used for static opponents
   compile: bool = True
-  jit_compile: bool = False
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
   char: tp.Optional[list[melee.Character]] = None
   batch_steps: int = 0
   async_inference: bool = False
+
+  tf: TFConfig = field(TFConfig)
 
   def __post_init__(self):
     if self.char is not None and len(self.char) != len(self.name):
@@ -73,13 +78,13 @@ class AgentConfig:
           f'number of names {len(self.name)}')
 
   def get_kwargs(self) -> dict:
-    if self.jit_compile:
+    if self.tf.jit_compile:
       logging.warning('jit_compile may lead to instability')
     kwargs: dict[str, tp.Any] = dict(
         compile=self.compile,
-        jit_compile=self.jit_compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
+        tf=dataclasses.asdict(self.tf),
     )
     if self.path:
       state = saving.load_state_from_disk(self.path)
