@@ -47,6 +47,7 @@ flags.DEFINE_integer('threads', 1, 'Number of threads to use')
 flags.DEFINE_integer('limit', None, 'Limit number of files to process (for testing)')
 flags.DEFINE_boolean('remove_input', False, 'Whether to remove successful files from input archive after conversion')
 flags.DEFINE_enum_class('output_type', OutputType.SLPZ, OutputType, 'Output type for conversion')
+flags.DEFINE_string('tmp_dir', None, 'Optional directory for temporary files (defaults to system temp directory)')
 
 def convert_slp_to_slpp_gz(
     zip_file: utils.ZipFile,
@@ -109,7 +110,7 @@ def convert_slp_to_slpz(
 ) -> Optional[str]:
   try:
     subprocess.run(
-        ['slpz', '-x', '-', '-o', output_path],
+        ['slpz', '-x', '-o', output_path, '-'],
         input=zip_file.read(),
         check=True,
         capture_output=True,
@@ -140,6 +141,7 @@ def convert_zip_archive(
     num_threads: int = 1,
     limit: Optional[int] = None,
     remove_input: bool = False,
+    tmp_dir: Optional[str] = None,
 ):
   """Convert all .slp files in a zip archive to .slpp.gz format.
 
@@ -164,7 +166,7 @@ def convert_zip_archive(
   to_remove: list[str] = []
 
   # Create temporary directory for output files (not in shared memory)
-  with tempfile.TemporaryDirectory() as temp_output_dir:
+  with tempfile.TemporaryDirectory(dir=tmp_dir) as temp_output_dir:
     todo: list[tuple[utils.ZipFile, str]] = []
     skipped_count = 0
     output_dirs = set()  # Track output directories to create
@@ -295,6 +297,7 @@ def main(_):
           num_threads=FLAGS.threads,
           limit=FLAGS.limit,
           remove_input=FLAGS.remove_input,
+          tmp_dir=FLAGS.tmp_dir,
       )
       return 0
     except Exception as e:
@@ -338,6 +341,7 @@ def main(_):
             num_threads=FLAGS.threads,
             limit=FLAGS.limit,
             remove_input=FLAGS.remove_input,
+            tmp_dir=FLAGS.tmp_dir,
         )
       except Exception as e:
         print(f"Error processing {zip_file}: {e}")
