@@ -21,6 +21,8 @@ class LearnerConfig:
   train_sample_policy: bool = False
 
   num_samples: int = 1
+
+  q_policy_argmax_weight: float = 1
   q_policy_imitation_weight: float = 0
   q_policy_expected_return_weight: float = 0
 
@@ -76,6 +78,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
       train_sample_policy: bool = True,
+      q_policy_argmax_weight: float = 1,
       q_policy_imitation_weight: float = 0,
       q_policy_expected_return_weight: float = 0,
   ):
@@ -96,6 +99,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.should_train_sample_policy = train_sample_policy
 
     self.num_samples = num_samples
+    self.q_policy_argmax_weight = q_policy_argmax_weight
     self.q_policy_imitation_weight = q_policy_imitation_weight
     self.q_policy_expected_return_weight = q_policy_expected_return_weight
 
@@ -366,7 +370,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     regret = q_policy_expected_return - optimal_expected_return
 
     losses = [
-        q_policy_argmax_loss,
+        self.q_policy_argmax_weight * q_policy_argmax_loss,
         self.q_policy_imitation_weight * q_policy_imitation_loss,
         -self.q_policy_expected_return_weight * q_policy_expected_return,
     ]
