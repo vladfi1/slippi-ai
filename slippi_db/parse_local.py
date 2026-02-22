@@ -422,6 +422,75 @@ def parse_7zs(
 
   return results
 
+def _swap_upgraded_files(
+    files: list[utils.ZipFile],
+    raw: str,
+    upgraded_dir: str,
+    db_conn: sqlite3.Connection,
+) -> list[utils.ZipFile]:
+  """Replace raw files with upgraded versions where available.
+
+  Modifies and returns the list in-place.
+  """
+  db_results = upgrade_slp.query_upgrade_results(db_conn, raw)
+  successes = {
+    name for name, result in db_results.items() if result == 'success'
+  }
+  if not successes:
+    return files
+
+  upgraded_path = os.path.join(upgraded_dir, raw)
+  if not os.path.exists(upgraded_path):
+    logging.warning(
+      '%s: %d successful upgrades but upgraded archive not found at %s',
+      raw, len(successes), upgraded_path)
+    return files
+
+  upgraded_files = utils.traverse_slp_files_zip(upgraded_path)
+  upgraded_by_base = {f.base_name: f for f in upgraded_files}
+  num_swapped = 0
+  for i, f in enumerate(files):
+    if f.base_name in successes and f.base_name in upgraded_by_base:
+      files[i] = upgraded_by_base[f.base_name]
+      num_swapped += 1
+  logging.info(
+    '%s: swapped %d/%d files from upgraded archive',
+    raw, num_swapped, len(files))
+  return files
+
+
+def _query_missing_netplay(parsed_db_path: str) -> dict[str, list[str]]:
+  """Query parsed.sqlite for valid replays missing netplay info.
+
+  Returns {raw_archive: [base_name, ...]} for files to re-parse.
+  """
+  if not os.path.exists(parsed_db_path):
+    return {}
+
+  conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
+  cursor = conn.execute("""
+    SELECT name, raw FROM replays
+    WHERE valid = 1
+      AND p0_netplay_name IS NULL
+      AND p0_netplay_code IS NULL
+      AND p1_netplay_name IS NULL
+      AND p1_netplay_code IS NULL
+  """)
+  rows = cursor.fetchall()
+  conn.close()
+
+  if not rows:
+    return {}
+
+  by_archive: dict[str, list[str]] = {}
+  for name, raw in rows:
+    # name is "base_name.slp", strip the suffix to get base_name
+    base_name = name.removesuffix('.slp')
+    by_archive.setdefault(raw, []).append(base_name)
+
+  return by_archive
+
+
 def run_parsing(
     root: str,
     num_threads: int = 1,
@@ -429,6 +498,7 @@ def run_parsing(
     chunk_size_gb: float = 0.5,
     in_memory: bool = True,
     reprocess: bool = False,
+    reparse_missing_netplay: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
     debug: bool = False,
@@ -459,17 +529,6 @@ def run_parsing(
 
   print("To process:", to_process)
 
-  if dry_run:
-    return
-
-  output_dir = os.path.join(root, 'Parsed')
-  os.makedirs(output_dir, exist_ok=True)
-
-  # Special-case 7z files which we process in chunks.
-  results = parse_7zs(
-      raw_dir, to_process, output_dir, num_threads,
-      compression_options, chunk_size_gb, in_memory)
-
   # Open upgrades DB if it exists.
   upgrades_db_path = os.path.join(root, 'upgrades.sqlite')
   if os.path.exists(upgrades_db_path):
@@ -481,7 +540,6 @@ def run_parsing(
   upgraded_dir = os.path.join(root, 'Upgraded')
 
   # Now handle zip files.
-  print("Processing zip files.")
   slp_files: list[utils.LocalFile] = []
   raw_names: list[str] = []
   for raw in to_process:
@@ -489,37 +547,50 @@ def run_parsing(
     if not raw.endswith('.zip'):
       continue
     files = utils.traverse_slp_files_zip(raw_path)
-
-    # Swap in upgraded files where available.
     if db_conn is not None:
-      db_results = upgrade_slp.query_upgrade_results(db_conn, raw)
-      successes = {
-        name for name, result in db_results.items() if result == 'success'
-      }
-      if successes:
-        upgraded_path = os.path.join(upgraded_dir, raw)
-        if os.path.exists(upgraded_path):
-          upgraded_files = utils.traverse_slp_files_zip(upgraded_path)
-          upgraded_by_base = {f.base_name: f for f in upgraded_files}
-          num_swapped = 0
-          for i, f in enumerate(files):
-            if f.base_name in successes and f.base_name in upgraded_by_base:
-              files[i] = upgraded_by_base[f.base_name]
-              num_swapped += 1
-          logging.info(
-            '%s: swapped %d/%d files from upgraded archive',
-            raw, num_swapped, len(files))
-        else:
-          logging.warning(
-            '%s: %d successful upgrades but upgraded archive not found at %s',
-            raw, len(successes), upgraded_path)
-
+      _swap_upgraded_files(files, raw, upgraded_dir, db_conn)
     print(f"Found {len(files)} slp files in {raw}")
     slp_files.extend(files)
     raw_names.extend([raw] * len(files))
 
+  # Re-parse files missing netplay info from already-processed archives.
+  if reparse_missing_netplay:
+    parsed_db_path = os.path.join(root, 'parsed.sqlite')
+    missing = _query_missing_netplay(parsed_db_path)
+    # Exclude archives we're already fully reprocessing.
+    to_process_set = set(to_process)
+    missing = {k: v for k, v in missing.items() if k not in to_process_set}
+    if missing:
+      total_files = sum(len(v) for v in missing.values())
+      print(f"Re-parsing {total_files} files missing netplay info "
+            f"from {len(missing)} archives.")
+    else:
+      print("No files missing netplay info.")
+
+    for raw, base_names in missing.items():
+      raw_path = os.path.join(raw_dir, raw)
+      all_files = utils.traverse_slp_files_zip(raw_path)
+      if db_conn is not None:
+        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
+      need = set(base_names)
+      selected = [f for f in all_files if f.base_name in need]
+      slp_files.extend(selected)
+      raw_names.extend([raw] * len(selected))
+
+  if dry_run:
+    return
+
+  output_dir = os.path.join(root, 'Parsed')
+  os.makedirs(output_dir, exist_ok=True)
+
+  # Special-case 7z files which we process in chunks.
+  results = parse_7zs(
+      raw_dir, to_process, output_dir, num_threads,
+      compression_options, chunk_size_gb, in_memory)
+
   # TODO: handle raw .slp and .slp.gz files
 
+  print("Processing zip files.")
   zip_results = parse_files(
       slp_files, output_dir,
       tmpdir=tmpdir,
@@ -580,6 +651,9 @@ if __name__ == '__main__':
       help='Type of compression to use.')
   COMPRESSION_LEVEL = flags.DEFINE_integer('compression_level', None, 'Compression level.')
   REPROCESS = flags.DEFINE_bool('reprocess', False, 'Reprocess raw archives.')
+  REPARSE_MISSING_NETPLAY = flags.DEFINE_bool(
+      'reparse_missing_netplay', False,
+      'Re-parse valid replays that are missing netplay info.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
   DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
@@ -594,6 +668,7 @@ if __name__ == '__main__':
             compression_level=COMPRESSION_LEVEL.value,
         ),
         reprocess=REPROCESS.value,
+        reparse_missing_netplay=REPARSE_MISSING_NETPLAY.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
         debug=DEBUG.value,
