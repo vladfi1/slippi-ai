@@ -252,16 +252,15 @@ def convert_zip_archive(
 
     # Handle input removal if requested
     if remove_input:
-      if failed_conversions == 0:
-        print(f"Removing input archive: {input_zip_path}")
-        os.remove(input_zip_path)
-      else:
-        # Remove only successful files from the archive
-        to_remove.extend(filename for filename, error in results if error is None)
+      # Remove only successful files from the archive
+      to_remove.extend(filename for filename, error in results if error is None)
 
-        if to_remove:
-          print(f"Removing {len(to_remove)} successful files from input archive at {input_zip_path}")
-          utils.delete_from_zip(input_zip_path, to_remove)
+      if to_remove:
+        print(f"Removing {len(to_remove)} successful files from input archive at {input_zip_path}")
+        utils.delete_from_zip(input_zip_path, to_remove)
+
+      # Note: we leave an empty archive if all files were removed. This plays
+      # well with dropbox_pull.py as it will avoid re-downloading the archive.
 
     if failed_conversions > 0:
       print(f"Some files failed to convert: {failed_conversions} errors")
