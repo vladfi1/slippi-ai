@@ -6,7 +6,7 @@ Root
   Raw
   raw.json
   Parsed
-  parsed.pkl
+  parsed.sqlite
   meta.json
 
 Raw contains .zip and .7z archives of .slp files, possibly nested under
@@ -16,38 +16,166 @@ been processed, it may be removed to save space.
 
 The Parsed directory is populated by this script with a parquet file for each
 processed .slp file. These files are named by the MD5 hash of the .slp file,
-and are used by imitation learning. The parsed.pkl pickle file contains
+and are used by imitation learning. The parsed.sqlite database contains
 metadata about each processed .slp in Parsed.
 
 The meta.json file is created by scripts/make_local_dataset.py and is used by
 imitation learning to know which files to train on.
-TODO: consider merging meta.json and parsed.pkl
 
 Usage: python slippi_db/parse_local.py --root=Root [--threads N] [--dry_run]
 
 This will process all unprocessed .zip and .7z files in the Raw directory,
-overwriting any existing files in Parsed, and will update parsed.pkl.
+overwriting any existing files in Parsed, and will update parsed.sqlite.
 """
 
 import concurrent.futures
 import json
 import logging
 import os
-import pickle
+import sqlite3
 import sys
 import tempfile
 import time
 import typing as tp
-from typing import Optional
+from typing import Any, Optional
 
 from absl import app, flags
 import tqdm
 
 from slippi_db import parse_peppi
 from slippi_db import preprocessing
+from slippi_db import upgrade_slp
 from slippi_db import utils
 from slippi_db import parsing_utils
 from slippi_db.parsing_utils import CompressionType
+
+## Parsed SQLite DB helpers
+# Schema matches slippi_db/scripts/convert_parsed_to_sqlite.py
+
+PARSED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS replays (
+    name TEXT NOT NULL,
+    raw TEXT NOT NULL,
+    slp_md5 TEXT,
+    slp_size INTEGER,
+    start_at TEXT,
+    played_on TEXT,
+    last_frame INTEGER,
+    slippi_version TEXT,
+    stage INTEGER,
+    timer INTEGER,
+    is_teams INTEGER,
+    num_players INTEGER,
+    winner INTEGER,
+    valid INTEGER NOT NULL,
+    is_training INTEGER,
+    not_training_reason TEXT,
+    parse_error TEXT,
+    pq_size INTEGER,
+    compression TEXT,
+    match_id TEXT,
+    match_game INTEGER,
+    match_tiebreaker INTEGER,
+    p0_port INTEGER,
+    p0_character INTEGER,
+    p0_type INTEGER,
+    p0_name_tag TEXT,
+    p0_netplay_name TEXT,
+    p0_netplay_code TEXT,
+    p0_netplay_suid TEXT,
+    p0_damage_taken REAL,
+    p1_port INTEGER,
+    p1_character INTEGER,
+    p1_type INTEGER,
+    p1_name_tag TEXT,
+    p1_netplay_name TEXT,
+    p1_netplay_code TEXT,
+    p1_netplay_suid TEXT,
+    p1_damage_taken REAL,
+    PRIMARY KEY (name, raw)
+);
+"""
+
+PARSED_COLUMNS = [
+    'name', 'raw', 'slp_md5', 'slp_size', 'start_at', 'played_on',
+    'last_frame', 'slippi_version', 'stage', 'timer', 'is_teams',
+    'num_players', 'winner', 'valid', 'is_training', 'not_training_reason',
+    'parse_error', 'pq_size', 'compression',
+    'match_id', 'match_game', 'match_tiebreaker',
+    'p0_port', 'p0_character', 'p0_type', 'p0_name_tag',
+    'p0_netplay_name', 'p0_netplay_code', 'p0_netplay_suid', 'p0_damage_taken',
+    'p1_port', 'p1_character', 'p1_type', 'p1_name_tag',
+    'p1_netplay_name', 'p1_netplay_code', 'p1_netplay_suid', 'p1_damage_taken',
+]
+
+PARSED_INSERT_SQL = f"""
+INSERT OR REPLACE INTO replays ({', '.join(PARSED_COLUMNS)})
+VALUES ({', '.join('?' * len(PARSED_COLUMNS))})
+"""
+
+
+def _format_version(version: tuple | list | None) -> str | None:
+  if version is None:
+    return None
+  return '.'.join(str(v) for v in version)
+
+
+def _extract_player(player: dict, prefix: str) -> dict[str, Any]:
+  netplay = player.get('netplay') or {}
+  return {
+    f'{prefix}_port': player.get('port'),
+    f'{prefix}_character': player.get('character'),
+    f'{prefix}_type': player.get('type'),
+    f'{prefix}_name_tag': player.get('name_tag'),
+    f'{prefix}_netplay_name': netplay.get('name'),
+    f'{prefix}_netplay_code': netplay.get('code'),
+    f'{prefix}_netplay_suid': netplay.get('suid'),
+    f'{prefix}_damage_taken': player.get('damage_taken'),
+  }
+
+
+def result_to_tuple(row: dict) -> tuple:
+  """Convert a parse result dict to a tuple for SQLite insertion."""
+  match = row.get('match') or {}
+  players = row.get('players') or []
+
+  flat = {
+    'name': row.get('name'),
+    'raw': row.get('raw'),
+    'slp_md5': row.get('slp_md5'),
+    'slp_size': row.get('slp_size'),
+    'start_at': row.get('startAt'),
+    'played_on': row.get('playedOn'),
+    'last_frame': row.get('lastFrame'),
+    'slippi_version': _format_version(row.get('slippi_version')),
+    'stage': row.get('stage'),
+    'timer': row.get('timer'),
+    'is_teams': row.get('is_teams'),
+    'num_players': row.get('num_players'),
+    'winner': row.get('winner'),
+    'valid': row.get('valid'),
+    'is_training': row.get('is_training'),
+    'not_training_reason': row.get('not_training_reason'),
+    'parse_error': row.get('reason'),
+    'pq_size': row.get('pq_size'),
+    'compression': row.get('compression'),
+    'match_id': match.get('id'),
+    'match_game': match.get('game'),
+    'match_tiebreaker': match.get('tiebreaker'),
+  }
+
+  if len(players) >= 1:
+    flat.update(_extract_player(players[0], 'p0'))
+  else:
+    flat.update(_extract_player({}, 'p0'))
+
+  if len(players) >= 2:
+    flat.update(_extract_player(players[1], 'p1'))
+  else:
+    flat.update(_extract_player({}, 'p1'))
+
+  return tuple(flat[col] for col in PARSED_COLUMNS)
+
 
 def parse_slp(
     file: utils.LocalFile,
@@ -294,14 +422,6 @@ def parse_7zs(
 
   return results
 
-MD5_KEY = 'slp_md5'
-
-def get_key(row: dict):
-  if MD5_KEY in row:
-    return row[MD5_KEY]
-
-  return (row['raw'], row['name'])
-
 def run_parsing(
     root: str,
     num_threads: int = 1,
@@ -350,6 +470,16 @@ def run_parsing(
       raw_dir, to_process, output_dir, num_threads,
       compression_options, chunk_size_gb, in_memory)
 
+  # Open upgrades DB if it exists.
+  upgrades_db_path = os.path.join(root, 'upgrades.sqlite')
+  if os.path.exists(upgrades_db_path):
+    db_conn = sqlite3.connect(f'file:{upgrades_db_path}?mode=ro', uri=True)
+    logging.info('Opened upgrades DB at %s', upgrades_db_path)
+  else:
+    db_conn = None
+
+  upgraded_dir = os.path.join(root, 'Upgraded')
+
   # Now handle zip files.
   print("Processing zip files.")
   slp_files: list[utils.LocalFile] = []
@@ -359,6 +489,31 @@ def run_parsing(
     if not raw.endswith('.zip'):
       continue
     files = utils.traverse_slp_files_zip(raw_path)
+
+    # Swap in upgraded files where available.
+    if db_conn is not None:
+      db_results = upgrade_slp.query_upgrade_results(db_conn, raw)
+      successes = {
+        name for name, result in db_results.items() if result == 'success'
+      }
+      if successes:
+        upgraded_path = os.path.join(upgraded_dir, raw)
+        if os.path.exists(upgraded_path):
+          upgraded_files = utils.traverse_slp_files_zip(upgraded_path)
+          upgraded_by_base = {f.base_name: f for f in upgraded_files}
+          num_swapped = 0
+          for i, f in enumerate(files):
+            if f.base_name in successes and f.base_name in upgraded_by_base:
+              files[i] = upgraded_by_base[f.base_name]
+              num_swapped += 1
+          logging.info(
+            '%s: swapped %d/%d files from upgraded archive',
+            raw, num_swapped, len(files))
+        else:
+          logging.warning(
+            '%s: %d successful upgrades but upgraded archive not found at %s',
+            raw, len(successes), upgraded_path)
+
     print(f"Found {len(files)} slp files in {raw}")
     slp_files.extend(files)
     raw_names.extend([raw] * len(files))
@@ -395,23 +550,21 @@ def run_parsing(
   with open(raw_db_path, 'w') as f:
     json.dump(list(raw_by_name.values()), f, indent=2)
 
-  # Record slp metadata.
-  # TODO: column-major would be more efficient
-  slp_db_path = os.path.join(root, 'parsed.pkl')
-  if os.path.exists(slp_db_path):
-    with open(slp_db_path, 'rb') as f:
-      slp_meta = pickle.load(f)
-    print(f"Loaded slp metadata with {len(slp_meta)} records.")
-  else:
-    slp_meta = []
+  # Record slp metadata in SQLite.
+  parsed_db_path = os.path.join(root, 'parsed.sqlite')
+  parsed_conn = sqlite3.connect(parsed_db_path)
+  parsed_conn.executescript(PARSED_SCHEMA)
 
-  by_key = {get_key(row): row for row in slp_meta}
+  tuples = [result_to_tuple(r) for r in results]
+  parsed_conn.executemany(PARSED_INSERT_SQL, tuples)
+  parsed_conn.commit()
 
-  for result in results:
-    by_key[get_key(result)] = result
+  count = parsed_conn.execute("SELECT COUNT(*) FROM replays").fetchone()[0]
+  print(f"parsed.sqlite now has {count} records.")
+  parsed_conn.close()
 
-  with open(os.path.join(root, 'parsed.pkl'), 'wb') as f:
-    pickle.dump(list(by_key.values()), f)
+  if db_conn is not None:
+    db_conn.close()
 
 if __name__ == '__main__':
   ROOT = flags.DEFINE_string('root', None, 'root directory', required=True)
