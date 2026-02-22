@@ -148,7 +148,9 @@ def get_metadata(game: peppi_py.Game) -> dict:
   for key in ['startAt', 'playedOn']:
     if key in metadata:
       result[key] = metadata[key]
-  del metadata
+
+  if game.frames is None:
+    raise ValueError('Game has no frames')
 
   result['lastFrame'] = game.frames.id[-1].as_py()
 
@@ -177,9 +179,17 @@ def get_metadata(game: peppi_py.Game) -> dict:
       character = leader.post.character[0].as_py()
       damage = None
 
-    netplay = None
+    netplay = {}
     if player.netplay is not None:
       netplay = get_dict(player.netplay, 'name', 'code', 'suid')
+
+    # Older replays have netplay info in metadata
+    if 'players' in metadata:
+      names = metadata['players'][str(player.port.value)]['names']
+      if 'code' in names:
+        netplay['code'] = names['code']
+      if 'netplay' in names:
+        netplay['name'] = names['netplay']
 
     player_metas.append(dict(
         port=player.port.value,
