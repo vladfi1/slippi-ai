@@ -459,6 +459,38 @@ def _swap_upgraded_files(
   return files
 
 
+def _query_missing_parsed(
+    parsed_db_path: str, output_dir: str,
+) -> dict[str, list[str]]:
+  """Query parsed.sqlite for training replays missing from Parsed/.
+
+  Returns {raw_archive: [base_name, ...]} for files to re-parse.
+  """
+  if not os.path.exists(parsed_db_path):
+    return {}
+
+  conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
+  cursor = conn.execute("""
+    SELECT name, raw, slp_md5 FROM replays
+    WHERE valid = 1 AND is_training = 1 AND slp_md5 IS NOT NULL
+  """)
+  rows = cursor.fetchall()
+  conn.close()
+
+  if not rows:
+    return {}
+
+  existing = set(os.listdir(output_dir))
+
+  by_archive: dict[str, list[str]] = {}
+  for name, raw, slp_md5 in rows:
+    if slp_md5 not in existing:
+      base_name = name.removesuffix('.slp')
+      by_archive.setdefault(raw, []).append(base_name)
+
+  return by_archive
+
+
 def _query_missing_netplay(parsed_db_path: str) -> dict[str, list[str]]:
   """Query parsed.sqlite for valid replays missing netplay info.
 
@@ -499,6 +531,7 @@ def run_parsing(
     in_memory: bool = True,
     reprocess: bool = False,
     reparse_missing_netplay: bool = False,
+    reparse_missing_parsed: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
     debug: bool = False,
@@ -577,11 +610,35 @@ def run_parsing(
       slp_files.extend(selected)
       raw_names.extend([raw] * len(selected))
 
-  if dry_run:
-    return
-
   output_dir = os.path.join(root, 'Parsed')
   os.makedirs(output_dir, exist_ok=True)
+
+  # Re-parse training replays whose parquet file is missing from Parsed/.
+  if reparse_missing_parsed:
+    parsed_db_path = os.path.join(root, 'parsed.sqlite')
+    missing = _query_missing_parsed(parsed_db_path, output_dir)
+    # Exclude archives we're already fully reprocessing.
+    to_process_set = set(to_process)
+    missing = {k: v for k, v in missing.items() if k not in to_process_set}
+    if missing:
+      total_files = sum(len(v) for v in missing.values())
+      print(f"Re-parsing {total_files} files missing from Parsed/ "
+            f"across {len(missing)} archives.")
+    else:
+      print("No files missing from Parsed/.")
+
+    for raw, base_names in missing.items():
+      raw_path = os.path.join(raw_dir, raw)
+      all_files = utils.traverse_slp_files_zip(raw_path)
+      if db_conn is not None:
+        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
+      need = set(base_names)
+      selected = [f for f in all_files if f.base_name in need]
+      slp_files.extend(selected)
+      raw_names.extend([raw] * len(selected))
+
+  if dry_run:
+    return
 
   # Special-case 7z files which we process in chunks.
   results = parse_7zs(
@@ -654,6 +711,9 @@ if __name__ == '__main__':
   REPARSE_MISSING_NETPLAY = flags.DEFINE_bool(
       'reparse_missing_netplay', False,
       'Re-parse valid replays that are missing netplay info.')
+  REPARSE_MISSING_PARSED = flags.DEFINE_bool(
+      'reparse_missing_parsed', False,
+      'Re-parse training replays whose parquet file is missing from Parsed/.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
   DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
@@ -669,6 +729,7 @@ if __name__ == '__main__':
         ),
         reprocess=REPROCESS.value,
         reparse_missing_netplay=REPARSE_MISSING_NETPLAY.value,
+        reparse_missing_parsed=REPARSE_MISSING_PARSED.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
         debug=DEBUG.value,
