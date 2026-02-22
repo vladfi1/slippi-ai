@@ -8,6 +8,7 @@ import json
 import multiprocessing as mp
 import os
 import psutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -234,6 +235,67 @@ class UpgradeResult:
   local_file: utils.ZipFile
   error: Optional[str] = None
   skipped: bool = False
+  slippi_version: Optional[str] = None
+  stage: Optional[int] = None
+  result_version: Optional[str] = None
+
+
+@dataclasses.dataclass(slots=True)
+class UpgradeInfo:
+  archive: str          # relative archive path (e.g. "foo.zip")
+  name: str             # file name within archive (base_name)
+  slippi_version: str   # original slippi version (e.g. "3.2.0")
+  stage: int            # stage ID from game.start.stage
+  upgraded: bool        # whether this file was upgraded
+  result: str           # "success", "skipped", "error"
+  error: Optional[str]  # error message if result == "error"
+  result_version: Optional[str]  # actual version read from upgraded file
+
+
+def _version_str(version: tuple) -> str:
+  return '.'.join(str(v) for v in version)
+
+
+def create_upgrades_db(db_path: str) -> sqlite3.Connection:
+  """Create/open the upgrades SQLite database."""
+  conn = sqlite3.connect(db_path)
+  conn.execute("""
+    CREATE TABLE IF NOT EXISTS upgrades (
+      archive TEXT NOT NULL,
+      name TEXT NOT NULL,
+      slippi_version TEXT,
+      stage INTEGER,
+      upgraded INTEGER NOT NULL,
+      result TEXT NOT NULL,
+      error TEXT,
+      result_version TEXT,
+      PRIMARY KEY (archive, name)
+    )
+  """)
+  conn.commit()
+  return conn
+
+
+def insert_upgrade_infos(conn: sqlite3.Connection, infos: list[UpgradeInfo]):
+  """Batch insert/replace UpgradeInfo rows into the database."""
+  conn.executemany(
+    """INSERT OR REPLACE INTO upgrades
+       (archive, name, slippi_version, stage, upgraded, result, error, result_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+    [
+      (info.archive, info.name, info.slippi_version, info.stage,
+       int(info.upgraded), info.result, info.error, info.result_version)
+      for info in infos
+    ]
+  )
+  conn.commit()
+
+
+def query_upgrade_results(conn: sqlite3.Connection, archive: str) -> dict[str, str]:
+  """Return {name: result} for all files in the given archive."""
+  cursor = conn.execute(
+    "SELECT name, result FROM upgrades WHERE archive = ?", (archive,))
+  return dict(cursor.fetchall())
 
 
 def check_same_metadata(
@@ -384,6 +446,9 @@ def _upgrade_slp_in_archive(
     debug: bool = False,
 ) -> UpgradeResult:
   skipped = False
+  slippi_version = None
+  stage = None
+  result_version = None
 
   tmp_parent_dir = utils.get_tmp_dir(in_memory=in_memory)
 
@@ -395,6 +460,8 @@ def _upgrade_slp_in_archive(
       f.write(local_file.from_raw(raw_data))
 
     game_no_frames = peppi_py.read_slippi(slp_path, skip_frames=True)
+    slippi_version = _version_str(game_no_frames.start.slippi.version)
+    stage = game_no_frames.start.stage
 
     if check_if_needed and not needs_upgrade(game_no_frames, min_version):
       skipped = True
@@ -408,24 +475,37 @@ def _upgrade_slp_in_archive(
             slp_path, rollback_mode=peppi_py.RollbackMode.LAST)
         upgraded_game = peppi_py.read_slippi(
             upgraded_path, rollback_mode=peppi_py.RollbackMode.LAST)
+        result_version = _version_str(upgraded_game.start.slippi.version)
 
         if upgraded_game.start.slippi.version != expected_version:
           if debug:
             import ipdb; ipdb.set_trace()
-          return UpgradeResult(local_file, f'unexpected version {upgraded_game.start.slippi.version}')
+          return UpgradeResult(
+              local_file, f'unexpected version {upgraded_game.start.slippi.version}',
+              slippi_version=slippi_version, stage=stage,
+              result_version=result_version)
 
         errors = check_games(original_game, upgraded_game, debug=debug)
         if errors:
-          return UpgradeResult(local_file, errors_to_str(errors))
+          return UpgradeResult(
+              local_file, errors_to_str(errors),
+              slippi_version=slippi_version, stage=stage,
+              result_version=result_version)
 
       try:
         subprocess.run(
             ['slpz', '-x', '-o', output_path, upgraded_path],
             check=True, capture_output=True, text=True)
       except subprocess.CalledProcessError as e:
-        return UpgradeResult(local_file, 'slpz: ' + e.stderr)
+        return UpgradeResult(
+            local_file, 'slpz: ' + e.stderr,
+            slippi_version=slippi_version, stage=stage,
+            result_version=result_version)
 
-  return UpgradeResult(local_file, None, skipped=skipped)
+  return UpgradeResult(
+      local_file, None, skipped=skipped,
+      slippi_version=slippi_version, stage=stage,
+      result_version=result_version)
 
 def _upgrade_slp_in_archive_safe(
     local_file: utils.ZipFile,
@@ -447,7 +527,7 @@ def _upgrade_slp_in_archive_safe(
 
     return UpgradeResult(
         local_file,
-        type(e).__name__ + ": " + str(e), skipped=False)
+        type(e).__name__ + ": " + str(e))
 
 def _monitor_results(
     results_iter: Iterator[UpgradeResult],
@@ -511,6 +591,9 @@ def upgrade_archive(
     expected_version: tuple[int, int, int] = (3, 18, 0),
     remove_input: bool = False,
     debug: bool = False,
+    db_conn: Optional[sqlite3.Connection] = None,
+    archive_name: Optional[str] = None,
+    retry_errors: bool = False,
 ) -> list[UpgradeResult]:
   """Upgrade a Slippi replay archive to the latest version."""
   if not os.path.exists(input_path):
@@ -574,9 +657,22 @@ def upgrade_archive(
   if skipped_files > 0:
     logging.info(f'Skipped {skipped_files} files that already exist in output archive')
 
-  # if not todo:
-  #   logging.info('No files to process')
-  #   return []
+  # Filter using DB results if available
+  if db_conn is not None and archive_name is not None:
+    db_results = query_upgrade_results(db_conn, archive_name)
+    db_skipped = 0
+    filtered_todo = []
+    for local_file, output_filename in todo:
+      db_result = db_results.get(local_file.base_name)
+      if db_result in ('success', 'skipped'):
+        db_skipped += 1
+      elif db_result == 'error' and not retry_errors:
+        db_skipped += 1
+      else:
+        filtered_todo.append((local_file, output_filename))
+    if db_skipped > 0:
+      logging.info(f'Skipped {db_skipped} files based on DB results')
+    todo = filtered_todo
 
   logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
 
@@ -695,6 +791,29 @@ def upgrade_archive(
         print(f"Removing {len(to_remove)} files from input archive at {input_path}")
         if to_remove:
           utils.delete_from_zip(input_path, to_remove)
+
+  # Write results to DB if available
+  if db_conn is not None and archive_name is not None and results:
+    infos = []
+    for result in results:
+      if result.error is not None:
+        result_str = 'error'
+      elif result.skipped:
+        result_str = 'skipped'
+      else:
+        result_str = 'success'
+      infos.append(UpgradeInfo(
+        archive=archive_name,
+        name=result.local_file.base_name,
+        slippi_version=result.slippi_version or '',
+        stage=result.stage or 0,
+        upgraded=not result.skipped and result.error is None,
+        result=result_str,
+        error=result.error,
+        result_version=result.result_version,
+      ))
+    insert_upgrade_infos(db_conn, infos)
+    logging.info(f'Wrote {len(infos)} results to DB')
 
   print(f"Output saved to: {output_path}")
   return results
@@ -1134,3 +1253,186 @@ def update_slp_metadata_in_archive(
       print(f'Output archive updated: {final_dest}')
 
   return results
+
+
+def _check_existing_file(
+    input_file: utils.ZipFile,
+    output_file: Optional[utils.ZipFile],
+    tmpdir: str,
+    archive_name: str,
+) -> UpgradeInfo:
+  """Check a single file pair and return upgrade info."""
+  name = input_file.base_name
+
+  # Read original file
+  with input_file.extract(tmpdir) as input_path:
+    input_game = peppi_py.read_slippi(input_path, skip_frames=True)
+
+  slippi_version = _version_str(input_game.start.slippi.version)
+  stage = input_game.start.stage
+
+  if output_file is None:
+    if needs_upgrade(input_game):
+      return UpgradeInfo(
+        archive=archive_name, name=name,
+        slippi_version=slippi_version, stage=stage,
+        upgraded=False, result='error',
+        error='missing upgrade', result_version=None,
+      )
+    else:
+      return UpgradeInfo(
+        archive=archive_name, name=name,
+        slippi_version=slippi_version, stage=stage,
+        upgraded=False, result='skipped',
+        error=None, result_version=None,
+      )
+
+  # Read upgraded file
+  with output_file.extract(tmpdir) as output_path:
+    output_game = peppi_py.read_slippi(output_path, skip_frames=True)
+
+  result_version = _version_str(output_game.start.slippi.version)
+
+  # Check metadata consistency
+  error = check_same_metadata(input_game, output_game)
+  if error is not None:
+    return UpgradeInfo(
+      archive=archive_name, name=name,
+      slippi_version=slippi_version, stage=stage,
+      upgraded=True, result='error',
+      error=error, result_version=result_version,
+    )
+
+  return UpgradeInfo(
+    archive=archive_name, name=name,
+    slippi_version=slippi_version, stage=stage,
+    upgraded=True, result='success',
+    error=None, result_version=result_version,
+  )
+
+
+def _check_existing_file_safe(
+    input_file: utils.ZipFile,
+    output_file: Optional[utils.ZipFile],
+    tmpdir: str,
+    archive_name: str,
+) -> UpgradeInfo:
+  """Safe wrapper around _check_existing_file."""
+  try:
+    return _check_existing_file(input_file, output_file, tmpdir, archive_name)
+  except KeyboardInterrupt:
+    raise
+  except BaseException as e:
+    known = _known_game_read_exception(e)
+    error_msg = known if known else type(e).__name__ + ": " + str(e)
+    return UpgradeInfo(
+      archive=archive_name, name=input_file.base_name,
+      slippi_version='', stage=0,
+      upgraded=False, result='error',
+      error=error_msg, result_version=None,
+    )
+
+
+def check_existing_upgrades(
+    input_archive: str,
+    output_archive: str,
+    archive_name: str,
+    db_conn: sqlite3.Connection,
+    num_threads: int = 1,
+) -> list[UpgradeInfo]:
+  """Check existing upgrades and populate the database.
+
+  Examines an input archive and its corresponding output archive to determine
+  the upgrade status of each file, then records the results in the database.
+
+  Args:
+    input_archive: Path to the input archive containing original .slp files.
+    output_archive: Path to the output archive containing upgraded .slpz files.
+    archive_name: Relative archive name to store in the database.
+    db_conn: SQLite connection (from create_upgrades_db).
+    num_threads: Number of parallel workers.
+
+  Returns:
+    List of UpgradeInfo objects.
+  """
+  if not os.path.exists(input_archive):
+    raise FileNotFoundError(f'Input archive does not exist: {input_archive}')
+
+  # Build mapping of base names to files in input archive
+  input_files: dict[str, utils.ZipFile] = {}
+  with zipfile.ZipFile(input_archive, 'r') as zf:
+    for info in zf.infolist():
+      if info.is_dir():
+        continue
+      if not utils.is_slp_file(info.filename):
+        continue
+      local_file = utils.ZipFile(input_archive, info.filename)
+      input_files[local_file.base_name] = local_file
+
+  # Build mapping of base names to files in output archive
+  output_files: dict[str, utils.ZipFile] = {}
+  if os.path.exists(output_archive):
+    with zipfile.ZipFile(output_archive, 'r') as zf:
+      for info in zf.infolist():
+        if info.is_dir():
+          continue
+        if not utils.is_slp_file(info.filename):
+          continue
+        local_file = utils.ZipFile(output_archive, info.filename)
+        output_files[local_file.base_name] = local_file
+
+  print(f'Input: {len(input_files)} files, Output: {len(output_files)} files')
+
+  # Build work items
+  work_items: list[tuple[utils.ZipFile, Optional[utils.ZipFile]]] = []
+  for base_name, input_file in input_files.items():
+    output_file = output_files.get(base_name)
+    work_items.append((input_file, output_file))
+
+  tmpdir = utils.get_tmp_dir(in_memory=True)
+
+  infos: list[UpgradeInfo] = []
+
+  if num_threads == 1:
+    for input_file, output_file in tqdm.tqdm(work_items, desc='Checking upgrades'):
+      info = _check_existing_file_safe(
+        input_file, output_file, tmpdir, archive_name)
+      infos.append(info)
+  else:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads) as executor:
+      try:
+        futures: list[concurrent.futures.Future] = []
+        for input_file, output_file in work_items:
+          futures.append(executor.submit(
+            _check_existing_file_safe,
+            input_file=input_file,
+            output_file=output_file,
+            tmpdir=tmpdir,
+            archive_name=archive_name,
+          ))
+
+        for future in tqdm.tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc='Checking upgrades'):
+          infos.append(future.result())
+      except KeyboardInterrupt:
+        print('KeyboardInterrupt, shutting down')
+        executor.shutdown(cancel_futures=True)
+        raise
+
+  # Report results
+  results_counter = collections.Counter(info.result for info in infos)
+  print(f'Results: {dict(results_counter)}')
+
+  error_counter = collections.Counter(
+    info.error for info in infos if info.error is not None)
+  if error_counter:
+    print('Errors:')
+    for error, count in error_counter.most_common(10):
+      print(f'  {count}: {error}')
+
+  # Insert into database
+  insert_upgrade_infos(db_conn, infos)
+
+  return infos
