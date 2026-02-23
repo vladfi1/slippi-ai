@@ -61,21 +61,6 @@ def download_file(url: str, dest_path: Path) -> None:
     raise
 
 
-def run_unroll_test(model_path: Path, output_path: Path, input_path: Path) -> bool:
-  """Run the unroll_agent.py test with the given model and output files."""
-
-  try:
-    unroll_agent.test_or_save_outputs(
-        model_path=str(model_path),
-        input_dir=str(input_path),
-        output_path=str(output_path),
-        overwrite=False,
-    )
-  except ValueError:
-    return False
-
-  return True
-
 def parse_args():
   """Parse command-line arguments."""
   parser = argparse.ArgumentParser(
@@ -95,42 +80,25 @@ def main():
 
   input_path = Path(args.input_dir) if args.input_dir else paths.TOY_DATA_DIR
 
-  failures = []
-
   with tempfile.TemporaryDirectory() as tmpdir:
     tmpdir_path = Path(tmpdir)
 
     for i, (model_source, output_source) in enumerate(TEST_CASES):
       print(f"\n--- Test case {i+1}/{len(TEST_CASES)} ---")
 
-      try:
-        model_path = get_file_path(model_source, tmpdir_path, f"model_{i}.pkl")
-        output_path = get_file_path(output_source, tmpdir_path, f"output_{i}.pkl")
-      except Exception as e:
-        print(f"Failed to get files for test case {i+1}: {e}")
-        failures.append((i+1, model_source, output_source, str(e)))
-        continue
+      model_path = get_file_path(model_source, tmpdir_path, f"model_{i}.pkl")
+      output_path = get_file_path(output_source, tmpdir_path, f"output_{i}.pkl")
 
       # Run test
-      if not run_unroll_test(model_path, output_path, input_path):
-        failures.append((i+1, model_source, output_source, "Test execution failed"))
+      unroll_agent.test_or_save_outputs(
+          model_path=str(model_path),
+          input_dir=str(input_path),
+          output_path=str(output_path),
+          overwrite=False,
+      )
 
-  # Report results
-  print(f"\n=== Test Results ===")
-  print(f"Total test cases: {len(TEST_CASES)}")
-  print(f"Passed: {len(TEST_CASES) - len(failures)}")
-  print(f"Failed: {len(failures)}")
-
-  if failures:
-    print("\nFailed test cases:")
-    for case_num, model_source, output_source, error in failures:
-      print(f"  Case {case_num}: {error}")
-      print(f"  Model: {model_source}")
-      print(f"  Output: {output_source}")
-    return 1
-  else:
-    print("\nAll tests passed!")
-    return 0
+  print("\nAll tests passed!")
+  return 0
 
 
 if __name__ == "__main__":
