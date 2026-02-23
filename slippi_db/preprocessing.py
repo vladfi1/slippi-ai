@@ -163,6 +163,8 @@ def get_metadata(game: peppi_py.Game) -> dict:
   players = start.players
   player_metas = []
 
+  player_meta_dict = metadata.get('players', {})
+
   for player, port in zip(players, game.frames.ports):
     leader = port.leader
 
@@ -184,8 +186,9 @@ def get_metadata(game: peppi_py.Game) -> dict:
       netplay = get_dict(player.netplay, 'name', 'code', 'suid')
 
     # Older replays have netplay info in metadata
-    if 'players' in metadata:
-      names = metadata['players'][str(player.port.value)]['names']
+    port_str = str(player.port.value)
+    if port_str in player_meta_dict:
+      names = player_meta_dict[port_str]['names']
       if 'code' in names:
         netplay['code'] = names['code']
       if 'netplay' in names:
