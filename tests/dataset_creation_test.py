@@ -50,6 +50,12 @@ def test_dataset_creation(threads=1) -> dict[str, dict]:
         in_memory=True,
         reprocess=False,
         dry_run=False,
+        debug=True,
+    )
+
+    parse_local.convert_sqlite_to_pickle(
+        input_path=os.path.join(root_dir, "parsed.sqlite"),
+        output_path=os.path.join(root_dir, "parsed.pkl"),
     )
 
     parsed_pkl_path = os.path.join(root_dir, "parsed.pkl")
@@ -63,7 +69,6 @@ def test_dataset_creation(threads=1) -> dict[str, dict]:
     invalid_entries = [entry for entry in parsed_data if not entry.get("valid", False)]
     non_training_entries = [entry for entry in parsed_data if not entry.get("is_training", False)]
 
-    # There is one known invalid entry in the test dataset, with multiple Gecko codes.
     assert len(invalid_entries) == 0, f"Found {len(invalid_entries)} invalid entries"
     assert len(non_training_entries) == 0, f"Found {len(non_training_entries)} non-training entries"
 
