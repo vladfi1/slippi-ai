@@ -59,19 +59,10 @@ def unroll(
   return distances
 
 def check_arrays_with_path(path: tuple, xs: np.ndarray, ys: np.ndarray):
-  isclose = np.isclose(xs, ys, atol=1e-5, rtol=1e-5)
-
-  # Handle multi-dimensional arrays like logits.
-  rank = isclose.ndim
-  if rank > 1:
-    isclose = np.all(isclose, axis=tuple(range(1, rank)))
-
-  idxs = np.arange(len(xs))[~isclose]
-  if len(idxs) > 0:
-    idx = idxs[0].item()
-    x = xs[idx]
-    y = ys[idx]
-    raise ValueError(f'Output mismatch at {path} ({idx}): {x} != {y}')
+  try:
+    np.testing.assert_allclose(xs, ys, atol=1e-5, rtol=1e-5)
+  except AssertionError as e:
+    raise ValueError(f'Output mismatch at {path}: {e}') from e
 
 def check_outputs(
     outputs: policies.DistanceOutputs,
