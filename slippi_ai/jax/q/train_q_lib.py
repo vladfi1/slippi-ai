@@ -31,13 +31,15 @@ from slippi_ai.policies import Platform
 from slippi_ai.jax import (
     embed as embed_lib,
     policies,
-    q_learner as learner_lib,
     saving,
     train_lib,
     jax_utils,
-    q_function as q_lib,
     networks,
     controller_heads,
+)
+from slippi_ai.jax.q import (
+    q_learner as learner_lib,
+    q_function as q_lib,
 )
 
 _field = utils.field
