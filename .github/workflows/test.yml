@@ -37,11 +37,28 @@ jobs:
         python tests/unroll_agent.py
         python tests/test_agent_outputs.py
 
+    - name: Cache the test dataset
+      uses: actions/cache@v4
+      id: cache-test-dataset
+      with:
+        path: test_dataset.zip
+        key: test-dataset-v1
+
+    - name: Download the test dataset
+      if: steps.cache-test-dataset.outputs.cache-hit != 'true'
+      run: |
+        curl -L "https://www.dropbox.com/scl/fi/o4jyexehc4edcmzeu930i/TestDataset-31.zip?rlkey=89d9m574zygeo8460lla7wmji&st=oi5q5ba8&dl=1" -o test_dataset.zip
+
+    - name: Extract test dataset
+      run: |
+        mkdir -p test_dataset_extracted
+        unzip -o test_dataset.zip -d test_dataset_extracted
+
     - name: slippi_db tests
       run: |
         python tests/slippi_db_test.py
-        python tests/replay_parser_test.py
-        python tests/dataset_creation_test.py
+        python tests/replay_parser_test.py --dataset_path=test_dataset_extracted
+        python tests/dataset_creation_test.py --dataset_zip=test_dataset.zip
 
     - name: Test Evaluator
       run: ./tests/run_evaluator.sh
