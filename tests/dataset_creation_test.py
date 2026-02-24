@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import shutil
 import tempfile
 
 from absl import app
@@ -12,6 +13,7 @@ from replay_parser_test import TEST_DATASET_URL, download_file
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("threads", 4, "Number of threads to use for parallel processing")
+flags.DEFINE_string("dataset_zip", None, "Path to a pre-downloaded test dataset zip file")
 
 
 def setup_dataset_root(temp_dir):
@@ -29,7 +31,10 @@ def setup_dataset_root(temp_dir):
 def download_test_dataset(raw_dir, temp_dir):
   """Download and extract the test dataset to the Raw directory."""
   zip_path = os.path.join(raw_dir, "test_dataset.zip")
-  download_file(TEST_DATASET_URL, zip_path)
+  if FLAGS.dataset_zip:
+    shutil.copy2(FLAGS.dataset_zip, zip_path)
+  else:
+    download_file(TEST_DATASET_URL, zip_path)
 
 
 def test_dataset_creation(threads=1) -> dict[str, dict]:
