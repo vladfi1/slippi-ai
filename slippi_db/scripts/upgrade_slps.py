@@ -1,3 +1,4 @@
+import logging
 import json
 from pathlib import Path
 import shutil
@@ -52,6 +53,7 @@ def process_single_archive(input_path, output_path, dolphin_config, db_conn=None
       db_conn=db_conn,
       archive_name=archive_name,
       retry_errors=RETRY_ERRORS.value,
+      dry_run=DRY_RUN.value,
   )
 
 
@@ -110,7 +112,7 @@ def main(_):
 
       # Find all zip files recursively
       zip_files = list(input_path.rglob('*.zip'))
-      print(f'Found {len(zip_files)} zip files to process')
+      logging.info(f'Found {len(zip_files)} zip files to process')
 
       json_results = []
       skipped = []
@@ -129,9 +131,6 @@ def main(_):
 
         print(f'Processing {zip_file} -> {output_file}')
 
-        if DRY_RUN.value:
-          continue
-
         archive_name = str(rel_path) if db_conn is not None else None
         results = process_single_archive(
             str(zip_file), str(output_file), dolphin_config,
@@ -144,8 +143,6 @@ def main(_):
 
       if skipped:
         print(f'Skipped {len(skipped)} files that already exist in output:')
-        for path in skipped:
-          print(f'  {path}')
 
     else:
       raise ValueError(f'Input path does not exist: {input_path}')
