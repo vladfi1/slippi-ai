@@ -594,6 +594,7 @@ def upgrade_archive(
     db_conn: Optional[sqlite3.Connection] = None,
     archive_name: Optional[str] = None,
     retry_errors: bool = False,
+    dry_run: bool = False,
 ) -> list[UpgradeResult]:
   """Upgrade a Slippi replay archive to the latest version."""
   if not os.path.exists(input_path):
@@ -617,11 +618,18 @@ def upgrade_archive(
         existing_outputs.add(info.filename)
     logging.info(f'Found {len(existing_outputs)} existing files in output archive')
 
+  if db_conn is not None and archive_name is not None:
+    db_results = query_upgrade_results(db_conn, archive_name)
+  else:
+    db_results = {}
+
   zf = zipfile.ZipFile(input_path, 'r')
   total_size = 0
   skipped_files = 0
   todo: list[tuple[utils.ZipFile, str]] = []
   to_remove: list[str] = []
+
+  skip_reasons = collections.Counter()
 
   for zip_info in zf.infolist():
     if zip_info.is_dir():
@@ -639,8 +647,15 @@ def upgrade_archive(
 
     if output_filename in existing_outputs:
       skipped_files += 1
+      skip_reasons['existing_output'] += 1
       if remove_input:
         to_remove.append(zip_info.filename)
+      continue
+
+    db_result = db_results.get(local_file.base_name)
+    if db_result in ('success', 'skipped') or (db_result == 'error' and not retry_errors):
+      skipped_files += 1
+      skip_reasons[db_result] += 1
       continue
 
     # True compression rate may be up to ~2x better thanks to slpz, if the
@@ -655,26 +670,11 @@ def upgrade_archive(
   zf.close()
 
   if skipped_files > 0:
-    logging.info(f'Skipped {skipped_files} files that already exist in output archive')
+    logging.info(f'Skipped {skipped_files} files ')
+    for reason, count in skip_reasons.items():
+      logging.info(f'  {count} files skipped due to {reason}')
 
-  # Filter using DB results if available
-  if db_conn is not None and archive_name is not None:
-    db_results = query_upgrade_results(db_conn, archive_name)
-    db_skipped = 0
-    filtered_todo = []
-    for local_file, output_filename in todo:
-      db_result = db_results.get(local_file.base_name)
-      if db_result in ('success', 'skipped'):
-        db_skipped += 1
-      elif db_result == 'error' and not retry_errors:
-        db_skipped += 1
-      else:
-        filtered_todo.append((local_file, output_filename))
-    if db_skipped > 0:
-      logging.info(f'Skipped {db_skipped} files based on DB results')
-    todo = filtered_todo
-
-  logging.info(f'Found {len(todo)} .slp files in archive, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
+  logging.info(f'{len(todo)} .slp files to upgrade, estimated slpz size: {total_size / (2 ** 30):.2f} GB')
 
   if in_memory:
     work_dir_space = psutil.virtual_memory().available
@@ -692,6 +692,10 @@ def upgrade_archive(
   output_space = psutil.disk_usage(output_parent).free
   if total_size > output_space:
     raise MemoryError(f'Not enough free space to write output archive: {total_size / (2 ** 30):.2f} GB required, {output_space / (2 ** 30):.2f} GB available')
+
+  if dry_run:
+    logging.info('Dry run complete, not processing files')
+    return []
 
   if in_memory:
     tmp_parent_dir = utils.get_tmp_dir(in_memory=True)
