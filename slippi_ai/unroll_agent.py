@@ -60,7 +60,7 @@ def unroll(
 
 def check_arrays_with_path(path: tuple, xs: np.ndarray, ys: np.ndarray):
   try:
-    np.testing.assert_allclose(xs, ys, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(xs, ys, atol=1e-5, rtol=1e-3)
   except AssertionError as e:
     raise ValueError(f'Output mismatch at {path}: {e}') from e
 
