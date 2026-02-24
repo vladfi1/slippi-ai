@@ -7,7 +7,8 @@ import fancyflags as ff
 
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
-from slippi_ai.jax import train_q_lib, networks, q_learner
+from slippi_ai.jax import networks
+from slippi_ai.jax.q import train_q_lib, q_learner
 
 network_config = networks.default_config()
 network_config['name'] = 'tx_like'
