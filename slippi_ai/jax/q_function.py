@@ -99,7 +99,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         lambda t: t[1:], frames.state_action.action)
     # Here we are batching over time (and batch)
     q_values = self.q_values_from_hidden_states(
-        hidden_states, next_actions)
+        values, hidden_states, next_actions)
 
     q_loss = jnp.square(value_targets - q_values)
     quev = q_loss / (value_variance + 1e-8)
@@ -133,12 +133,14 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
   def q_values_from_hidden_states(
       self,
+      values: jax.Array,
       hidden_states: RecurrentState,
       actions: Action,
   ) -> jax.Array:
     action_inputs = self.embed_action(actions)
     action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
-    return jnp.squeeze(self.q_head(action_outputs), -1)
+    advantages = jnp.squeeze(self.q_head(action_outputs), -1)
+    return values + advantages
 
 class FakeQFunction:
 

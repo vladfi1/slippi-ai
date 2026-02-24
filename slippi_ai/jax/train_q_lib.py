@@ -279,23 +279,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         Config, combined_state['config'])
 
     # We can update the delay as it doesn't affect the network architecture.
-    if restore_config.policy.delay != config.policy.delay:
-      logging.warning(
-          f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
-      best_eval_loss = float('inf')  # Old losses don't apply to new delay.
+    # if restore_config.policy.delay != config.policy.delay:
+    #   logging.warning(
+    #       f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
+    #   best_eval_loss = float('inf')  # Old losses don't apply to new delay.
 
     # These we can't change after the fact.
-    for key in ['network', 'controller_head', 'embed']:
+    for key in ['policy', 'network', 'controller_head', 'embed', 'observation']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
-        if config.restore_path is None:
-          # In this case we are implicitly restoring from the same experiment,
-          # and it would be surprising to use the old config.
-          # TODO: improve this check, maybe ask the user for confirmation?
-          raise ValueError(
-              f'Requested {key} config doesn\'t match existing config.')
-
         logging.warning(
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
@@ -360,15 +353,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   mesh = jax_utils.get_mesh()
   data_sharding = jax_utils.data_sharding(mesh)
 
-  learner_kwargs = dataclasses.asdict(config.learner)
   learner = learner_lib.Learner(
+      config=config.learner,
       q_function=q_function,
       sample_policy=sample_policy,
       q_policy=q_policy,
       rngs=rngs,
       mesh=mesh,
       data_sharding=data_sharding,
-      **learner_kwargs,
   )
 
   logging.info("Network configuration")
