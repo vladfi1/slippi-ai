@@ -9,7 +9,7 @@ import optax
 from slippi_ai import utils
 from slippi_ai.data import Batch, Frames, StateAction
 from slippi_ai.jax.policies import Policy, RecurrentState
-from slippi_ai.jax import q_function as q_lib
+from slippi_ai.jax.q import q_function as q_lib
 from slippi_ai.jax import embed, rl_lib, jax_utils
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 
@@ -278,18 +278,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     q_bias = q_outputs.q_values - q_outputs.values
 
-    # if not self.include_action_taken_in_samples:
-    #   num_samples = self.num_samples
-    # elif optimize:
-    #   num_samples = self.num_samples
-    #   # Slice out last action since that was the one taken and its q-value is
-    #   # already computed in q_outputs.q_values.
-    #   policy_samples = jax.tree.map(
-    #       lambda x: jax.lax.slice_in_dim(x, 0, -1, axis=_SAMPLE_AXIS),
-    #       policy_samples)
-    # else:
-    #   num_samples = self.num_samples + 1
-
     def q_fn(policy_samples: embed.Action) -> jax.Array:
       return self.q_function.q_values_from_hidden_states(
           values=q_outputs.values,
@@ -364,7 +352,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       num_samples += 1
 
     # Train the q_policy by argmaxing the q_function over the sample_policy
-    # TODO: Take the argmax inside the q_function unroll.
     q_policy_outputs = q_policy.unroll_with_outputs(
         frames, initial_states)
     q_policy_imitation_loss = q_policy_outputs.imitation_loss
@@ -378,17 +365,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     q_policy_argmax_loss = jax_utils.add_n(
         q_policy.controller_head.controller_embedding.flatten(
             q_policy_distance))
-
-    # def q_policy_distance(target_controller_state: embed.Action):
-    #   return q_policy.controller_head.distance(
-    #       inputs=q_policy_outputs.outputs,
-    #       prev_controller_state=prev_action,
-    #       target_controller_state=target_controller_state,
-    #   ).distance
-
-    # q_policy_distances = jax.vmap(
-    #     q_policy_distance, in_axes=_SAMPLE_AXIS, out_axes=_SAMPLE_AXIS)(
-    #       policy_samples)
 
     # Estimate q_policy returns
     @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
@@ -418,7 +394,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     losses = [
         self.q_policy_argmax_weight * q_policy_argmax_loss,
         self.q_policy_imitation_weight * q_policy_imitation_loss,
-        -self.q_policy_expected_return_weight * q_policy_expected_return,
     ]
     q_policy_total_loss = jax_utils.add_n(losses)
 
