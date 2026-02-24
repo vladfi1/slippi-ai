@@ -70,11 +70,11 @@ if __name__ == '__main__':
   )
   EMBED = ff.DEFINE_dict(
       'embed',
-      name=ff.String('simple'),
+      name=ff.String('enhanced'),
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
-          use_controller_rnn=ff.Boolean(True),
+          use_controller_rnn=ff.Boolean(False),
       ),
   )
 

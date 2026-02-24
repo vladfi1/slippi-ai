@@ -170,7 +170,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
-    policy_loss = sum(jax.tree.leaves(distances))
+    policy_loss = jax_utils.add_n(jax.tree.leaves(distances))
 
     metrics = dict(
         loss=policy_loss,
