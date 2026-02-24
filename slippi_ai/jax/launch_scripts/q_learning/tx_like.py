@@ -10,7 +10,8 @@ import fancyflags as ff
 
 import melee
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import train_q_lib, embed
+from slippi_ai.jax import embed
+from slippi_ai.jax.q import train_q_lib
 
 NET_NAME = 'tx_like'
 
