@@ -2,6 +2,7 @@
 
 import collections
 import json
+import unicodedata
 import logging
 
 from absl import app
@@ -68,7 +69,8 @@ def main(_):
     display_name = user_json['displayName']
 
     name_to_port = {
-        player.displayName: port for port, player in gamestate.players.items()
+        # player.displayName: port for port, player in gamestate.players.items()
+        unicodedata.normalize('NFKC', player.displayName): port for port, player in gamestate.players.items()
     }
 
     actual_port = name_to_port[display_name]
