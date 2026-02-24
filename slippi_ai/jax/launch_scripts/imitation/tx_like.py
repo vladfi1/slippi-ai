@@ -19,7 +19,7 @@ NET_NAME = networks.TransformerLike.name()
 def default_config():
   config = train_lib.Config()
 
-  config.max_names = 128
+  config.max_names = 32
   config.policy.delay = 21
   config.data.batch_size=512
   config.data.unroll_length=80
@@ -28,8 +28,9 @@ def default_config():
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
   config.learner.reward_halflife=8
-  config.embed.controller.axis_spacing=32
-  config.embed.controller.shoulder_spacing=10
+  config.embed.controller.type = 'custom_v1'
+  config.embed.controller.default.axis_spacing=32
+  config.embed.controller.default.shoulder_spacing=10
   config.embed.player.with_nana = True
   # MLP Items embed not yet implemented for JAX
   config.embed.items.type = embed.ItemsType.FLAT
@@ -59,7 +60,7 @@ def default_config():
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
-  config.runtime.num_evals_per_epoch = 4
+  config.runtime.num_evals_per_epoch = 8
 
   return config
 
@@ -78,11 +79,11 @@ if __name__ == '__main__':
   )
   EMBED = ff.DEFINE_dict(
       'embed',
-      name=ff.String('simple'),
+      name=ff.String('enhanced'),
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
-          use_controller_rnn=ff.Boolean(True),
+          use_controller_rnn=ff.Boolean(False),
       ),
   )
 
@@ -138,6 +139,7 @@ if __name__ == '__main__':
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
     embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
+    embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
 
     def update_embed_config(config: dict):
       config['name'] = embed_name
