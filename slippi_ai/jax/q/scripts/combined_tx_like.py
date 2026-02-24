@@ -11,12 +11,12 @@ import fancyflags as ff
 import melee
 from slippi_ai import flag_utils, paths
 from slippi_ai.jax import embed
-from slippi_ai.jax.q import train_q_lib
+from slippi_ai.jax.q import train_combined
 
 NET_NAME = 'tx_like'
 
 def default_config():
-  config = train_q_lib.Config()
+  config = train_combined.Config()
 
   config.max_names = 128
   config.policy.delay = 21
@@ -100,7 +100,7 @@ if __name__ == '__main__':
   )
 
   def main(_):
-    config = flag_utils.dataclass_from_dict(train_q_lib.Config, CONFIG.value)
+    config = flag_utils.dataclass_from_dict(train_combined.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
     net_config = dict(NET.value)
@@ -151,6 +151,6 @@ if __name__ == '__main__':
         config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
-    train_q_lib.train(config)
+    train_combined.train(config)
 
   app.run(main)

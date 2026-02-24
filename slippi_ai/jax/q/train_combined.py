@@ -38,7 +38,7 @@ from slippi_ai.jax import (
     controller_heads,
 )
 from slippi_ai.jax.q import (
-    q_learner as learner_lib,
+    combined_learner as learner_lib,
     q_function as q_lib,
 )
 
