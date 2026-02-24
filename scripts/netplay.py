@@ -8,11 +8,16 @@ from absl import app
 from absl import flags
 import fancyflags as ff
 
-from slippi_ai import eval_lib, types, utils
+import melee
+from slippi_ai import eval_lib, types, utils, saving
 from slippi_ai import dolphin as dolphin_lib
 from slippi_db.parse_libmelee import get_controller
 
-PLAYER = ff.DEFINE_dict('player', **eval_lib.PLAYER_FLAGS)
+agent_flags = eval_lib.AGENT_FLAGS.copy()
+agent_flags['async_inference'] = ff.Boolean(True)
+
+AGENT = ff.DEFINE_dict('agent', **agent_flags)
+CHAR = flags.DEFINE_enum_class('char', melee.Character.FOX, melee.Character, 'Character to use for AI player')
 
 dolphin_flags = dolphin_lib.DOLPHIN_FLAGS.copy()
 dolphin_flags.update(
@@ -23,8 +28,6 @@ dolphin_flags.update(
 )
 DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
 
-CHECK_INPUTS = flags.DEFINE_boolean('check_inputs', False, 'Check inputs.')
-
 RUNTIME = flags.DEFINE_integer('runtime', None, 'Runtime in seconds.')
 
 FLAGS = flags.FLAGS
@@ -34,32 +37,32 @@ def main(_):
 
   port = 1
 
-  player = eval_lib.get_player(**PLAYER.value)
+  agent_state = saving.load_state_from_disk(AGENT.value['path'])
+
+  player = dolphin_lib.AI(
+      character=CHAR.value,
+  )
+  eval_lib.update_character(player, agent_state['config'])
 
   dolphin = dolphin_lib.Dolphin(
       players={port: player},
       **DOLPHIN.value,
   )
 
-  agents: list[eval_lib.Agent] = []
-
   # Warm up agent before starting game to prevent initial hiccup.
-  if isinstance(player, dolphin_lib.AI):
-    agent = eval_lib.build_agent(
-        controller=dolphin.controllers[port],
-        opponent_port=None,  # will be set later
-        console_delay=DOLPHIN.value['online_delay'],
-        run_on_cpu=True,
-        **PLAYER.value['ai'],
-    )
-    agents.append(agent)
+  agent = eval_lib.build_agent(
+      controller=dolphin.controllers[port],
+      opponent_port=None,  # will be set later
+      console_delay=DOLPHIN.value['online_delay'],
+      run_on_cpu=True,
+      state=agent_state,
+      **AGENT.value,
+  )
 
-    eval_lib.update_character(player, agent.config)
+  try:
+    # Start game
+    gamestate = dolphin.step()
 
-  # Start game
-  gamestate = dolphin.step()
-
-  if len(agents) == 1:
     with open(DOLPHIN.value['user_json_path']) as f:
       user_json = json.load(f)
     display_name = user_json['displayName']
@@ -76,43 +79,13 @@ def main(_):
 
     # Main loop
     agent.start()
+    agent.step(gamestate)
 
-  try:
-    num_frames = 0
+    num_frames = 1
 
     while True:
-      if gamestate.frame == -123:
-        action_queue = collections.deque(
-            [None] * (1 + dolphin.console.online_delay))
-
-      # "step" to the next frame
-      prev_frame = gamestate.frame
       gamestate = dolphin.step()
-      if CHECK_INPUTS.value and gamestate.frame != -123:
-        assert gamestate.frame == prev_frame + 1
-
-      for agent in agents:
-        action: types.Controller = agent.step(gamestate).controller_state
-        action = utils.map_nt(lambda x: x[0], action)
-        action_queue.appendleft(action)
-
-        expected: types.Controller = action_queue.pop()
-        if expected is None:
-          continue
-
-        if gamestate.frame < 0:
-          continue
-
-        observed = agent._agent.embed_controller.from_state(
-            get_controller(gamestate.players[actual_port].controller_state))
-
-        # deadzone can change observed stick values
-        if observed.buttons != expected.buttons:
-          frame = gamestate.frame + 123
-          if CHECK_INPUTS.value:
-            raise ValueError(f'Wrong controller seen on frame {frame}')
-          else:
-            logging.error(f'Wrong controller seen on frame {frame}')
+      agent.step(gamestate)
 
       num_frames += 1
 
@@ -120,8 +93,7 @@ def main(_):
         break
 
   finally:
-    for agent in agents:
-      agent.stop()
+    agent.stop()
     dolphin.stop()
 
 if __name__ == '__main__':

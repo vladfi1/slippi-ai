@@ -705,6 +705,8 @@ def build_agent(
     **agent_kwargs,
 ) -> Agent:
   if state is None:
+    if path is None:
+      raise ValueError('Must provide either state or path.')
     state = saving.load_state_from_disk(path)
 
   return Agent(
