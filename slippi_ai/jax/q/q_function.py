@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from slippi_ai import data
+from slippi_ai import data, flag_utils
 from slippi_ai.jax import rl_lib
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import embed, networks, jax_utils
@@ -25,6 +25,17 @@ class UnrollOutputs(tp.NamedTuple):
   q_values: jax.Array  # [T, B]
 
 Rank2 = tuple[int, int]
+
+def q_function_from_config(config: dict):
+  embed_config = flag_utils.dataclass_from_dict(
+    embed.EmbedConfig, config['embed'])
+  return QFunction(
+    rngs=nnx.Rngs(0),
+    embed_action=embed_config.controller.make_embedding(),
+    embed_config=embed_config,
+    num_names=config['max_names'],
+    network_config=config['network'],
+  )
 
 class QFunction(nnx.Module, tp.Generic[Action]):
 
@@ -138,11 +149,21 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       initial_state: Batch of initial recurrent states.
       discount: Per-frame discount factor for returns.
     """
+    outputs, hidden_states = self.loss_and_hidden_states(
+        frames, initial_state, discount)
+    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
+    return outputs, final_state
+
+  def loss_and_hidden_states(
+      self,
+      frames: data.Frames[Rank2, Action],
+      initial_state: RecurrentState,
+      discount: float,
+  ) -> tp.Tuple[QOutputs, RecurrentState]:
     all_outputs, all_hidden_states = self.core_net.scan(
         frames.state_action, frames.is_resetting, initial_state)
 
     hidden_states = jax.tree.map(lambda t: t[:-1], all_hidden_states)
-    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
 
     all_values = jnp.squeeze(self.value_head(all_outputs), -1)
     values, last_value = all_values[:-1], all_values[-1]
@@ -161,7 +182,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         discount=discount,
     )
 
-    return outputs, final_state
+    return outputs, hidden_states
 
   def _get_outputs(
       self,
