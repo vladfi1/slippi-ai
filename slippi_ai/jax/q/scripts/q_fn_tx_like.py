@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """Launch script for q-only training - JAX version."""
 
-import dataclasses
 import os
 
 from absl import app, flags
@@ -18,7 +17,7 @@ def default_config():
   config = train_q_fn.Config()
 
   config.max_names = 128
-  config.delay = 21
+  config.delay = 0
   config.data.batch_size = 512
   config.data.unroll_length = 80
   config.data.damage_ratio = 0.01
@@ -31,14 +30,6 @@ def default_config():
   config.embed.items.type = embed.ItemsType.FLAT
   config.embed.with_fod = True
   config.embed.with_randall = True
-
-  net_config = config.network
-  net_config['name'] = NET_NAME
-  net_config[NET_NAME].update(
-      num_layers=2,
-      hidden_size=512,
-  )
-  net_config['embed']['name'] = 'enhanced'
 
   config.dataset.mirror = True
   config.dataset.allowed_opponents = 'all'
@@ -57,6 +48,7 @@ if __name__ == '__main__':
       'net',
       name=ff.String(NET_NAME),
       hidden_size=ff.Integer(512),
+      num_layers=ff.Integer(2),
       ffw_multiplier=ff.Integer(2),
       recurrent_layer=ff.String('lstm'),
   )
@@ -111,7 +103,7 @@ if __name__ == '__main__':
       if config.tag is None:
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
-        config.tag = f"{char}_{net}_{n}x{h}"
+        config.tag = f"{char}_d{config.delay}_{net}_{n}x{h}"
 
     config.dataset.allowed_characters = char
 
@@ -138,7 +130,7 @@ if __name__ == '__main__':
         wandb_kwargs['mode'] = 'disabled'
 
     wandb.init(
-        config=dataclasses.asdict(config),
+        # config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
     train_q_fn.train(config)
