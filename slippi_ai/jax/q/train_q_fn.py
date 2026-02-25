@@ -70,7 +70,7 @@ class Config:
   embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
   network: dict = _field(networks.default_config)
 
-  expt_root: str = 'experiments/q_only'
+  expt_root: str = 'experiments/q_function'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
@@ -206,6 +206,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.warning('No compatible policy or checkpoint specified.')
     if config.delay is None:
       raise ValueError('Must specify delay.')
+
+  # Set wandb config after potential overrides from checkpoint or compatible policy.
+  wandb.config.update(dataclasses.asdict(config))
 
   rngs = nnx.Rngs(config.seed)
 
