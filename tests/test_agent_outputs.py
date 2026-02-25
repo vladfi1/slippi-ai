@@ -15,7 +15,7 @@ from slippi_ai import paths, unroll_agent
 
 TEST_CASES: List[Tuple[str, str]] = [
   (
-    str(paths.DEMO_CHECKPOINT),
+    str(paths.DEMO_IMITATION_CHECKPOINT),
     str(paths.AGENT_OUTPUTS_DIR / 'demo.pkl')
   ),
   (

@@ -18,30 +18,14 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
 
-  train_sample_policy: bool = False
-
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
   include_action_taken_in_samples: bool = True
 
   q_policy_argmax_weight: float = 1
   q_policy_imitation_weight: float = 0
-  q_policy_expected_return_weight: float = 0
 
 _SAMPLE_AXIS = 0
-
-def replicate(n: int, axis: int = _SAMPLE_AXIS) -> tp.Callable[[jax.Array], jax.Array]:
-  def fn(x: jax.Array) -> jax.Array:
-    x0 = jnp.expand_dims(x, axis)
-    reps = [1] * x0.ndim
-    reps[axis] = n
-    return jnp.tile(x0, reps)
-  return fn
-
-T = tp.TypeVar('T')
-
-def identity(x: T) -> T:
-  return x
 
 class QFunctionOutputs(tp.NamedTuple):
   values: jax.Array  # [T, B]
@@ -64,6 +48,11 @@ SAMPLE_POLICY = 'sample_policy'
 Q_FUNCTION = 'q_function'
 Q_POLICY = 'q_policy'
 
+def masked_mean(x: jax.Array, mask: jax.Array) -> jax.Array:
+  masked_sum = jnp.sum(x * mask, keepdims=True)
+  count = jnp.sum(mask)
+  return masked_sum / (count + 1e-8)
+
 class Learner(nnx.Module, tp.Generic[embed.Action]):
 
   def __init__(
@@ -77,22 +66,22 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       data_sharding: jax.sharding.NamedSharding,
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
+      q_policy_optimizer_state: tp.Optional[tp.Any] = None,
   ):
     self.config = config
     self.q_function = q_function
     self.sample_policy = sample_policy
     self.q_policy = q_policy
 
-    learning_rate = config.learning_rate
-    self.q_function_optimizer = nnx.Optimizer(
-        q_function, optax.adam(learning_rate), wrt=nnx.Param)
+    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
 
-    self.sample_policy_optimizer = nnx.Optimizer(
-        sample_policy, optax.adam(learning_rate), wrt=nnx.Param)
+    learning_rate = config.learning_rate
+
     self.q_policy_optimizer = nnx.Optimizer(
         q_policy, optax.adam(learning_rate), wrt=nnx.Param)
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    if q_policy_optimizer_state is not None:
+      jax_utils.set_module_state(self.q_policy_optimizer, q_policy_optimizer_state)
 
     if not config.include_action_taken_in_samples and config.num_samples < 2:
       raise ValueError('num_samples must be at least 2 if not including action taken in samples')
@@ -101,7 +90,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.include_action_taken_in_samples = config.include_action_taken_in_samples
     self.q_policy_argmax_weight = config.q_policy_argmax_weight
     self.q_policy_imitation_weight = config.q_policy_imitation_weight
-    self.q_policy_expected_return_weight = config.q_policy_expected_return_weight
 
     self.delay = q_policy.delay
     assert sample_policy.delay == self.delay
@@ -125,15 +113,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         extra_out_specs=(TMS,),  # policy samples
     )
 
-    self.train_sample_policy = jax_utils.data_parallel_train_with_rngs(
-        module=self.sample_policy,
-        optimizer=self.sample_policy_optimizer,
-        rngs=rngs,
-        loss_fn=self._unroll_sample_policy,
-        **sharding_kwargs,
-        **sample_policy_specs,
-    )
-
     self.run_sample_policy = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.sample_policy,
         rngs=rngs,
@@ -146,14 +125,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         extra_in_specs=(TMS,),  # policy samples
         # best_action, values, q_fn hidden states
         extra_out_specs=(TM, TM, TM),
-    )
-
-    self.train_q_function = jax_utils.data_parallel_train(
-        module=self.q_function,
-        optimizer=self.q_function_optimizer,
-        loss_fn=self._unroll_q_function,
-        **sharding_kwargs,
-        **q_function_specs,
     )
 
     self.run_q_function = jax_utils.shard_map_loss_fn(
@@ -238,7 +209,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     action = frames.state_action.action
     prev_action = jax.tree.map(lambda t: t[:-1], action)
-    next_action = jax.tree.map(lambda t: t[1:], action)
 
     sample_policy_outputs = sample_policy.unroll_with_outputs(frames, initial_states)
 
@@ -274,14 +244,16 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, final_state = q_function.loss(frames, initial_states, self.discount)
+    q_outputs, hidden_states = q_function.loss_and_hidden_states(
+        frames, initial_states, self.discount)
+    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
 
     q_bias = q_outputs.q_values - q_outputs.values
 
     def q_fn(policy_samples: embed.Action) -> jax.Array:
       return self.q_function.q_values_from_hidden_states(
           values=q_outputs.values,
-          hidden_states=q_outputs.hidden_states,
+          hidden_states=hidden_states,
           actions=policy_samples,
       )
 
@@ -318,18 +290,30 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     action_taken_is_optimal = optimal_expected_return <= q_outputs.q_values
 
+    optimal_sample_policy_advantage = masked_mean(
+        sample_policy_advantages,
+        mask=~action_taken_is_optimal,
+    )
+
+    non_optimal_sample_policy_advantage = masked_mean(
+        sample_policy_advantages,
+        mask=action_taken_is_optimal,
+    )
+
     bm_loss = jnp.mean(q_outputs.loss, axis=0)
     metrics = dict(
         q_outputs.metrics,
         sample_policy_advantages=sample_policy_advantages,
         optimal_advantages=optimal_advantages,
         action_taken_is_optimal=action_taken_is_optimal,
+        optimal_sample_policy_advantage=optimal_sample_policy_advantage,
+        non_optimal_sample_policy_advantage=non_optimal_sample_policy_advantage,
         q_bias=q_bias,
     )
 
     bm_metrics = jax.tree.map(jax_utils.swap_axes, metrics)
 
-    return bm_loss, bm_metrics, final_state, best_action, q_outputs.values, q_outputs.hidden_states
+    return bm_loss, bm_metrics, final_state, best_action, q_outputs.values, hidden_states
 
   def _unroll_q_policy(
       self,
@@ -400,6 +384,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     q_policy_metrics = dict(
         q_loss=q_policy_argmax_loss,
         imitation_loss=q_policy_imitation_loss,
+        total_loss=q_policy_total_loss,
         q_policy_advantages=q_policy_advantages,
     )
 
@@ -412,7 +397,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       self,
       batch: Batch,
       initial_state: RecurrentState,
-      train: bool = True,
+      # train: bool = True,
   ):
     state_action = StateAction(
         batch.game, batch.game.p0.controller, batch.name)
@@ -423,18 +408,13 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     )
     frames = self._shard_frames(frames)
 
-    # TODO: properly fork rngs for shard_map
-    if train:
-      return self.train_sample_policy(frames, initial_state)
-    else:
-      return self.run_sample_policy(frames, initial_state)
+    return self.run_sample_policy(frames, initial_state)
 
   def step_q_function(
       self,
       batch: Batch[Rank2],  # batch-major
       initial_state: RecurrentState,
       policy_samples: embed.Action,  # time-major
-      train: bool = True,
   ):
     state_action = StateAction(
         batch.game, batch.game.p0.controller, batch.name)
@@ -445,10 +425,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     )
     frames = self._shard_frames(frames)
 
-    if train:
-      return self.train_q_function(frames, initial_state, policy_samples)
-    else:
-      return self.run_q_function(frames, initial_state, policy_samples)
+    return self.run_q_function(frames, initial_state, policy_samples)
 
   def step_q_policy(
       self,
@@ -492,8 +469,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       final_states[SAMPLE_POLICY],
       policy_samples,
     ) = self.step_sample_policy(
-        batch, initial_states[SAMPLE_POLICY],
-        train=train and self.config.train_sample_policy)
+        batch, initial_states[SAMPLE_POLICY])
 
     (
       metrics[Q_FUNCTION],
@@ -502,8 +478,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       values,
       q_hidden_states,
     ) = self.step_q_function(
-        batch, initial_states[Q_FUNCTION], policy_samples,
-        train=train)
+        batch, initial_states[Q_FUNCTION], policy_samples)
     del policy_samples
 
     (
@@ -513,8 +488,5 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         batch, initial_states[Q_POLICY],
         best_action, values, q_hidden_states,
         train=train)
-
-    # satisfy train_q_lib._get_loss
-    metrics['total_loss'] = metrics[Q_POLICY]['q_loss']
 
     return metrics, final_states
