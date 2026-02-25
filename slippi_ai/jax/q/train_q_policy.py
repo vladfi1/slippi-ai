@@ -4,7 +4,6 @@
 import contextlib
 import dataclasses
 import functools
-import json
 import os
 import pickle
 import time
@@ -19,27 +18,22 @@ from flax import nnx
 import wandb
 
 from slippi_ai import (
-    evaluators,
     flag_utils,
     nametags,
     utils,
     data as data_lib,
     dolphin as dolphin_lib,
-    observations as obs_lib,
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
-    embed as embed_lib,
-    policies,
     saving,
     train_lib,
     jax_utils,
     networks,
-    controller_heads,
 )
 from slippi_ai.jax.q import (
-    combined_learner as learner_lib,
     q_function as q_lib,
+    q_policy_learner as learner_lib,
 )
 
 _field = utils.field
@@ -52,6 +46,7 @@ class RuntimeConfig:
 
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
+  max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -94,33 +89,19 @@ class QFunctionConfig:
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
-  rl_evaluator: RLEvaluatorConfig = _field(RLEvaluatorConfig)
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
-  observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
-
-  max_names: int = 16
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
-
-  # These apply to both sample and q policies.
-  # TODO: can we support distinct configurations here?
-  policy: policies.PolicyConfig = _field(policies.PolicyConfig)
-  network: dict = _field(networks.default_config)
-  controller_head: dict = _field(controller_heads.default_config)
-
-  embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
-
-  q_function: QFunctionConfig = _field(QFunctionConfig)
 
   expt_root: str = 'experiments/q_learning'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
-  # TODO: group these into their own subconfig
   restore_path: tp.Optional[str] = None
   initialize_policies_from: tp.Optional[str] = None
+  initialize_q_function_from: tp.Optional[str] = None
 
   seed: int = 0
   version: int = saving.VERSION
@@ -250,6 +231,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   train_time = 0.0
   best_eval_loss = float('inf')
   total_frames = 0
+  train_epoch = 0.0
 
   name_map: tp.Optional[dict[str, int]] = None  # initialized later, after train/test split
 
@@ -257,85 +239,99 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   # attempt to restore parameters
   restored = False
+  restored_state = None
   if config.restore_path:
     logging.info('restoring from %s', config.restore_path)
-    combined_state = saving.load_state_from_disk(config.restore_path)
+    restored_state = saving.load_state_from_disk(config.restore_path)
     restored = True
   elif os.path.exists(pickle_path):
     logging.info('restoring from %s', pickle_path)
-    combined_state = saving.load_state_from_disk(pickle_path)
+    restored_state = saving.load_state_from_disk(pickle_path)
     restored = True
   else:
     logging.info('not restoring any params')
 
   if restored:
-    assert isinstance(combined_state, dict)
-    counters: dict = combined_state['counters']
+    assert isinstance(restored_state, dict)
+    counters: dict = restored_state['counters']
 
     step = counters['step']
     best_eval_loss = counters['best_eval_loss']
     train_time = counters['train_time']
     total_frames: int = counters['total_frames']
+    train_epoch = counters['train_epoch']
 
-    restore_config = flag_utils.dataclass_from_dict(
-        Config, combined_state['config'])
+    # restore_config = flag_utils.dataclass_from_dict(
+    #     Config, restored_state['config'])
 
-    # We can update the delay as it doesn't affect the network architecture.
-    # if restore_config.policy.delay != config.policy.delay:
-    #   logging.warning(
-    #       f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
-    #   best_eval_loss = float('inf')  # Old losses don't apply to new delay.
+  policy_optimizer_state = None
 
-    # These we can't change after the fact.
-    for key in ['policy', 'network', 'controller_head', 'embed', 'observation']:
-      current = getattr(config, key)
-      previous = getattr(restore_config, key)
-      if current != previous:
-        logging.warning(
-            f'Requested {key} config doesn\'t match, overriding from checkpoint.')
-        setattr(config, key, previous)
+  # Initialize policies
+  if restored:
+    assert isinstance(restored_state, dict)
+    imitation_config = flag_utils.dataclass_from_dict(
+        train_lib.Config,
+        saving.upgrade_config(restored_state['imitation_config']))
+    name_map = restored_state['name_map']
 
-  if not restored and config.initialize_policies_from:
+    sample_policy = saving.policy_from_config_dict(restored_state['imitation_config'])
+    q_policy = saving.policy_from_config_dict(restored_state['imitation_config'])
+
+  elif config.initialize_policies_from:
     logging.info(f'Initializing policies from {config.initialize_policies_from}')
     imitation_state = saving.load_state_from_disk(config.initialize_policies_from)
 
     sample_policy = saving.load_policy_from_state(imitation_state)
     q_policy = saving.load_policy_from_state(imitation_state)
+    policy_optimizer_state = imitation_state['state']['policy_optimizer']
 
-    # Overwrite policy config
     imitation_config = flag_utils.dataclass_from_dict(
-        train_lib.Config,
-        saving.upgrade_config(imitation_state['config'])
-    )
-    for key in ['policy', 'network', 'controller_head', 'embed', 'observation']:
-      setattr(config, key, getattr(imitation_config, key))
-
-    if config.learner.train_sample_policy:
-      logging.warning('Continuing to train sample policy')
+        train_lib.Config, saving.upgrade_config(imitation_state['config']))
 
     name_map = imitation_state['name_map']
     del imitation_state
   else:
-    config_dict = dataclasses.asdict(config)
-    sample_policy = saving.policy_from_config_dict(config_dict)
-    q_policy = saving.policy_from_config_dict(config_dict)
+    raise ValueError('Must initialize policies from a checkpoint.')
 
-  if not config.initialize_policies_from and not config.learner.train_sample_policy:
-    if restored:
-      logging.warning('Not training uninitialized sample_policy.')
-    else:
-      config.learner.train_sample_policy = True
-      logging.warning('Training sample policy.')
+  assert name_map is not None
 
-  rngs = nnx.Rngs(config.seed)
 
-  q_function = q_lib.QFunction(
-      rngs=rngs,
-      network_config=config.q_function.network,
-      embed_action=q_policy.controller_head.controller_embedding,
-      embed_config=config.embed,
-      num_names=config.max_names,
-  )
+  # Initialize q_function
+  if restored:
+    assert isinstance(restored_state, dict)
+    q_function = q_lib.q_function_from_config(restored_state['q_function_config'])
+    # q_function_optimizer_state = None
+
+  elif config.initialize_q_function_from:
+    with open(config.initialize_q_function_from, 'rb') as f:
+      q_fn_state = pickle.load(f)
+    q_function = q_lib.q_function_from_config(q_fn_state['config'])
+
+    # These keys have to match the attributes in q_only_learner.Learner
+    jax_utils.set_module_state(q_function, q_fn_state['state']['q_function'])
+    # q_function_optimizer_state = q_fn_state['state']['q_function_optimizer']
+
+    from slippi_ai.jax.q import train_q_fn
+    q_function_config = flag_utils.dataclass_from_dict(
+        train_q_fn.Config, q_fn_state['config'])
+
+    if q_function_config.observation != imitation_config.observation:
+      raise ValueError('Q function was trained with different observation config: %s vs %s' % (
+          q_function_config.observation, imitation_config.observation))
+
+    if q_function_config.delay != imitation_config.policy.delay:
+      raise ValueError('Q function was trained with different delay config: %s vs %s' % (
+          q_function_config.delay, imitation_config.policy.delay))
+
+    # We use the imitation name_map; check that the q_function's name_map can
+    # handle everything the imitation one uses.
+    q_fn_name_map = q_fn_state['name_map']
+    for name, code in name_map.items():
+      if q_fn_name_map[name] != code:
+        raise ValueError(f'Name map mismatch for name {name}: {q_fn_name_map[name]} vs {code}')
+
+  else:
+    raise ValueError('Must initialize q_function from a checkpoint.')
 
   # Multi-device setup
   runtime = config.runtime
@@ -354,6 +350,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   mesh = jax_utils.get_mesh()
   data_sharding = jax_utils.data_sharding(mesh)
+  rngs = nnx.Rngs(config.seed)
 
   learner = learner_lib.Learner(
       config=config.learner,
@@ -363,11 +360,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       rngs=rngs,
       mesh=mesh,
       data_sharding=data_sharding,
+      q_policy_optimizer_state=policy_optimizer_state,
   )
-
-  logging.info("Network configuration")
-  for comp in ['network', 'controller_head']:
-    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   ### Dataset Creation ###
   dataset_config = config.dataset
@@ -375,27 +369,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   train_replays, test_replays = data_lib.train_test_split(dataset_config)
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
-  if name_map is None:
-    name_map = train_lib.create_name_map(train_replays, config.max_names)
-
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
-  # Record name map
-  print(name_map)
-  with open(name_map_path, 'w') as f:
-    json.dump(name_map, f)
-  wandb.save(name_map_path, policy='now')
-
-  num_codes = nametags.max_name_code(name_map) + 1
-  encode_name = nametags.name_encoder(name_map)
-  encode_name_uint8 = lambda name: np.uint8(encode_name(name))
-  batch_encode_name = np.vectorize(encode_name_uint8)
-
   # Create data sources for train and test.
   data_config = dict(
       dataclasses.asdict(config.data),
       extra_frames=1 + q_policy.delay,
       name_map=name_map,
-      observation_config=config.observation,
+      observation_config=imitation_config.observation,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
   test_data = data_lib.make_source(replays=test_replays, **data_config)
@@ -403,7 +382,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True),
-      rngs=rngs, data_sharding=data_sharding)
+      rngs=rngs, data_sharding=data_sharding, epoch_offset=train_epoch)
   test_manager = TrainManager(
       learner, test_data, dict(train=False),
       rngs=rngs, data_sharding=data_sharding)
@@ -415,10 +394,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   print_losses('initial', train_manager.step()[0])
 
   if restored:
-    assert isinstance(combined_state, dict)  # appease type checker
-    jax_utils.set_module_state(learner, combined_state['state'])
+    assert isinstance(restored_state, dict)  # appease type checker
+    jax_utils.set_module_state(
+        learner,
+        jax_utils.shard_pytree(restored_state['state'], data_sharding))
     print_losses('post-restore', train_manager.step()[0])
-    del combined_state
+    del restored_state
 
   # TODO: use orbax instead?
   def save(eval_loss=None):
@@ -431,12 +412,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         total_frames=total_frames,
         train_time=train_time,
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
+        train_epoch=train_manager.last_epoch,
     )
 
     combined = dict(
         state=jax_state,
         step=step,
         config=dataclasses.asdict(config),
+        imitation_config=dataclasses.asdict(imitation_config),
         name_map=name_map,
         # dataset_metrics=dataset_metrics,
         counters=counters,
@@ -519,6 +502,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
     test_stats_jax = None
+    num_eval_steps = 0
     while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
@@ -526,8 +510,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         per_step_eval_stats.append(test_stats_np)
 
       test_stats_jax, batch = test_manager.step()
-
       metas.append(batch.meta)
+
+      # Optionally stop eval early
+      num_eval_steps += 1
+      if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
+        break
 
     assert test_stats_jax is not None
     test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
@@ -572,14 +560,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     train_lib.log_stats(to_log, step, take_mean=False)
 
     # Calculate the mean eval loss
-    eval_loss = mean_stats[learner_lib.Q_FUNCTION]['q']['loss']
+    eval_loss = mean_stats[learner_lib.Q_POLICY]['total_loss']
 
     # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
-
 
     print(f'EVAL step={step} epoch={train_epoch:.3f} loss={eval_loss:.4f}')
     print_losses('eval', mean_stats)
@@ -591,143 +578,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # TODO: Log losses aggregated by name.
 
-  if config.rl_evaluator.use:
-    if config.rl_evaluator.opponent:
-      opponent_state = saving.load_state_from_disk(
-          path=config.rl_evaluator.opponent)
-    else:
-      # TODO: default to sample policy?
-      raise NotImplementedError('opponent not specified')
+  start_time = time.time()
 
-    AGENT_PORT = 1
-    OPPONENT_PORT = 2
+  train_profiler = utils.Profiler(burnin=0)
 
-    dolphin_kwargs = config.rl_evaluator.dolphin.to_kwargs()
-    # Characters are set in the evaluator from the data config.
-    players = {
-        AGENT_PORT: dolphin_lib.AI(),
-        # TODO: allow playing against the in-game CPU like run_evaluator.py
-        OPPONENT_PORT: dolphin_lib.AI(),
-    }
-    dolphin_kwargs.update(players=players)
+  while time.time() - start_time < runtime.max_runtime:
+    with train_profiler:
+      train_stats, _ = train_manager.step()
 
-    common_agent_kwargs = dataclasses.asdict(config.rl_evaluator.agent)
+    # Update counters
+    step += 1
+    total_frames += FRAMES_PER_STEP
+    train_time += train_profiler.last_time
 
-    agent_kwargs: dict[int, dict] = {}
-    agent_state = dict(
-        state=get_tf_state(),  # could drop everything but 'policy' key
-        config=dataclasses.asdict(config),
-        name_map=name_map,
-    )
-    agent_kwargs[AGENT_PORT] = dict(
-        state=agent_state,
-        **common_agent_kwargs,
-    )
-    agent_kwargs[OPPONENT_PORT] = dict(
-        state=opponent_state,
-        **common_agent_kwargs,
-    )
-    agent_kwargs[OPPONENT_PORT].update(
-        name=config.rl_evaluator.opponent_name,
-    )
+    maybe_log(train_stats)
+    maybe_eval()
 
-    env_kwargs = {}
-    if config.rl_evaluator.async_envs:
-      env_kwargs.update(
-          num_steps=config.rl_evaluator.num_env_steps,
-          inner_batch_size=config.rl_evaluator.inner_batch_size,
-      )
-
-    rl_evaluator = evaluators.Evaluator(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        num_envs=config.rl_evaluator.num_envs,
-        async_envs=config.rl_evaluator.async_envs,
-        env_kwargs=dict(
-            num_steps=config.rl_evaluator.num_env_steps,
-            inner_batch_size=config.rl_evaluator.inner_batch_size,
-        ),
-        use_gpu=config.rl_evaluator.gpu_inference,
-        use_fake_envs=config.rl_evaluator.use_fake_envs,
-    )
-
-    rl_evaluator.start()
-
-    num_rl_evals = 0
-
-    def rl_evaluate():
-      nonlocal num_rl_evals
-      num_rl_evals += 1  # increment here to skip first reset
-
-      if num_rl_evals % config.rl_evaluator.reset_every_n_evals == 0:
-        logging.info('Resetting Environment')
-        rl_evaluator.reset_env()
-
-      rl_evaluator.update_variables({AGENT_PORT: q_policy.variables})
-      start_time = time.perf_counter()
-      run_time = 0
-      rewards = []
-      while run_time < config.rl_evaluator.runtime_seconds:
-        metrics, timings = rl_evaluator.rollout(
-            num_steps=config.rl_evaluator.rollout_length)
-        rewards.append(metrics[AGENT_PORT].reward)
-
-        run_time = time.perf_counter() - start_time
-
-      total_reward = sum(rewards)
-      num_frames = (
-          config.rl_evaluator.num_envs
-          * config.rl_evaluator.rollout_length
-          * len(rewards))
-      num_minutes = num_frames / (60 * 60)
-      kdpm = total_reward / num_minutes
-      fps = num_frames / run_time
-
-      to_log = dict(
-          ko_diff=kdpm,
-          num_rollouts=len(rewards),
-          num_minutes=num_minutes,
-          fps=fps,
-          timings=timings,
-      )
-
-      print(f'EVAL: kdpm={kdpm}, minutes={num_minutes:.2f}, fps={fps:.1f}\n')
-      to_log['time'] = run_time
-
-      total_steps = step.numpy()
-      train_lib.log_stats(dict(rl_eval=to_log), total_steps)
-
-    stop_rl_evaluator = rl_evaluator.stop
-  else:
-    rl_evaluate = lambda: None
-    stop_rl_evaluator = lambda: None
-
-  maybe_rl_eval = utils.Periodically(rl_evaluate, config.rl_evaluator.interval_seconds)
-
-  try:
-
-    # For burnin.
-    # maybe_eval(force=True)
-    maybe_rl_eval()  # guaranteed to run the first time
-
-    start_time = time.time()
-
-    train_profiler = utils.Profiler(burnin=0)
-
-    while time.time() - start_time < runtime.max_runtime:
-      with train_profiler:
-        train_stats, _ = train_manager.step()
-
-      # Update counters
-      step += 1
-      total_frames += FRAMES_PER_STEP
-      train_time += train_profiler.last_time
-
-      maybe_log(train_stats)
-      maybe_eval()
-
-    maybe_eval(force=True)
-    rl_evaluate()
-
-  finally:
-    stop_rl_evaluator()
+  maybe_eval(force=True)

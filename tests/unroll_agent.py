@@ -11,7 +11,7 @@ FLAGS = flags.FLAGS
 
 OUTPUT_PATH = paths.AGENT_OUTPUTS_DIR / 'demo.pkl'
 
-flags.DEFINE_string('model', str(paths.DEMO_CHECKPOINT), 'Path to the model.')
+flags.DEFINE_string('model', str(paths.DEMO_IMITATION_CHECKPOINT), 'Path to the model.')
 flags.DEFINE_string('input', str(paths.TOY_DATA_DIR), 'Path to the input file directory.')
 flags.DEFINE_string('output', str(OUTPUT_PATH), 'Path to the output file.')
 flags.DEFINE_bool('overwrite', False, 'Whether to overwrite the output file.')

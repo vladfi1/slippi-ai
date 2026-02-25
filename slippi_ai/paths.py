@@ -5,7 +5,11 @@ PACKAGE_PATH = _FILE_PATH.parent
 DATA_PATH = PACKAGE_PATH / 'data'
 
 # A tiny demo checkpoint.
-DEMO_CHECKPOINT = DATA_PATH / 'checkpoints/demo'
+CHECKPOINTS_DIR = DATA_PATH / 'checkpoints'
+DEMO_IMITATION_CHECKPOINT = CHECKPOINTS_DIR / 'demo'
+
+JAX_Q_FN_CKPT = CHECKPOINTS_DIR / 'jax_q_fn'
+JAX_IMITATION_CKPT = CHECKPOINTS_DIR / 'jax_demo'
 
 TOY_DATASET = DATA_PATH / 'toy_dataset'
 TOY_DATA_DIR = TOY_DATASET / 'games'

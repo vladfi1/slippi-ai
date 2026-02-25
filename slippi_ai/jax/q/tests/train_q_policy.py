@@ -8,7 +8,7 @@ import fancyflags as ff
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
 from slippi_ai.jax import networks
-from slippi_ai.jax.q import combined_learner, train_combined
+from slippi_ai.jax.q import train_q_policy
 
 network_config = networks.default_config()
 network_config['name'] = 'tx_like'
@@ -20,7 +20,7 @@ network_config['tx_like'].update(
     activation='gelu',
 )
 
-DEFAULT_CONFIG = train_combined.Config(
+DEFAULT_CONFIG = train_q_policy.Config(
     dataset=data_lib.DatasetConfig(
         data_dir=str(paths.TOY_DATA_DIR),
         meta_path=str(paths.TOY_META_PATH),
@@ -32,22 +32,14 @@ DEFAULT_CONFIG = train_combined.Config(
         batch_size=2,
         unroll_length=5,
     ),
-    runtime=train_combined.RuntimeConfig(
+    runtime=train_q_policy.RuntimeConfig(
         log_interval=4,
         max_runtime=10,
         num_evals_per_epoch=2,
-        num_eval_epochs=0.1,
+        max_eval_steps=3,
     ),
-    network=network_config,
-    q_function=train_combined.QFunctionConfig(
-        network=network_config,
-    ),
-)
-
-DEFAULT_CONFIG.controller_head['name'] = 'autoregressive'
-DEFAULT_CONFIG.controller_head['autoregressive'].update(
-    residual_size=2,
-    component_depth=0,
+    initialize_policies_from=str(paths.JAX_IMITATION_CKPT),
+    initialize_q_function_from=str(paths.JAX_Q_FN_CKPT),
 )
 
 if __name__ == '__main__':
@@ -62,8 +54,8 @@ if __name__ == '__main__':
     wandb.init(mode='offline')  # avoid network calls during tests
 
     config = flag_utils.dataclass_from_dict(
-        train_combined.Config, CONFIG.value)
+        train_q_policy.Config, CONFIG.value)
 
-    train_combined.train(config)
+    train_q_policy.train(config)
 
   app.run(main)

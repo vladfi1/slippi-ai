@@ -113,7 +113,7 @@ def get_module_state(module: nnx.Module, to_numpy: bool = True) -> dict:
     pure_state = jax.tree.map(np.asarray, pure_state)
   return pure_state
 
-def set_module_state(module: nnx.Module, state_dict: dict):
+def set_module_state(module: nnx.Module | nnx.Optimizer, state_dict: dict):
   """Set the state of a module from a pure dict."""
   state = nnx.state(module)
   nnx.replace_by_pure_dict(state, state_dict)
