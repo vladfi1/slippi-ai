@@ -249,6 +249,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       mesh=mesh,
       data_sharding=data_sharding,
   )
+  jax_utils.replicate_module(learner, mesh)
 
   logging.info("Network configuration")
   for comp in ['network']:
@@ -290,15 +291,15 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       learner, test_data, dict(train=False),
       rngs=rngs, data_sharding=data_sharding)
 
-  print_losses('initial', train_manager.step()[0])
+  print_losses('initial', test_manager.step()[0])
 
   if restored:
     assert isinstance(restored_state, dict)
-    jax_utils.set_module_state(
-        learner,
-        jax_utils.shard_pytree(restored_state['state'], data_sharding))
-    print_losses('post-restore', train_manager.step()[0])
-    del restored_state
+    replicated_state = jax_utils.shard_pytree(
+        restored_state['state'], jax_utils.replicate_sharding(mesh))
+    jax_utils.set_module_state(learner, replicated_state)
+    print_losses('post-restore', test_manager.step()[0])
+    del restored_state, replicated_state
 
   def save(eval_loss=None):
     nonlocal best_eval_loss
