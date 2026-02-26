@@ -47,6 +47,7 @@ class RuntimeConfig:
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # useful for tests
+  eval_at_start: bool = False
 
 @dataclasses.dataclass
 class Config:
@@ -55,6 +56,9 @@ class Config:
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
+
+  # Optionally use longer unroll length for less biased evaluation.
+  test_unroll_multiplier: int = 1
 
   # Loads obs config and name map to be compatible with a given policy.
   # This is needed later in the combined setting so that the data works with
@@ -207,6 +211,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.delay is None:
       raise ValueError('Must specify delay.')
 
+  if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
+    logging.info("Setting learner unroll batch size = %d", config.data.unroll_length)
+    config.learner.unroll_batch_size = config.data.unroll_length
+
   # Set wandb config after potential overrides from checkpoint or compatible policy.
   wandb.config.update(dataclasses.asdict(config))
 
@@ -259,7 +267,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   print(name_map)
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
-  wandb.save(name_map_path, policy='now')
 
   data_config = dict(
       dataclasses.asdict(config.data),
@@ -268,7 +275,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       observation_config=config.observation,
   )
   train_data = data_lib.make_source(replays=train_replays, **data_config)
-  test_data = data_lib.make_source(replays=test_replays, **data_config)
+
+  test_data_config = dict(
+      data_config,
+      num_workers=2 * config.data.num_workers,
+      unroll_length=config.data.unroll_length * config.test_unroll_multiplier)
+  test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays
 
   train_manager = TrainManager(
@@ -405,7 +417,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     step_time = test_manager.step_profiler.mean_time()
 
     sps = len(per_step_eval_stats) / eval_time
-    frames_per_step = test_data.batch_size * config.data.unroll_length
+    frames_per_step = test_data.batch_size * test_data_config['unroll_length']
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
     train_epoch = epoch_tracker.last
@@ -451,6 +463,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   start_time = time.time()
   train_profiler = utils.Profiler(burnin=0)
+
+  maybe_eval(force=config.runtime.eval_at_start)
 
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:
