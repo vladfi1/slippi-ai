@@ -17,6 +17,8 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
 
+  unroll_batch_size: tp.Optional[int] = None
+
 Loss = jax.Array
 Rank2 = tuple[int, int]
 
@@ -64,6 +66,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         module=self.q_function,
         loss_fn=self._unroll_q_function,
         mesh=mesh,
+        static_argnames=['unroll_batch_size'],
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -103,11 +106,18 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       q_function: q_lib.QFunction[embed.Action],
       bm_frames: Frames[Rank2, embed.Action],
       initial_state: RecurrentState,
+      *,
+      unroll_batch_size: tp.Optional[int] = None,
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, final_state = q_function.loss(frames, initial_state, self.discount)
+    if unroll_batch_size is None:
+      q_outputs, final_state = q_function.loss(
+          frames, initial_state, self.discount)
+    else:
+      q_outputs, final_state = q_function.loss_batched(
+          frames, initial_state, self.discount, unroll_batch_size)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)
     bm_metrics = jax.tree.map(jax_utils.swap_axes, q_outputs.metrics)
@@ -132,6 +142,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     if train:
       metrics, final_state = self.train_q_function(frames, initial_state)
     else:
-      metrics, final_state = self.run_q_function(frames, initial_state)
+      metrics, final_state = self.run_q_function(
+        frames, initial_state, unroll_batch_size=self.config.unroll_batch_size)
 
     return {Q_FUNCTION: metrics}, final_state
