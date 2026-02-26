@@ -545,9 +545,10 @@ def data_parallel_train_with_rngs(
 
   return cached_partial(train, module, optimizer, rngs)
 
+
 def shard_map_loss_fn(
     module: ModT,
-    loss_fn: tp.Callable[[ModT, Data, State, *Inputs], tp.Tuple[Loss, AuxT, State, *Outputs]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
@@ -563,7 +564,7 @@ def shard_map_loss_fn(
       donate_argnums=(2,),
       static_argnames=static_argnames,
   )
-  def loss_fn_wrapper(module: ModT, data: Data, state: State, *args: *Inputs):
+  def loss_fn_wrapper(module: ModT, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
     if extra_in_specs is None:
       _extra_in_specs = tuple(PS() for _ in args)
     else:
@@ -585,9 +586,9 @@ def shard_map_loss_fn(
         module: ModT,
         data: Data,
         state: State,
-        *inputs: *Inputs,
+        *inputs: P.args,
     ) -> tuple[AuxT, State, *Outputs]:
-      loss_and_outputs = loss_fn(module, data, state, *inputs)
+      loss_and_outputs = loss_fn(module, data, state, *inputs, **kwargs)
       return loss_and_outputs[1:]
 
     return sharded_loss_fn(module, data, state, *args)
@@ -597,7 +598,7 @@ def shard_map_loss_fn(
 def shard_map_loss_fn_with_rngs(
     module: ModT,
     rngs: nnx.Rngs,
-    loss_fn: tp.Callable[[ModT, Data, State, nnx.Rngs, *Inputs], tp.Tuple[Loss, AuxT, State, *Outputs]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
@@ -618,7 +619,7 @@ def shard_map_loss_fn_with_rngs(
       donate_argnums=(1, 3),
       static_argnames=static_argnames,
   )
-  def loss_fn_wrapper(module: ModT, rngs: nnx.Rngs, data: Data, state: State, *args: *Inputs):
+  def loss_fn_wrapper(module: ModT, rngs: nnx.Rngs, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
     if extra_in_specs is None:
       _extra_in_specs = tuple(PS() for _ in args)
     else:
@@ -641,14 +642,15 @@ def shard_map_loss_fn_with_rngs(
         data: Data,
         state: State,
         rngs: nnx.Rngs,
-        *inputs: *Inputs,
+        *inputs: P.args,
+        **kwargs: P.kwargs,
     ) -> tuple[AuxT, State, *Outputs]:
       map_update(lambda x: x[0], rngs)  # go from [1] to []
-      loss_and_outputs = loss_fn(module, data, state, rngs, *inputs)
+      loss_and_outputs = loss_fn(module, data, state, rngs, *inputs, **kwargs)
       map_update(lambda x: x[None], rngs)  # go back to [1] for shard_map
       return loss_and_outputs[1:]
 
-    return sharded_loss_fn(module, data, state, rngs, *args)
+    return sharded_loss_fn(module, data, state, rngs, *args, **kwargs)
 
   return cached_partial(loss_fn_wrapper, module, rngs)
 
