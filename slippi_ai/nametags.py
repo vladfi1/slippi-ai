@@ -1,5 +1,6 @@
 """Track known player nametags and connect codes."""
 
+import collections
 from typing import Optional
 
 import melee
@@ -157,6 +158,32 @@ for name in BANNED_NAMES:
 
 def is_banned_name(name: str) -> bool:
   return normalize_name(name) in BANNED_NAMES
+
+
+def name_map_from_entries(names: list[str], max_names: int) -> dict[str, int]:
+  name_counts: collections.Counter = collections.Counter()
+  for name in names:
+    name_counts[name] += 1
+  return name_map_from_counts(name_counts, max_names)
+
+def name_map_from_counts(name_counts: collections.Counter, max_names: int) -> dict[str, int]:
+  normalized_counts = collections.Counter()
+  for name, count in name_counts.items():
+    normalized_counts[normalize_name(name)] += count
+
+  name_map: dict[str, int] = {}
+  for i, (name, _) in enumerate(normalized_counts.most_common(max_names)):
+    name_map[name] = i
+
+  # Bake in group aliases so all spellings map to the same code.
+  for first, *rest in NAME_GROUPS:
+    if first not in name_map:
+      continue
+    for alias in rest:
+      name_map[alias] = name_map[first]
+
+  return name_map
+
 
 for name, _ in PLAYER_MAINS:
   assert name in KNOWN_PLAYERS, name

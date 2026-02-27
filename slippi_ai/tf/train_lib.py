@@ -300,31 +300,33 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   ### Dataset Creation ###
-  dataset_config = config.dataset
-
-  # Parse csv chars into list of enum values.
-  char_filters = {}
-  for key in ['allowed_characters', 'allowed_opponents']:
-    chars_string = getattr(dataset_config, key)
-    char_filters[key] = data_lib.chars_from_string(chars_string)
-
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
-  character_quantities = collections.Counter()
-  for replay in train_replays:
-    character_quantities[melee.Character(replay.main_player.character)] += 1
-  dataset_metrics = {
-      'characters': dict(character_quantities),
-  }
-
+  name_map: tp.Optional[dict[str, int]] = None
   if restored:
-    name_map: dict[str, int] = combined_state['name_map']
-  else:
-    name_map = create_name_map(train_replays, config.max_names)
+    assert isinstance(combined_state, dict)  # appease type checker
+    name_map = combined_state['name_map']
+
+  train_data_config = config.data
+  test_batch_size = 2 * config.data.batch_size
+  test_data_config = dataclasses.replace(
+      train_data_config,
+      num_workers=2 * train_data_config.num_workers,
+      batch_size=test_batch_size,
+  )
+
+  train_data, test_data, name_map = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=train_data_config,
+      test_data_config=test_data_config,
+      name_map=name_map,
+      max_names=config.max_names,
+      extra_frames=policy.delay + 1,
+      observation_config=config.observation,
+  )
+  exit_stack.callback(train_data.shutdown)
+  exit_stack.callback(test_data.shutdown)
 
   # Record name map
-  print(name_map)
+  logging.info(name_map)
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
@@ -334,26 +336,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   encode_name = nametags.name_encoder(name_map)
   encode_name_uint8 = lambda name: np.uint8(encode_name(name))
   batch_encode_name = np.vectorize(encode_name_uint8)
-
-  # Create data sources for train and test.
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + policy.delay,
-      name_map=name_map,
-      observation_config=config.observation,
-      **char_filters,
-  )
-  train_data = data_lib.make_source(replays=train_replays, **data_config)
-
-  test_batch_size = 2 * config.data.batch_size
-  test_data_config = dict(
-      data_config,
-      # Use more workers for test data to keep up with eval speed.
-      num_workers=2 * config.data.num_workers,
-      batch_size=test_batch_size,
-  )
-  test_data = data_lib.make_source(replays=test_replays, **test_data_config)
-  del train_replays, test_replays  # free up memory
 
   train_manager = train_lib.TrainManager(learner, train_data, dict(train=True))
   test_manager = train_lib.TrainManager(learner, test_data, dict(train=False))
@@ -404,7 +386,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         config=dataclasses.asdict(config),
         name_map=name_map,
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
-        dataset_metrics=dataset_metrics,
     )
     pickled_state = pickle.dumps(combined_state)
 

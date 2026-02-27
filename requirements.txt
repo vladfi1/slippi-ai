@@ -11,3 +11,4 @@ peppi-py-vladfi
 portpicker
 pulp
 tqdm
+git+https://github.com/vladfi1/webdataset.git@tar-xz

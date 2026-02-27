@@ -360,8 +360,7 @@ def train(config: Config):
     meta: data_lib.ChunkMeta = tf.nest.map_structure(utils.stack, *metas)
 
     # Name of the player we're imitating.
-    name = np.where(
-        meta.info.swap, meta.info.meta.p1.name, meta.info.meta.p0.name)
+    name = meta.main_player.name
     encoded_name = batch_encode_name(name)
     assert encoded_name.dtype == np.uint8
     assert encoded_name.shape == loss.shape

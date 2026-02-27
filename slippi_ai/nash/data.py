@@ -35,7 +35,7 @@ def convert_batch(
     encode_name: tp.Callable[[str], types.Int32Array[data_lib.Rank1]],
 ) -> TwoPlayerBatch[data_lib.Rank2]:
   p1_game = data_lib.swap_players(batch.game)
-  # Note: the name data is a numpy array of strings with shaep [B]
+  # Note: the name data is a numpy array of strings with shape [B]
   p1_name_code = encode_name(batch.meta.meta.p1.name)  # [B]
 
   full_p1_name_code = np.broadcast_to(

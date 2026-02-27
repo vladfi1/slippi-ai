@@ -19,6 +19,7 @@ from melee.enums import Button
 S = TypeVar('S', bound=tuple[int, ...])
 T = TypeVar('T')
 Nest = Union[Mapping[str, 'Nest'], T]
+Rank1 = tuple[int]
 
 # we define NamedTuples for python typechecking and IDE integration
 
@@ -237,7 +238,7 @@ def array_to_nt(nt: type[T], val: pa.Array) -> T:
   assert val.type.num_fields == 0
   return val.to_numpy(zero_copy_only=False).astype(node_or_leaf)
 
-def game_array_to_nt(game: pa.StructArray) -> Game:
+def game_array_to_nt(game: pa.StructArray) -> Game[Rank1]:
   result = array_to_nt(Game, game)
   assert isinstance(result, Game)
   return result

@@ -258,36 +258,23 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   ### Dataset Creation ###
-  dataset_config = config.dataset
-
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
-  if name_map is None:
-    name_map = train_lib.create_name_map(train_replays, config.max_names)
-
-  name_map_path = os.path.join(expt_dir, 'name_map.json')
-  print(name_map)
-  with open(name_map_path, 'w') as f:
-    json.dump(name_map, f)
-
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + config.delay,
-      name_map=name_map,
-      observation_config=config.observation,
-  )
-  train_data = data_lib.make_source(replays=train_replays, **data_config)
-
-  test_data_config = dict(
-      data_config,
-      num_workers=2 * config.data.num_workers,
+  train_data_config = config.data
+  test_data_config = dataclasses.replace(
+      train_data_config,
+      num_workers=2 * train_data_config.num_workers,
       unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
       unroll_chunks=0,  # the unroll multiplier obviates the need this
   )
-  test_data = data_lib.make_source(replays=test_replays, **test_data_config)
-  del train_replays, test_replays
 
+  train_data, test_data, name_map = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=train_data_config,
+      test_data_config=test_data_config,
+      name_map=name_map,
+      max_names=config.max_names,
+      extra_frames=config.delay + 1,
+      observation_config=config.observation,
+  )
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)
 
@@ -431,7 +418,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     step_time = test_manager.step_profiler.mean_time()
 
     sps = len(per_step_eval_stats) / eval_time
-    frames_per_step = test_data.batch_size * test_data_config['unroll_length']
+    frames_per_step = test_data.batch_size * test_data_config.unroll_length
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
     train_epoch = epoch_tracker.last
