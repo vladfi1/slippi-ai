@@ -278,7 +278,7 @@ def create_name_map(
 def value_function_from_config(
     config: Config,
     rngs: nnx.Rngs,
-) -> tp.Optional[vf_lib.ValueFunction]:
+) -> vf_lib.ValueFunction:
   vf_config = config.value_function
   network_config = config.network
   if vf_config.separate_network_config:

@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import optax
 import numpy as np
+import tensorflow_probability.substrates.jax as tfp
 
 from slippi_ai import utils, types
 from slippi_ai.types import (
@@ -29,7 +30,7 @@ from slippi_ai.action_space import custom_v1 as cv1
 Array = jax.Array
 In = TypeVar('In')
 Out = TypeVar('Out')
-
+Inputs = tp.TypeVarTuple('Inputs')
 
 # TODO: distinguish between leaf and composite embeddings
 class Embedding(Generic[In, Out], abc.ABC):
@@ -53,7 +54,7 @@ class Embedding(Generic[In, Out], abc.ABC):
   def __call__(self, x: Out) -> Array:
     """Embed the input state as a flat tensor."""
 
-  def map(self, f, *args: Out) -> Out:
+  def map(self, f: tp.Callable[[tp.Self, *Inputs], Out], *args: Out) -> Out:
     return f(self, *args)
 
   def flatten(self, struct: Out) -> Iterator[Any]:
@@ -85,6 +86,16 @@ class Embedding(Generic[In, Out], abc.ABC):
     """Negative log-prob of the target sample."""
     raise NotImplementedError
 
+  def distribution(self, distribution: Array) -> tfp.distributions.Distribution:
+    raise NotImplementedError(
+        f'{type(self).__name__} does not support distribution')
+
+  def kl_divergence(self, logits_p: Array, logits_q: Array) -> Array:
+    return self.distribution(logits_p).kl_divergence(self.distribution(logits_q))
+
+  def entropy(self, logits: Array) -> Array:
+    return self.distribution(logits).entropy()
+
 class BoolEmbedding(Embedding[np.bool, np.bool]):
 
   def __init__(self, name='bool', on=1., off=0.):
@@ -114,6 +125,10 @@ class BoolEmbedding(Embedding[np.bool, np.bool]):
       logits = logits / temperature
     probs = jax.nn.sigmoid(logits)
     return jax.random.bernoulli(rng, probs)
+
+  def distribution(self, distribution: Array) -> tfp.distributions.Bernoulli:
+    logits = jnp.squeeze(distribution, axis=-1)
+    return tfp.distributions.Bernoulli(logits=logits)
 
 embed_bool = BoolEmbedding()
 
@@ -232,6 +247,9 @@ class OneHotEmbedding(Embedding[int, T]):
     if temperature is not None:
       logits = logits / temperature
     return jax.random.categorical(rng, logits, axis=-1).astype(self.dtype)
+
+  def distribution(self, distribution: Array) -> tfp.distributions.Categorical:
+    return tfp.distributions.Categorical(logits=distribution, dtype=self.dtype)
 
 NT = TypeVar("NT")
 
@@ -658,6 +676,15 @@ class CompoundEmbedding(Embedding[In, Out]):
 
   def distance(self, distribution: Array, target: Out) -> Out:
     return self._embed_mid.distance(distribution, target)
+
+  def distribution(self, distribution: Array) -> tfp.distributions.Distribution:
+    return self._embed_mid.distribution(distribution)
+
+  def kl_divergence(self, logits_p: Array, logits_q: Array) -> Array:
+    return self._embed_mid.kl_divergence(logits_p, logits_q)
+
+  def entropy(self, logits: Array) -> Array:
+    return self._embed_mid.entropy(logits)
 
 def make_custom_v1_embedding(
     config: cv1.Config,
