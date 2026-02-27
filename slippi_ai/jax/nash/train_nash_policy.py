@@ -1,14 +1,11 @@
-
 """Train (and test) a network via imitation learning."""
 
 import contextlib
 import dataclasses
-import functools
 import os
 import pickle
 import time
 import typing as tp
-import queue, threading
 
 from absl import logging
 
@@ -50,6 +47,8 @@ class RuntimeConfig:
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
+
+  data_source_burnin: int = 5
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -262,8 +261,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     raise ValueError('Must initialize policies from a checkpoint.')
 
-  assert name_map is not None
-
+  assert isinstance(name_map, dict)
 
   # Initialize q_function
   if config.initialize_q_function_from:
@@ -342,27 +340,29 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   config.dataset.allowed_opponents = config.dataset.allowed_characters
   config.dataset.filter_opponent_name = True
 
-  train_replays, test_replays = data_lib.train_test_split(config.dataset)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
-  # Create data sources for train and test.
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + nash_policy.delay,
+  train_data, test_data, name_map = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=config.data,
       name_map=name_map,
+      extra_frames=1 + nash_policy.delay,
       observation_config=imitation_config.observation,
   )
-  def make_source(replays: list[data_lib.ReplayInfo], kwargs: dict):
-    source = nash_data.TwoPlayerDataSource(
-        data_lib.make_source(replays=replays, **kwargs),
+
+  def make_source(source: data_lib.AbstractDataSource):
+    nash_source = nash_data.TwoPlayerDataSource(
+        source=source,
         name_map=name_map,
     )
-    exit_stack.callback(source.shutdown)
-    return source
+    exit_stack.callback(nash_source.shutdown)
+    return nash_source
 
-  train_data = make_source(train_replays, data_config)
-  test_data = make_source(test_replays, data_config)
-  del train_replays, test_replays
+  train_data = make_source(train_data)
+  test_data = make_source(test_data)
+
+  # Get rid of match-start correlations
+  for source in [train_data, test_data]:
+    for _ in range(config.runtime.data_source_burnin):
+      next(source)
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True),

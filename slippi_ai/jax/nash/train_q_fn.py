@@ -155,6 +155,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   total_frames = 0
   epoch_offset = 0.0
 
+  restored_state: tp.Optional[dict] = None
   name_map: tp.Optional[dict[str, int]] = None
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
@@ -267,41 +268,39 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   config.dataset.allowed_opponents = config.dataset.allowed_characters
   config.dataset.filter_opponent_name = True
 
-  train_replays, test_replays = data_lib.train_test_split(config.dataset)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
+  train_data_config = config.data
+  test_data_config = dataclasses.replace(
+      train_data_config,
+      num_workers=2 * train_data_config.num_workers,
+      unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
+      unroll_chunks=0,  # the unroll multiplier obviates the need this
+  )
 
-  if name_map is None:
-    name_map = train_lib.create_name_map(train_replays, config.q_function.num_names)
+  train_data, test_data, name_map = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=train_data_config,
+      test_data_config=test_data_config,
+      name_map=name_map,
+      max_names=config.q_function.num_names,
+      extra_frames=config.delay + 1,
+      observation_config=config.observation,
+  )
 
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   print(name_map)
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
 
-  def make_source(replays: list[data_lib.ReplayInfo], kwargs: dict):
-    source = nash_data.TwoPlayerDataSource(
-        data_lib.make_source(replays=replays, **kwargs),
+  def make_source(source: data_lib.AbstractDataSource):
+    nash_source = nash_data.TwoPlayerDataSource(
+        source=source,
         name_map=name_map,
     )
-    exit_stack.callback(source.shutdown)
-    return source
+    exit_stack.callback(nash_source.shutdown)
+    return nash_source
 
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + config.delay,
-      name_map=name_map,
-      observation_config=config.observation,
-  )
-  train_data = make_source(train_replays, data_config)
-
-  test_data_config = dict(
-      data_config,
-      num_workers=2 * config.data.num_workers,
-      unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
-      unroll_chunks=0,  # the unroll multiplier obviates the need this
-  )
-  test_data = make_source(test_replays, test_data_config)
-  del train_replays, test_replays
+  train_data = make_source(train_data)
+  test_data = make_source(test_data)
 
   # Get rid of match-start correlations
   for source in [train_data, test_data]:
@@ -417,7 +416,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # Stats have shape [B, 2, T]
     def time_mean(x: jax.Array, axis: int = 2) -> np.ndarray:
-      assert x.shape[axis] == test_data_config['unroll_length']
+      assert x.shape[axis] == test_data_config.unroll_length
       # Need to convert to numpy as np.mean will perform the computation in jax.
       return np.mean(np.asarray(x), axis=axis)
 
@@ -447,7 +446,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     step_time = test_manager.step_profiler.mean_time()
 
     sps = len(per_step_eval_stats) / eval_time
-    frames_per_step = test_data.batch_size * test_data_config['unroll_length']
+    frames_per_step = test_data.batch_size * test_data_config.unroll_length
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
     counters = dict(

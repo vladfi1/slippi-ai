@@ -343,22 +343,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   )
 
   ### Dataset Creation ###
-  dataset_config = config.dataset
+  train_data_config = config.data
+  test_data_config = dataclasses.replace(
+      train_data_config,
+      num_workers=2 * train_data_config.num_workers,
+  )
 
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
-  logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
-
-  # Create data sources for train and test.
-  data_config = dict(
-      dataclasses.asdict(config.data),
-      extra_frames=1 + q_policy.delay,
+  train_data, test_data, name_map = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=train_data_config,
+      test_data_config=test_data_config,
       name_map=name_map,
+      extra_frames=q_policy.delay + 1,
       observation_config=imitation_config.observation,
   )
-  train_data = data_lib.make_source(replays=train_replays, **data_config)
-  test_data = data_lib.make_source(replays=test_replays, **data_config)
-  del train_replays, test_replays
-
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)
 
@@ -403,7 +401,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         imitation_config=dataclasses.asdict(imitation_config),
         q_function_config=dataclasses.asdict(q_function_config),
         name_map=name_map,
-        # dataset_metrics=dataset_metrics,
         counters=counters,
     )
     pickled_state = pickle.dumps(combined)
