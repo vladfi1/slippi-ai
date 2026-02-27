@@ -14,7 +14,7 @@ from slippi_ai import (
     policies,
 )
 from slippi_ai.data import NAME_DTYPE
-from slippi_ai.types import Game
+from slippi_ai.types import Game, FloatArray, BoolArray
 from slippi_ai.controller_heads import (
     SampleOutputs, ControllerType as CT,
 )
@@ -23,14 +23,16 @@ from slippi_ai.policies import RecurrentState as RS
 Port = int
 Timings = dict
 
+Rank2 = tuple[int, int]
+
 # Mimics data.Batch
 class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
   # The [T+1, ...] arrays overlap in time by 1.
-  states: Game  # [T+1, B]
-  name: np.ndarray  # [T+1, B]
+  states: Game[Rank2]  # [T+1, B]
+  name: np.ndarray[Rank2, np.dtype[np.int32]]  # [T+1, B]
   actions: SampleOutputs[CT]  # [T+1, B]
-  rewards: np.ndarray  # [T, B]
-  is_resetting: bool  # [T+1, B]
+  rewards: FloatArray[Rank2]  # [T, B]
+  is_resetting: BoolArray[Rank2]  # [T+1, B]
   initial_state: RS  # [B]
   delayed_actions: list[SampleOutputs[CT]]  # [D, B]
 
@@ -204,8 +206,10 @@ class RolloutWorker:
     is_resetting: list[bool] = []
 
     # Record each agent's initial state at the beginning of the rollout.
+    # Copy to numpy to guard against JAX buffer donation: JIT-compiled agents
+    # donate hidden state buffers on each step, invalidating raw JAX references.
     initial_states = {
-        port: agent.hidden_state
+        port: utils.map_single_structure(np.asarray, agent.hidden_state)
         for port, agent in self._agents.items()
     }
 
