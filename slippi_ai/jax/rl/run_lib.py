@@ -237,20 +237,21 @@ class LearnerManager:
 class Logger:
 
   def __init__(self):
-    self.buffer = []
+    self.buffer: list[dict] = []
 
   def record(self, to_log):
     to_log = utils.map_single_structure(np.mean, to_log)
     self.buffer.append(to_log)
 
-  def flush(self, step: int) -> tp.Optional[dict]:
+  def flush(self, step: int, extras: dict = {}) -> tp.Optional[dict]:
     if not self.buffer:
       return None
 
     to_log = utils.map_nt(
         lambda *xs: np.mean(xs), *self.buffer)
+    to_log.update(extras)
     train_lib.log_stats(to_log, step)
-    self.buffer = []
+    self.buffer.clear()
     return to_log
 
 
@@ -528,6 +529,8 @@ def run(config: Config):
       deduplicated_states = utils.map_single_structure(
           lambda x: x[:, :, :batch_size], states)
       metrics['by_name'] = get_name_matchup_stats(deduplicated_states)
+    else:
+      metrics['ko_diff'] = reward.ko_diff(states) * MINUTES_PER_FRAME
 
     metrics.update(
         timings=timings,
@@ -537,13 +540,20 @@ def run(config: Config):
 
   logger = Logger()
   steps_per_epoch = config.learner.ppo.num_batches
+  frames_per_step = config.actor.num_envs * config.actor.rollout_length
 
-  def flush(step: int):
-    metrics = logger.flush(step * steps_per_epoch)
+  def flush(epoch: int):
+    total_steps = epoch * steps_per_epoch
+    total_frames = total_steps * frames_per_step
+    extras = dict(
+        total_frames=total_frames,
+    )
+
+    metrics = logger.flush(total_steps, extras=extras)
     if metrics is None:
       return
 
-    print('\nStep:', step)
+    print('\nStep:', epoch)
 
     timings: dict = metrics['timings']
     timing_str = ', '.join(
@@ -558,6 +568,8 @@ def run(config: Config):
     teacher_kl = post_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
+    if config.opponent.type is not OpponentType.SELF:
+      print(f'ko_diff: {metrics["ko_diff"]:.3f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
@@ -586,10 +598,6 @@ def run(config: Config):
     logging.info('Finite time mode, disabling env resets')
     reset_interval = None
 
-  optimizer_burnin_start = 0
-  value_train_start = optimizer_burnin_start + config.learner.optimizer_burnin_steps
-  policy_train_start = value_train_start + config.learner.value_burnin_steps
-
   try:
     for i in range(config.runtime.max_step):
       with step_profiler:
@@ -597,26 +605,24 @@ def run(config: Config):
           logging.info('Resetting environments')
           learner_manager.reset_env()
 
-        # opt_step = learner.policy_optimizer.step.value.item()
-        # opt_lr = learner.policy_schedule(opt_step)
-        # logging.info(f'Step {step}, optimizer step {opt_step}, learning rate {opt_lr:.6f}')
-
-        if step == policy_train_start:
+        if step == config.learner.optimizer_burnin_epochs + config.learner.value_burnin_epochs:
           logging.info('Burnin complete, starting policy updates')
           # metrics change shape b/c ppo steps goes from 1 to 2
-          logger.flush(step)
-        elif step == value_train_start:
+          flush(step-1)
+        elif step == config.learner.value_burnin_epochs:
+          logging.info('Policy optimizer burnin')
+          # metrics change shape b/c ppo steps goes from 0 to 1
+          flush(step-1)
+        elif step == 0:
           logging.info('Value function burnin')
-        elif step == optimizer_burnin_start:
-          logging.info('Optimizer burnin')
 
         trajectories, metrics = learner_manager.step(step)
 
       logger.record(get_log_data(trajectories, metrics))
       maybe_flush(step)
 
-      step += 1
       maybe_save(step)
+      step += 1
 
     save(step)
 

@@ -125,7 +125,7 @@ class AgentManager:
       self.save_path = os.path.join(expt_dir, name)
       logging.info(f'Port {port}: restoring from {self.save_path}')
       rl_state = jax_saving.load_state_from_disk(self.save_path)
-      self.step = rl_state['step']
+      self.step: int = rl_state['step']
       restore_config = flag_utils.dataclass_from_dict(
           AgentConfig, rl_state[AGENT_CONFIG_KEY])
       agent_config.name = restore_config.name
@@ -187,6 +187,9 @@ class AgentManager:
     )
 
   def save(self, step: int):
+    if self.save_path is None:
+      raise ValueError('save_path not set for agent on port {}'.format(self.port))
+
     state = self.get_state()
     state['step'] = step
     pickled_state = pickle.dumps(state)
@@ -237,7 +240,7 @@ class ExperimentManager:
       self.num_rollouts = 0
       self._burnin_after_reset()
 
-  def _rollout(self) -> tuple[dict[int, evaluators.Trajectory], dict]:
+  def _rollout(self) -> tuple[tp.Mapping[int, evaluators.Trajectory], dict]:
     self.num_rollouts += 1
     return self.actor.rollout(self._unroll_length)
 
@@ -254,7 +257,7 @@ class ExperimentManager:
 
   def step(
       self,
-      ppo_steps: tp.Optional[int] = None,
+      step: int,
   ) -> tuple[dict[int, list[evaluators.Trajectory]], dict]:
     reset_interval = self._config.runtime.reset_every_n_steps
     if reset_interval and self.num_rollouts >= reset_interval:
@@ -288,8 +291,7 @@ class ExperimentManager:
       metrics = {}
       for port, learner in self._learners.items():
         self._hidden_states[port], metrics[port] = learner.ppo(
-            trajectories[port], self._hidden_states[port],
-            num_epochs=ppo_steps)
+            trajectories[port], self._hidden_states[port], step=step)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
 
@@ -458,7 +460,7 @@ def run(config: Config):
 
     while step < config.runtime.max_step:
       with step_profiler:
-        trajectories, metrics = experiment_manager.step()
+        trajectories, metrics = experiment_manager.step(step)
 
       if experiment_manager.learner_profiler.num_calls > 0:
         logger.record(get_log_data(trajectories, metrics))

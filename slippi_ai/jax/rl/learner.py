@@ -42,8 +42,8 @@ class LearnerConfig:
   reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
   ppo: PPOConfig = field(PPOConfig)
 
-  optimizer_burnin_steps: int = 1
-  value_burnin_steps: int = 1
+  optimizer_burnin_epochs: int = 1
+  value_burnin_epochs: int = 1
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
@@ -129,20 +129,14 @@ class Learner(nnx.Module):
 
     self._controller_embedding = policy.controller_head.controller_embedding
 
-    self.value_lr_zero_steps = config.optimizer_burnin_steps
-    self.policy_lr_zero_steps = self.value_lr_zero_steps + config.value_burnin_steps
-
-    # The policy update is accumulated across the trajectories in one epoch,
-    # while the value function is updated on each trajectory.
-    # During the optimizer/value burnin, ppo epochs will be set to 1.
-    num_policy_updates_per_epoch = 1
-    num_value_updates_per_epoch = config.ppo.num_batches
+    # The policy update is accumulated across the trajectories in one epoch.
+    # For the first value_burnin_epochs we don't train the policy at all.
+    # Then for the next optimizer_burnin_epochs we train the policy for a
+    # single epoch with learning_rate=0 to initialize the optimizer state.
 
     self.policy_schedule = warmup_schedule(
-        self.policy_lr_zero_steps * num_policy_updates_per_epoch, config.learning_rate
-    )
-    self.value_schedule = warmup_schedule(
-        self.value_lr_zero_steps * num_value_updates_per_epoch, config.learning_rate
+        config.optimizer_burnin_epochs,
+        config.learning_rate,
     )
 
     self.policy_optimizer = nnx.Optimizer(
@@ -151,7 +145,7 @@ class Learner(nnx.Module):
         wrt=nnx.Param)
     self.value_optimizer = nnx.Optimizer(
         self.value_function,
-        optax.adam(self.value_schedule),
+        optax.adam(config.learning_rate),
         wrt=nnx.Param)
 
     self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
@@ -428,7 +422,9 @@ class Learner(nnx.Module):
     # Checkpoint policy state for potential reverting.
     # checkpoint = jax_utils.get_module_state(self.policy)
 
-    if step < self.policy_lr_zero_steps:
+    if step < self._config.value_burnin_epochs:
+      num_epochs = 0
+    elif step < self._config.value_burnin_epochs + self._config.optimizer_burnin_epochs:
       num_epochs = 1
     else:
       num_epochs = self._config.ppo.num_epochs
