@@ -8,7 +8,7 @@ import wandb
 import fancyflags as ff
 
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import embed
+from slippi_ai.jax import embed, saving, train_lib
 from slippi_ai.jax.q import train_q_fn
 
 NET_NAME = 'tx_like'
@@ -32,7 +32,7 @@ def default_config():
   config.embed.with_fod = True
   config.embed.with_randall = True
 
-  config.dataset.mirror = True
+  config.dataset.mirror = False
   config.dataset.allowed_opponents = 'all'
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
@@ -86,6 +86,13 @@ if __name__ == '__main__':
     config = flag_utils.dataclass_from_dict(train_q_fn.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
+    imitation_config = None
+    if config.compatible_policy is not None:
+      imitation_state = saving.load_state_from_disk(config.compatible_policy)
+      imitation_config = flag_utils.dataclass_from_dict(
+          train_lib.Config,
+          saving.upgrade_config(imitation_state['config']))
+
     net_config = dict(NET.value)
     net = net_config.pop('name')
 
@@ -104,7 +111,13 @@ if __name__ == '__main__':
       if config.tag is None:
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
-        config.tag = f"{char}_d{config.delay}_{net}_{n}x{h}"
+        if imitation_config is not None:
+          fs = imitation_config.observation.frame_skip.skip
+        else:
+          fs = config.observation.frame_skip.skip
+        um = config.test_unroll_multiplier
+        rh = int(config.learner.reward_halflife)
+        config.tag = f"{char}_d{config.delay}_{net}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
