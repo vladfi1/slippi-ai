@@ -14,6 +14,7 @@ DEFAULT_CONFIG = train_two_lib.Config(
         max_step=10,
         log_interval=0,
         burnin_steps_after_reset=1,
+        expt_root='experiments/tests/jax/train_two',
     ),
     learner=learner_lib.LearnerConfig(
         learning_rate=0,

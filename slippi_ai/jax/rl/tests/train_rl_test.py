@@ -16,6 +16,7 @@ DEFAULT_CONFIG = run_lib.Config(
         log_interval=0,
         burnin_steps_after_reset=1,
         reset_every_n_steps=6,
+        expt_root='experiments/tests/jax/rl',
     ),
     learner=learner_lib.LearnerConfig(
         learning_rate=0,
