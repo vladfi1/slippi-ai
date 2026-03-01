@@ -23,6 +23,7 @@ def default_config():
   config.data.damage_ratio = 0.01
   config.data.num_workers = 1
   config.data.balance_characters = True
+  config.data.unroll_chunks = 4
   config.learner.learning_rate = 1e-4
   config.learner.reward_halflife = 8
 
@@ -89,7 +90,8 @@ if __name__ == '__main__':
         n = network[NET_NAME]['num_layers']
         h = network[NET_NAME]['hidden_size']
         fs = imitation_config.observation.frame_skip.skip
-        config.tag = f"{char}_d{d}_{NET_NAME}_{n}x{h}_fs{fs}"
+        ns = config.learner.num_samples
+        config.tag = f"{char}_d{d}_{NET_NAME}_{n}x{h}_fs{fs}_ns{ns}"
 
     config.dataset.allowed_characters = char
 

@@ -95,7 +95,7 @@ class Config:
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
-  expt_root: str = 'experiments/q_learning'
+  expt_root: str = 'experiments/q_policy'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
 
