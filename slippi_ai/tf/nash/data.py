@@ -3,7 +3,8 @@ import typing as tp
 import numpy as np
 import tensorflow as tf
 
-from slippi_ai import embed, nametags
+from slippi_ai import nametags
+from slippi_ai.tf import embed
 from slippi_ai import data as data_lib
 
 T = tp.TypeVar('T')

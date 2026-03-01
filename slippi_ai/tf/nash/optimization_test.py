@@ -5,7 +5,7 @@ import tensorflow as tf
 import tqdm
 
 from slippi_ai import utils
-from slippi_ai.nash import optimization, nash
+from slippi_ai.tf.nash import optimization, nash
 
 
 class QuadraticOptimizationProblem(optimization.ConstrainedOptimizationProblem[tf.Tensor]):
