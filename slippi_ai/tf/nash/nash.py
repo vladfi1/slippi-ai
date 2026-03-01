@@ -3,7 +3,7 @@ import typing as tp
 import numpy as np
 import tensorflow as tf
 
-from slippi_ai.nash import optimization
+from slippi_ai.tf.nash import optimization
 
 class NashLogits(tp.NamedTuple):
   p1_logits: tf.Tensor

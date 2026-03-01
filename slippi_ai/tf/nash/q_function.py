@@ -4,12 +4,13 @@ import typing as tp
 import tensorflow as tf
 import sonnet as snt
 
-from slippi_ai import data, embed, networks, tf_utils
+from slippi_ai import data
+from slippi_ai.tf import embed, networks, tf_utils
 from slippi_ai.utils import field
-from slippi_ai.rl_lib import discounted_returns
-from slippi_ai.networks import RecurrentState
-from slippi_ai.nash.data import split, merge
-from slippi_ai.tf_utils import expand_tile
+from slippi_ai.tf.rl_lib import discounted_returns
+from slippi_ai.tf.networks import RecurrentState
+from slippi_ai.tf.nash.data import split, merge
+from slippi_ai.tf.tf_utils import expand_tile
 
 class QOutputs(tp.NamedTuple):
   returns: tf.Tensor  # [T, B]

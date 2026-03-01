@@ -1,10 +1,7 @@
 from absl import app, flags
 import numpy as np
-import tensorflow as tf
-import tqdm
 
-from slippi_ai.nash import optimization_test
-from slippi_ai.nash import nash, optimization
+from slippi_ai.tf.nash import optimization, optimization_test
 
 ITERS = flags.DEFINE_integer('iters', 10, 'Number of tests to run')
 SIZE = flags.DEFINE_integer('size', 10, 'Game size')

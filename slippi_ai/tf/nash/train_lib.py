@@ -21,17 +21,19 @@ from slippi_ai import (
     nametags,
     policies,
     saving,
-    s3_lib,
+    utils,
+)
+from slippi_ai.tf import (
     train_q_lib,
     tf_utils,
     train_lib,
-    utils,
 )
+
 from slippi_ai import data as data_lib
 from slippi_ai import dolphin as dolphin_lib
-from slippi_ai.nash import learner as learner_lib
-from slippi_ai.nash import q_function as q_lib
-from slippi_ai.nash import data as nash_data
+from slippi_ai.tf.nash import learner as learner_lib
+from slippi_ai.tf.nash import q_function as q_lib
+from slippi_ai.tf.nash import data as nash_data
 
 field = utils.field
 
