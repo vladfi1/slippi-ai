@@ -2,7 +2,6 @@ import time
 
 from absl import app, flags
 import numpy as np
-import pulp
 
 from slippi_ai.nash import nash
 
