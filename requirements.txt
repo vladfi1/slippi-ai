@@ -9,4 +9,5 @@ py7zr
 parameterized
 peppi-py-vladfi
 portpicker
+pulp
 tqdm
