@@ -233,8 +233,8 @@ def solve_optimization_interior_point_primal_dual(
     initial_constraint_weight: float | jax.Array = 1.0,
     constraint_weight_decay: float | jax.Array = 0.9,
     optimum: tp.Optional[float | jax.Array] = None,
-    *,
     max_steps: int = 100,
+    *,
     is_linear: bool = False,
     cholesky: bool = False,
     debug: bool = False,
@@ -536,11 +536,52 @@ def as_feasiblity_solver(
 
   return feasibility_solver
 
-solve_feasibility_interior_point_primal_dual = as_feasiblity_solver(
+solve_feasibility_ippd = as_feasiblity_solver(
   solve_optimization_interior_point_primal_dual)
+
+_ippd_static_argnames = ['is_linear', 'cholesky']
 
 def jitted_ippd_feasibility_solver(
     problem: FeasibilityProblem[Parameters, Variables],
 ):
-  solver = jax_utils.partial(solve_feasibility_interior_point_primal_dual, problem)
-  return jax_utils.jit(solver, static_argnames=['is_linear', 'cholesky'])
+  solver = jax_utils.partial(solve_feasibility_ippd, problem)
+  return jax_utils.jit(solver, static_argnames=_ippd_static_argnames)
+
+def vmap_ippd_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_ippd, problem)
+
+  @functools.cache
+  def vmapped_solver(
+    is_linear: bool = False,
+    cholesky: bool = False,
+  ):
+    return jax.vmap(
+      functools.partial(solver, is_linear=is_linear, cholesky=cholesky),
+      in_axes=(0, None, None, None, None, None))
+
+  def batched_solver(
+    parameters: Parameters,
+    error: float | jax.Array = 1e-2,
+    initial_constraint_weight: float | jax.Array = 1.0,
+    constraint_weight_decay: float | jax.Array = 0.9,
+    optimum: tp.Optional[float | jax.Array] = None,
+    max_steps: int = 200,
+    *,
+    is_linear: bool = False,
+    cholesky: bool = False,
+  ) -> tuple[Variables, Stats]:
+    solver_fn = vmapped_solver(is_linear=is_linear, cholesky=cholesky)
+    # Must pass arguments positionally, otherwise vmap will default to mapping
+    # along axis 0 (instead of None as we want).
+    return solver_fn(
+        parameters,
+        error,
+        initial_constraint_weight,
+        constraint_weight_decay,
+        optimum,
+        max_steps,
+    )
+
+  return batched_solver
