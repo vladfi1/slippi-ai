@@ -233,23 +233,34 @@ def solve_optimization_interior_point_primal_dual(
     initial_constraint_weight: float | jax.Array = 1.0,
     constraint_weight_decay: float | jax.Array = 0.9,
     optimum: tp.Optional[float | jax.Array] = None,
-    max_steps: int = 100,
+    max_steps: int = 200,
     *,
     is_linear: bool = False,
     cholesky: bool = False,
     debug: bool = False,
+    expected_dtype: tp.Optional[jnp.dtype] = jnp.float64,
 ) -> tuple[Variables, dict]:
   """Solve a convex optimization problem using a primal-dual interior point method.
+
+  It is recommended that parameters are passed as float64. Even float32 can lead
+  to instability in the optimization. To use float64 you will need to set the
+  JAX_ENABLE_X64 environment variable to true. If you want to use float32, you
+  should at least set JAX_DEFAULT_MATMUL_PRECISION=float32 -- otherwise jax will
+  use "tensorflow32" which is faster but less precise. Even if instability is
+  rare, one unstable problem will slow down the entire batch.
+
+  Empircally, Nash problems take about 100 steps to converge with error=1e-4.
 
   Args:
     problem: The optimization problem to solve.
     parameters: Parameters defining the problem.
     error: The desired accuracy of the solution.
-    initial_constraint_weight: Needs doc.
+    initial_constraint_weight: Initial constraint weight.
     constraint_weight_decay: Decay factor for the constraint weight in each iteration.
     optimum: If provided, the known optimal value of the objective function. Used for logging and debugging.
     is_linear: If true, the objective and constraints are linear, which allows some optimizations.
     cholesky: If true, use Cholesky decomposition to solve the linear system in the Newton step.
+    expected_dtype: Check that the variables have this dtype.
   """
   variables = problem.initial_variables(parameters)
 
@@ -257,6 +268,8 @@ def solve_optimization_interior_point_primal_dual(
 
   flat_var = flatten(variables)
   dtype = flat_var.dtype
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, but got {dtype}"
 
   initial_constraints = problem.constraint_violations(parameters, variables)
   num_constraints = initial_constraints.shape[-1]
@@ -539,7 +552,7 @@ def as_feasiblity_solver(
 solve_feasibility_ippd = as_feasiblity_solver(
   solve_optimization_interior_point_primal_dual)
 
-_ippd_static_argnames = ['is_linear', 'cholesky']
+_ippd_static_argnames = ['is_linear', 'cholesky', 'expected_dtype', 'debug']
 
 def jitted_ippd_feasibility_solver(
     problem: FeasibilityProblem[Parameters, Variables],
@@ -547,41 +560,8 @@ def jitted_ippd_feasibility_solver(
   solver = jax_utils.partial(solve_feasibility_ippd, problem)
   return jax_utils.jit(solver, static_argnames=_ippd_static_argnames)
 
-def vmap_ippd_feasibility_solver(
+def vmap1_ippd_feasibility_solver(
     problem: FeasibilityProblem[Parameters, Variables],
 ):
   solver = jax_utils.partial(solve_feasibility_ippd, problem)
-
-  @functools.cache
-  def vmapped_solver(
-    is_linear: bool = False,
-    cholesky: bool = False,
-  ):
-    return jax.vmap(
-      functools.partial(solver, is_linear=is_linear, cholesky=cholesky),
-      in_axes=(0, None, None, None, None, None))
-
-  def batched_solver(
-    parameters: Parameters,
-    error: float | jax.Array = 1e-2,
-    initial_constraint_weight: float | jax.Array = 1.0,
-    constraint_weight_decay: float | jax.Array = 0.9,
-    optimum: tp.Optional[float | jax.Array] = None,
-    max_steps: int = 200,
-    *,
-    is_linear: bool = False,
-    cholesky: bool = False,
-  ) -> tuple[Variables, Stats]:
-    solver_fn = vmapped_solver(is_linear=is_linear, cholesky=cholesky)
-    # Must pass arguments positionally, otherwise vmap will default to mapping
-    # along axis 0 (instead of None as we want).
-    return solver_fn(
-        parameters,
-        error,
-        initial_constraint_weight,
-        constraint_weight_decay,
-        optimum,
-        max_steps,
-    )
-
-  return batched_solver
+  return jax_utils.vmap1(solver, static_argnames=_ippd_static_argnames)

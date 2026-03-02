@@ -61,7 +61,7 @@ _solve_zero_sum_nash_jax = jax_utils.partial(
     optimization.solve_feasibility_ippd,
     ZeroSumNash)
 _jitted_solve_zero_sum_nash_jax = optimization.jitted_ippd_feasibility_solver(ZeroSumNash)
-_batched_solve_zero_sum_nash_jax = optimization.vmap_ippd_feasibility_solver(ZeroSumNash)
+_batched_solve_zero_sum_nash_jax = optimization.vmap1_ippd_feasibility_solver(ZeroSumNash)
 
 def solve_zero_sum_nash_jax(
     payoff_matrix: np.ndarray,
@@ -80,4 +80,6 @@ def solve_zero_sum_nash_jax(
 
   return solver(
     jnp.asarray(payoff_matrix),
-    is_linear=is_linear, optimum=optimum, **kwargs)
+    is_linear=is_linear, optimum=optimum,
+    expected_dtype=payoff_matrix.dtype,
+    **kwargs)

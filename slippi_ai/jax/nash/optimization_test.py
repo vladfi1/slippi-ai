@@ -146,7 +146,7 @@ def test_random_nash(
     dims = (batch_size, *size)
   else:
     dims = size
-  payoff_matrix = np.random.randn(*dims).astype(dtype)
+  payoff_matrix = np.random.standard_normal(dims).astype(dtype)
   return test_nash(payoff_matrix, **kwargs)
 
 
