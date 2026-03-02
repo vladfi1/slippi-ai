@@ -268,6 +268,16 @@ def scan_rnn(
   return nnx.scan(in_axes=(0, nnx.Carry), out_axes=(0, nnx.Carry))(
       output_hidden)(inputs, initial_state)[0]
 
+def nonjit_while_loop(
+    cond_fn: tp.Callable[[T], jax.Array],
+    body_fn: tp.Callable[[T], T],
+    init_val: T,
+) -> T:
+  """Like jax.lax.while_loop but not jitted."""
+  val = init_val
+  while bool(cond_fn(val)):
+    val = body_fn(val)
+  return val
 
 Data = tp.TypeVar('Data')
 State = tp.TypeVar('State')
@@ -374,10 +384,31 @@ def shard_map_grads(
       mesh=mesh,
   )
 
-# Better type hints for nnx.cached_partial
+# Better type hints for functools.partial and nnx.cached_partial
 In1 = tp.TypeVar('In1')
 In2 = tp.TypeVar('In2')
 In3 = tp.TypeVar('In3')
+
+@tp.overload
+def partial(
+    func: tp.Callable[tp.Concatenate[In1, P], T],
+    arg1: In1,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, P], T],
+    arg1: In1, arg2: In2,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, P], T],
+    arg1: In1, arg2: In2, arg3: In3,
+) -> tp.Callable[P, T]: ...
+
+def partial(func, *args):  # type: ignore
+  return functools.partial(func, *args)
 
 @tp.overload
 def cached_partial(
@@ -400,7 +431,18 @@ def cached_partial(
 def cached_partial(func, *args):  # type: ignore
   return nnx.cached_partial(func, *args)
 
+F = tp.TypeVar('F')
 
+def _typed_transform(
+    transform: tp.Callable[tp.Concatenate[tp.Any, P], tp.Any],
+) -> tp.Callable[tp.Concatenate[F, P], F]:
+  """Adds type signature to nnx transforms."""
+  return transform
+
+jit = _typed_transform(jax.jit)
+nnx_jit = _typed_transform(nnx.jit)
+
+# TODO: accept kwargs?
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
