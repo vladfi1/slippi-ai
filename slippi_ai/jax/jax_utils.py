@@ -442,6 +442,33 @@ def _typed_transform(
 jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
 
+Out = tp.TypeVar('Out')
+
+def vmap1(
+    func: tp.Callable[tp.Concatenate[T, P], Out],
+    in_axis: int = 0,
+    out_axis: int = 0,
+    static_argnames: tp.Optional[tp.Iterable[str]] = None,
+):
+  """Vmap across just the first argument to a function.
+
+  This is a workaround for vamp forcing kwargs to have axis 0.
+  """
+
+  def wrapper(
+      arg: T,
+      *args: P.args,
+      **kwargs: P.kwargs,
+  ) -> Out:
+    def partial_func(arg: T):
+      return func(arg, *args, **kwargs)
+
+    return jax.vmap(
+        partial_func,
+        in_axes=in_axis, out_axes=out_axis)(arg)
+
+  return jit(wrapper, static_argnames=static_argnames)
+
 # TODO: accept kwargs?
 def data_parallel_train(
     module: ModT,

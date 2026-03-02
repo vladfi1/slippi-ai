@@ -83,6 +83,26 @@ def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
   return np.sum(p * log_ratio, axis=-1)
 
 
+def verify_nash(
+    payoff_matrix: np.ndarray,
+    solution: nash.NashVariables,
+    atol: float = 1e-1,
+):
+  jax_p1 = np.asarray(solution.p1)
+  jax_p2 = np.asarray(solution.p2)
+  jax_nash_value = np.asarray(solution.p1_nash_value)
+
+  p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
+  np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
+
+  kl1 = kl_divergence(p1, jax_p1)
+  assert kl1 < atol, kl1
+
+  kl2 = kl_divergence(p2, jax_p2)
+  assert kl2 < atol, kl2
+
+  np.testing.assert_allclose(jax_nash_value, nash_value, atol=atol)
+
 def test_nash(
     payoff_matrix: np.ndarray,
     atol: float = 1e-1,
@@ -94,20 +114,13 @@ def test_nash(
   solve_time = time.perf_counter() - start_time
 
   if verify:
-    jax_p1 = np.asarray(variables.p1)
-    jax_p2 = np.asarray(variables.p2)
-    jax_nash_value = np.asarray(variables.p1_nash_value)
+    batched = payoff_matrix.ndim == 3
+    if not batched:
+      payoff_matrix = payoff_matrix[None]
+      variables = jax.tree.map(lambda x: x[None], variables)
 
-    p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
-    np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
-
-    kl1 = kl_divergence(p1, jax_p1)
-    assert kl1 < atol, kl1
-
-    kl2 = kl_divergence(p2, jax_p2)
-    assert kl2 < atol, kl2
-
-    np.testing.assert_allclose(jax_nash_value, nash_value, atol=atol)
+    for i in range(payoff_matrix.shape[0]):
+      verify_nash(payoff_matrix[i], jax.tree.map(lambda x: x[i], variables), atol=atol)
 
   stats = {k: np.asarray(v) for k, v in stats.items()}
   stats['time'] = solve_time
@@ -126,23 +139,27 @@ def test_rps(**kwargs):
 def test_random_nash(
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float32,
-    # batch_size: int = 1,
+    batch_size: int = 0,
     **kwargs,
 ):
-  payoff_matrix = np.random.randn(*size).astype(dtype)
+  if batch_size > 0:
+    dims = (batch_size, *size)
+  else:
+    dims = size
+  payoff_matrix = np.random.randn(*dims).astype(dtype)
   return test_nash(payoff_matrix, **kwargs)
 
 
 def random_nash_tests(
     num_tests: int = 10,
-    # batch_size: int = 10,
+    batch_size: int = 0,
     **kwargs,
 ):
   all_stats = []
   solve_times = []
   for i in tqdm.trange(num_tests):
     stats = test_random_nash(
-        # batch_size=batch_size,
+        batch_size=batch_size,
         **kwargs,
     )
     all_stats.append(stats)
@@ -150,7 +167,8 @@ def random_nash_tests(
       solve_times.append(stats['time'])
 
   if solve_times:
-    total_solved = len(solve_times)
+    bs = 1 if batch_size == 0 else batch_size
+    total_solved = len(solve_times) * bs
     total_time = sum(solve_times)
     mean_time = total_time / total_solved
     problems_per_second = total_solved / total_time
@@ -170,6 +188,8 @@ if __name__ == '__main__':
   test_solve_quadratic_optimization()
 
   for is_linear in [True, False]:
+    print(f'Testing with is_linear={is_linear}')
+
     test_solve_corner_optimization(
         error=1e-3,
         max_size=3,
@@ -180,13 +200,23 @@ if __name__ == '__main__':
         is_linear=is_linear,
     )
 
-    random_nash_tests(
+    nash_kwargs = dict(
         num_tests=10,
         size=(10, 11),
-        dtype=np.float64,
+        # dtype=np.float64,
         error=1e-5,
         atol=1e-1,
         is_linear=is_linear,
         # jit=False,
         # debug=True,
+        max_steps=200,
+    )
+
+    print('Unbatched Nash')
+    random_nash_tests(**nash_kwargs)
+
+    print('Batched Nash')
+    random_nash_tests(
+        batch_size=10,
+        **nash_kwargs,
     )

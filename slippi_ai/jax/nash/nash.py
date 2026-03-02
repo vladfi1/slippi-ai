@@ -58,9 +58,10 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[PayoffMatrix, NashVaria
 ZeroSumNash = ZeroSumNashProblem()
 
 _solve_zero_sum_nash_jax = jax_utils.partial(
-    optimization.solve_feasibility_interior_point_primal_dual,
+    optimization.solve_feasibility_ippd,
     ZeroSumNash)
 _jitted_solve_zero_sum_nash_jax = optimization.jitted_ippd_feasibility_solver(ZeroSumNash)
+_batched_solve_zero_sum_nash_jax = optimization.vmap_ippd_feasibility_solver(ZeroSumNash)
 
 def solve_zero_sum_nash_jax(
     payoff_matrix: np.ndarray,
@@ -70,9 +71,13 @@ def solve_zero_sum_nash_jax(
     jit: bool = True,
     **kwargs,
 ) -> tuple[NashVariables, dict]:
-  if jit:
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_zero_sum_nash_jax
+  elif jit:
     solver = _jitted_solve_zero_sum_nash_jax
   else:
     solver = _solve_zero_sum_nash_jax
 
-  return solver(payoff_matrix, is_linear=is_linear, optimum=optimum, **kwargs)
+  return solver(
+    jnp.asarray(payoff_matrix),
+    is_linear=is_linear, optimum=optimum, **kwargs)
