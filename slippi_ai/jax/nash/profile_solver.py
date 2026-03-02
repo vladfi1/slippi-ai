@@ -1,7 +1,9 @@
 from absl import app, flags
 import numpy as np
 
-from slippi_ai.jax.nash import optimization, optimization_test
+import jax
+
+from slippi_ai.jax.nash import optimization_test
 
 ITERS = flags.DEFINE_integer('iters', 10, 'Number of tests to run')
 SIZE = flags.DEFINE_integer('size', 10, 'Game size')
@@ -15,17 +17,19 @@ dtypes = {
     'f32': np.float32,
     'f64': np.float64,
 }
-DTYPE = flags.DEFINE_enum('dtype', 'f32', dtypes.keys(), 'float type')
+DTYPE = flags.DEFINE_enum('dtype', 'f64', dtypes.keys(), 'float type')
 
 LINEAR = flags.DEFINE_boolean('linear', True, 'Linearity optimization')
 CHOLESKY = flags.DEFINE_boolean('cholesky', False, 'Cholesky optimization')
 
 def main(_):
+  jax.config.update('jax_enable_x64', True)
+
   optimization_test.random_nash_tests(
       num_tests=ITERS.value,
       batch_size=BATCH_SIZE.value,
       size=(SIZE.value, SIZE.value),
-    #   dtype=dtypes[DTYPE.value],
+      dtype=dtypes[DTYPE.value],
       error=ERROR.value,
       atol=ATOL.value,
       verify=VERIFY.value,
