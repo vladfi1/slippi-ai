@@ -709,15 +709,22 @@ class MultiDataSourceMP(AbstractDataSource):
     for source in self.sources:
       source.shutdown()
 
-class CachedDataSource(DataSource):
+class CachedDataSource(AbstractDataSource):
   """Guaranteed fast, useful for performance benchmarking."""
 
-  @functools.cache
-  def _get_batch(self) -> tuple[Batch, float]:
-    return super().__next__()
+  def __init__(self, source: AbstractDataSource):
+    self.source = source
+    self.counter = 0
+    self._get_batch = functools.cache(self.source.__next__)
+
+  @property
+  def batch_size(self) -> int:
+    return self.source.batch_size
 
   def __next__(self) -> Tuple[Batch, float]:
-    return self._get_batch()
+    batch = self._get_batch()[0]
+    self.counter += 1
+    return batch, self.counter
 
 @dataclasses.dataclass
 class DataConfig:
@@ -737,13 +744,14 @@ def make_source(
   if num_workers == 0:
     unroll_chunks: int = kwargs.pop('unroll_chunks')
 
-    if cached:
-      return CachedDataSource(**kwargs)
-
     if unroll_chunks > 0:
       return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
 
-    return DataSource(**kwargs)
+    source = DataSource(**kwargs)
+
+    if cached:
+      return CachedDataSource(source)
+    return source
 
   if num_workers == 1:
     return DataSourceMP(**kwargs)
