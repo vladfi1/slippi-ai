@@ -3,6 +3,7 @@
 import sys
 from slippi_ai import envs, saving, eval_lib, data, utils, evaluators
 from slippi_ai.jax import *
+from slippi_ai.jax.rl import *
 
 if __name__ == '__main__':
   assert 'tensorflow' not in sys.modules
