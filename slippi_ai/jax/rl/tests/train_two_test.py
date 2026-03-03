@@ -20,6 +20,8 @@ DEFAULT_CONFIG = train_two_lib.Config(
         learning_rate=0,
         reward=reward_lib.RewardConfig(nana_ratio=0),
         ppo=learner_lib.PPOConfig(num_batches=2),
+        optimizer_burnin_epochs=0,
+        value_burnin_epochs=0,
     ),
     actor=run_lib.ActorConfig(
         use_fake_envs=True,
