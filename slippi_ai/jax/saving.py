@@ -114,6 +114,12 @@ def load_policy_from_state(state: dict) -> policies.Policy:
   upgrade_policy(params)
   jax_utils.set_module_state(policy, params)
 
+  def check_array(x):
+    if not isinstance(x, np.ndarray):
+      raise ValueError(f"Expected all policy parameters to be numpy arrays, but got {type(x)}")
+
+  jax.tree.map(check_array, params)
+
   return policy
 
 def load_state_from_disk(path: str) -> dict:
@@ -125,4 +131,10 @@ def load_state_from_disk(path: str) -> dict:
   # consider both modules "deleted" after the first one is used and donated.
   state['state'] = jax.tree.map(np.asarray, state['state'])
 
+  return state
+
+def load_imitation_state_from_disk(path: str) -> dict:
+  state = load_state_from_disk(path)
+  state['config'] = upgrade_config(state['config'])
+  upgrade_policy(state['state']['policy'])
   return state
