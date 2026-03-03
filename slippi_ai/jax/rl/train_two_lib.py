@@ -55,6 +55,11 @@ class AgentConfig:
   batch_steps: int = 0
   async_inference: bool = False
 
+def default_learner_config():
+  return learner_lib.LearnerConfig(
+      optimizer_burnin_epochs=0,
+      value_burnin_epochs=0,
+  )
 
 @dataclasses.dataclass
 class Config:
@@ -62,9 +67,9 @@ class Config:
 
   dolphin: dolphin_lib.DolphinConfig = field(dolphin_lib.DolphinConfig)
   # Base learner config — learner1/learner2 override individual fields.
-  learner: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
-  learner1: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
-  learner2: learner_lib.LearnerConfig = field(learner_lib.LearnerConfig)
+  learner: learner_lib.LearnerConfig = field(default_learner_config)
+  learner1: learner_lib.LearnerConfig = field(default_learner_config)
+  learner2: learner_lib.LearnerConfig = field(default_learner_config)
 
   actor: run_lib.ActorConfig = field(run_lib.ActorConfig)
   p1: AgentConfig = field(AgentConfig)
@@ -132,11 +137,16 @@ class AgentManager:
       agent_config.teacher = restore_config.teacher
       if restore_config.char is not None:
         agent_config.char = restore_config.char
+    elif not agent_config.teacher:
+      raise ValueError(
+          f'Port {port}: no checkpoint found in {expt_dir} and no teacher specified.')
 
+    assert agent_config.teacher is not None
     teacher_state = jax_saving.load_state_from_disk(agent_config.teacher)
     self.character = _resolve_character(agent_config, teacher_state, port)
 
     if not self.found:
+      run_lib.reset_optimizer_steps(teacher_state)
       rl_state = teacher_state
       self.save_path = None
       self.step = 0
@@ -234,6 +244,12 @@ class ExperimentManager:
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
 
+    if not self._config.dolphin.infinite_time:
+      logging.info('Finite time mode, disabling env resets')
+      self.reset_interval = None
+    else:
+      self.reset_interval = config.runtime.reset_every_n_steps
+
     with self.reset_profiler:
       self.actor = self._build_actor()
       self.actor.start()
@@ -259,8 +275,7 @@ class ExperimentManager:
       self,
       step: int,
   ) -> tuple[dict[int, list[evaluators.Trajectory]], dict]:
-    reset_interval = self._config.runtime.reset_every_n_steps
-    if reset_interval and self.num_rollouts >= reset_interval:
+    if self.reset_interval and self.num_rollouts >= self.reset_interval:
       logging.info('Resetting environments')
       with self.reset_profiler:
         self.actor.reset_env()
@@ -408,10 +423,12 @@ def run(config: Config):
     p1_stats = reward.player_stats(
         states.p1, states.p0, states.stage,
         stalling_threshold=learner2_config.reward.stalling_threshold)
+    ko_diff = p1_stats['deaths'] - p0_stats['deaths']
 
     log_data = dict(
         p0=p0_stats,
         p1=p1_stats,
+        ko_diff=ko_diff,
         timings=timings,
         actor=metrics['actor'],
         learner=metrics['learner'][main_port],
@@ -455,6 +472,11 @@ def run(config: Config):
   agent0 = agents[PORTS[0]]
   step = agent0.step  # Both agents share the same step counter.
 
+  # TODO: flush logger at optimizer/value burnin boundaries
+  for learner_config in [config.learner1, config.learner2]:
+    assert learner_config.optimizer_burnin_epochs == 0
+    assert learner_config.value_burnin_epochs == 0
+
   try:
     logging.info('Main training loop')
 
@@ -466,8 +488,9 @@ def run(config: Config):
         logger.record(get_log_data(trajectories, metrics))
         maybe_flush(step)
 
-      step += 1
+
       maybe_save(step)
+      step += 1
 
     save(step)
 
