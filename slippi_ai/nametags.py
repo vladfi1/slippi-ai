@@ -123,7 +123,7 @@ for first, *rest in NAME_GROUPS:
   for name in rest:
     NAME_MAP[name] = first
 
-def normalize_name(name):
+def normalize_name(name: str):
   return NAME_MAP.get(name, name)
 
 KNOWN_PLAYERS = {group[0] for group in NAME_GROUPS}
