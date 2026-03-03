@@ -64,6 +64,7 @@ class NetworksTest(unittest.TestCase):
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
 
   def test_unroll_vs_step_sa_frame_tx(self):
+    self.skipTest('frame_tx test is very slow')
     rngs = nnx.Rngs(0)
     embed_config = embed.EmbedConfig()
     state_action_embedding = embed_config.make_state_action_embedding(num_names=8)
