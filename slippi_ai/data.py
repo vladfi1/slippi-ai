@@ -320,9 +320,12 @@ def train_test_split(
         if config.swap:
           replays.append(ReplayInfo(replay_path, True))
 
-  # TODO: stable partition
-  if len(replays) < 2:
-    raise ValueError("Not enough replays found.")
+  if len(replays) == 0:
+    raise ValueError("No replays found with the given configuration.")
+
+  if len(replays) == 1:
+    logging.warning("Only one replay found, using it for both train and test.")
+    return replays, replays
 
   rng = random.Random(config.seed)
   rng.shuffle(replays)
