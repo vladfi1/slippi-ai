@@ -33,6 +33,7 @@ InputTree = tp.TypeVar('InputTree', bound=Inputs)
 OutputTree = tp.TypeVar('OutputTree', bound=Outputs)
 OutputTree2 = tp.TypeVar('OutputTree2', bound=Outputs)
 
+Shape = int | tp.Sequence[int]
 
 class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
 
@@ -42,7 +43,7 @@ class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
     '''Returns the output size of the network.'''
 
   @abc.abstractmethod
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
     '''Returns the initial state for a batch of size batch_size.'''
 
   def step(
@@ -68,7 +69,7 @@ class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
       reset: Array,
       prev_state: RecurrentState,
   ) -> Tuple[OutputTree, RecurrentState]:
-    batch_size = reset.shape[0]
+    batch_size = reset.shape
     rngs = nnx.Rngs(0)  # TODO: pass rngs properly
     initial_state = where_pytree(
         reset, self.initial_state(batch_size, rngs), prev_state)
@@ -202,10 +203,12 @@ class RecurrentWrapper(Network[Array, Array]):
   def __init__(
       self,
       core: nnx.RNNCellBase,
+      input_size: int,
       output_size: int,
       remat: bool = False,
   ):
     self._core = core
+    self.input_size = input_size
     self._output_size = output_size
     self._remat = remat
 
@@ -213,8 +216,12 @@ class RecurrentWrapper(Network[Array, Array]):
   def output_size(self) -> int:
     return self._output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
-    input_shape = (batch_size, getattr(self._core, 'in_features', 1))
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
+    if isinstance(batch_size, int):
+      batch_shape = (batch_size,)
+    else:
+      batch_shape = tuple(batch_size)
+    input_shape = batch_shape + (self.input_size,)
     return self._core.initialize_carry(input_shape, rngs)
 
   def step(self, inputs, prev_state):
@@ -239,7 +246,7 @@ class FFWWrapper(Network[InputTree, OutputTree]):
   def output_size(self) -> int:
     return self._output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     del batch_size, rngs
     return ()
 
@@ -280,7 +287,7 @@ class Identity(Network[InputTree, InputTree]):
 
     raise NotImplementedError('Identity network has no fixed output size.')
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     del batch_size, rngs
     return ()
 
@@ -312,7 +319,7 @@ class Compose(Network[InputTree, OutputTree]):
   def output_size(self) -> int:
     return self._second.output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     first_state = self._first.initial_state(batch_size, rngs)
     second_state = self._second.initial_state(batch_size, rngs)
     return (first_state, second_state)
@@ -358,7 +365,7 @@ class Sequential(Network[InputTree, InputTree]):
   def output_size(self) -> int:
     return self._layers[-1].output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     return [layer.initial_state(batch_size, rngs) for layer in self._layers]
 
   def step(self, inputs, prev_state):
@@ -392,7 +399,7 @@ class ResidualWrapper(Network[InputTree, InputTree]):
   def output_size(self) -> int:
     return self._net.output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     return self._net.initial_state(batch_size, rngs)
 
   def _combine(self, inputs: InputTree, outputs: InputTree) -> InputTree:
@@ -419,7 +426,7 @@ class RematWrapper(Network[InputTree, OutputTree]):
   def output_size(self) -> int:
     return self._net.output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     return self._net.initial_state(batch_size, rngs)
 
   # Note: we can't directly use jax.remat on self._net.step as it raises issues
@@ -455,7 +462,9 @@ class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
         nnx.GRUCell(
             in_features=input_size,
             hidden_features=hidden_size,
-            rngs=rngs),
+            rngs=rngs,
+        ),
+        input_size=input_size,
         output_size=hidden_size,
         remat=remat)
 
@@ -475,7 +484,9 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
         nnx.LSTMCell(
             in_features=input_size,
             hidden_features=hidden_size,
-            rngs=rngs),
+            rngs=rngs,
+        ),
+        input_size=input_size,
         output_size=hidden_size,
         remat=remat)
 
@@ -596,7 +607,7 @@ class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
     """
 
   @abc.abstractmethod
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
     pass
 
   @abc.abstractmethod
@@ -613,7 +624,7 @@ class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
       reset: Array,
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    batch_size = reset.shape[0]
+    batch_size = reset.shape
     rngs = nnx.Rngs(0)  # TODO: pass rngs properly
     initial_state = where_pytree(
         reset, self.initial_state(batch_size, rngs), prev_state)
@@ -719,7 +730,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
   def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_module.dummy(shape)
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
     return self._network.initial_state(batch_size, rngs)
 
   def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
@@ -824,7 +835,7 @@ class GroupNetwork(Network[list[InputTree], list[OutputTree]]):
   def output_size(self):
     raise NotImplementedError()
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs):
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     return [
         net.initial_state(batch_size, rngs)
         for net in self._networks]
@@ -896,7 +907,7 @@ class StackedGroupNetwork(Network[InputTree, OutputTree]):
   def output_size(self) -> int:
     return self._networks.output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
     @nnx.vmap(in_axes=(0, 0), out_axes=1, axis_size=self.width)
     def init_single(net: Network, r: nnx.Rngs) -> RecurrentState:
       return net.initial_state(batch_size, r)
@@ -970,7 +981,7 @@ class StackedSequential(Network[InputTree, InputTree]):
   def output_size(self) -> int:
     return self._networks.output_size
 
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
 
     @nnx.vmap(in_axes=(0, 0), out_axes=1, axis_size=self.depth)
     def init_single(net: Network, r: nnx.Rngs) -> RecurrentState:
