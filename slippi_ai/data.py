@@ -142,6 +142,7 @@ class DatasetConfig:
   # Filter by player
   allowed_names: str = ALL
   banned_names: str = NONE
+  filter_opponent_name: bool = False
 
   swap: bool = True  # yield swapped versions of each replay
   mirror: bool = False  # mirror left/right in each replay
@@ -211,6 +212,9 @@ def create_name_filter(
     banned_names_set = set(banned_names.split(','))
 
   def is_allowed(name: str) -> bool:
+    if nametags.is_banned_name(name):
+      return False
+
     name = nametags.normalize_name(name)
     if name in banned_names_set:
       return False
@@ -265,12 +269,12 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
           or p1.character not in allowed_opponents):
         continue
 
-      if nametags.is_banned_name(p0.name):
+      if not name_filter(p0.name):
         banned_counts[p0.name] += 1
         continue
 
-      if not name_filter(p0.name):
-        banned_counts[p0.name] += 1
+      if config.filter_opponent_name and not name_filter(p1.name):
+        banned_counts[p1.name] += 1
         continue
 
       replays.append(ReplayInfo(replay_path, swap, replay_meta))
