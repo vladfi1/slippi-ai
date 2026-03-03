@@ -324,28 +324,31 @@ def sharded_grads(
     data_axis: str = DATA_AXIS,
 ):
 
-  # TODO: merge with loss_fn_with_mean?
-  def packed_loss_fn(module: ModT, *args: P.args, **kwargs: P.kwargs):
-    all_outputs = loss_fn(module, *args, **kwargs)
-    return all_outputs[0], all_outputs[1:]
-
-  # If we let shard_map handle gradient communication across devices implicitly,
-  # then we need to make sure the loss is averaged across devices inside loss_fn.
-  sharded_loss_fn = loss_fn_with_mean(
-      packed_loss_fn, take_pmean=not explicit_pmean, data_axis=data_axis)
-
-  grad_fn = grad_with_aux(sharded_loss_fn)
-
   def compute_grads(
       module: ModT,
       *args: P.args,
       **kwargs: P.kwargs,
   ) -> tuple[Grads, *Outputs]:
+
+    # TODO: merge with loss_fn_with_mean?
+    def packed_loss_fn(module: ModT):
+      # Note: we don't pass kwargs through grad_fn because nnx can't figure out
+      # how to handle them; our functions are too generic for the inspect module.
+      all_outputs = loss_fn(module, *args, **kwargs)
+      return all_outputs[0], all_outputs[1:]
+
+    # If we let shard_map handle gradient communication across devices implicitly,
+    # then we need to make sure the loss is averaged across devices inside loss_fn.
+    sharded_loss_fn = loss_fn_with_mean(
+        packed_loss_fn, take_pmean=not explicit_pmean, data_axis=data_axis)
+
+    grad_fn = grad_with_aux(sharded_loss_fn)
+
     # This prevents jax from inserting an implicit psum on gradients.
     if explicit_pmean:
       module = pcast_module(module, data_axis, to='varying')
 
-    grads, aux = grad_fn(module, *args, **kwargs)
+    grads, aux = grad_fn(module)
 
     if explicit_pmean:
       grads = jax.lax.pmean(grads, axis_name=data_axis)
@@ -394,11 +397,11 @@ def cached_partial(
 def cached_partial(func, *args):  # type: ignore
   return nnx.cached_partial(func, *args)
 
-# TODO: accept kwargs?
+
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
-    loss_fn: tp.Callable[[ModT, Data, State, *Inputs], tuple[Loss, AuxT, State, *Outputs]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
@@ -406,7 +409,7 @@ def data_parallel_train(
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
-) -> tp.Callable[[Data, State, *Inputs], tuple[AuxT, State, *Outputs]]:
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
 
@@ -416,7 +419,7 @@ def data_parallel_train(
   )
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
-      data: Data, state: State, *args: *Inputs,
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
   ) -> tuple[AuxT, State, *Outputs]:
 
     if extra_in_specs is None:
@@ -454,9 +457,10 @@ def data_parallel_train(
         optimizer: nnx.Optimizer[ModT],
         data: Data,
         state: State,
-        *inputs: *Inputs,
+        *args: P.args,
+        # No kwargs because shard_map doesn't support them
     ) -> tuple[AuxT, State, *Outputs]:
-      grads_and_outputs = sharded_grads_fn(module, data, state, *inputs)
+      grads_and_outputs = sharded_grads_fn(module, data, state, *args, **kwargs)
       grads = grads_and_outputs[0]
       optimizer.update(module, grads)
       return grads_and_outputs[1:]
@@ -470,7 +474,7 @@ def data_parallel_train_with_rngs(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
     rngs: nnx.Rngs,
-    loss_fn: tp.Callable[[ModT, Data, State, nnx.Rngs, *Inputs], tuple[Loss, AuxT, State, *Outputs]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
     data_axis: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
@@ -478,7 +482,7 @@ def data_parallel_train_with_rngs(
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
-) -> tp.Callable[[Data, State, *Inputs], tuple[AuxT, State, *Outputs]]:
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
 
@@ -493,7 +497,7 @@ def data_parallel_train_with_rngs(
   )
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
-      data: Data, state: State, *args: *Inputs,
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
   ) -> tuple[AuxT, State, *Outputs]:
 
     if extra_in_specs is None:
@@ -532,10 +536,11 @@ def data_parallel_train_with_rngs(
         data: Data,
         state: State,
         rngs: nnx.Rngs,  # shape [1]
-        *inputs: *Inputs,
+        *args: P.args,
+        # No kwargs because shard_map doesn't support them
     ) -> tuple[AuxT, State, *Outputs]:
       map_update(lambda x: x[0], rngs)  # remove the extra leading axis from rngs
-      grads_and_outputs = sharded_grads_fn(module, data, state, rngs, *inputs)
+      grads_and_outputs = sharded_grads_fn(module, data, state, rngs, *args, **kwargs)
       map_update(lambda x: x[None], rngs)  # add back leading axis to rngs for next step
       grads = grads_and_outputs[0]
       optimizer.update(module, grads)
