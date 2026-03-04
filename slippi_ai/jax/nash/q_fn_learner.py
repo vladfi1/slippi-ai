@@ -8,7 +8,7 @@ from flax import nnx
 import optax
 
 from slippi_ai import utils
-from slippi_ai.nash.data import TwoPlayerBatch
+from slippi_ai.nash.data import TwoPlayerBatch, batch_to_frames
 from slippi_ai.types import Frames, Controller, S, Action
 from slippi_ai.jax.policies import RecurrentState
 from slippi_ai.jax.nash import q_function as q_lib
@@ -103,13 +103,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
   def prepare_frames(self, batch: TwoPlayerBatch[Rank2]) -> Frames[Rank3, embed.Action]:
     # Note: inputs and outputs are batch-major
-    zipped_frames = utils.map_nt(
-        lambda *xs: np.stack(xs, axis=1),
-        batch.p0_frames, batch.p1_frames,
-    )
-    zipped_frames = tp.cast(Frames[Rank3, Controller], zipped_frames)
+    zipped_frames = batch_to_frames(batch)
     encoded_frames = self._encode_frames(zipped_frames)
-
     return utils.map_single_structure(
       lambda x: jax.device_put(x, self.data_sharding), encoded_frames)
 
