@@ -4,19 +4,30 @@ import typing as tp
 
 import numpy as np
 
-from slippi_ai import nametags
+from slippi_ai import nametags, utils
 from slippi_ai import data as data_lib
 from slippi_ai.types import S
 from slippi_ai import types
 
 T = tp.TypeVar('T')
-
+Rank3 = tuple[int, int, int]
 
 class TwoPlayerBatch(tp.NamedTuple, tp.Generic[S]):
   p0_frames: types.Frames[S, types.Controller]
   p1_frames: types.Frames[S, types.Controller]
   # is_resetting: types.BoolArray[S]
   meta: data_lib.ChunkMeta
+
+def batch_to_frames(
+    batch: TwoPlayerBatch[data_lib.Rank2],
+) -> types.Frames[Rank3, types.Controller]:
+  """Convert [B, T] batch to [B, 2, T] frames."""
+  zipped_frames = utils.map_nt(
+      lambda *xs: np.stack(xs, axis=1),
+      batch.p0_frames, batch.p1_frames,
+  )
+  return tp.cast(types.Frames[Rank3, types.Controller], zipped_frames)
+
 
 def convert_batch(
     batch: data_lib.Batch[data_lib.Rank2],  # batch-major
