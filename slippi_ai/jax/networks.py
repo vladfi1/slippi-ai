@@ -1687,7 +1687,7 @@ def construct_network(
     input_size: int,
     name: str,
     **config,
-) -> Network:
+) -> Network[Array, Array]:
   """Construct a network from config.
 
   Args:
@@ -1700,7 +1700,7 @@ def construct_network(
     Constructed network.
   """
   constructor = SIMPLE_CONSTRUCTORS[name]
-  return constructor(rngs=rngs, input_size=input_size, **config[name])
+  return constructor.from_config(rngs=rngs, input_size=input_size, **config[name])
 
 def build_embed_module(
     rngs: nnx.Rngs,

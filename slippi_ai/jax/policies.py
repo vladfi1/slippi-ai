@@ -20,16 +20,16 @@ Array = jax.Array
 RecurrentState = networks.RecurrentState
 
 
-class UnrollOutputs(tp.NamedTuple):
+class UnrollOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   log_probs: Array  # [T, B]
-  distances: DistanceOutputs  # Struct of [T, B]
+  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
 
-class UnrollWithOutputs(tp.NamedTuple):
+class UnrollWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   imitation_loss: Array  # [T, B]
-  distances: DistanceOutputs  # Struct of [T, B]
+  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
   outputs: Array  # [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
@@ -72,9 +72,9 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll(
       self,
-      frames: data.Frames[Rank2, ControllerType],
+      frames: data.Frames[S, ControllerType],
       initial_state: RecurrentState,
-  ) -> UnrollOutputs:
+  ) -> UnrollOutputs[S, ControllerType]:
     """Computes prediction loss on a batch of frames.
 
     Assumes that actions and rewards are delayed, and that one extra
@@ -97,7 +97,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
     distances = distance_outputs.distance
-    policy_loss = sum(jax.tree.leaves(distances))
+    policy_loss = jax_utils.add_n(jax.tree.leaves(distances))
     log_probs = -policy_loss
 
     metrics = dict(
@@ -154,9 +154,9 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll_with_outputs(
       self,
-      frames: data.Frames[Rank2, ControllerType],
+      frames: data.Frames[S, ControllerType],
       initial_state: RecurrentState,
-  ) -> UnrollWithOutputs:
+  ) -> UnrollWithOutputs[S, ControllerType]:
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
     last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
@@ -208,7 +208,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def multi_sample(
       self,
       rngs: nnx.Rngs,
-      states: list[embed.Game],  # time-indexed
+      states: list[embed.Game[S]],  # time-indexed
       prev_action: ControllerType,  # only for first step
       name_code: int,
       initial_state: RecurrentState,
@@ -218,7 +218,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     actions = []
     hidden_state = initial_state
     for game in states:
-      state_action = data.StateAction(
+      state_action = data.StateAction[S, ControllerType](
           state=game,
           action=prev_action,
           name=name_code,
