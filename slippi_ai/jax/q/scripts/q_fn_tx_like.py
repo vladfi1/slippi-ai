@@ -106,7 +106,11 @@ if __name__ == '__main__':
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
-      char = CHAR.value
+      if imitation_config is not None:
+        char = imitation_config.dataset.allowed_characters
+        config.dataset.allowed_opponents = imitation_config.dataset.allowed_opponents
+      else:
+        char = CHAR.value
 
       if config.tag is None:
         n = config.network[net]['num_layers']
@@ -117,7 +121,16 @@ if __name__ == '__main__':
           fs = config.observation.frame_skip.skip
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
-        config.tag = f"{char}_d{config.delay}_{net}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
+
+        ops = config.dataset.allowed_opponents
+        if ops == 'all':
+          op = ''
+        elif ops == char:
+          op = '_ditto'
+        else:
+          op = f"_vs_{ops}"
+
+        config.tag = f"{char}_d{config.delay}{op}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
