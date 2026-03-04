@@ -122,13 +122,18 @@ if __name__ == '__main__':
       if config.tag is None:
         n = config.q_function.network[net]['num_layers']
         h = net_config['hidden_size']
+        net_str = f"{n}x{h}"
+
+        head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
+
         if imitation_config is not None:
           fs = imitation_config.observation.frame_skip.skip
         else:
           fs = config.observation.frame_skip.skip
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
-        config.tag = f"nash_q_fn_{char}_d{config.delay}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
+
+        config.tag = f"nash_q_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
