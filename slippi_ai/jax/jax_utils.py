@@ -329,9 +329,12 @@ def sharded_grads(
       *args: P.args,
       **kwargs: P.kwargs,
   ) -> tuple[Grads, *Outputs]:
+    # TODO: make sure that no nnx objects are in kwargs. If they are, nnx will
+    # complain with a trace level mismatch. This is why we pass *args through
+    # the loss function and its gradient.
 
     # TODO: merge with loss_fn_with_mean?
-    def packed_loss_fn(module: ModT):
+    def packed_loss_fn(module: ModT, *args: P.args):
       # Note: we don't pass kwargs through grad_fn because nnx can't figure out
       # how to handle them; our functions are too generic for the inspect module.
       all_outputs = loss_fn(module, *args, **kwargs)
@@ -348,7 +351,7 @@ def sharded_grads(
     if explicit_pmean:
       module = pcast_module(module, data_axis, to='varying')
 
-    grads, aux = grad_fn(module)
+    grads, aux = grad_fn(module, *args)
 
     if explicit_pmean:
       grads = jax.lax.pmean(grads, axis_name=data_axis)
