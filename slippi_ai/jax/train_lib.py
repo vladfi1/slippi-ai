@@ -304,7 +304,7 @@ def policy_from_config(
 def value_function_from_config(
     config: Config,
     rngs: nnx.Rngs,
-) -> tp.Optional[vf_lib.ValueFunction]:
+) -> vf_lib.ValueFunction:
   vf_config = config.value_function
   network_config = config.network
   if vf_config.separate_network_config:
@@ -396,6 +396,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   logging.info("Network configuration")
   for comp in ['network', 'controller_head']:
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+
+  wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
   # Multi-device setup
   runtime = config.runtime
