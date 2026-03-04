@@ -150,3 +150,9 @@ jobs:
 
     - name: JAX Q Policy
       run: python slippi_ai/jax/q/tests/train_q_policy.py
+
+    - name: JAX Nash
+      run: python slippi_ai/jax/nash/optimization_test.py
+
+    - name: JAX Nash Q Function
+      run: python slippi_ai/jax/nash/tests/train_q_fn.py
