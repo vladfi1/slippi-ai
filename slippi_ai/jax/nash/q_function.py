@@ -52,10 +52,16 @@ def to_merged_outputs(outputs: jax.Array) -> jax.Array:
   return jnp.stack([p0_outputs, p1_outputs], axis=-2)
 
 @dataclasses.dataclass
+class HeadConfig:
+  num_layers: int = 1
+  hidden_size: int = 128
+
+@dataclasses.dataclass
 class QFunctionConfig:
   embed: embed_lib.EmbedConfig = dataclasses.field(default_factory=embed_lib.EmbedConfig)
   num_names: int = 16
   network: dict = dataclasses.field(default_factory=networks.default_config)
+  head: HeadConfig = dataclasses.field(default_factory=HeadConfig)
 
   advantage_qs: bool = True  # Have q-head predict advantages
 
@@ -80,12 +86,18 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     self.action_net = networks.construct_network(
         rngs, input_size=self.embed_action.size, **config.network)
 
-    self.value_head = nnx.Linear(
-      in_features=2 * self.core_net.output_size,
-      out_features=1, rngs=rngs)
-    self.q_head = nnx.Linear(
-      in_features=2 * self.action_net.output_size,
-      out_features=1, rngs=rngs)
+    self.value_head = jax_utils.MLP(
+      rngs=rngs,
+      input_size=2 * self.core_net.output_size,
+      features=[config.head.hidden_size] * config.head.num_layers + [1],
+      activate_final=False,
+    )
+    self.q_head = jax_utils.MLP(
+      rngs=rngs,
+      input_size=2 * self.action_net.output_size,
+      features=[config.head.hidden_size] * config.head.num_layers + [1],
+      activate_final=False,
+    )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> networks.RecurrentState:
     states = [self.core_net.initial_state(batch_size, rngs) for _ in range(2)]

@@ -41,6 +41,10 @@ DEFAULT_CONFIG = train_q_fn.Config(
     ),
     q_function=q_lib.QFunctionConfig(
         network=network_config,
+        head=q_lib.HeadConfig(
+            num_layers=1,
+            hidden_size=1,
+        ),
     ),
     delay=0,
 )

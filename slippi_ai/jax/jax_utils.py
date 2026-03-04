@@ -126,9 +126,11 @@ class MLP(nnx.Module):
       rngs: nnx.Rngs,
       input_size: int,
       features: list[int],
-      activation=nnx.relu,
+      activation=jax.nn.relu,
       activate_final: bool = False,
   ):
+    self.input_size = input_size
+
     layers = []
     in_size = input_size
     for i, out_size in enumerate(features):
@@ -142,8 +144,9 @@ class MLP(nnx.Module):
       layers.append(activation)
 
     self.layers = nnx.List(layers)
+    self.output_size = in_size
 
-  def __call__(self, x):
+  def __call__(self, x: Array) -> Array:
     for layer in self.layers:
       x = layer(x)
     return x
