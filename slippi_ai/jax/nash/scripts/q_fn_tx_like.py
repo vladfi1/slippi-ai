@@ -128,7 +128,7 @@ if __name__ == '__main__':
           fs = config.observation.frame_skip.skip
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
-        config.tag = f"nash_q_fn_{char}_d{config.delay}_{net}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
+        config.tag = f"nash_q_fn_{char}_d{config.delay}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 

@@ -204,13 +204,25 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.delay is None:
       logging.info('setting delay from compatible policy: %d', imitation_config.policy.delay)
       config.delay = imitation_config.policy.delay
+    elif config.delay != imitation_config.policy.delay:
+      logging.warning(
+          f"Requested delay {config.delay} doesn't match compatible policy's "
+          f"delay {imitation_config.policy.delay}.")
+
+    if config.dataset.allowed_characters != imitation_config.dataset.allowed_characters:
+      logging.warning(
+          f"Requested allowed character(s) {config.dataset.allowed_characters} "
+          f"doesn't match compatible policy's allowed character(s) "
+          f"{imitation_config.dataset.allowed_characters}.")
   else:
     logging.warning('No compatible policy or checkpoint specified.')
     if config.delay is None:
       raise ValueError('Must specify delay.')
 
   if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
-    logging.info("Setting learner unroll batch size = %d", config.data.unroll_length)
+    logging.info(
+        "Setting learner unroll batch size = %d to avoid OOMs during eval",
+        config.data.unroll_length)
     config.learner.unroll_batch_size = config.data.unroll_length
 
   # Set wandb config after potential overrides from checkpoint or compatible policy.
