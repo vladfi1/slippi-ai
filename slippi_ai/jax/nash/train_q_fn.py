@@ -341,7 +341,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       f.write(pickled_state)
 
   FRAMES_PER_MINUTE = 60 * 60
-  FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
+  FRAMES_PER_STEP = 2 * config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step)
   epoch_tracker = utils.Tracker(train_manager.last_epoch)
