@@ -314,15 +314,16 @@ def loss_fn_with_mean(
   def wrapped_loss_fn(*args: P.args, **kwargs: P.kwargs) -> tuple[Loss, AuxT]:
     loss, aux = loss_fn(*args, **kwargs)
     # First take the mean across the device-local batch.
-    loss = jnp.mean(loss, axis=0, keepdims=True)
+    # loss = jnp.mean(loss, axis=0, keepdims=True)
+    loss = jnp.mean(loss)
 
     if take_pmean:
       if data_axis is None:
         raise ValueError('data_axis must be specified when take_pmean is True.')
 
-      loss = jax.lax.pmean(loss, axis_name=data_axis)
+      loss = jax.lax.pmean(jnp.expand_dims(loss, axis=0), axis_name=data_axis)[0]
 
-    return loss[0], aux
+    return loss, aux
 
   return wrapped_loss_fn
 
