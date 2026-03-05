@@ -103,6 +103,11 @@ def add_n(xs: tp.Iterable[Array]) -> Array:
     total += x
   return total
 
+def entropy(probs: Array, axis: int = -1) -> Array:
+  """Compute the entropy of a probability distribution."""
+  log_probs = jnp.where(probs > 0, jnp.log(probs), 0.0)
+  return -jnp.sum(probs * log_probs, axis=axis)
+
 # Flax NNX
 
 def get_module_state(module: nnx.Module, to_numpy: bool = True) -> dict:
@@ -445,6 +450,17 @@ def _typed_transform(
 
 jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
+shard_map = _typed_transform(jax.shard_map)
+
+def lax_map(
+    f: tp.Callable[[In1], T],
+    xs: In1,
+    *,
+    batch_size: tp.Optional[int] = None,
+) -> T:
+  """Like jax.lax.map but with better type signature."""
+  # TODO: support multiple inputs and different axes
+  return jax.lax.map(f, xs, batch_size=batch_size)
 
 Out = tp.TypeVar('Out')
 
