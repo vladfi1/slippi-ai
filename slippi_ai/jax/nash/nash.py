@@ -64,7 +64,7 @@ _jitted_solve_zero_sum_nash_jax = optimization.jitted_ippd_feasibility_solver(Ze
 _batched_solve_zero_sum_nash_jax = optimization.vmap1_ippd_feasibility_solver(ZeroSumNash)
 
 def solve_zero_sum_nash_jax(
-    payoff_matrix: np.ndarray,
+    payoff_matrix: np.ndarray | jax.Array,
     *,
     is_linear: bool = True,
     optimum: float | None = 0,
