@@ -616,7 +616,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     metas: list[data_lib.ChunkMeta] = []
 
     def time_mean(x: jax.Array) -> np.ndarray:
-      return np.mean(x, axis=1)
+      assert x.shape[0] == config.data.batch_size
+      # time dim is unroll_length [+ overlap for value stats]
+      return np.mean(np.asarray(x), axis=1)
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch

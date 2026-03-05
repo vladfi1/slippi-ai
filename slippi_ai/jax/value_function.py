@@ -102,18 +102,20 @@ class ValueFunction(nnx.Module):
         # 'reward': jax_utils.get_stats(rewards),
         # 'return': jax_utils.get_stats(value_targets),
         'loss': value_loss,
-        'variance': value_variance[None, None],
+        # Note: full_like raises an error due to pvary.
+        # TODO: this is probably a jax bug and we should report it.
+        'variance': jnp.full(value_loss.shape, value_variance),
         'uev': uev,  # unexplained variance
     }
 
-    outputs = ValueOutputs(
+    value_outputs = ValueOutputs(
         returns=value_targets,
         advantages=advantages,
         loss=value_loss,
         metrics=metrics,
     )
 
-    return outputs, final_state
+    return value_outputs, final_state
 
 
 class FakeValueFunction(nnx.Module):
