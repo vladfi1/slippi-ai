@@ -466,8 +466,8 @@ def solve_optimization_interior_point_primal_dual(
 
   eta = -jnp.vecdot(constraint_vars, initial_constraints)
 
-  num_steps = jnp.int32(1)
-  done = jnp.bool(False)
+  num_steps = jax_utils.as_vma(jnp.int32(1), combined)
+  done = jax_utils.as_vma(jnp.bool(False), combined)
 
   initial_loop_vars = done, num_steps, combined, eta
 
