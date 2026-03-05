@@ -473,6 +473,12 @@ def vmap1(
 
   return jit(wrapper, static_argnames=static_argnames)
 
+def as_vma(x: T, ref) -> T:
+  if not hasattr(ref, 'vma'):
+    return x
+
+  return jax.lax.pcast(x, tuple(ref.vma), to='varying')
+
 # TODO: accept kwargs?
 def data_parallel_train(
     module: ModT,
