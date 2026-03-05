@@ -7,7 +7,7 @@ import fancyflags as ff
 
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
-from slippi_ai.jax import networks
+from slippi_ai.jax import networks, embed as embed_lib
 from slippi_ai.jax.nash import train_q_fn
 from slippi_ai.jax.nash import q_function as q_lib
 
@@ -41,6 +41,10 @@ DEFAULT_CONFIG = train_q_fn.Config(
     ),
     q_function=q_lib.QFunctionConfig(
         network=network_config,
+        embed=embed_lib.EmbedConfig(
+            player=embed_lib.PlayerConfig(with_nana=False),
+            items=embed_lib.ItemsConfig(type=embed_lib.ItemsType.SKIP),
+        ),
         head=q_lib.HeadConfig(
             num_layers=1,
             hidden_size=1,
