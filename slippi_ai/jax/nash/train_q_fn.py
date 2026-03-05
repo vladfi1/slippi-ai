@@ -274,10 +274,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     json.dump(name_map, f)
 
   def make_source(replays: list[data_lib.ReplayInfo], kwargs: dict):
-    return nash_data.TwoPlayerDataSource(
+    source = nash_data.TwoPlayerDataSource(
         data_lib.make_source(replays=replays, **kwargs),
         name_map=name_map,
     )
+    exit_stack.callback(source.shutdown)
+    return source
 
   data_config = dict(
       dataclasses.asdict(config.data),

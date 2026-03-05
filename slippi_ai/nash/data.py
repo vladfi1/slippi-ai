@@ -11,6 +11,7 @@ from slippi_ai import types
 
 T = tp.TypeVar('T')
 Rank3 = tuple[int, int, int]
+ZippedFrames = types.Frames[Rank3, types.Controller[Rank3]]
 
 class TwoPlayerBatch(tp.NamedTuple, tp.Generic[S]):
   p0_frames: types.Frames[S, types.Controller]
@@ -20,13 +21,13 @@ class TwoPlayerBatch(tp.NamedTuple, tp.Generic[S]):
 
 def batch_to_frames(
     batch: TwoPlayerBatch[data_lib.Rank2],
-) -> types.Frames[Rank3, types.Controller]:
+) -> ZippedFrames:
   """Convert [B, T] batch to [B, 2, T] frames."""
   zipped_frames = utils.map_nt(
       lambda *xs: np.stack(xs, axis=1),
       batch.p0_frames, batch.p1_frames,
   )
-  return tp.cast(types.Frames[Rank3, types.Controller], zipped_frames)
+  return tp.cast(ZippedFrames, zipped_frames)
 
 
 def convert_batch(
@@ -81,3 +82,6 @@ class TwoPlayerDataSource:
   def __next__(self):
     batch, epoch = next(self.source)
     return convert_batch(batch, self.batched_encode_name), epoch
+
+  def shutdown(self):
+    self.source.shutdown()
