@@ -65,7 +65,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def encode_game(self, game: data.Game) -> data.Game:
     return self.network.encode_game(game)
 
-  def initial_state(self, batch_size: int, rngs: tp.Optional[nnx.Rngs] = None) -> RecurrentState:
+  def initial_state(self, batch_size: networks.Shape, rngs: tp.Optional[nnx.Rngs] = None) -> RecurrentState:
     if rngs is None:
       rngs = nnx.Rngs(0)
     return self.network.initial_state(batch_size, rngs)

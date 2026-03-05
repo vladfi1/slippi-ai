@@ -28,17 +28,6 @@ class UnrollOutputs(tp.NamedTuple):
 # Rank2 = tuple[int, int]
 Rank3 = tuple[int, int, int]
 
-# def q_function_from_config(config: dict):
-#   embed_config = flag_utils.dataclass_from_dict(
-#     embed.EmbedConfig, config['embed'])
-#   return QFunction(
-#     rngs=nnx.Rngs(0),
-#     embed_action=embed_config.controller.make_embedding(),
-#     embed_config=embed_config,
-#     num_names=config['max_names'],
-#     network_config=config['network'],
-#   )
-
 def to_merged_outputs(outputs: jax.Array) -> jax.Array:
   """Goes from [..., 2, O] to [..., 2, 2O]."""
   *batch, n, o = outputs.shape
@@ -107,24 +96,68 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     merged_outputs = to_merged_outputs(outputs)
     return jnp.squeeze(self.value_head(merged_outputs), -1)
 
-  def _q_values_from_outputs(self, outputs: jax.Array) -> jax.Array:
-    merged_outputs = to_merged_outputs(outputs)
-    return jnp.squeeze(self.q_head(merged_outputs), -1)
-
-  def q_values_from_hidden_states(
+  def _q_values_from_outputs(
       self,
-      values: jax.Array, # [T, B, 2]
-      hidden_states: RecurrentState,  # [T, B, 2, H]
-      actions: Action,  # [T, B, 2]
-  ) -> jax.Array:  # [T, B, 2]
-    action_inputs = self.embed_action(actions)
-    action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
-    qs = self._q_values_from_outputs(action_outputs)
+      outputs: jax.Array,  # [..., 2, O]
+      values: jax.Array,  # [..., 2]
+  ) -> jax.Array:  # [..., 2]
+    merged_outputs = to_merged_outputs(outputs)
+    qs = jnp.squeeze(self.q_head(merged_outputs), -1)
 
     if self.config.advantage_qs:
       return values + qs
     else:
       return qs
+
+  def q_values_from_hidden_states(
+      self,
+      values: jax.Array, # [..., 2]
+      hidden_states: RecurrentState,  # [..., 2, H]
+      actions: Action,  # [..., 2]
+  ) -> jax.Array:  # [..., 2]
+    action_inputs = self.embed_action(actions)
+    action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
+    return self._q_values_from_outputs(action_outputs, values)
+
+  def multi_q_values_from_hidden_states(
+      self,
+      values: jax.Array, # [T, B, 2]
+      hidden_states: RecurrentState,  # [T, B, 2, H]
+      actions: Action,  # [S, T, B, 2]
+      batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
+  ) -> jax.Array:  # [S, S, T, B, 2]
+    action_inputs = self.embed_action(actions)
+
+    action_outputs, _ = jax_utils.lax_map(
+        lambda x: self.action_net.step(x, hidden_states),
+        action_inputs,
+        batch_size=batch_size,
+    )
+    p0_outputs, p1_outputs = jnp.unstack(action_outputs, axis=-2)  # [S, T, B, O]
+
+    num_samples = action_outputs.shape[0]
+
+    if batch_size is None:
+      inner_bs = None
+      outer_bs = None
+    elif batch_size == 0:
+      inner_bs = 0
+      outer_bs = 0
+    elif batch_size <= num_samples:
+      inner_bs = batch_size
+      outer_bs = None
+    else:
+      inner_bs = 0
+      outer_bs = batch_size // num_samples
+
+    def p0_fn(p0_outputs: jax.Array):
+      def p1_fn(p1_outputs: jax.Array):
+        outputs = jnp.stack([p0_outputs, p1_outputs], axis=-2)  # [T, B, 2, O]
+        return self._q_values_from_outputs(outputs, values)
+
+      return jax_utils.lax_map(p1_fn, p1_outputs, batch_size=inner_bs)
+
+    return jax_utils.lax_map(p0_fn, p0_outputs, batch_size=outer_bs)
 
   def unroll(
       self,

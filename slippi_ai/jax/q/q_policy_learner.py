@@ -246,7 +246,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       )
 
     assert _SAMPLE_AXIS == 0
-    sample_q_values = jax.lax.map(
+    sample_q_values = jax_utils.lax_map(
         q_fn, policy_samples,
         batch_size=self.config.sample_batch_size,
     )
