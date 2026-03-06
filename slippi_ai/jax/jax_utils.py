@@ -91,10 +91,7 @@ def where(cond: Array, x: Array, y: Array) -> Array:
 
 def swap_axes(t, axis1=0, axis2=1):
   """Swap two axes of a tensor."""
-  permutation = list(range(len(t.shape)))
-  permutation[axis2] = axis1
-  permutation[axis1] = axis2
-  return jnp.transpose(t, permutation)
+  return jnp.swapaxes(t, axis1, axis2)
 
 def add_n(xs: tp.Iterable[Array]) -> Array:
   xs_iter = iter(xs)
@@ -106,7 +103,7 @@ def add_n(xs: tp.Iterable[Array]) -> Array:
 def entropy(probs: Array, axis: int = -1) -> Array:
   """Compute the entropy of a probability distribution."""
   log_probs = jnp.where(probs > 0, jnp.log(probs), 0.0)
-  return -jnp.sum(probs * log_probs, axis=axis)
+  return -jnp.vecdot(probs, log_probs, axis=axis)
 
 # Flax NNX
 
@@ -452,6 +449,18 @@ jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
 shard_map = _typed_transform(jax.shard_map)
 
+def grad0(
+    f: tp.Callable[tp.Concatenate[T, P], Loss],
+) -> tp.Callable[tp.Concatenate[T, P], T]:
+  """Gradient of f with respect to the first argument."""
+  return jax.grad(f, argnums=0)
+
+def jacrev0(
+    f: tp.Callable[tp.Concatenate[T, P], Loss],
+) -> tp.Callable[tp.Concatenate[T, P], T]:
+  """Jacobian of f with respect to the first argument."""
+  return jax.jacrev(f, argnums=0)
+
 def lax_map(
     f: tp.Callable[[In1], T],
     xs: In1,
@@ -488,6 +497,16 @@ def vmap1(
         in_axes=in_axis, out_axes=out_axis)(arg)
 
   return jit(wrapper, static_argnames=static_argnames)
+
+def multi_vmap(
+    func: tp.Callable[P, Out],
+    batch_rank: int,
+) -> tp.Callable[P, Out]:
+  """Apply vmap across the first batch_rank axes."""
+  for _ in range(batch_rank):
+    func = jax.vmap(func)
+  return func
+
 
 def as_vma(x: T, ref) -> T:
   if not hasattr(ref, 'vma'):
