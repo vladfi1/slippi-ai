@@ -518,21 +518,7 @@ Solver = tp.Callable[
     tp.Concatenate[ConstrainedOptimizationProblem[Parameters, Variables], Parameters, P],
     tuple[Variables, Stats]]
 
-def solve_feasibility(
-    problem: FeasibilityProblem[Parameters, Variables],
-    parameters: Parameters,
-    optimization_solver: Solver[Parameters, SlackVariables[Variables], P] = solve_optimization_interior_point_primal_dual,
-    *solver_args: P.args,
-    **solver_kwargs: P.kwargs,
-) -> tuple[Variables, Stats]:
-  slack_problem = SlackFeasibilityProblem(problem)
-  variables, stats = optimization_solver(
-    slack_problem, parameters, *solver_args, **solver_kwargs)
-  stats['slack'] = variables.slack
-  return variables.variables, stats
-
-
-def as_feasiblity_solver(
+def as_feasibility_solver(
     optimization_solver: Solver[Parameters, SlackVariables[Variables], P],
 ):
   def feasibility_solver(
@@ -545,11 +531,24 @@ def as_feasiblity_solver(
     variables, stats = optimization_solver(
       slack_problem, parameters, *solver_args, **solver_kwargs)
     stats['slack'] = variables.slack
-    return variables.variables, stats
+
+    vs = variables.variables
+    eq = problem.equality_violations(parameters, vs)
+    ineq = problem.constraint_violations(parameters, vs)
+
+    total_violation = jnp.sum(jnp.maximum(0, ineq)) + jnp.sum(jnp.abs(eq))
+
+    stats.update(
+        max_equality_violation=jnp.max(jnp.abs(eq)),
+        max_inequality_violation=jnp.max(ineq),
+        total_violation=total_violation,
+    )
+
+    return vs, stats
 
   return feasibility_solver
 
-solve_feasibility_ippd = as_feasiblity_solver(
+solve_feasibility_ippd = as_feasibility_solver(
   solve_optimization_interior_point_primal_dual)
 
 _ippd_static_argnames = ['is_linear', 'cholesky', 'expected_dtype', 'debug']
