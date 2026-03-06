@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import typing as tp
 
 import jax
@@ -27,6 +28,8 @@ class LearnerConfig:
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
   include_action_taken_in_samples: bool = True
+
+  nash_error: float = 1e-3
 
   nash_weight: float = 1
   imitation_weight: float = 0
@@ -107,6 +110,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     if not config.include_action_taken_in_samples and config.num_samples < 2:
       raise ValueError('num_samples must be at least 2 if not including action taken in samples')
 
+    if config.sample_batch_size > 0:
+      ns = config.num_samples
+      if config.include_action_taken_in_samples:
+        ns += 1
+      if ns % config.sample_batch_size != 0:
+        logging.warning(f'sample_batch_size {config.sample_batch_size} does not divide num_samples {ns}')
+
     self.num_samples = config.num_samples
 
     self.delay = nash_policy.delay
@@ -121,6 +131,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         smap_optimizer=smap_optimizer,
     )
 
+    BM = PS(DATA_AXIS)
     tms_specs = [None, DATA_AXIS]
     TM = PS(*tms_specs)  # time-major
     tms_specs.insert(_SAMPLE_AXIS, None)
@@ -133,7 +144,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_hidden = TM
     qs = TMSS
     nash_solution = TM
-    metrics = TM
+    metrics = BM
 
     sample_policy_specs = ShardingSpecs(
         extra_in_specs=None,
@@ -160,12 +171,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
         **q_function_specs,
     )
 
-    self.compute_nash = jax_utils.shard_map(
+    sharded_compute_nash = jax_utils.shard_map(
         self._compute_nash,
         mesh=mesh,
         in_specs=(qs,),
         out_specs=(nash_solution, metrics),
     )
+    self.compute_nash = jax.jit(sharded_compute_nash)
 
     nash_policy_specs = ShardingSpecs(
         extra_in_specs=(policy_samples, vs, q_hidden, nash_solution),
@@ -312,7 +324,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     with jax.enable_x64():
       payoff_matrices = payoff_matrices.astype(jnp.float64)
       assert payoff_matrices.dtype == jnp.float64
-      merged_outputs = nash.solve_zero_sum_nash_jax(payoff_matrices)  # [T*B, ...]
+      merged_outputs = nash.solve_zero_sum_nash_jax(  # [T*B, ...]
+        payoff_matrices, error=self.config.nash_error)
 
     def unmerge(x: jax.Array) -> jax.Array:
       assert x.shape[0] == t * b
@@ -367,6 +380,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
           prev_controller_state=prev_action,
           target_controller_state=policy_sample).distance
 
+    if self.config.sample_batch_size > 0:
+      nash_policy_distance_fn = jax.remat(nash_policy_distance_fn)
+
     # [S, T, B, 2]
     nash_policy_distances = jax_utils.lax_map(
         nash_policy_distance_fn, actions,
@@ -379,10 +395,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
 
     nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [T, B, 2, S]
+    nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
     nash_entropy = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
 
-    nash_cross_entropy = -jnp.sum(nash_probs * nash_policy_log_probs, axis=-1)  # [T, B, 2]
-    nash_kl = nash_cross_entropy - nash_entropy
+    nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
     # Estimate nash_policy vs computed nash
     nash_policy_samples = nash_policy.controller_head.sample(   # [T, B, 2]
@@ -437,7 +453,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     metrics = dict(
         nash_entropy=nash_entropy,
-        nash_kl=nash_kl,
+        nash_cross_entropy=nash_cross_entropy,
         nash_policy_qs=nash_policy_qs,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
