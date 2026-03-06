@@ -50,6 +50,8 @@ class RuntimeConfig:
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
 
+  profile: bool = False  # whether to run with jax profiler enabled
+
 @dataclasses.dataclass
 class AgentConfig:
   batch_steps: int = 0
@@ -158,11 +160,15 @@ class TrainManager:
 def print_losses(name: str, stats: dict):
   spl = stats[learner_lib.SAMPLE_POLICY]['loss']
   nent = stats[learner_lib.NASH_POLICY]['nash_entropy']
-  nkl = stats[learner_lib.NASH_POLICY]['nash_kl']
+  nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy']
+  spl, nent, nxent = map(train_lib.mean, (spl, nent, nxent))
 
-  spl, nent, nkl = map(train_lib.mean, (spl, nent, nkl))
+  tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
+  ns = np.asarray(stats[learner_lib.NASH]['num_steps'])
 
-  print(f'{name}: spl={spl:.4f} nent={nent:.4f} nkl={nkl:.4f}')
+  print(
+      f'{name}: spl={spl:.3f} nent={nent:.3f} nxent={nxent:.3f} '
+      f'tv={tv:.4f} nsmean={ns.mean():.2f} nsstd={ns.std():.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
@@ -171,6 +177,11 @@ def train(config: Config):
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Nash solver needs float64 for stability
   # jax.config.update('jax_enable_x64', True)
+
+  if config.runtime.profile:
+    # profile_context = jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True)
+    # exit_stack.enter_context(profile_context)
+    jax.profiler.start_server(9999)
 
   tag = config.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
@@ -324,10 +335,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       nash_policy_optimizer_state=policy_optimizer_state,
   )
 
-  ### Dataset Creation ###
-  dataset_config = config.dataset
+  # Set up dataset for training on both sides of each replay
+  config.dataset.swap = False
+  config.dataset.allowed_opponents = config.dataset.allowed_characters
+  config.dataset.filter_opponent_name = True
 
-  train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  train_replays, test_replays = data_lib.train_test_split(config.dataset)
   logging.info(f'Training on {len(train_replays)} replays, testing on {len(test_replays)}')
 
   # Create data sources for train and test.

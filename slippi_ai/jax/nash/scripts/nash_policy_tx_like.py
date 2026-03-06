@@ -39,8 +39,6 @@ if __name__ == '__main__':
 
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
-  CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
-
   NUM_DAYS = flags.DEFINE_float('num_days', 14, 'Number of days to train for')
 
   CONFIG = ff.DEFINE_dict(
@@ -77,7 +75,7 @@ if __name__ == '__main__':
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
-      char = CHAR.value
+      char = imitation_config.dataset.allowed_characters
 
       if config.tag is None:
         network = imitation_config.network
