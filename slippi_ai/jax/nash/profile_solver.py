@@ -22,8 +22,17 @@ DTYPE = flags.DEFINE_enum('dtype', 'f64', dtypes.keys(), 'float type')
 LINEAR = flags.DEFINE_boolean('linear', True, 'Linearity optimization')
 CHOLESKY = flags.DEFINE_boolean('cholesky', False, 'Cholesky optimization')
 
+PROFILE_SERVER_PORT = flags.DEFINE_integer('profile_server_port', None, 'Port for the profile server')
+PROFILE_TRACE_DIR = flags.DEFINE_string('profile_trace_dir', None, 'Directory to save profile traces')
+
 def main(_):
   jax.config.update('jax_enable_x64', True)
+
+  if PROFILE_SERVER_PORT.value is not None:
+    jax.profiler.start_server(PROFILE_SERVER_PORT.value)
+
+  if PROFILE_TRACE_DIR.value is not None:
+    jax.profiler.start_trace(PROFILE_TRACE_DIR.value)
 
   optimization_test.random_nash_tests(
       num_tests=ITERS.value,
@@ -37,6 +46,9 @@ def main(_):
       cholesky=CHOLESKY.value,
       max_steps=MAX_STEPS.value,
   )
+
+  if PROFILE_TRACE_DIR.value is not None:
+    jax.profiler.stop_trace()
 
 if __name__ == '__main__':
   app.run(main)
