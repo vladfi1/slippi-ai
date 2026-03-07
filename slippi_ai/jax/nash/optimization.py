@@ -564,3 +564,94 @@ def vmap1_ippd_feasibility_solver(
 ):
   solver = jax_utils.partial(solve_feasibility_ippd, problem)
   return jax_utils.vmap1(solver, static_argnames=_ippd_static_argnames)
+
+
+def solve_optimization_qpax(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    error: float = 1e-5,
+    max_steps: int = 100,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    **_,
+) -> tuple[Variables, Stats]:
+  """Solve a linear program (LP) using qpax's primal-dual interior point method.
+
+  Assumes the objective and all constraints are linear in the variables.
+
+  Args:
+    problem: A ConstrainedOptimizationProblem with linear objective and constraints.
+    parameters: Parameters defining the problem.
+    error: KKT residual tolerance for convergence.
+    max_steps: Maximum number of iterations.
+    expected_dtype: Check that the variables have this dtype.
+  """
+  import qpax
+
+  variables = problem.initial_variables(parameters)
+  flatten, unflatten, flat_size = _setup_flatten(variables)
+  flat_var = flatten(variables)
+
+  dtype = flat_var.dtype
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, got {dtype}"
+
+  N = flat_size
+
+  def obj_fn(x: jax.Array) -> jax.Array:
+    return problem.objective(parameters, unflatten(x))
+
+  def constr_fn(x: jax.Array) -> jax.Array:
+    return problem.constraint_violations(parameters, unflatten(x))
+
+  def eq_fn(x: jax.Array) -> jax.Array:
+    return problem.equality_violations(parameters, unflatten(x))
+
+  # LP: Q = 0, q = gradient of (linear) objective
+  Q = jnp.zeros([N, N], dtype=dtype)
+  q = jax.grad(obj_fn)(flat_var)
+
+  # Inequality constraints: constr_fn(x) = G @ x + c <= 0, i.e. G @ x <= h = -c
+  G = jax.jacrev(constr_fn)(flat_var)  # [M, N]
+  h = G @ flat_var - constr_fn(flat_var)
+
+  # Equality constraints: eq_fn(x) = A @ x + d = 0, i.e. A @ x = b = -d
+  A = jax.jacrev(eq_fn)(flat_var)  # [K, N]
+  b = A @ flat_var - eq_fn(flat_var)
+
+  x_opt, _s, _z, _y, converged, num_steps = qpax.pdip.solve_qp(
+      Q, q, A, b, G, h, solver_tol=error, max_iter=max_steps)
+
+  vs = unflatten(x_opt)
+  eq = problem.equality_violations(parameters, vs)
+  ineq = problem.constraint_violations(parameters, vs)
+
+  total_violation = jnp.sum(jnp.maximum(0, ineq)) + jnp.sum(jnp.abs(eq))
+
+  stats = dict(
+      # max_equality_violation=jnp.max(jnp.abs(eq)),
+      # max_inequality_violation=jnp.max(ineq),
+      total_violation=total_violation,
+      converged=converged,
+      num_steps=num_steps,
+  )
+
+  return vs, stats
+
+solve_feasibility_qpax = as_feasibility_solver(solve_optimization_qpax)
+
+_qpax_static_argnames = ['expected_dtype']
+
+
+def jitted_qpax_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_qpax, problem)
+  return jax_utils.jit(solver, static_argnames=_qpax_static_argnames)
+
+
+def vmap1_qpax_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_qpax, problem)
+  return jax_utils.vmap1(solver, static_argnames=_qpax_static_argnames)
