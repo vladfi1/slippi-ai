@@ -57,13 +57,13 @@ class ZeroSumNashProblem(optimization.FeasibilityProblem[PayoffMatrix, NashVaria
 
 ZeroSumNash = ZeroSumNashProblem()
 
-_solve_zero_sum_nash_jax = jax_utils.partial(
+_solve_zero_sum_nash_ippd = jax_utils.partial(
     optimization.solve_feasibility_ippd,
     ZeroSumNash)
-_jitted_solve_zero_sum_nash_jax = optimization.jitted_ippd_feasibility_solver(ZeroSumNash)
-_batched_solve_zero_sum_nash_jax = optimization.vmap1_ippd_feasibility_solver(ZeroSumNash)
+_jitted_solve_zero_sum_nash_ippd = optimization.jitted_ippd_feasibility_solver(ZeroSumNash)
+_batched_solve_zero_sum_nash_ippd = optimization.vmap1_ippd_feasibility_solver(ZeroSumNash)
 
-def solve_zero_sum_nash_jax(
+def solve_zero_sum_nash_ippd(
     payoff_matrix: np.ndarray | jax.Array,
     *,
     is_linear: bool = True,
@@ -72,14 +72,52 @@ def solve_zero_sum_nash_jax(
     **kwargs,
 ) -> tuple[NashVariables, dict]:
   if payoff_matrix.ndim == 3:
-    solver = _batched_solve_zero_sum_nash_jax
+    solver = _batched_solve_zero_sum_nash_ippd
   elif jit:
-    solver = _jitted_solve_zero_sum_nash_jax
+    solver = _jitted_solve_zero_sum_nash_ippd
   else:
-    solver = _solve_zero_sum_nash_jax
+    solver = _solve_zero_sum_nash_ippd
 
   return solver(
     jnp.asarray(payoff_matrix),
     is_linear=is_linear, optimum=optimum,
     expected_dtype=payoff_matrix.dtype,
     **kwargs)
+
+
+_solve_zero_sum_nash_qpax = jax_utils.partial(
+    optimization.solve_feasibility_qpax,
+    ZeroSumNash)
+_jitted_solve_zero_sum_nash_qpax = optimization.jitted_qpax_feasibility_solver(ZeroSumNash)
+_batched_solve_zero_sum_nash_qpax = optimization.vmap1_qpax_feasibility_solver(ZeroSumNash)
+
+
+def solve_zero_sum_nash_qpax(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    **kwargs,
+) -> tuple[NashVariables, dict]:
+  """Solve a zero-sum Nash equilibrium using qpax's LP solver."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_zero_sum_nash_qpax
+  elif jit:
+    solver = _jitted_solve_zero_sum_nash_qpax
+  else:
+    solver = _solve_zero_sum_nash_qpax
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      expected_dtype=payoff_matrix.dtype,
+      **kwargs)
+
+class NashSolver(tp.Protocol):
+  def __call__(
+      self,
+      payoff_matrix: np.ndarray | jax.Array,
+      *,
+      jit: bool,
+      max_steps: int,
+      error: float,
+      **kwargs,
+  ) -> tuple[NashVariables, dict]: ...
