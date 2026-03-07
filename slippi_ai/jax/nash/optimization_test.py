@@ -36,7 +36,7 @@ def test_solve_quadratic_optimization(num_dims: int = 3):
   xs = np.arange(num_dims, dtype=np.float32)
   problem = QuadraticOptimizationProblem(xs)
   variables, _ = optimization.solve_optimization_interior_point_primal_dual(
-      problem, Empty, error=1e-3)
+      problem, Empty, error=1e-3, expected_dtype=jnp.float32)
   assert np.all(np.abs(np.asarray(variables)) < 1e-3)
 
 CornerParams = jax.Array
@@ -67,12 +67,14 @@ def test_solve_corner_optimization(
 ):
   problem = CornerOptimizationProblem()
   sizes = 1 + jnp.arange(max_size).astype(jnp.float32)
+  solver_kwargs.setdefault('expected_dtype', jnp.float32)
   variables, _ = solver(problem, sizes, *solver_args, **solver_kwargs)
 
   actual = np.asarray(variables)
   expected = np.asarray(sizes)
 
-  np.testing.assert_allclose(actual, expected, atol=1e-3)
+  atol = solver_kwargs.get('error', 1e-2)
+  np.testing.assert_allclose(actual, expected, atol=atol)
 
 
 def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
@@ -103,14 +105,20 @@ def verify_nash(
 
   np.testing.assert_allclose(jax_nash_value, nash_value, atol=atol)
 
-def test_nash(
+def run_nash_test(
     payoff_matrix: np.ndarray,
     atol: float = 1e-1,
     verify: bool = True,
+    solver: tp.Optional[nash.NashSolver] = None,
     **kwargs,
 ) -> dict:
+  if solver is None:
+    solver = nash.solve_zero_sum_nash_ippd
   start_time = time.perf_counter()
-  variables, stats = nash.solve_zero_sum_nash_jax(payoff_matrix, **kwargs)
+  variables, stats = solver(payoff_matrix, **kwargs)
+  # Reading the stats will block until the solution is ready,
+  # so we can measure the solve time here.
+  stats = {k: np.asarray(v) for k, v in stats.items()}
   solve_time = time.perf_counter() - start_time
 
   if verify:
@@ -122,7 +130,6 @@ def test_nash(
     for i in range(payoff_matrix.shape[0]):
       verify_nash(payoff_matrix[i], jax.tree.map(lambda x: x[i], variables), atol=atol)
 
-  stats = {k: np.asarray(v) for k, v in stats.items()}
   stats['time'] = solve_time
   return stats
 
@@ -133,13 +140,14 @@ def test_rps(**kwargs):
       [1, 0, -1],
       [-1, 1, 0],
   ], dtype=np.float32)
-  return test_nash(payoff_matrix, **kwargs)
+  return run_nash_test(payoff_matrix, **kwargs)
 
 
 def test_random_nash(
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float32,
     batch_size: int = 0,
+    solver: tp.Optional[nash.NashSolver] = None,
     **kwargs,
 ):
   if batch_size > 0:
@@ -147,12 +155,14 @@ def test_random_nash(
   else:
     dims = size
   payoff_matrix = np.random.standard_normal(dims).astype(dtype)
-  return test_nash(payoff_matrix, **kwargs)
+  return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
 def random_nash_tests(
     num_tests: int = 10,
     batch_size: int = 0,
+    solver: tp.Optional[nash.NashSolver] = None,
+    stat_keys: tuple[str, ...] = ('num_steps', 'total_violation'),
     **kwargs,
 ):
   all_stats = []
@@ -160,6 +170,7 @@ def random_nash_tests(
   for i in tqdm.trange(num_tests):
     stats = test_random_nash(
         batch_size=batch_size,
+        solver=solver,
         **kwargs,
     )
     all_stats.append(stats)
@@ -176,7 +187,9 @@ def random_nash_tests(
 
   stats = utils.batch_nest(all_stats)
 
-  for key in ['num_steps', 'slack']:
+  for key in stat_keys:
+    if key not in stats:
+      continue
     values = stats[key]
     mean, std = np.mean(values), np.std(values)
     min_value = np.min(values)
@@ -212,11 +225,37 @@ if __name__ == '__main__':
         max_steps=200,
     )
 
-    print('Unbatched Nash')
+    print('Unbatched Nash (ippd)')
     random_nash_tests(**nash_kwargs)
 
-    print('Batched Nash')
+    print('Batched Nash (ippd)')
     random_nash_tests(
         batch_size=10,
         **nash_kwargs,
     )
+
+  # qpax solver tests
+  print('\n--- qpax solver ---')
+
+  print('Corner optimization (qpax)')
+  test_solve_corner_optimization(
+      max_size=3,
+      solver=optimization.solve_optimization_qpax,
+  )
+
+  print('RPS (qpax)')
+  test_rps(solver=nash.solve_zero_sum_nash_qpax)
+
+  qpax_nash_kwargs = dict(
+      num_tests=10,
+      size=(10, 11),
+      atol=1e-1,
+      solver=nash.solve_zero_sum_nash_qpax,
+      stat_keys=('num_steps', 'converged', 'total_violation'),
+  )
+
+  print('Unbatched Nash (qpax)')
+  random_nash_tests(**qpax_nash_kwargs)
+
+  print('Batched Nash (qpax)')
+  random_nash_tests(batch_size=10, **qpax_nash_kwargs)
