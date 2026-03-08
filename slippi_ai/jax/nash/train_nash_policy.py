@@ -393,11 +393,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         train_epoch=train_manager.last_epoch,
     )
 
+    # TODO: maybe only save the nash policy and rely on initialize_policies_from
+    # and initialize_q_function_from for the sample policy and q_function?
     combined = dict(
         state=jax_state,
         step=step,
         config=dataclasses.asdict(config),
         imitation_config=dataclasses.asdict(imitation_config),
+        q_function_config=dataclasses.asdict(q_fn_config),
         name_map=name_map,
         # dataset_metrics=dataset_metrics,
         counters=counters,
