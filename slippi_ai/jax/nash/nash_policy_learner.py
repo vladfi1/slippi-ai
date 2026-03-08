@@ -34,6 +34,8 @@ class LearnerConfig:
   nash_weight: float = 1
   imitation_weight: float = 0
 
+  nash_solver: str = 'qpax'
+
 _SAMPLE_AXIS = 0
 
 Loss = jax.Array
@@ -171,13 +173,24 @@ class Learner(nnx.Module, tp.Generic[Action]):
         **q_function_specs,
     )
 
-    sharded_compute_nash = jax_utils.shard_map(
-        self._compute_nash,
-        mesh=mesh,
-        in_specs=(qs,),
-        out_specs=(nash_solution, metrics),
+    # We can't shard_map the qpax solver because of vma issues with while_loop.
+    # The solution would be to insert a manual pvary inside qpax like we do in
+    # our own ippd solver, but we can also just let jit handle running on
+    # multiple devices as the solver is completely batch-parallel.
+
+    # sharded_compute_nash = jax_utils.shard_map(
+    #     self._compute_nash,
+    #     mesh=mesh,
+    #     in_specs=(qs,),
+    #     out_specs=(nash_solution, metrics),
+    # )
+    # self.compute_nash = jax_utils.jit(sharded_compute_nash)
+    self.compute_nash = jax_utils.jit(
+      self._compute_nash,
+      in_shardings=jax.NamedSharding(mesh, qs),
+      # out_shardings=(nash_solution, metrics),
     )
-    self.compute_nash = jax.jit(sharded_compute_nash)
+    self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
     nash_policy_specs = ShardingSpecs(
         extra_in_specs=(policy_samples, vs, q_hidden, nash_solution),
@@ -324,7 +337,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
     with jax.enable_x64():
       payoff_matrices = payoff_matrices.astype(jnp.float64)
       assert payoff_matrices.dtype == jnp.float64
-      merged_outputs = nash.solve_zero_sum_nash_jax(  # [T*B, ...]
+
+      if self.config.nash_solver == 'qpax':
+        solver = nash.solve_zero_sum_nash_qpax
+      elif self.config.nash_solver == 'ippd':
+        solver = nash.solve_zero_sum_nash_ippd
+      else:
+        raise ValueError(f'Unknown nash_solver {self.config.nash_solver}')
+
+      merged_outputs = solver(  # [T*B, ...]
         payoff_matrices, error=self.config.nash_error)
 
     def unmerge(x: jax.Array) -> jax.Array:
