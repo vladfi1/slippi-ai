@@ -43,6 +43,7 @@ _field = utils.field
 @dataclasses.dataclass
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_step: tp.Optional[int] = None  # maximum number of training steps (None for no limit)
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
@@ -50,7 +51,8 @@ class RuntimeConfig:
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
 
-  profile: bool = False  # whether to run with jax profiler enabled
+  profile_server_port: tp.Optional[int] = None
+  profile_trace_dir: tp.Optional[str] = None
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -178,10 +180,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Nash solver needs float64 for stability
   # jax.config.update('jax_enable_x64', True)
 
-  if config.runtime.profile:
-    # profile_context = jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True)
-    # exit_stack.enter_context(profile_context)
-    jax.profiler.start_server(9999)
+  if config.runtime.profile_server_port is not None:
+    jax.profiler.start_server(config.runtime.profile_server_port)
 
   tag = config.tag or train_lib.get_experiment_tag()
   # Might want to use wandb.run.dir instead, but it doesn't seem
@@ -564,6 +564,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_profiler = utils.Profiler(burnin=0)
 
+  if config.runtime.profile_trace_dir is not None:
+    if config.runtime.max_step is None:
+      raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
+    jax.profiler.start_trace(config.runtime.profile_trace_dir)
+
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:
       train_stats, _ = train_manager.step()
@@ -576,4 +581,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     maybe_log(train_stats)
     maybe_eval()
 
-  maybe_eval(force=True)
+    if config.runtime.max_step is not None and step >= config.runtime.max_step:
+      logging.info('Reached max step %d, stopping training.', step)
+      break
+
+  # maybe_eval(force=True)
+  if config.runtime.profile_trace_dir is not None:
+    jax.profiler.stop_trace()

@@ -489,6 +489,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return bm_loss, bm_metrics, nash_policy_outputs.final_state
 
+  @jax.profiler.annotate_function
   def step_sample_policy(
       self,
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
@@ -503,6 +504,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return self.run_sample_policy(frames, initial_state)
 
+  @jax.profiler.annotate_function
   def step_q_function(
       self,
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
@@ -518,6 +520,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return self.run_q_function(frames, initial_state, policy_samples)
 
+  @jax.profiler.annotate_function
   def step_nash_policy(
       self,
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]

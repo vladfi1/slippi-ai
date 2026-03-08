@@ -31,7 +31,7 @@ def replicate_sharding(mesh: Mesh) -> NamedSharding:
   return NamedSharding(mesh, PS())
 
 
-def data_sharding(mesh: Mesh, axis_name: str = 'data') -> NamedSharding:
+def data_sharding(mesh: Mesh, axis_name: str = DATA_AXIS) -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
 
@@ -481,9 +481,10 @@ def vmap1(
 ):
   """Vmap across just the first argument to a function.
 
-  This is a workaround for vamp forcing kwargs to have axis 0.
+  This is a workaround for vmap forcing kwargs to have axis 0.
   """
 
+  @functools.wraps(func)
   def wrapper(
       arg: T,
       *args: P.args,
@@ -534,6 +535,7 @@ def data_parallel_train(
       donate_argnums=(0, 1, 3),
       static_argnames=static_argnames,
   )
+  @functools.wraps(loss_fn)
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
@@ -612,6 +614,7 @@ def data_parallel_train_with_rngs(
       donate_argnums=(0, 1, 2, 4),
       static_argnames=static_argnames,
   )
+  @functools.wraps(loss_fn)
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
@@ -686,6 +689,7 @@ def shard_map_loss_fn(
       donate_argnums=(2,),
       static_argnames=static_argnames,
   )
+  @functools.wraps(loss_fn)
   def loss_fn_wrapper(module: ModT, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
     if extra_in_specs is None:
       _extra_in_specs = tuple(PS() for _ in args)
@@ -741,6 +745,7 @@ def shard_map_loss_fn_with_rngs(
       donate_argnums=(1, 3),
       static_argnames=static_argnames,
   )
+  @functools.wraps(loss_fn)
   def loss_fn_wrapper(module: ModT, rngs: nnx.Rngs, data: Data, state: State, *args: P.args, **kwargs: P.kwargs):
     if extra_in_specs is None:
       _extra_in_specs = tuple(PS() for _ in args)
