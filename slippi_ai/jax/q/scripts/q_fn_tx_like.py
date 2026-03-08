@@ -20,12 +20,12 @@ def default_config():
   config.delay = 0
   config.data.batch_size = 512
   config.data.unroll_length = 80
-  config.test_unroll_multiplier = 4
+  config.test_unroll_multiplier = 16
   config.data.damage_ratio = 0.01
   config.data.num_workers = 2
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
-  config.learner.reward_halflife = 8
+  config.learner.reward_halflife = 4
   config.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
   config.embed.player.with_nana = True
   config.embed.items.type = embed.ItemsType.FLAT
@@ -49,7 +49,7 @@ if __name__ == '__main__':
       'net',
       name=ff.String(NET_NAME),
       hidden_size=ff.Integer(512),
-      num_layers=ff.Integer(2),
+      num_layers=ff.Integer(1),
       ffw_multiplier=ff.Integer(2),
       recurrent_layer=ff.String('lstm'),
   )
