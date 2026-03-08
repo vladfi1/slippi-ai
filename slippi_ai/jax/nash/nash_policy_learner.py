@@ -242,9 +242,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
         reward=frames.reward[self.delay:],
     )
 
-  def _shard_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
-    return utils.map_single_structure(lambda x: jax.device_put(x, self.data_sharding), frames)
-
   def _unroll_sample_policy(
       self,
       sample_policy: Policy[Action],
@@ -495,12 +492,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
   ):
-    encoded_frames = Frames[nash_data.Rank3, Action](
+    frames = Frames[nash_data.Rank3, Action](
         state_action=self.sample_policy.network.encode(zipped_frames.state_action),
         is_resetting=zipped_frames.is_resetting,
         reward=zipped_frames.reward,
     )
-    frames = self._shard_frames(encoded_frames)
 
     return self.run_sample_policy(frames, initial_state)
 
@@ -511,12 +507,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,
       policy_samples: Action,  # [T, B, 2]
   ):
-    encoded_frames = Frames[nash_data.Rank3, Action](
+    frames = Frames[nash_data.Rank3, Action](
         state_action=self.q_function.core_net.encode(zipped_frames.state_action),
         is_resetting=zipped_frames.is_resetting,
         reward=zipped_frames.reward,
     )
-    frames = self._shard_frames(encoded_frames)
 
     return self.run_q_function(frames, initial_state, policy_samples)
 
@@ -531,12 +526,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       nash_solution: nash.NashVariables,  # [T, B]
       train: bool = True,
   ):
-    encoded_frames = Frames[nash_data.Rank3, Action](
+    frames = Frames[nash_data.Rank3, Action](
         state_action=self.nash_policy.network.encode(zipped_frames.state_action),
         is_resetting=zipped_frames.is_resetting,
         reward=zipped_frames.reward,
     )
-    frames = self._shard_frames(encoded_frames)
 
     fn = self.train_nash_policy if train else self.run_nash_policy
     return fn(
