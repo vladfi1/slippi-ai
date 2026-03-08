@@ -21,7 +21,7 @@ def default_config():
   config.data.batch_size = 512
   config.data.unroll_length = 80
   config.data.damage_ratio = 0.01
-  config.data.num_workers = 1
+  config.data.num_workers = 2
   config.data.unroll_chunks = 4
   config.learner.learning_rate = 1e-4
 
