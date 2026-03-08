@@ -14,6 +14,7 @@ ATOL = flags.DEFINE_float('atol', 1e-1, 'Nash KL divergence tolerance')
 VERIFY = flags.DEFINE_boolean('verify', False, 'Verify the solution')
 MAX_STEPS = flags.DEFINE_integer('max_steps', 200, 'Maximum number of optimization steps')
 SOLVER = flags.DEFINE_enum('solver', 'ippd', ['ippd', 'qpax'], 'Solver to use')
+MULTI_DEVICE = flags.DEFINE_boolean('multi_device', False, 'Whether to test multi-device execution')
 
 dtypes = {
     'f32': np.float32,
@@ -53,6 +54,7 @@ def main(_):
       is_linear=LINEAR.value,
       cholesky=CHOLESKY.value,
       max_steps=MAX_STEPS.value,
+      multi_device=MULTI_DEVICE.value,
   )
 
   if PROFILE_TRACE_DIR.value is not None:

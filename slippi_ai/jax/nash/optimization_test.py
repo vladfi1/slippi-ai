@@ -7,6 +7,7 @@ import numpy as np
 import tqdm
 
 from slippi_ai import utils
+from slippi_ai.jax import jax_utils
 from slippi_ai.jax.nash import optimization, nash
 
 EmptyT = tuple[()]
@@ -148,6 +149,7 @@ def test_random_nash(
     dtype: np.dtype = np.float32,
     batch_size: int = 0,
     solver: tp.Optional[nash.NashSolver] = None,
+    multi_device: bool = False,
     **kwargs,
 ):
   if batch_size > 0:
@@ -155,6 +157,12 @@ def test_random_nash(
   else:
     dims = size
   payoff_matrix = np.random.standard_normal(dims).astype(dtype)
+
+  if multi_device:
+    mesh = jax_utils.get_mesh()
+    sharding = jax_utils.data_sharding(mesh)
+    payoff_matrix = jax.device_put(payoff_matrix, sharding)
+
   return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
