@@ -115,12 +115,10 @@ class TrainManager:
       learner: learner_lib.Learner,
       data_source: data_lib.AbstractDataSource,
       step_kwargs={},
-      prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
       # TODO: pass in epoch offset when resuming from checkpoint
       epoch_offset: float = 0,
-      cached: bool = False,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -131,7 +129,6 @@ class TrainManager:
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
-    self.cached = cached
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -139,53 +136,10 @@ class TrainManager:
       hidden_state = jax_utils.shard_pytree(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
-    self.prefetch = prefetch
-    if prefetch > 0:
-      self.frames_queue = queue.Queue(maxsize=prefetch)
-      self.stop_requested = threading.Event()
-      self.data_thread = threading.Thread(target=self.fetch_batches)
-      self.data_thread.start()
-
-    self.cached_fetch_batch = functools.cache(self.fetch_batch)
-
-  def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
-    batch, epoch = next(self.data_source)
-    epoch += self.epoch_offset
-
-    if np.any(batch.is_resetting[:, 1:]):
-      raise ValueError("Unexpected mid-episode reset.")
-
-    frames = self.learner.prepare_frames(batch)
-    return (batch, epoch, frames)
-
-  def fetch_batches(self):
-    # TODO: we might not need this anymore due to jax runahead
-    while not self.stop_requested.is_set():
-      data = self.fetch_batch()
-
-      # Try to put data into the queue, but check for stop_requested
-      while not self.stop_requested.is_set():
-        try:
-          self.frames_queue.put(data, timeout=1)
-          break
-        except queue.Full:
-          continue
-
-  def stop(self):
-    if self.prefetch > 0:
-      self.stop_requested.set()
-      self.data_thread.join()
-
   def step(self) -> tuple[dict, data_lib.Batch]:
     stats = {}
 
     with self.data_profiler:
-      # if self.prefetch > 0:
-      #   stats.update(frames_queue_size=self.frames_queue.qsize())
-      #   batch, epoch, frames = self.frames_queue.get()
-      # else:
-      #   batch_fn = self.cached_fetch_batch if self.cached else self.fetch_batch
-      #   batch, epoch, frames = batch_fn()
       batch, epoch = next(self.data_source)
 
     self.last_epoch = epoch
@@ -380,16 +334,15 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data = data_lib.make_source(replays=test_replays, **data_config)
   del train_replays, test_replays
 
+  exit_stack.callback(train_data.shutdown)
+  exit_stack.callback(test_data.shutdown)
+
   train_manager = TrainManager(
       learner, train_data, dict(train=True),
       rngs=rngs, data_sharding=data_sharding, epoch_offset=train_epoch)
   test_manager = TrainManager(
       learner, test_data, dict(train=False),
       rngs=rngs, data_sharding=data_sharding)
-
-  # TrainManager should probably be a proper context manager.
-  exit_stack.callback(train_manager.stop)
-  exit_stack.callback(test_manager.stop)
 
   print_losses('initial', train_manager.step()[0])
 

@@ -137,7 +137,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         is_resetting=batch.is_resetting,
         reward=batch.reward,
     )
-    frames = self._shard_frames(frames)
 
     if train:
       metrics, final_state = self.train_q_function(frames, initial_state)

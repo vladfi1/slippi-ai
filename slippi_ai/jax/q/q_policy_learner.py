@@ -185,18 +185,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
   def _shard_frames(self, frames: Frames[Rank2, embed.Action]) -> Frames[Rank2, embed.Action]:
     return utils.map_single_structure(lambda x: jax.device_put(x, self.data_sharding), frames)
 
-  def prepare_frames(self, batch: Batch[Rank2]) -> Frames[Rank2, embed.Action]:
-    # Note: this assumes that the sample_policy, q_function, and q_policy all
-    # use the same embedding for the state_action.
-    state_action = StateAction(
-        batch.game, batch.game.p0.controller, batch.name)
-    frames = Frames(
-        state_action=self.q_function.core_net.encode(state_action),
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
-    return self._shard_frames(frames)
-
   def _unroll_sample_policy(
       self,
       sample_policy: Policy[embed.Action],
@@ -406,7 +394,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         is_resetting=batch.is_resetting,
         reward=batch.reward,
     )
-    frames = self._shard_frames(frames)
 
     return self.run_sample_policy(frames, initial_state)
 
@@ -423,7 +410,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         is_resetting=batch.is_resetting,
         reward=batch.reward,
     )
-    frames = self._shard_frames(frames)
 
     return self.run_q_function(frames, initial_state, policy_samples)
 
@@ -443,7 +429,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         is_resetting=batch.is_resetting,
         reward=batch.reward,
     )
-    frames = self._shard_frames(frames)
 
     if train:
       return self.train_q_policy(
