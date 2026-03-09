@@ -266,14 +266,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
 
   # Initialize q_function
-  if restored:
-    assert isinstance(restored_state, dict)
-    q_fn_config = flag_utils.dataclass_from_dict(
-        q_lib.QFunctionConfig, restored_state['q_function_config'])
-    q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config)
-    # q_function_optimizer_state = None
-
-  elif config.initialize_q_function_from:
+  if config.initialize_q_function_from:
     # TODO: version the q_function checkpoint and handle upgrades
     with open(config.initialize_q_function_from, 'rb') as f:
       q_fn_state = pickle.load(f)
@@ -302,13 +295,23 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       if q_fn_name_map[name] != code:
         raise ValueError(f'Name map mismatch for name {name}: {q_fn_name_map[name]} vs {code}')
 
+    if restored_state is not None:
+      logging.warning('Using q_function from %s instead of checkpoint', config.initialize_q_function_from)
+      del restored_state['state']['q_function']
+      # restored_state['state']['q_function'] = q_fn_state['state']['q_function']
+
+  elif restored:
+    assert isinstance(restored_state, dict)
+    q_fn_config = flag_utils.dataclass_from_dict(
+        q_lib.QFunctionConfig, restored_state['q_function_config'])
+    q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config)
+    # q_function_optimizer_state = None
+
   else:
     raise ValueError('Must initialize q_function from a checkpoint.')
 
   # Multi-device setup
   runtime = config.runtime
-  mesh: tp.Optional[jax.sharding.Mesh] = None
-  data_sharding = None
   num_devices = jax_utils.num_devices()
   if num_devices == 1:
     logging.warning(
@@ -331,7 +334,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       nash_policy=nash_policy,
       rngs=rngs,
       mesh=mesh,
-      data_sharding=data_sharding,
       nash_policy_optimizer_state=policy_optimizer_state,
   )
 
@@ -374,8 +376,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if restored:
     assert isinstance(restored_state, dict)  # appease type checker
     jax_utils.set_module_state(
-        learner,
-        jax_utils.shard_pytree(restored_state['state'], data_sharding))
+      learner, jax_utils.shard_pytree(
+          restored_state['state'], jax_utils.replicate_sharding(mesh)))
     print_losses('post-restore', train_manager.step()[0])
     del restored_state
 
