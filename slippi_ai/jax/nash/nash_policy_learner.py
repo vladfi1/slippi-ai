@@ -89,7 +89,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       nash_policy: Policy[Action],
       rngs: nnx.Rngs,  # used for sampling
       mesh: jax.sharding.Mesh,
-      data_sharding: jax.sharding.NamedSharding,
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
       nash_policy_optimizer_state: tp.Optional[tp.Any] = None,
@@ -126,7 +125,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     jax_utils.replicate_module(self, mesh)
 
-    self.data_sharding = data_sharding
     sharding_kwargs = ShardingKwargs(
         mesh=mesh,
         explicit_pmean=explicit_pmean,
