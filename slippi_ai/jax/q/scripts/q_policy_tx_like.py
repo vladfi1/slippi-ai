@@ -43,8 +43,6 @@ if __name__ == '__main__':
 
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
-  CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
-
   NUM_DAYS = flags.DEFINE_float('num_days', 14, 'Number of days to train for')
 
   CONFIG = ff.DEFINE_dict(
@@ -81,17 +79,32 @@ if __name__ == '__main__':
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
-      char = CHAR.value
+      char = imitation_config.dataset.allowed_characters
+      config.dataset.allowed_opponents = imitation_config.dataset.allowed_opponents
 
       if config.tag is None:
         network = imitation_config.network
         assert network['name'] == NET_NAME, f"Expected network name {NET_NAME} but got {network['name']}"
         d = imitation_config.policy.delay
+        ops = config.dataset.allowed_opponents
+        if ops == 'all':
+          op = ''
+        elif ops == char:
+          op = '_ditto'
+        else:
+          op = f"_vs_{ops}"
+
         n = network[NET_NAME]['num_layers']
         h = network[NET_NAME]['hidden_size']
         fs = imitation_config.observation.frame_skip.skip
         ns = config.learner.num_samples
-        config.tag = f"{char}_d{d}_{NET_NAME}_{n}x{h}_fs{fs}_ns{ns}"
+
+        if fs > 0:
+          fs = f"_fs{fs}"
+        else:
+          fs = ""
+
+        config.tag = f"qp_{char}_d{d}{op}_{NET_NAME}_{n}x{h}{fs}_ns{ns}"
 
     config.dataset.allowed_characters = char
 
