@@ -282,7 +282,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data_config = dict(
       data_config,
       num_workers=2 * config.data.num_workers,
-      unroll_length=config.data.unroll_length * config.test_unroll_multiplier)
+      unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
+      unroll_chunks=0,  # the unroll multiplier obviates the need this
+  )
   test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays
 
