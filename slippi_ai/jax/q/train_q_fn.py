@@ -286,6 +286,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data = data_lib.make_source(replays=test_replays, **test_data_config)
   del train_replays, test_replays
 
+  exit_stack.callback(train_data.shutdown)
+  exit_stack.callback(test_data.shutdown)
+
   # Get rid of match-start correlations
   for source in [train_data, test_data]:
     for _ in range(config.runtime.data_source_burnin):
@@ -396,8 +399,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     per_step_eval_stats: list[dict] = []
 
-    def time_mean(x: jax.Array) -> np.ndarray:
-      return np.mean(x, axis=1)
+    def time_mean(x: jax.Array, axis: int = 1) -> np.ndarray:
+      assert x.shape[axis] == config.data.unroll_length * config.test_unroll_multiplier
+      return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
