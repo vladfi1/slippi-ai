@@ -108,13 +108,11 @@ def verify_nash(
 
 def run_nash_test(
     payoff_matrix: np.ndarray,
+    solver: nash.NashSolver,
     atol: float = 1e-1,
     verify: bool = True,
-    solver: tp.Optional[nash.NashSolver] = None,
     **kwargs,
 ) -> dict:
-  if solver is None:
-    solver = nash.solve_zero_sum_nash_ippd
   start_time = time.perf_counter()
   variables, stats = solver(payoff_matrix, **kwargs)
   # Reading the stats will block until the solution is ready,
@@ -135,18 +133,19 @@ def run_nash_test(
   return stats
 
 
-def test_rps(**kwargs):
+def test_rps(dtype=np.float64, **kwargs):
   payoff_matrix = np.array([
       [0, -1, 1],
       [1, 0, -1],
       [-1, 1, 0],
-  ], dtype=np.float32)
-  return run_nash_test(payoff_matrix, **kwargs)
+  ], dtype=dtype)
+  with jax.enable_x64():
+    return run_nash_test(payoff_matrix, **kwargs)
 
 
 def test_random_nash(
     size: tuple[int, int] = (3, 3),
-    dtype: np.dtype = np.float32,
+    dtype: np.dtype = np.float64,
     batch_size: int = 0,
     solver: tp.Optional[nash.NashSolver] = None,
     multi_device: bool = False,
@@ -158,12 +157,13 @@ def test_random_nash(
     dims = size
   payoff_matrix = np.random.standard_normal(dims).astype(dtype)
 
-  if multi_device:
-    mesh = jax_utils.get_mesh()
-    sharding = jax_utils.data_sharding(mesh)
-    payoff_matrix = jax.device_put(payoff_matrix, sharding)
+  with jax.enable_x64():
+    if multi_device:
+      mesh = jax_utils.get_mesh()
+      sharding = jax_utils.data_sharding(mesh)
+      payoff_matrix = jax.device_put(payoff_matrix, sharding)
 
-  return run_nash_test(payoff_matrix, solver=solver, **kwargs)
+    return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
 def random_nash_tests(
@@ -204,6 +204,33 @@ def random_nash_tests(
     max_value = np.max(values)
     print(f'{key}: {mean:.1e} ± {std:.1e}, [{min_value:.1e}, {max_value:.1e}]')
 
+def run_nash_tests(
+    **solver_kwargs,
+):
+  solver_kwargs = dict(
+    solver_kwargs,
+    dtype=np.float64,
+  )
+
+  print('RPS')
+  test_rps(**solver_kwargs)
+
+  nash_kwargs = dict(
+      solver_kwargs,
+      num_tests=10,
+      size=(10, 11),
+      # jit=False,
+      # debug=True,
+  )
+
+  print('Unbatched')
+  random_nash_tests(**nash_kwargs)
+
+  print('Batched')
+  random_nash_tests(
+      batch_size=10,
+      **nash_kwargs,
+  )
 
 if __name__ == '__main__':
   test_solve_quadratic_optimization()
@@ -216,30 +243,12 @@ if __name__ == '__main__':
         max_size=3,
         is_linear=is_linear,
     )
-    test_rps(
-        error=1e-3,
-        is_linear=is_linear,
-    )
 
-    nash_kwargs = dict(
-        num_tests=10,
-        size=(10, 11),
-        # dtype=np.float64,
+    run_nash_tests(
+        solver=nash.solve_zero_sum_nash_ippd,
         error=1e-5,
-        atol=1e-1,
-        is_linear=is_linear,
-        # jit=False,
-        # debug=True,
         max_steps=200,
-    )
-
-    print('Unbatched Nash (ippd)')
-    random_nash_tests(**nash_kwargs)
-
-    print('Batched Nash (ippd)')
-    random_nash_tests(
-        batch_size=10,
-        **nash_kwargs,
+        is_linear=is_linear,
     )
 
   # qpax solver tests
@@ -249,21 +258,32 @@ if __name__ == '__main__':
   test_solve_corner_optimization(
       max_size=3,
       solver=optimization.solve_optimization_qpax,
+      error=1e-3,
+      debug=True,
   )
 
-  print('RPS (qpax)')
-  test_rps(solver=nash.solve_zero_sum_nash_qpax)
-
-  qpax_nash_kwargs = dict(
-      num_tests=10,
-      size=(10, 11),
+  qpax_kwargs = dict(
+      error=1e-5,
+      max_steps=30,
       atol=1e-1,
-      solver=nash.solve_zero_sum_nash_qpax,
-      stat_keys=('num_steps', 'converged', 'total_violation'),
+      # debug=True,
+      # jit=False,
   )
 
-  print('Unbatched Nash (qpax)')
-  random_nash_tests(**qpax_nash_kwargs)
+  print('qpax default')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_qpax,
+      **qpax_kwargs,
+  )
 
-  print('Batched Nash (qpax)')
-  random_nash_tests(batch_size=10, **qpax_nash_kwargs)
+  qpax_fast_kwargs = dict(
+      error=1e-5,
+      atol=1e-3,
+      # jit=False,
+  )
+
+  print('qpax fast')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_qpax_fast,
+      **qpax_fast_kwargs,
+  )
