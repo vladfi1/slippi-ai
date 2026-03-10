@@ -565,16 +565,21 @@ def vmap1_ippd_feasibility_solver(
   solver = jax_utils.partial(solve_feasibility_ippd, problem)
   return jax_utils.vmap1(solver, static_argnames=_ippd_static_argnames)
 
+class QPaxExtras(tp.NamedTuple):
+  ineq_slack: jax.Array
+  ineq_dual: jax.Array
+  eq_dual: jax.Array
 
-def solve_optimization_qpax(
+def solve_optimization_qpax_with_extras(
     problem: ConstrainedOptimizationProblem[Parameters, Variables],
     parameters: Parameters,
     *,
-    error: float = 1e-5,
-    max_steps: int = 100,
+    error: float,
+    max_steps: int = 30,
     expected_dtype: tp.Optional[jnp.dtype] = None,
+    debug: bool = False,
     **_,
-) -> tuple[Variables, Stats]:
+) -> tuple[Variables, QPaxExtras, Stats]:
   """Solve a linear program (LP) using qpax's primal-dual interior point method.
 
   Assumes the objective and all constraints are linear in the variables.
@@ -619,7 +624,8 @@ def solve_optimization_qpax(
   A = jax.jacrev(eq_fn)(flat_var)  # [K, N]
   b = A @ flat_var - eq_fn(flat_var)
 
-  x_opt, _s, _z, _y, converged, num_steps = qpax.pdip.solve_qp(
+  solve_qp = qpax.pdip.solve_qp_debug if debug else qpax.pdip.solve_qp
+  x_opt, s, z, y, converged, num_steps = solve_qp(
       Q, q, A, b, G, h, solver_tol=error, max_iter=max_steps)
 
   vs = unflatten(x_opt)
@@ -627,6 +633,12 @@ def solve_optimization_qpax(
   ineq = problem.constraint_violations(parameters, vs)
 
   total_violation = jnp.sum(jnp.maximum(0, ineq)) + jnp.sum(jnp.abs(eq))
+
+  extras = QPaxExtras(
+      ineq_slack=s,
+      ineq_dual=z,
+      eq_dual=y,
+  )
 
   stats = dict(
       # max_equality_violation=jnp.max(jnp.abs(eq)),
@@ -636,22 +648,37 @@ def solve_optimization_qpax(
       num_steps=num_steps,
   )
 
-  return vs, stats
+  return vs, extras, stats
+
+def solve_optimization_qpax(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    error: float,
+    max_steps: int = 30,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    debug: bool = False,
+    **_,
+) -> tuple[Variables, Stats]:
+  variables, _, stats = solve_optimization_qpax_with_extras(
+      problem, parameters, error=error, max_steps=max_steps, expected_dtype=expected_dtype, debug=debug)
+  return variables, stats
+
 
 solve_feasibility_qpax = as_feasibility_solver(solve_optimization_qpax)
 
-_qpax_static_argnames = ['expected_dtype']
+qpax_static_argnames = ['expected_dtype', 'debug']
 
 
 def jitted_qpax_feasibility_solver(
     problem: FeasibilityProblem[Parameters, Variables],
 ):
   solver = jax_utils.partial(solve_feasibility_qpax, problem)
-  return jax_utils.jit(solver, static_argnames=_qpax_static_argnames)
+  return jax_utils.jit(solver, static_argnames=qpax_static_argnames)
 
 
 def vmap1_qpax_feasibility_solver(
     problem: FeasibilityProblem[Parameters, Variables],
 ):
   solver = jax_utils.partial(solve_feasibility_qpax, problem)
-  return jax_utils.vmap1(solver, static_argnames=_qpax_static_argnames)
+  return jax_utils.vmap1(solver, static_argnames=qpax_static_argnames)
