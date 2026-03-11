@@ -339,29 +339,17 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
             q_policy_distance))
 
     # Estimate q_policy returns
-    @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
-    def sample_q_policy(rngs: nnx.Rngs):
-      return q_policy.controller_head.sample(
-          rngs=rngs,
-          inputs=q_policy_outputs.outputs,
-          prev_controller_state=prev_action).controller_state
+    q_policy_samples = q_policy.controller_head.sample(
+        rngs=rngs,
+        inputs=q_policy_outputs.outputs,
+        prev_controller_state=prev_action).controller_state
 
-    q_policy_samples = sample_q_policy(rngs.fork(split=num_samples))
-
-    def compute_q(policy_sample: embed.Action) -> jax.Array:
-      return self.q_function.q_values_from_hidden_states(
-          values=values,
-          hidden_states=q_hidden_states,
-          actions=policy_sample,
-      )
-
-    assert _SAMPLE_AXIS == 0
-    q_policy_sample_q_values = jax.lax.map(
-        compute_q, q_policy_samples,
-        batch_size=self.config.sample_batch_size,
+    q_policy_sample_q_values = self.q_function.q_values_from_hidden_states(
+        values=values,
+        hidden_states=q_hidden_states,
+        actions=q_policy_samples,
     )
-    q_policy_expected_return = jnp.mean(q_policy_sample_q_values, axis=_SAMPLE_AXIS)
-    q_policy_advantages = q_policy_expected_return - values
+    q_policy_advantages = q_policy_sample_q_values - values
 
     losses = [
         self.q_policy_argmax_weight * q_policy_argmax_loss,
