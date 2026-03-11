@@ -606,7 +606,7 @@ class TimeBatchedDataSource(AbstractDataSource):
 
     start = self._current_index * self.unroll_length
     end = start + self.unroll_length + self.extra_frames
-    slice = lambda a: a[:, start:end]
+    slice = lambda x: x[:, start:end]
 
     self._current_index += 1
 

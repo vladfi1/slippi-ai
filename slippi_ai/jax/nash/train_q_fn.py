@@ -102,7 +102,7 @@ class TrainManager:
     self.step_profiler = utils.Profiler()
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
-    self.last_epoch = 0.
+    self.last_epoch = epoch_offset
 
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
@@ -115,7 +115,7 @@ class TrainManager:
     with self.data_profiler:
       batch, epoch = next(self.data_source)
 
-    self.last_epoch = epoch
+    self.last_epoch = epoch + self.epoch_offset
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
@@ -153,6 +153,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   train_time = 0.0
   best_eval_loss = float('inf')
   total_frames = 0
+  epoch_offset = 0.0
 
   name_map: tp.Optional[dict[str, int]] = None
 
@@ -178,6 +179,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     best_eval_loss = counters['best_eval_loss']
     train_time = counters['train_time']
     total_frames: int = counters['total_frames']
+    epoch_offset: float = counters.get('train_epoch', 0.0)
+
+    logging.info('Resuming from step %d, total_frames %d, train_time %.2f, best_eval_loss %.4f, epoch_offset %.2f',
+                 step, total_frames, train_time, best_eval_loss, epoch_offset)
 
     restore_config = flag_utils.dataclass_from_dict(
         Config, restored_state['config'])
@@ -292,7 +297,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data_config = dict(
       data_config,
       num_workers=2 * config.data.num_workers,
-      unroll_length=config.data.unroll_length * config.test_unroll_multiplier)
+      unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
+      unroll_chunks=0,  # the unroll multiplier obviates the need this
+  )
   test_data = make_source(test_replays, test_data_config)
   del train_replays, test_replays
 
@@ -303,7 +310,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True),
-      rngs=rngs, data_sharding=data_sharding)
+      rngs=rngs, data_sharding=data_sharding,
+      epoch_offset=epoch_offset)
   test_manager = TrainManager(
       learner, test_data, dict(train=False),
       rngs=rngs, data_sharding=data_sharding)
@@ -327,6 +335,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         total_frames=total_frames,
         train_time=train_time,
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
+        train_epoch=train_manager.last_epoch,
     )
 
     combined = dict(
@@ -394,7 +403,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' step={step_time:.3f}')
     print()
 
-  last_train_epoch_evaluated = 0.
+  last_train_epoch_evaluated = train_manager.last_epoch
 
   def maybe_eval(force: bool = False):
     nonlocal best_eval_loss, last_train_epoch_evaluated
@@ -407,12 +416,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
 
     # Stats have shape [B, 2, T]
-    def time_mean(x: jax.Array) -> np.ndarray:
-      # For some reason if we take the mean along the wrong axis here we get a
-      # *gpu* OOM, which suggests that maybe np.mean isn't converting back to
-      # cpu? The OOM only happens if the number of eval batches is high enough;
-      # 200 OOMs but 100 doesn't.
-      return np.mean(x, axis=2)
+    def time_mean(x: jax.Array, axis: int = 2) -> np.ndarray:
+      assert x.shape[axis] == test_data_config['unroll_length']
+      # Need to convert to numpy as np.mean will perform the computation in jax.
+      return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
@@ -443,7 +450,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     frames_per_step = test_data.batch_size * test_data_config['unroll_length']
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
-    train_epoch = epoch_tracker.last
     counters = dict(
         total_frames=total_frames,
         train_epoch=train_epoch,

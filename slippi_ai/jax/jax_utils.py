@@ -535,7 +535,6 @@ def data_parallel_train(
       donate_argnums=(0, 1, 3),
       static_argnames=static_argnames,
   )
-  @functools.wraps(loss_fn)
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
@@ -614,7 +613,6 @@ def data_parallel_train_with_rngs(
       donate_argnums=(0, 1, 2, 4),
       static_argnames=static_argnames,
   )
-  @functools.wraps(loss_fn)
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs,

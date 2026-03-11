@@ -1,7 +1,6 @@
 import dataclasses
 import typing as tp
 
-import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -11,7 +10,10 @@ from slippi_ai import utils
 from slippi_ai.nash.data import TwoPlayerBatch, batch_to_frames
 from slippi_ai.types import Frames, Controller, S, Action
 from slippi_ai.jax.policies import RecurrentState
-from slippi_ai.jax.nash import q_function as q_lib
+from slippi_ai.jax.nash import (
+   q_function as q_lib,
+   utils as nash_utils,
+)
 from slippi_ai.jax import embed, rl_lib, jax_utils
 from slippi_ai.jax.nash.q_function import Rank3
 
@@ -64,6 +66,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         optimizer=self.q_function_optimizer,
         loss_fn=self._unroll_q_function,
         **sharding_kwargs,
+        static_argnames=['unroll_batch_size'],
     )
 
     self.run_q_function = jax_utils.shard_map_loss_fn(
@@ -101,13 +104,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
         reward=frames.reward,
     )
 
-  def prepare_frames(self, batch: TwoPlayerBatch[Rank2]) -> Frames[Rank3, embed.Action]:
-    # Note: inputs and outputs are batch-major
-    zipped_frames = batch_to_frames(batch)
-    encoded_frames = self._encode_frames(zipped_frames)
-    return utils.map_single_structure(
-      lambda x: jax.device_put(x, self.data_sharding), encoded_frames)
-
   def _unroll_q_function(
       self,
       q_function: q_lib.QFunction[embed.Action],
@@ -116,9 +112,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       *,
       unroll_batch_size: tp.Optional[int] = None,
   ) -> tuple[Loss, dict, RecurrentState]:
-    # Move time dimension to the front.
-    frames = utils.map_nt(
-      lambda x: jnp.moveaxis(x, 2, 0), combined_frames)
+    frames = nash_utils.bm_to_tm(combined_frames)
     frames = self._get_delayed_frames(frames)
 
     if unroll_batch_size is None:
@@ -139,7 +133,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
-    frames = self.prepare_frames(batch)
+    zipped_frames = batch_to_frames(batch)
+    frames = self._encode_frames(zipped_frames)
 
     if train:
       metrics, final_state = self.train_q_function(frames, initial_state)
