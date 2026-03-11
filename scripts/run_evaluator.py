@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
       timer = utils.Profiler(burnin=0)
       with timer:
-        stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value)
+        stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=True)
 
       if TF_PROFILE.value:
         import tensorflow as tf
