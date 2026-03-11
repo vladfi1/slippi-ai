@@ -7,13 +7,12 @@
 if __name__ == '__main__':
   __spec__ = None  # https://github.com/python/cpython/issues/87115
 
+  import logging
   import os
 
   from absl import app, flags
   import fancyflags as ff
   import wandb
-
-  import melee
 
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
@@ -23,15 +22,17 @@ if __name__ == '__main__':
   DP="Diamond Player"
   MP="Master Player"
 
-  D=21
+  D1=21
 
   P1='marth'
   N1=['Zain', 'Kodorin', MP]
-  M1=f'{P1}_d{D}_imitation_3x768'
+  M1=f'{P1}_d{D1}_imitation_3x768'
+
+  D2=18
 
   P2='luigi'
   N2=['Siddward', 'JahRidin', MP]
-  M2=f'{P2}_d{D}_tx_like_3x512'
+  M2=f'{P2}_d{D2}_tx_like_3x512'
 
   PGW=3
 
@@ -42,7 +43,7 @@ if __name__ == '__main__':
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
   CONFIG.dolphin.console_timeout=60
-  CONFIG.dolphin.infinite_time=False  # regularly randomize stages
+  CONFIG.dolphin.infinite_time=True
   CONFIG.dolphin.emulation_speed=0
   CONFIG.learner.learning_rate=3e-5
   CONFIG.learner.value_cost=1
@@ -70,7 +71,7 @@ if __name__ == '__main__':
   CONFIG.actor.num_env_steps=4
   CONFIG.actor.gpu_inference=True
   CONFIG.runtime.burnin_steps_after_reset=5
-  CONFIG.runtime.reset_every_n_steps=512
+  CONFIG.runtime.reset_every_n_steps=None
   CONFIG.learner.optimizer_burnin_epochs=0
   CONFIG.learner.value_burnin_epochs=0
 
@@ -115,11 +116,18 @@ if __name__ == '__main__':
     p1_imitation_config = get_imitation_config(config.p1.teacher)
     p2_imitation_config = get_imitation_config(config.p2.teacher)
 
-    delay = p1_imitation_config.policy.delay
-    if p2_imitation_config.policy.delay != delay:
-      raise ValueError('Teachers must have the same delay.')
+    c1 = p1_imitation_config.dataset.allowed_characters
+    c2 = p2_imitation_config.dataset.allowed_characters
 
-    config.runtime.tag = f"{P1}_vs_{P2}_d{delay}_kl_{KLW.value:.0e}"
+    d1 = p1_imitation_config.policy.delay
+    d2 = p2_imitation_config.policy.delay
+    if d1 != d2:
+      logging.warning('Teachers must have the same delay.')
+
+    if d1 == d2:
+      config.runtime.tag = f"{c1}_vs_{c2}_d{d1}_kl_{KLW.value:.0e}"
+    else:
+      config.runtime.tag = f"{c1}_d{d1}_vs_{c2}_d{d2}_kl_{KLW.value:.0e}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
