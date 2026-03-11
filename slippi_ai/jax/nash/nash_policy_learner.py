@@ -335,6 +335,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
       if self.config.nash_solver == 'qpax':
         solver = nash.solve_zero_sum_nash_qpax
+      elif self.config.nash_solver == 'qpax_fast':
+        solver = nash.solve_zero_sum_nash_qpax_fast
       elif self.config.nash_solver == 'ippd':
         solver = nash.solve_zero_sum_nash_ippd
       else:
