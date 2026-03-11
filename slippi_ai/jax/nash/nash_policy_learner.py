@@ -269,7 +269,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     policy_samples = sample(rngs.fork(split=self.num_samples))
 
     bm_loss = jnp.mean(sample_policy_outputs.imitation_loss, axis=[0, 2])
-    bm_metrics = nash_utils.tm_to_bm(sample_policy_outputs.metrics)
+    bm_metrics = utils.map_single_structure(
+      lambda x: jnp.mean(x, axis=0), sample_policy_outputs.metrics)
 
     return (
         bm_loss,
@@ -312,7 +313,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_values = sample_q_values
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
-    bm_metrics = nash_utils.tm_to_bm(q_outputs.metrics)
+    bm_metrics = utils.map_single_structure(
+      lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
     return bm_loss, bm_metrics, final_state, q_outputs.values, hidden_states, q_values
 
@@ -355,6 +357,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_variables = utils.map_single_structure(
         lambda x: x.astype(jnp.float32), nash_variables)
 
+    # Keep time dim so we can take max over num_steps
     bm_metrics = utils.map_single_structure(
         lambda x: jnp.swapaxes(x, 0, 1), tm_metrics)
 
@@ -482,7 +485,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         nash_probs, index=-1, axis=-1, keepdims=False)  # [T, B, 2]
 
     bm_loss = jnp.mean(nash_policy_total_loss, axis=[0, 2])
-    bm_metrics = nash_utils.tm_to_bm(metrics)
+    bm_metrics = utils.map_single_structure(
+      lambda x: jnp.mean(x, axis=0), metrics)
 
     return bm_loss, bm_metrics, nash_policy_outputs.final_state
 
