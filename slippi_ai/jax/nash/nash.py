@@ -174,7 +174,7 @@ def _solve_zero_sum_nash_qpax_fast(
 
   opt_x, extras, stats = optimization.solve_optimization_qpax_with_extras(
       problem,
-      jnp.asarray(payoff_matrix),
+      payoff_matrix,
       **kwargs,
   )
 
