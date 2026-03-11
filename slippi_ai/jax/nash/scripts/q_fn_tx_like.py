@@ -133,7 +133,7 @@ if __name__ == '__main__':
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
 
-        config.tag = f"nash_q_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
+        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
