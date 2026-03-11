@@ -170,7 +170,7 @@ def print_losses(name: str, stats: dict):
 
   print(
       f'{name}: spl={spl:.3f} nent={nent:.3f} nxent={nxent:.3f} '
-      f'tv={tv:.4f} nsmean={ns.mean():.2f} nsstd={ns.std():.4f}')
+      f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
@@ -425,9 +425,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     """Do a test step, then log both train and test stats."""
     test_stats, _ = test_manager.step()
 
-    train_stats, test_stats = utils.map_single_structure(
-        train_lib.mean, (train_stats, test_stats))
-
     elapsed_time = log_tracker.update(time.time())
     total_steps = step
     steps = step_tracker.update(total_steps)
@@ -441,6 +438,18 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     eph = delta_epoch / elapsed_time * 60 * 60
     data_time = train_manager.data_profiler.mean_time()
     step_time = train_manager.step_profiler.mean_time()
+
+    print(f'step={total_steps} epoch={epoch:.3f}')
+    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
+    print_losses('train', train_stats)
+    print_losses('test', test_stats)
+    print(f'timing:'
+          f' data={data_time:.3f}'
+          f' step={step_time:.3f}')
+    print()
+
+    train_stats, test_stats = utils.map_single_structure(
+        train_lib.mean, (train_stats, test_stats))
 
     timings = dict(
         sps=sps,
@@ -457,15 +466,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     )
     train_lib.log_stats(all_stats, total_steps)
 
-    print(f'step={total_steps} epoch={epoch:.3f}')
-    print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
-    print_losses('train', train_stats)
-    print_losses('test', test_stats)
-    print(f'timing:'
-          f' data={data_time:.3f}'
-          f' step={step_time:.3f}')
-    print()
-
   last_train_epoch_evaluated = 0.
 
   def maybe_eval(force: bool = False):
@@ -479,13 +479,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
 
-    def time_mean(x: jax.Array, axis=-1) -> np.ndarray:
-      # x will have shape [B, T] or [B, 2, T]
-      assert x.shape[0] == config.data.batch_size
-      assert x.shape[axis] == config.data.unroll_length
-      # TODO: maybe take the mean inside jax?
-      return np.mean(np.asarray(x), axis=axis)
-
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
     test_stats_jax = None
@@ -493,7 +486,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
-        test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+        test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
 
       test_stats_jax, batch = test_manager.step()
@@ -505,7 +498,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         break
 
     assert test_stats_jax is not None
-    test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+    test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
     # [eval_steps, batch_size], mean taken over time
