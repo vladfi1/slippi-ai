@@ -34,7 +34,7 @@ class LearnerConfig:
   nash_weight: float = 1
   imitation_weight: float = 0
 
-  nash_solver: str = 'qpax'
+  nash_solver: str = 'qpax_fast'
 
 _SAMPLE_AXIS = 0
 
@@ -186,7 +186,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.compute_nash = jax_utils.jit(
       self._compute_nash,
       in_shardings=jax.NamedSharding(mesh, qs),
-      # out_shardings=(nash_solution, metrics),
+      out_shardings=(jax.NamedSharding(mesh, nash_solution), jax.NamedSharding(mesh, metrics)),
     )
     self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
@@ -329,30 +329,31 @@ class Learner(nnx.Module, tp.Generic[Action]):
     mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
 
     payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
-    payoff_matrices = payoff_matrices.reshape((t * b, s1, s2))  # [(T*B), S, S]
 
     with jax.enable_x64():
       payoff_matrices = payoff_matrices.astype(jnp.float64)
       assert payoff_matrices.dtype == jnp.float64
 
       if self.config.nash_solver == 'qpax':
-        solver = nash.solve_zero_sum_nash_qpax
+        solver = nash._solve_zero_sum_nash_qpax
       elif self.config.nash_solver == 'qpax_fast':
-        solver = nash.solve_zero_sum_nash_qpax_fast
+        solver = nash._solve_zero_sum_nash_qpax_fast
       elif self.config.nash_solver == 'ippd':
-        solver = nash.solve_zero_sum_nash_ippd
+        solver = nash._solve_zero_sum_nash_ippd
       else:
         raise ValueError(f'Unknown nash_solver {self.config.nash_solver}')
 
-      merged_outputs = solver(  # [T*B, ...]
-        payoff_matrices, error=self.config.nash_error)
+      # Use separate vmaps over T and B to avoid an XLA SPMD partitioner
+      # bug triggered by vmapping over the merged T*B sharded dimension.
+      # Only triggered by qpax_fast, probably because it has matrices with
+      # some dimensions equal to one.
+      def solve_one(pm):
+        return solver(pm, error=self.config.nash_error)
 
-    def unmerge(x: jax.Array) -> jax.Array:
-      assert x.shape[0] == t * b
-      return x.reshape((t, b, *x.shape[1:]))
+      # First vmap over sharded batch dim.
+      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[1, 0])
 
-    nash_variables, tm_metrics = utils.map_single_structure(  # [T, B, ...]
-        unmerge, merged_outputs)
+      nash_variables, tm_metrics = solve_vmap(payoff_matrices)
 
     nash_variables = utils.map_single_structure(
         lambda x: x.astype(jnp.float32), nash_variables)

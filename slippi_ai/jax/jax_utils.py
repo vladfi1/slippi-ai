@@ -1,6 +1,7 @@
 """JAX utilities."""
 
 import functools
+import logging
 import os
 import typing as tp
 import types
@@ -478,6 +479,7 @@ def vmap1(
     in_axis: int = 0,
     out_axis: int = 0,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
+    use_jit: bool = True,
 ):
   """Vmap across just the first argument to a function.
 
@@ -497,15 +499,45 @@ def vmap1(
         partial_func,
         in_axes=in_axis, out_axes=out_axis)(arg)
 
-  return jit(wrapper, static_argnames=static_argnames)
+  if use_jit:
+    return jit(wrapper, static_argnames=static_argnames)
+
+  return wrapper
 
 def multi_vmap(
     func: tp.Callable[P, Out],
-    batch_rank: int,
+    batch_rank: tp.Optional[int] = None,
+    axes: tp.Optional[tp.Sequence[int]] = None,
 ) -> tp.Callable[P, Out]:
-  """Apply vmap across the first batch_rank axes."""
-  for _ in range(batch_rank):
-    func = jax.vmap(func)
+  """Apply vmap across the first batch_rank axes.
+
+  First axis in axes is outermost vmap.
+  """
+  if batch_rank is not None and axes is not None:
+    raise ValueError('Only one of batch_rank and axes can be specified.')
+
+  if batch_rank is not None:
+    axes = list(range(batch_rank))
+
+  if axes is None:
+    raise ValueError('One of batch_rank and axes must be specified.')
+
+  if len(set(axes)) < len(axes):
+    raise ValueError(f'Axes must be unique, got {axes}.')
+
+  n = len(axes)
+  modified_axes = list(axes)
+  for i in range(n):
+    axis = modified_axes[i]
+    for j in range(i+1, n):
+      if modified_axes[j] > axis:
+        modified_axes[j] -= 1
+
+  logging.info(f'multi_vmap: axes={axes}, modified_axes={modified_axes}')
+
+  for axis in reversed(modified_axes):
+    func = jax.vmap(func, in_axes=axis, out_axes=axis)
+
   return func
 
 
