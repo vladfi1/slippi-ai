@@ -190,7 +190,7 @@ class RolloutWorker:
     with self._env_push_profiler:
       self._env.push(decoded_actions)
 
-  def rollout(self, num_steps: int) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+  def rollout(self, num_steps: int, verbose: bool = False) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
     # This ensures that the agent can process all of the states it will be fed.
     for agent in self._agents.values():
       if num_steps % agent.batch_steps != 0:
@@ -224,7 +224,13 @@ class RolloutWorker:
         sample_outputs[port].append(prev_agent_outputs[port])
       is_resetting.append(env_output.needs_reset)
 
-    for _ in range(num_steps):
+    if verbose:
+      import tqdm
+      step_iter = tqdm.trange(num_steps, desc='Rollout', unit='step')
+    else:
+      step_iter = range(num_steps)
+
+    for _ in step_iter:
       # Note that there will always be a first gamestate before any actions
       # are fed into the environment; either the initial state or the last
       # state peeked on the previous rollout.
@@ -342,10 +348,11 @@ class Evaluator(RolloutWorker):
       self,
       num_steps: int,
       policy_vars: tp.Optional[tp.Mapping[Port, policies.PolicyState]] = None,
+      verbose: bool = False,
   ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
     if policy_vars is not None:
       self.update_variables(policy_vars)
-    trajectories, timings = super().rollout(num_steps)
+    trajectories, timings = super().rollout(num_steps, verbose=verbose)
     metrics = {
         port: RolloutMetrics.from_trajectory(trajectory)
         for port, trajectory in trajectories.items()
