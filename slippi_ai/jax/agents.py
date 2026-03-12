@@ -109,7 +109,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
-    return self._hidden_state
+    # Return a copy for buffer donation.
+    return utils.map_single_structure(jnp.copy, self._hidden_state)
 
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     if isinstance(name_code, int):
