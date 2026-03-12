@@ -205,11 +205,8 @@ class RolloutWorker:
     }
     is_resetting: list[bool] = []
 
-    # Record each agent's initial state at the beginning of the rollout.
-    # Copy to numpy to guard against JAX buffer donation: JIT-compiled agents
-    # donate hidden state buffers on each step, invalidating raw JAX references.
     initial_states = {
-        port: utils.map_single_structure(np.asarray, agent.hidden_state)
+        port: agent.hidden_state
         for port, agent in self._agents.items()
     }
 
