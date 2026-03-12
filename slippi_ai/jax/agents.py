@@ -150,7 +150,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     self._prev_controller = sample_outputs.controller_state
 
     # Convert to numpy?
-    return sample_outputs
+    return jax.copy_to_host_async(sample_outputs)
 
   def multi_step(
       self,
@@ -168,16 +168,4 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     self._prev_controller = sample_outputs[-1].controller_state
 
-    return sample_outputs
-
-  def step_unbatched(
-      self,
-      game: Game,
-      needs_reset: bool,
-  ) -> SampleOutputs:
-    assert self._batch_size == 1
-    batched_game = utils.map_single_structure(
-        lambda x: np.expand_dims(x, 0), game)
-    batched_needs_reset = np.expand_dims(needs_reset, 0)
-    batched_action = self.step(batched_game, batched_needs_reset)
-    return utils.map_single_structure(lambda x: jnp.squeeze(x, 0), batched_action)
+    return jax.copy_to_host_async(sample_outputs)
