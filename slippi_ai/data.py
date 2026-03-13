@@ -92,12 +92,16 @@ class ReplayInfo(NamedTuple):
   def main_player(self) -> PlayerMeta:
     return self.meta.p0
 
-  def read_pq(self) -> pyarrow.StructArray:
+  def read_raw(self) -> bytes:
     if isinstance(self.path, str):
       with open(self.path, 'rb') as f:
         contents = f.read()
     else:
       contents = self.path.read()
+    return contents
+
+  def read_pq(self) -> pyarrow.StructArray:
+    contents = self.read_raw()
 
     if self.meta.zlib:
       contents = zlib.decompress(contents)
@@ -133,10 +137,13 @@ class WdsReplayInfo(tp.NamedTuple):
 
 def _parse_wds_sample(sample: dict) -> WdsReplayInfo:
   """Decode a WebDataset sample dict into a WdsReplayInfo."""
-  parquet_bytes: bytes = sample['game']
   meta_dict = json.loads(sample['meta'].decode('utf-8'))
 
-  reader = pyarrow.BufferReader(parquet_bytes)
+  content: bytes = sample['game']
+  if meta_dict['zlib']:
+    content = zlib.decompress(content)
+
+  reader = pyarrow.BufferReader(content)
   table = pq.read_table(reader)
   game_struct = table['root'].combine_chunks()
   game = game_array_to_nt(game_struct)
@@ -151,7 +158,7 @@ def _parse_wds_sample(sample: dict) -> WdsReplayInfo:
       p0=p0, p1=p1,
       stage=meta_dict['stage'],
       slp_md5=meta_dict['slp_md5'],
-      zlib=False,
+      zlib=meta_dict['zlib'],  # not really used
   )
   return WdsReplayInfo(
     meta=replay_meta,
@@ -399,10 +406,12 @@ def _replay_info_to_wds(info: ReplayInfo) -> dict:
       'stage': meta.stage,
       'slp_md5': meta.slp_md5,
       'swap': info.swap,
+      'zlib': meta.zlib,
   }
 
 WDS_META = 'wds_meta.json'
-WDS_SHARD_EXT = '.tar.xz'
+WDS_SHARD_EXT = '.tar'
+# WDS_SHARD_EXT = '.tar.xz'
 SPLITS = ('train', 'test')
 
 def _wds_shard_pattern(split: str):
@@ -447,7 +456,8 @@ def write_wds_shards(
 
     shard_path = os.path.join(output_dir, _wds_shard_pattern(split))
     with wds.writer.ShardWriter(shard_path, **dataclasses.asdict(shard_writer_config)) as sink:
-      for replay_info in replays:
+      import tqdm
+      for replay_info in tqdm.tqdm(replays, unit='replay', desc=f'Writing {split} shards'):
         if config.swap:
           players = [replay_info.main_player]
         else:
@@ -457,15 +467,15 @@ def write_wds_shards(
           name_counts[player.name] += 1
           character_counts[player.character] += 1
 
-        game_pq = replay_info.read_pq()
-        parquet_bytes = parsing_utils.convert_game(game_pq)  # no compression
+        # game_pq = replay_info.read_pq()
+        # parquet_bytes = parsing_utils.convert_game(game_pq)  # no compression
 
         md5 = replay_info.meta.slp_md5
         key = md5 + ('_swap' if replay_info.swap else '')
 
         sink.write({
             '__key__': key,
-            'game': parquet_bytes,
+            'game': replay_info.read_raw(),  # already compressed if needed
             'meta': json.dumps(_replay_info_to_wds(replay_info), indent=2).encode('utf-8'),
         })
 
