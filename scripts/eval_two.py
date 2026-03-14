@@ -43,6 +43,7 @@ dolphin_config = dolphin_lib.DolphinConfig(
     headless=False,
     infinite_time=False,
     online_delay=2,
+    emulation_speed=1,
     path=os.environ.get('DOLPHIN_PATH'),
     iso=os.environ.get('ISO_PATH'),
     instant_match_restart=False,
