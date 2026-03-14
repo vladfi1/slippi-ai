@@ -6,10 +6,8 @@
 # FROM nvcr.io/nvidia/jax:25.10-py3
 FROM nvcr.io/nvidia/jax:26.01-py3
 
-# rclone
-RUN wget https://downloads.rclone.org/rclone-current-linux-amd64.deb && \
-    dpkg -i rclone-current-linux-amd64.deb && \
-    rm rclone-current-linux-amd64.deb
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir s3cmd s3fs speedtest-cli
 
 # Set working directory
 WORKDIR /slippi-ai
