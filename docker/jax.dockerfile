@@ -6,6 +6,11 @@
 # FROM nvcr.io/nvidia/jax:25.10-py3
 FROM nvcr.io/nvidia/jax:26.01-py3
 
+# rclone
+RUN wget https://downloads.rclone.org/rclone-current-linux-amd64.deb && \
+    dpkg -i rclone-current-linux-amd64.deb && \
+    rm rclone-current-linux-amd64.deb
+
 # Set working directory
 WORKDIR /slippi-ai
 
