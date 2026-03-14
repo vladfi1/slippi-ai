@@ -79,7 +79,7 @@ class TrainManager:
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
-      hidden_state = jax_utils.shard_pytree(hidden_state, data_sharding)
+      hidden_state = jax_utils.device_put(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
     self._encode_state_action = learner.policy.network.encode
@@ -122,13 +122,11 @@ class TrainManager:
         reward=batch.reward,
     )
 
-    # Convert to JAX arrays (and shard if multi-device)
-    if self.data_sharding is not None:
-      frames = jax_utils.shard_pytree(frames, self.data_sharding)
-    else:
-      # In principle this shouldn't be needed due to jax runahead, but
-      # empirically it results in a ~10% increase in performance.
-      frames = utils.map_nt(jnp.asarray, frames)
+    # In principle this shouldn't be needed due to jax runahead, but in
+    # practice it eliminates the MemcpyH2D gaps in the xprof timeline. This
+    # could be because we device_put the whole tree at once. Empirically
+    # this results in a ~10% speedup.
+    frames = jax_utils.device_put(frames, self.data_sharding)
 
     return (batch, epoch, frames)
 

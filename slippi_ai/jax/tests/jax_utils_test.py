@@ -18,7 +18,7 @@ import sys
 
 from jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
-    shard_pytree, data_sharding,
+    device_put, data_sharding,
 )
 
 
@@ -65,7 +65,7 @@ class ShardMapGradsTest(unittest.TestCase):
     ref_grads, ref_aux = _single_device_grads(module, data)
 
     replicate_module(module, mesh)
-    sharded_data = shard_pytree(data, data_sharding(mesh))
+    sharded_data = device_put(data, data_sharding(mesh))
     shard_grads, shard_aux = shard_map_grads(
         _loss_fn, mesh, explicit_pmean=True)(module, sharded_data)
 
@@ -85,7 +85,7 @@ class ShardMapGradsTest(unittest.TestCase):
     ref_grads, _ = _single_device_grads(module, data)
 
     replicate_module(module, mesh)
-    sharded_data = shard_pytree(data, data_sharding(mesh))
+    sharded_data = device_put(data, data_sharding(mesh))
     shard_grads, _ = shard_map_grads(
         _loss_fn, mesh, explicit_pmean=False)(module, sharded_data)
 
@@ -103,7 +103,7 @@ class ShardMapGradsTest(unittest.TestCase):
         ref_grads, _ = _single_device_grads(module, data)
 
         replicate_module(module, mesh)
-        sharded_data = shard_pytree(data, data_sharding(mesh))
+        sharded_data = device_put(data, data_sharding(mesh))
         shard_grads, _ = shard_map_grads(
             _loss_fn, mesh, explicit_pmean=True)(module, sharded_data)
 
@@ -118,7 +118,7 @@ class ShardMapGradsTest(unittest.TestCase):
     ref_grads, ref_aux = _single_device_grads(module, data)
 
     replicate_module(module, mesh)
-    sharded_data = shard_pytree(data, data_sharding(mesh))
+    sharded_data = device_put(data, data_sharding(mesh))
     shard_grads, shard_aux = shard_map_grads(
         _loss_fn, mesh, explicit_pmean=True)(module, sharded_data)
 

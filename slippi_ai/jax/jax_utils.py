@@ -36,11 +36,9 @@ def data_sharding(mesh: Mesh, axis_name: str = DATA_AXIS) -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
 
-def shard_pytree(pytree: T, sharding: NamedSharding) -> T:
+def device_put(pytree: T, sharding: tp.Optional[NamedSharding]) -> T:
   """Shard a pytree of arrays with the given sharding."""
-  def shard_leaf(x):
-    return jax.device_put(x, sharding)
-  return jax.tree.map(shard_leaf, pytree)
+  return jax.device_put(pytree, sharding)
 
 def map_update(
     f: tp.Callable[[jax.Array], jax.Array],

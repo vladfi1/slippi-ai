@@ -144,8 +144,8 @@ def main():
     multi_initial_state = multi_device_learner.initial_state(multi_batch_size, rngs)
 
     # Shard data
-    multi_frames = jax_utils.shard_pytree(multi_frames, data_sharding)
-    multi_initial_state = jax_utils.shard_pytree(multi_initial_state, data_sharding)
+    multi_frames = jax_utils.device_put(multi_frames, data_sharding)
+    multi_initial_state = jax_utils.device_put(multi_initial_state, data_sharding)
 
     print(f"Multi-device batch size: {multi_batch_size}")
     print(f"Per-device batch size: {multi_batch_size // num_devices}")
