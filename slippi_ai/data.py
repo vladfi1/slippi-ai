@@ -614,6 +614,7 @@ def read_wds_meta(dataset_path: str) -> dict:
 class WebDataConfig:
   shuffle_buffer_size: int = 1000
   cache_dir: Optional[str] = None
+  verbose: bool = True
 
 # TODO: support mirroring
 class WebDataSource(AbstractDataSource):
@@ -630,6 +631,7 @@ class WebDataSource(AbstractDataSource):
       observation_config: Optional[observations.ObservationConfig] = None,
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
+      verbose: bool = True,
   ):
     self.dataset_path = dataset_path
     self.split = split
@@ -641,6 +643,7 @@ class WebDataSource(AbstractDataSource):
     self.encode_name = nametags.name_encoder(self.name_map)
     self.wds_meta = read_wds_meta(dataset_path)
     self.num_replays = self.wds_meta['sizes'][split]
+    self.verbose = verbose
 
     def build_observation_filter():
       if observation_config is None:
@@ -673,7 +676,8 @@ class WebDataSource(AbstractDataSource):
       return path
 
     shard_urls = [to_url(shard) for shard in shards]
-    print(shard_urls)
+    if self.verbose:
+      print(shard_urls)
 
     cache_dir = self.cache_dir
     if cache_dir is not None:
@@ -685,6 +689,7 @@ class WebDataSource(AbstractDataSource):
     dataset = wds.compat.WebDataset(
         shard_urls, shardshuffle=100,
         cache_dir=cache_dir,
+        verbose=self.verbose,
     )
 
     pipeline = (
