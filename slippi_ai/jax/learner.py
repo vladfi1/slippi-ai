@@ -256,15 +256,19 @@ class Learner(nnx.Module):
 
     if compile and self.use_shard_map:
       if train:
-        policy_metrics, policy_final_states = self.sharded_train_policy(
-            bm_frames, policy_initial_states)
-        value_metrics, value_final_states = self.sharded_train_value_function(
-            bm_frames, value_initial_states, discount=self.discount)
+        with jax.profiler.TraceAnnotation("sharded_train_policy"):
+          policy_metrics, policy_final_states = self.sharded_train_policy(
+              bm_frames, policy_initial_states)
+        with jax.profiler.TraceAnnotation("sharded_train_value_function"):
+          value_metrics, value_final_states = self.sharded_train_value_function(
+              bm_frames, value_initial_states, discount=self.discount)
       else:
-        policy_metrics, policy_final_states = self.sharded_run_policy(
-            bm_frames, policy_initial_states)
-        value_metrics, value_final_states = self.sharded_run_value_function(
-            bm_frames, value_initial_states, discount=self.discount)
+        with jax.profiler.TraceAnnotation("sharded_run_policy"):
+          policy_metrics, policy_final_states = self.sharded_run_policy(
+              bm_frames, policy_initial_states)
+        with jax.profiler.TraceAnnotation("sharded_run_value_function"):
+          value_metrics, value_final_states = self.sharded_run_value_function(
+              bm_frames, value_initial_states, discount=self.discount)
     else:
       if compile:
         step_policy_fn = self.jit_step_policy
