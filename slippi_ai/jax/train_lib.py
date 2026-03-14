@@ -17,7 +17,6 @@ import typing as tp
 from absl import logging
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
@@ -193,14 +192,21 @@ _field = utils.field
 @dataclasses.dataclass
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_step: tp.Optional[int] = None  # maximum number of training steps
   log_interval: int = 10  # seconds between logging
 
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
+  max_eval_steps: tp.Optional[int] = None  # for testing
+  eval_at_start: bool = False
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
   prefetch: int = 0  # number of batches to prefetch in data loader
+
+  profile_server_port: tp.Optional[int] = None
+  profile_trace_dir: tp.Optional[str] = None
+
 
 @dataclasses.dataclass
 class ValueFunctionConfig:
@@ -298,6 +304,9 @@ def train(config: Config):
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Giving XLA all available memory avoids fragmentation issues
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+
+  if config.runtime.profile_server_port is not None:
+    jax.profiler.start_server(config.runtime.profile_server_port)
 
   tag = config.tag or get_experiment_tag()
   expt_dir = config.expt_dir
@@ -601,14 +610,19 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     allowed_characters = list(melee.Character)
 
   last_train_epoch_evaluated = 0.
+  needs_initial_eval = runtime.eval_at_start
 
   def maybe_eval():
     nonlocal best_eval_loss, last_train_epoch_evaluated
+    nonlocal needs_initial_eval
 
     train_epoch = train_manager.last_epoch
-    if (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
+    if (
+      (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1
+      and not needs_initial_eval):
       return
     last_train_epoch_evaluated = train_epoch
+    needs_initial_eval = False
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
@@ -621,7 +635,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
     test_stats_jax = None
-    while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
+    eval_steps = 0
+    while (
+      test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs
+      and (runtime.max_eval_steps is None or eval_steps < runtime.max_eval_steps)
+    ):
       # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
         test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
@@ -630,6 +648,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_stats_jax, batch = test_manager.step()
 
       metas.append(batch.meta)
+      eval_steps += 1
 
     assert test_stats_jax is not None
     test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
@@ -732,6 +751,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_profiler = utils.Profiler(burnin=0)
 
+  if config.runtime.profile_trace_dir is not None:
+    if config.runtime.max_step is None:
+      raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
+    jax.profiler.start_trace(config.runtime.profile_trace_dir)
+
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:
       train_stats, _ = train_manager.step()
@@ -743,3 +767,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     maybe_log(train_stats)
     maybe_eval()
+
+    if config.runtime.max_step is not None and step >= config.runtime.max_step:
+      logging.info('Reached max step %d, stopping training.', step)
+      break
+
+  if config.runtime.profile_trace_dir is not None:
+    jax.profiler.stop_trace()
