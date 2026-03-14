@@ -8,6 +8,7 @@ import platform
 import queue
 import random
 import subprocess
+import threading
 import time
 import typing as tp
 
@@ -430,6 +431,48 @@ def split_iterator(
 
   return tuple(iter_i(i) for i in range(num))
 
+def prefetch_iterator(iterator: tp.Iterator[T], buffer_size: int) -> tp.Iterator[T]:
+  queue = collections.deque[T]()
+
+  for item in itertools.islice(iterator, buffer_size):
+    queue.append(item)
+
+  for item in iterator:
+    yield queue.popleft()
+    queue.append(item)
+
+  yield from queue
+
+class PrefetchIteratorMT(tp.Generic[T], tp.Iterator[T]):
+
+  def __init__(self, iterator: tp.Iterator[T], buffer_size: int):
+    self.queue = queue.Queue(maxsize=buffer_size)
+    self.stop_requested = threading.Event()
+
+    def worker():
+      while not self.stop_requested.is_set():
+        item = next(iterator)
+
+        # Try to put data into the queue, but check for stop_requested
+        while not self.stop_requested.is_set():
+          try:
+            self.queue.put(item, timeout=1)
+            break
+          except queue.Full:
+            continue
+
+    self.thread = threading.Thread(target=worker, daemon=True)
+    self.thread.start()
+
+  def __iter__(self):
+    return self
+
+  def __next__(self) -> T:
+    return self.queue.get()
+
+  def stop(self):
+    self.stop_requested.set()
+    self.thread.join()
 
 def find_open_udp_ports(num: int):
   min_port = 10_000

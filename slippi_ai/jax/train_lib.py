@@ -4,13 +4,10 @@ import collections
 import contextlib
 import dataclasses
 import datetime
-import functools
 import json
 import os
 import pickle
-import queue
 import secrets
-import threading
 import time
 import typing as tp
 
@@ -62,7 +59,6 @@ class TrainManager:
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
       # TODO: pass in epoch offset when resuming from checkpoint
       epoch_offset: float = 0,
-      cached: bool = False,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -73,7 +69,6 @@ class TrainManager:
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
-    self.cached = cached
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -84,13 +79,21 @@ class TrainManager:
     self._encode_state_action = learner.policy.network.encode
 
     self.prefetch = prefetch
-    if prefetch > 0:
-      self.frames_queue = queue.Queue(maxsize=prefetch)
-      self.stop_requested = threading.Event()
-      self.data_thread = threading.Thread(target=self.fetch_batches)
-      self.data_thread.start()
 
-    self.cached_fetch_batch = functools.cache(self.fetch_batch)
+    def iter_batches():
+      while True:
+        yield self.fetch_batch()
+
+    self.batch_iterator = iter_batches()
+
+    self.cleanup_fns = []
+
+    if prefetch > 0:
+      self.batch_iterator = utils.PrefetchIteratorMT(self.batch_iterator, prefetch)
+      self.cleanup_fns.append(self.batch_iterator.stop)
+
+      # Non-MT prefetching doesn't seem to help.
+      # self.batch_iterator = utils.prefetch_iterator(self.batch_iterator, prefetch)
 
   def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
     batch, epoch = next(self.data_source)
@@ -121,42 +124,21 @@ class TrainManager:
         reward=batch.reward,
     )
 
-    # In principle this shouldn't be needed due to jax runahead, but in
-    # practice it eliminates the MemcpyH2D gaps in the xprof timeline. This
-    # could be because we device_put the whole tree at once. Empirically
-    # this results in a ~10% speedup.
+    # When combined with prefetching this eliminates MemcpyH2D gaps in xprof,
+    # and empirically improves performance by ~10%.
     frames = jax_utils.device_put(frames, self.data_sharding)
 
     return (batch, epoch, frames)
 
-  def fetch_batches(self):
-    # TODO: we might not need this anymore due to jax runahead
-    while not self.stop_requested.is_set():
-      data = self.fetch_batch()
-
-      # Try to put data into the queue, but check for stop_requested
-      while not self.stop_requested.is_set():
-        try:
-          self.frames_queue.put(data, timeout=1)
-          break
-        except queue.Full:
-          continue
-
   def stop(self):
-    if self.prefetch > 0:
-      self.stop_requested.set()
-      self.data_thread.join()
+    for fn in self.cleanup_fns:
+      fn()
 
   def step(self) -> tuple[dict, data_lib.Batch]:
     stats = {}
 
     with self.data_profiler:
-      if self.prefetch > 0:
-        stats.update(frames_queue_size=self.frames_queue.qsize())
-        batch, epoch, frames = self.frames_queue.get()
-      else:
-        batch_fn = self.cached_fetch_batch if self.cached else self.fetch_batch
-        batch, epoch, frames = batch_fn()
+      batch, epoch, frames = next(self.batch_iterator)
 
     self.last_epoch = epoch
 
@@ -202,7 +184,7 @@ class RuntimeConfig:
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
-  prefetch: int = 0  # number of batches to prefetch in data loader
+  prefetch: int = 1  # number of batches to prefetch in data loader
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -492,7 +474,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       rngs=rngs,
       data_sharding=data_sharding,
       prefetch=runtime.prefetch,
-      cached=config.data.cached,
   )
 
   train_manager = TrainManager(
