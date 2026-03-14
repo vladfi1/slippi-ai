@@ -1,5 +1,6 @@
 """JAX utilities."""
 
+import collections
 import functools
 import logging
 import os
@@ -808,6 +809,30 @@ def shard_map_loss_fn_with_rngs(
     return sharded_loss_fn(module, data, state, rngs, *args, **kwargs)
 
   return cached_partial(loss_fn_wrapper, module, rngs)
+
+def put_into(buffer: T, x: T) -> T:
+  return x
+
+def prefetch_data(
+    source: tp.Iterator[Data],
+    size: int = 1,
+    sharding: tp.Optional[NamedSharding] = None,
+) -> tp.Iterator[Data]:
+  """Prefetch data from a source iterator, optionally sharding it across devices."""
+  queue = collections.deque[Data]()
+
+  put_data = jit(put_into, donate_argnums=0, out_shardings=sharding)
+
+  for _ in range(size):
+    data = next(source)
+    queue.append(device_put(data, sharding))
+
+  for item in source:
+    buffer = queue.popleft()
+    yield buffer
+    queue.append(put_data(buffer, item))
+
+  yield from queue
 
 
 # Misc

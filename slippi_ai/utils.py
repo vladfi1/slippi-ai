@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import functools
 import gc
+import itertools
 import logging
 import platform
 import queue
@@ -389,6 +390,46 @@ def cycle_iterable(iterable: tp.Iterable[T]) -> tp.Iterator[T]:
   """More efficient than itertools.cycle as it avoids storing a copy of the iterable."""
   while True:
     yield from iterable
+
+T1 = tp.TypeVar('T1')
+T2 = tp.TypeVar('T2')
+T3 = tp.TypeVar('T3')
+
+@tp.overload
+def split_iterator(iterator: tp.Iterator[tuple[T1, T2]]) -> tuple[tp.Iterator[T1], tp.Iterator[T2]]: ...
+@tp.overload
+def split_iterator(iterator: tp.Iterator[tuple[T1, T2, T3]]) -> tuple[tp.Iterator[T1], tp.Iterator[T2], tp.Iterator[T3]]: ...
+
+def split_iterator(
+    iterator: tp.Iterator[tuple],
+) -> tuple[tp.Iterator, ...]:
+  """Split an iterator of tuples into a tuple of iterators. Inverse of zip."""
+  first_item = next(iterator)
+  num = len(first_item)
+
+  queues = [collections.deque() for _ in range(num)]
+  for q, x in zip(queues, first_item):
+    q.append(x)
+
+  del first_item
+
+  def iter_i(i: int):
+    while True:
+      if not queues[i]:
+        try:
+          item = next(iterator)
+          if len(item) != num:
+            raise ValueError(f'Expected {num} values, got {len(item)}')
+        except StopIteration:
+          return
+
+        for q, x in zip(queues, item):
+          q.append(x)
+
+      yield queues[i].popleft()
+
+  return tuple(iter_i(i) for i in range(num))
+
 
 def find_open_udp_ports(num: int):
   min_port = 10_000
