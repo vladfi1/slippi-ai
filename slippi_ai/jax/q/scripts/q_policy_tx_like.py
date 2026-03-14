@@ -98,13 +98,14 @@ if __name__ == '__main__':
         h = network[NET_NAME]['hidden_size']
         fs = imitation_config.observation.frame_skip.skip
         ns = config.learner.num_samples
+        iw = config.learner.q_policy_imitation_weight
 
         if fs > 0:
           fs = f"_fs{fs}"
         else:
           fs = ""
 
-        config.tag = f"qp_{char}_d{d}{op}_{NET_NAME}_{n}x{h}{fs}_ns{ns}"
+        config.tag = f"qp_{char}_d{d}{op}_{NET_NAME}_{n}x{h}{fs}_ns{ns}_iw{iw:.1e}"
 
     config.dataset.allowed_characters = char
 

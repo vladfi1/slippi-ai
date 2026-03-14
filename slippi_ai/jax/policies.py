@@ -45,7 +45,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def __init__(
       self,
-      network: networks.StateActionNetwork,
+      network: networks.StateActionNetwork[ControllerType],
       controller_head: ControllerHead[ControllerType],
       delay: int = 0,
   ):

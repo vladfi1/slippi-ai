@@ -3,12 +3,10 @@
 
 import contextlib
 import dataclasses
-import functools
 import os
 import pickle
 import time
 import typing as tp
-import queue, threading
 
 from absl import logging
 
@@ -31,6 +29,7 @@ from slippi_ai.jax import (
     jax_utils,
     networks,
 )
+from slippi_ai.jax.embed import Action
 from slippi_ai.jax.q import (
     q_function as q_lib,
     q_policy_learner as learner_lib,
@@ -108,17 +107,17 @@ class Config:
   platform: str = Platform.JAX.value
 
 
-class TrainManager:
+class TrainManager[Action]:
 
   def __init__(
       self,
-      learner: learner_lib.Learner,
+      learner: learner_lib.Learner[Action],
       data_source: data_lib.AbstractDataSource,
       step_kwargs={},
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
-      # TODO: pass in epoch offset when resuming from checkpoint
       epoch_offset: float = 0,
+      prefetch: int = 0,
   ):
     self.learner = learner
     self.data_source = data_source
@@ -129,6 +128,7 @@ class TrainManager:
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
+    self.prefetch = prefetch
 
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
@@ -136,17 +136,42 @@ class TrainManager:
       hidden_state = jax_utils.device_put(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
+    self.cleanup_fns = [data_source.shutdown]
+
+    def iter_batches():
+      while True:
+        yield self.fetch_batch()
+
+    self.batch_iterator = iter_batches()
+
+    if prefetch > 0:
+      self.batch_iterator = utils.PrefetchIteratorMT(self.batch_iterator, prefetch)
+      self.cleanup_fns.append(self.batch_iterator.stop)
+
+  def fetch_batch(self) -> tuple[data_lib.Batch, float, dict[str, data_lib.Frames]]:
+    batch, epoch = next(self.data_source)
+    epoch += self.epoch_offset
+    frames = self.learner.prepare_frames(batch)
+    if self.prefetch > 0:
+      frames = jax_utils.device_put(frames, self.data_sharding)
+    return batch, epoch, frames
+
+  def stop(self):
+    for fn in self.cleanup_fns:
+      fn()
+
   def step(self) -> tuple[dict, data_lib.Batch]:
     stats = {}
 
     with self.data_profiler:
-      batch, epoch = next(self.data_source)
+      # batch, epoch, frames = self.fetch_batch()
+      batch, epoch, frames = next(self.batch_iterator)
 
     self.last_epoch = epoch
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
-          batch, self.hidden_state, **self.step_kwargs)
+          frames, self.hidden_state, **self.step_kwargs)
       stats.update(learner_stats)
 
     return stats, batch
@@ -344,13 +369,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       learner, test_data, dict(train=False),
       rngs=rngs, data_sharding=data_sharding)
 
+  exit_stack.callback(train_manager.stop)
+  exit_stack.callback(test_manager.stop)
+
   print_losses('initial', train_manager.step()[0])
 
   if restored:
     assert isinstance(restored_state, dict)  # appease type checker
-    jax_utils.set_module_state(
-        learner,
-        jax_utils.device_put(restored_state['state'], data_sharding))
+    replicated_state = jax_utils.device_put(
+        restored_state['state'], jax_utils.replicate_sharding(mesh))
+    jax_utils.set_module_state(learner, replicated_state)
     print_losses('post-restore', train_manager.step()[0])
     del restored_state
 
@@ -373,6 +401,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         step=step,
         config=dataclasses.asdict(config),
         imitation_config=dataclasses.asdict(imitation_config),
+        q_function_config=dataclasses.asdict(q_function_config),
         name_map=name_map,
         # dataset_metrics=dataset_metrics,
         counters=counters,
