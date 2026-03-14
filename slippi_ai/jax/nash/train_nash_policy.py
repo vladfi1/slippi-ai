@@ -141,7 +141,7 @@ class TrainManager:
     # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
-      hidden_state = jax_utils.shard_pytree(hidden_state, data_sharding)
+      hidden_state = jax_utils.device_put(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
   def step(self) -> tuple[dict, nash_data.TwoPlayerBatch]:
@@ -376,7 +376,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if restored:
     assert isinstance(restored_state, dict)  # appease type checker
     jax_utils.set_module_state(
-      learner, jax_utils.shard_pytree(
+      learner, jax_utils.device_put(
           restored_state['state'], jax_utils.replicate_sharding(mesh)))
     print_losses('post-restore', train_manager.step()[0])
     del restored_state

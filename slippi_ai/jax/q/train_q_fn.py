@@ -110,7 +110,7 @@ class TrainManager:
 
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
-      hidden_state = jax_utils.shard_pytree(hidden_state, data_sharding)
+      hidden_state = jax_utils.device_put(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
   def step(self) -> tuple[dict, data_lib.Batch]:
@@ -307,7 +307,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   if restored:
     assert isinstance(restored_state, dict)
-    replicated_state = jax_utils.shard_pytree(
+    replicated_state = jax_utils.device_put(
         restored_state['state'], jax_utils.replicate_sharding(mesh))
     jax_utils.set_module_state(learner, replicated_state)
     print_losses('post-restore', test_manager.step()[0])
