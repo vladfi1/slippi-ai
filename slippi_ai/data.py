@@ -36,7 +36,6 @@ from slippi_ai.mirror import mirror_game
 
 from slippi_db import utils as file_utils
 from slippi_db.utils import is_remote, FsspecFile
-from slippi_db import parsing_utils
 
 class PlayerMeta(NamedTuple):
   character: int
@@ -812,7 +811,7 @@ class TimeBatchedDataSource(AbstractDataSource):
       extra_frames: int = 1,
       **kwargs,
   ):
-    self.data_source = DataSource(
+    self.data_source = make_source(
         unroll_length=unroll_chunks * unroll_length,
         extra_frames=extra_frames,
         **kwargs)
@@ -963,25 +962,44 @@ class DataConfig:
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
+# TODO: this is a bit messy
+# There is an asymmetry between the DataSource and WebDataSource code paths:
+# DataSource assumes that the ReplayInfo objects have already been produced,
+# while WebDataSource produces WdsReplayInfo objects on the fly from the WebDataset.
 def make_source(
-    num_workers: int,
+    num_workers: int = 0,
     cached: bool = False,
-    wds: tp.Optional[WebDataConfig] = None,
     **kwargs,  # should contain "replays"
 ) -> AbstractDataSource:
-  del wds
+  is_ds = 'replays' in kwargs
+  is_wds = 'dataset_path' in kwargs
+
+  if is_ds and is_wds:
+    raise ValueError("Cannot specify both replays and dataset_path.")
 
   if num_workers == 0:
-    unroll_chunks: int = kwargs.pop('unroll_chunks')
+    unroll_chunks: int = kwargs.pop('unroll_chunks', 0)
 
     if unroll_chunks > 0:
       return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
 
-    source = DataSource(**kwargs)
+    if is_ds:
+      del kwargs['wds']
+      source = DataSource(**kwargs)
+    elif is_wds:
+      del kwargs['balance_characters']  # not supported
+      wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
+      source = WebDataSource(**kwargs, **wds)
+    else:
+      raise ValueError("Must specify either replays or dataset_path.")
 
     if cached:
       return CachedDataSource(source)
     return source
+
+  if num_workers > 1 and is_wds:
+    logging.warning("num_workers > 1 not supported for WebDataSource, setting to 1.")
+    num_workers = 1
 
   if num_workers == 1:
     return DataSourceMP(**kwargs)
@@ -1010,8 +1028,7 @@ def build_sources(
     test_data_config: Optional[DataConfig] = None,
     name_map: Optional[dict[str, int]] = None,
     max_names: Optional[int] = None,
-    extra_frames: int = 1,
-    observation_config: Optional[observations.ObservationConfig] = None,
+    **kwargs,  # observation_config, extra_frames
 ) -> Sources:
   test_data_config = test_data_config or train_data_config
 
@@ -1032,15 +1049,12 @@ def build_sources(
     sources = {}
 
     for split, data_config in zip(SPLITS, [train_data_config, test_data_config]):
-      sources[split] = WebDataSource(
+      sources[split] = make_source(
           dataset_path=dataset_config.wds_path,
           split=split,
-          batch_size=train_data_config.batch_size,
-          unroll_length=train_data_config.unroll_length,
-          extra_frames=extra_frames,
-          damage_ratio=train_data_config.damage_ratio,
           name_map=name_map,
-          **dataclasses.asdict(data_config.wds),
+          **dataclasses.asdict(data_config),
+          **kwargs,
       )
 
     return Sources(**sources, name_map=name_map)
@@ -1068,9 +1082,8 @@ def build_sources(
     sources[split] = make_source(
         replays=split_replays,
         name_map=name_map,
-        observation_config=observation_config,
-        extra_frames=extra_frames,
         **dataclasses.asdict(data_config),
+        **kwargs,
     )
 
   return Sources(**sources, name_map=name_map)
