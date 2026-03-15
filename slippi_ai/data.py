@@ -1039,6 +1039,14 @@ def build_sources(
 
   if dataset_config.wds_path is not None:
     wds_meta = read_wds_meta(dataset_config.wds_path)
+
+    # TODO: check opponents too
+    allowed_characters = _charset(chars_from_string(dataset_config.allowed_characters))
+    for char_str, _ in wds_meta['character_counts'].items():
+      char_int = int(char_str)
+      if char_int not in allowed_characters:
+        raise ValueError(f"Character {melee.Character(char_int).name} present in dataset but not allowed by config.")
+
     train_size = wds_meta['sizes']['train']
     test_size = wds_meta['sizes']['test']
     logging.info(f'Training on {train_size} replays, testing on {test_size} replays from WebDataset at {dataset_config.wds_path}.')
