@@ -30,23 +30,24 @@ def main(_):
   logging.getLogger("dropbox").setLevel(logging.WARNING)
 
   config = flag_utils.dataclass_from_dict(Config, CONFIG.value)
-  train, _ = data_lib.train_test_split(config.dataset)
 
-  source = data_lib.make_source(
-      replays=train,
+  sources = data_lib.build_sources(
+      dataset_config=config.dataset,
+      train_data_config=config.data,
       observation_config=config.observation,
-      **dataclasses.asdict(config.data),
+      max_names=16,
   )
+  train = sources.train
 
   print('Warming up...')
   start = time.perf_counter()
-  next(source)  # warmup
+  next(train)  # warmup
   print(f'Warmup took {time.perf_counter() - start:.2f} seconds')
 
   start = time.perf_counter()
   batches = 0
   while time.perf_counter() - start < RUNTIME.value:
-    next(source)
+    next(train)
     batches += 1
   run_time = time.perf_counter() - start
   bps = batches / run_time
