@@ -529,29 +529,28 @@ class TrajectoryManager:
       self.observation_filter.reset()
       game = self.observation_filter.filter_time(game)
 
-    self.game = game
+    self.flat_game = utils.cached_flatten(Game)(game)
+    self.game_len = game_len(game)
     self.frame = 0
     self.info = info
+    self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
     self.name_code = self.encode_name(info.main_player.name)
     self.needs_game = False
 
-  def grab_chunk(self) -> Batch[Rank1]:
+  def grab_chunk(self) -> list:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
 
     needs_reset = (
         self.needs_game or
-        self.frame + self.unroll_length > game_len(self.game))
+        self.frame + self.unroll_length > self.game_len)
 
     if needs_reset:
       self.find_game()
 
     start = self.frame
     end = start + self.unroll_length
-    slice = lambda x: x[start:end]
-    # faster than tree.map_structure
-    # states = utils.map_nt(slice, self.game)
-    states = utils.cached_map_nt(Game)(slice, self.game)
+    flat_game = [x[start:end] for x in self.flat_game]
     self.frame = end - self.overlap
 
     # Rewards could be deferred to the learner.
@@ -560,13 +559,24 @@ class TrajectoryManager:
     is_resetting = np.full([self.unroll_length], False)
     is_resetting[0] = needs_reset
 
-    return Batch(
-        game=states,
-        name=name,
-        is_resetting=is_resetting,
-        reward=rewards,
-        meta=ChunkMeta(start, end, self.info.meta),
-    )
+    # Flat Batch
+    flat_result = flat_game
+    flat_result.append(name)
+    flat_result.append(is_resetting)
+    flat_result.append(rewards)
+    # Flat ChunkMeta
+    flat_result.append(start)
+    flat_result.append(end)
+    flat_result.extend(self.flat_meta)
+
+    return flat_result
+
+Rank2 = tuple[int, int]
+
+def process_flat_batches(flat_batches: list) -> Batch[Rank2]:
+  batched_flat = [np.stack(xs) for xs in zip(*flat_batches)]
+  return utils.cached_unflatten(Batch, batched_flat)
+
 
 def swap_players(game: Game[S]) -> Game[S]:
   return game._replace(p0=game.p1, p1=game.p0)
@@ -587,7 +597,6 @@ def read_table(path: str, compressed: bool) -> Game[Rank1]:
 
 Shape = tp.TypeVarTuple('Shape')
 
-Rank2 = tuple[int, int]
 
 class AbstractDataSource(abc.ABC):
 
@@ -701,11 +710,8 @@ class WebDataSource(AbstractDataSource):
   def batch_size(self) -> int:
     return self._batch_size
 
-  def process_batch(self, batches: list[Batch[Rank1]]) -> Batch[Rank2]:
-    return utils.cached_zip_map_nt(Batch)(np.stack, batches)  # type: ignore
-
   def __next__(self) -> Tuple[Batch[Rank2], float]:
-    batch = self.process_batch(
+    batch = process_flat_batches(
         [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / self.num_replays
     assert batch.game.stage.shape[-1] == self.chunk_size
@@ -785,11 +791,8 @@ class DataSource(AbstractDataSource):
       self.replay_counter += 1
       yield replay
 
-  def process_batch(self, batches: list[Batch[Rank1]]) -> Batch[Rank2]:
-    return utils.cached_zip_map_nt(Batch)(np.stack, batches)  # type: ignore
-
   def __next__(self) -> Tuple[Batch[Rank2], float]:
-    batch = self.process_batch(
+    batch = process_flat_batches(
         [m.grab_chunk() for m in self.managers])
     # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)

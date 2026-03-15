@@ -185,6 +185,61 @@ def cached_zip_map_nt(t: type[T]) -> tp.Callable[[MultiIdFn, tp.Sequence[T]], T]
 
   return lambda f, xs: f(xs)
 
+@functools.cache
+def cached_flatten(t: type[T]) -> tp.Callable[[T], list]:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    field_fns = [cached_flatten(subtype) for _, subtype in node_or_leaf]
+
+    def flatten_fn(x: T) -> list:
+      result = []
+      for sub_fn, v in zip(field_fns, x):
+        result.extend(sub_fn(v))
+      return result
+
+    return flatten_fn
+
+  return lambda x: [x]
+
+@functools.cache
+def cached_unflatten_iter(t: type[T]) -> tp.Callable[[tp.Iterator], T]:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    field_fns = [cached_unflatten_iter(subtype) for _, subtype in node_or_leaf]
+
+    def unflatten_fn(xs: tp.Iterator) -> T:
+      return t(*(f(xs) for f in field_fns))
+
+    return unflatten_fn
+
+  return lambda xs: next(xs)
+
+@functools.cache
+def cached_unflatten_offset(t: type[T]) -> tuple[int, tp.Callable[[list, int], T]]:
+  node_or_leaf = get_node_or_leaf(t)
+
+  if isinstance(node_or_leaf, list):
+    sizes_and_fns = [cached_unflatten_offset(subtype) for _, subtype in node_or_leaf]
+    offset = 0
+    offsets_and_fns = []
+    for size, fn in sizes_and_fns:
+      offsets_and_fns.append((offset, fn))
+      offset += size
+    total_size = offset
+    del offset
+
+    def unflatten_fn(xs: list, start: int) -> T:
+      return t(*(f(xs, start + offset) for offset, f in offsets_and_fns))
+
+    return total_size, unflatten_fn
+
+  return 1, lambda xs, start: xs[start]
+
+def cached_unflatten(t: type[T], xs: list) -> T:
+  _, unflatten_fn = cached_unflatten_offset(t)
+  return unflatten_fn(xs, 0)
 
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
   # More efficient than batch_nest
