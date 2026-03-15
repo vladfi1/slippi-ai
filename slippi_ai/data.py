@@ -704,7 +704,9 @@ class WebDataSource(AbstractDataSource):
         .shuffle(self.shuffle_buffer_size)
         .map(_parse_wds_sample)
     )
-    yield from pipeline
+    for item in pipeline:
+      self.replay_counter += 1
+      yield item
 
   @property
   def batch_size(self) -> int:
