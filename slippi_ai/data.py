@@ -950,13 +950,14 @@ class DataConfig:
   unroll_length: int = 64
   damage_ratio: float = 0.01
   num_workers: int = 0
+  buffer: int = 16  # DataSourceMP buffer size
   balance_characters: bool = False
   cached: bool = False
   unroll_chunks: int = 0
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
-# TODO: this is a bit messy
+# TODO: this kwarg manipulation is a bit messy
 # There is an asymmetry between the DataSource and WebDataSource code paths:
 # DataSource assumes that the ReplayInfo objects have already been produced,
 # while WebDataSource produces WdsReplayInfo objects on the fly from the WebDataset.
@@ -971,34 +972,37 @@ def make_source(
   if is_ds and is_wds:
     raise ValueError("Cannot specify both replays and dataset_path.")
 
-  if num_workers == 0:
-    unroll_chunks: int = kwargs.pop('unroll_chunks', 0)
-
-    if unroll_chunks > 0:
-      return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
-
-    if is_ds:
-      del kwargs['wds']
-      source = DataSource(**kwargs)
-    elif is_wds:
-      del kwargs['balance_characters']  # not supported
-      wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
-      source = WebDataSource(**kwargs, **wds)
-    else:
-      raise ValueError("Must specify either replays or dataset_path.")
-
-    if cached:
-      return CachedDataSource(source)
-    return source
-
   if num_workers > 1 and is_wds:
     logging.warning("num_workers > 1 not supported for WebDataSource, setting to 1.")
     num_workers = 1
 
   if num_workers == 1:
     return DataSourceMP(**kwargs)
+  elif num_workers > 1:
+    return MultiDataSourceMP(num_workers=num_workers, **kwargs)
 
-  return MultiDataSourceMP(num_workers=num_workers, **kwargs)
+  if 'buffer' in kwargs:
+    del kwargs['buffer']
+
+  unroll_chunks: int = kwargs.pop('unroll_chunks', 0)
+
+  if unroll_chunks > 0:
+    return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
+
+  if is_ds:
+    del kwargs['wds']
+    source = DataSource(**kwargs)
+  elif is_wds:
+    del kwargs['balance_characters']  # not supported
+    wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
+    source = WebDataSource(**kwargs, **wds)
+  else:
+    raise ValueError("Must specify either replays or dataset_path.")
+
+  if cached:
+    source = CachedDataSource(source)
+
+  return source
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(

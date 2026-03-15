@@ -59,7 +59,7 @@ def main(_):
   frames_per_minute = 60 * 60
   mps = fps / frames_per_minute
 
-  print(f'bps={bps:.2f} spb={spb:.3f} fps={fps:.0f} mps={mps:.1f}')
+  print(f'batches={batches} bps={bps:.2f} spb={spb:.3f} fps={fps:.0f} mps={mps:.1f}')
 
 if __name__ == '__main__':
   app.run(main)
