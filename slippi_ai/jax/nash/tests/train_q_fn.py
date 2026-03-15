@@ -28,7 +28,6 @@ DEFAULT_CONFIG = train_q_fn.Config(
         test_ratio=0.5,
     ),
     data=data_lib.DataConfig(
-        compressed=True,
         balance_characters=True,
         batch_size=2,
         unroll_length=5,

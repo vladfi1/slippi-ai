@@ -498,13 +498,11 @@ class TrajectoryManager:
       unroll_length: int,
       encode_name: Callable[[str], int],
       overlap: int = 1,
-      compressed: bool = True,
       game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
   ):
     self.source = source
-    self.compressed = compressed
     self.unroll_length = unroll_length
     self.overlap = overlap
     self.game_filter = game_filter or (lambda _: True)
@@ -718,7 +716,6 @@ class DataSource(AbstractDataSource):
   def __init__(
       self,
       replays: List[ReplayInfo],
-      compressed: bool = True,
       batch_size: int = 64,
       unroll_length: int = 64,
       extra_frames: int = 1,
@@ -732,7 +729,6 @@ class DataSource(AbstractDataSource):
     self.unroll_length = unroll_length
     self.chunk_size = unroll_length + extra_frames
     self.damage_ratio = damage_ratio
-    self.compressed = compressed
 
     self.balance_characters = balance_characters
 
@@ -752,7 +748,6 @@ class DataSource(AbstractDataSource):
             replay_iter,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
-            compressed=compressed,
             observation_filter=build_observation_filter(),
             reward_kwargs=dict(damage_ratio=damage_ratio),
             encode_name=self.encode_name,
@@ -954,7 +949,6 @@ class DataConfig:
   batch_size: int = 32
   unroll_length: int = 64
   damage_ratio: float = 0.01
-  compressed: bool = True
   num_workers: int = 0
   balance_characters: bool = False
   cached: bool = False
@@ -1013,7 +1007,6 @@ def toy_data_source(**kwargs) -> DataSource:
   )
   return DataSource(
       replays=replays_from_meta(dataset_config),
-      compressed=True,
       **kwargs,
   )
 
