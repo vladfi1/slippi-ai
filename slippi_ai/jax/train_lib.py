@@ -297,6 +297,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   train_time = 0.0
   best_eval_loss = float('inf')
   total_frames = 0
+  train_epoch = 0.0
 
   if restored:
     assert isinstance(combined_state, dict)
@@ -306,6 +307,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     best_eval_loss = counters['best_eval_loss']
     train_time = counters['train_time']
     total_frames: int = counters['total_frames']
+    train_epoch = counters.get('train_epoch', 0.0)
 
     restore_config = flag_utils.dataclass_from_dict(
         Config, combined_state['config'])
@@ -438,7 +440,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True, compile=runtime.compile),
-      **manager_kwargs)
+      epoch_offset=train_epoch, **manager_kwargs)
   test_manager = TrainManager(
       learner, test_data, dict(train=False, compile=runtime.compile),
       **manager_kwargs)
@@ -467,6 +469,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         total_frames=total_frames,
         train_time=train_time,
         best_eval_loss=eval_loss if eval_loss is not None else best_eval_loss,
+        train_epoch=train_manager.last_epoch,
     )
 
     # easier to always bundle the config with the state
