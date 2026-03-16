@@ -9,20 +9,12 @@ FROM nvcr.io/nvidia/jax:26.01-py3
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir s3cmd s3fs speedtest-cli
 
-# Set working directory
-WORKDIR /slippi-ai
+WORKDIR /root
+RUN git clone https://github.com/vladfi1/slippi-ai.git --branch jax
 
-# Copy requirements first for better layer caching
-COPY requirements.txt ./
-COPY jax-requirements.txt ./
+WORKDIR /root/slippi-ai
 
-# Install Python dependencies
 RUN pip install --no-cache-dir -r jax-requirements.txt
-
-# Copy the rest of the project
-COPY . .
-
-# Install the package in editable mode
 RUN pip install --no-cache-dir -e .[jax]
 
 # Set default command
