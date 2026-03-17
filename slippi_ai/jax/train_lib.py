@@ -190,6 +190,7 @@ _field = utils.field
 @dataclasses.dataclass
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_step: tp.Optional[int] = None  # maximum number of training steps
   log_interval: int = 10  # seconds between logging
 
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
@@ -760,3 +761,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     maybe_log(train_stats)
     maybe_eval()
+
+    if runtime.max_step is not None and step >= runtime.max_step:
+      logging.info('Reached max step of %d, stopping training.', runtime.max_step)
+      break
