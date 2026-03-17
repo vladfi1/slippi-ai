@@ -48,8 +48,6 @@ class RuntimeConfig:
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
 
-  data_source_burnin: int = 5
-
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
 
@@ -358,11 +356,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_data = make_source(train_data)
   test_data = make_source(test_data)
-
-  # Get rid of match-start correlations
-  for source in [train_data, test_data]:
-    for _ in range(config.runtime.data_source_burnin):
-      next(source)
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True),
