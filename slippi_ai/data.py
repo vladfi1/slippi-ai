@@ -854,7 +854,7 @@ class TimeBatchedDataSource(AbstractDataSource):
 
 
 def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
-  data_source = make_source(num_workers=0, **data_source_kwargs)
+  data_source = _make_time_batched_source(**data_source_kwargs)
   while True:
     batch_queue.put(next(data_source))
 
@@ -959,8 +959,46 @@ class DataConfig:
   balance_characters: bool = False
   cached: bool = False
   unroll_chunks: int = 0
+  burnin: int = 5  # get rid of early-game correlations
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
+
+def _make_single_process_source(
+    cached: bool = False,
+    buffer: tp.Optional[int] = None,
+    burnin: int = 5,
+    replays: Optional[List[ReplayInfo]] = None,
+    wds_path: Optional[str] = None,
+    **kwargs,
+) -> AbstractDataSource:
+  del buffer
+
+  if replays is not None:
+    del kwargs['wds']
+    source = DataSource(replays=replays, **kwargs)
+  elif wds_path is not None:
+    del kwargs['balance_characters']  # not supported
+    wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
+    source = WebDataSource(dataset_path=wds_path, **kwargs, **wds)
+  else:
+    raise ValueError("Must specify either replays or wds_path.")
+
+  if cached:
+    source = CachedDataSource(source)
+  else:
+    for _ in range(burnin):
+      next(source)
+
+  return source
+
+def _make_time_batched_source(
+    unroll_chunks: int = 0,
+    **kwargs,
+) -> AbstractDataSource:
+  if unroll_chunks > 0:
+    return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
+
+  return _make_single_process_source(**kwargs)
 
 # TODO: this kwarg manipulation is a bit messy
 # There is an asymmetry between the DataSource and WebDataSource code paths:
@@ -968,14 +1006,13 @@ class DataConfig:
 # while WebDataSource produces WdsReplayInfo objects on the fly from the WebDataset.
 def make_source(
     num_workers: int = 0,
-    cached: bool = False,
-    **kwargs,  # should contain "replays"
+    **kwargs,  # should contain "replays" or "wds_path"
 ) -> AbstractDataSource:
   is_ds = 'replays' in kwargs
-  is_wds = 'dataset_path' in kwargs
+  is_wds = 'wds_path' in kwargs
 
   if is_ds and is_wds:
-    raise ValueError("Cannot specify both replays and dataset_path.")
+    raise ValueError("Cannot specify both replays and wds_path.")
 
   if num_workers > 1 and is_wds:
     logging.warning("num_workers > 1 not supported for WebDataSource, setting to 1.")
@@ -986,28 +1023,7 @@ def make_source(
   elif num_workers > 1:
     return MultiDataSourceMP(num_workers=num_workers, **kwargs)
 
-  if 'buffer' in kwargs:
-    del kwargs['buffer']
-
-  unroll_chunks: int = kwargs.pop('unroll_chunks', 0)
-
-  if unroll_chunks > 0:
-    return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
-
-  if is_ds:
-    del kwargs['wds']
-    source = DataSource(**kwargs)
-  elif is_wds:
-    del kwargs['balance_characters']  # not supported
-    wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
-    source = WebDataSource(**kwargs, **wds)
-  else:
-    raise ValueError("Must specify either replays or dataset_path.")
-
-  if cached:
-    source = CachedDataSource(source)
-
-  return source
+  return _make_time_batched_source(**kwargs)
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(
@@ -1060,7 +1076,7 @@ def build_sources(
 
     for split, data_config in zip(SPLITS, [train_data_config, test_data_config]):
       sources[split] = make_source(
-          dataset_path=dataset_config.wds_path,
+          wds_path=dataset_config.wds_path,
           split=split,
           name_map=name_map,
           **dataclasses.asdict(data_config),

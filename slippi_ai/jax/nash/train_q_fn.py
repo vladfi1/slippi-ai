@@ -49,8 +49,6 @@ class RuntimeConfig:
   max_eval_steps: tp.Optional[int] = None  # useful for tests
   eval_at_start: bool = False
 
-  data_source_burnin: int = 5
-
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
@@ -301,11 +299,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   train_data = make_source(train_data)
   test_data = make_source(test_data)
-
-  # Get rid of match-start correlations
-  for source in [train_data, test_data]:
-    for _ in range(config.runtime.data_source_burnin):
-      next(source)
 
   train_manager = TrainManager(
       learner, train_data, dict(train=True),

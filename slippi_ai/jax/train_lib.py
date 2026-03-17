@@ -186,8 +186,6 @@ class RuntimeConfig:
   multi_device: bool = True  # whether to use multi-device data parallelism
   prefetch: int = 1  # number of batches to prefetch in data loader
 
-  data_source_burnin: int = 5
-
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
 
@@ -415,10 +413,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   )
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)
-
-  for source in [train_data, test_data]:
-    for _ in range(runtime.data_source_burnin):
-      next(source)
 
   # Record name map
   logging.info(name_map)
