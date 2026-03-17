@@ -217,7 +217,7 @@ def cached_unflatten_iter(t: type[T]) -> tp.Callable[[tp.Iterator], T]:
   return lambda xs: next(xs)
 
 @functools.cache
-def cached_unflatten_offset(t: type[T]) -> tuple[int, tp.Callable[[list, int], T]]:
+def cached_unflatten_offset(t: type[T]) -> tuple[int, tp.Callable[[tp.Sequence, int], T]]:
   node_or_leaf = get_node_or_leaf(t)
 
   if isinstance(node_or_leaf, list):
@@ -230,15 +230,17 @@ def cached_unflatten_offset(t: type[T]) -> tuple[int, tp.Callable[[list, int], T
     total_size = offset
     del offset
 
-    def unflatten_fn(xs: list, start: int) -> T:
+    def unflatten_fn(xs: tp.Sequence, start: int) -> T:
       return t(*(f(xs, start + offset) for offset, f in offsets_and_fns))
 
     return total_size, unflatten_fn
 
   return 1, lambda xs, start: xs[start]
 
-def cached_unflatten(t: type[T], xs: list) -> T:
-  _, unflatten_fn = cached_unflatten_offset(t)
+def cached_unflatten(t: type[T], xs: tp.Sequence) -> T:
+  size, unflatten_fn = cached_unflatten_offset(t)
+  if len(xs) != size:
+    raise ValueError(f'Expected {size} values to unflatten into {t}, got {len(xs)}')
   return unflatten_fn(xs, 0)
 
 def batch_nest_nt(nests: tp.Sequence[T]) -> T:
