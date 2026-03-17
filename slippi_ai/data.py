@@ -9,6 +9,7 @@ import logging
 import math
 import multiprocessing as mp
 import os
+import pickle
 import random
 import shutil
 from typing import (
@@ -536,11 +537,11 @@ class TrajectoryManager:
     self.game_len = game_len(game)
     self.frame = 0
     self.info = info
-    self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
+    # self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
     self.name_code = self.encode_name(info.main_player.name)
     self.needs_game = False
 
-  def grab_chunk(self) -> list:
+  def grab_chunk(self) -> tuple[list[np.ndarray], ChunkMeta]:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
 
@@ -562,23 +563,51 @@ class TrajectoryManager:
     is_resetting = np.full([self.unroll_length], False)
     is_resetting[0] = needs_reset
 
-    # Flat Batch
-    flat_result = flat_game
-    flat_result.append(name)
-    flat_result.append(is_resetting)
-    flat_result.append(rewards)
-    # Flat ChunkMeta
-    flat_result.append(start)
-    flat_result.append(end)
-    flat_result.extend(self.flat_meta)
+    flat_batch = flat_game
+    flat_batch.extend([name, is_resetting, rewards])
 
-    return flat_result
+    meta = ChunkMeta(start=start, end=end, meta=self.info.meta)
+
+    return flat_batch, meta
 
 Rank2 = tuple[int, int]
 
-def process_flat_batches(flat_batches: list) -> BatchWithMeta[Rank2]:
-  batched_flat = [np.stack(xs) for xs in zip(*flat_batches)]
-  return utils.cached_unflatten(BatchWithMeta, batched_flat)
+
+class BatchAccumulator:
+  """Pre-allocates output buffers to avoid per-batch numpy allocations.
+
+  Replaces np.stack([chunk[j] for chunk in chunks]) for each leaf j with
+  in-place writes: buf[j][i] = chunk[j], reusing the same memory each batch.
+
+  Note: returned buffers are reused across calls; do not retain references
+  to batch arrays across multiple __next__ calls.
+  """
+
+  def __init__(self, batch_size: int):
+    self._batch_size = batch_size
+    self._needs_init = True
+
+  def _init(self, unbatched: tp.Sequence[list[np.ndarray]]):
+    assert len(unbatched) == self._batch_size
+    assert self._needs_init
+    self._needs_init = False
+
+    prototype = unbatched[0]
+    self._bufs = []
+    for x in prototype:
+      assert isinstance(x, np.ndarray)
+      self._bufs.append(np.empty((self._batch_size, *x.shape), dtype=x.dtype))
+
+  def collect(self, unbatched: tp.Sequence[list[np.ndarray]]) -> list[np.ndarray]:
+    """Fill pre-allocated buffers from managers; return batched flat list."""
+    if self._needs_init:
+      self._init(unbatched)
+
+    for i, xs in enumerate(unbatched):
+      for buf, x in zip(self._bufs, xs):
+        buf[i] = x
+
+    return self._bufs
 
 
 def swap_players(game: Game[S]) -> Game[S]:
@@ -599,7 +628,6 @@ def read_table(path: str, compressed: bool) -> Game[Rank1]:
   return game_array_to_nt(game_struct)
 
 Shape = tp.TypeVarTuple('Shape')
-
 
 class AbstractDataSource(abc.ABC):
 
@@ -655,6 +683,8 @@ class WebDataSource(AbstractDataSource):
     self.wds_meta = read_wds_meta(dataset_path)
     self.num_replays = self.wds_meta['sizes'][split]
     self.verbose = verbose
+
+    self._accumulator = BatchAccumulator(batch_size)
 
     def build_observation_filter():
       if observation_config is None:
@@ -726,12 +756,18 @@ class WebDataSource(AbstractDataSource):
     return self._batch_size
 
   def __next__(self) -> Tuple[BatchWithMeta[Rank2], float]:
-    batch = process_flat_batches(
-        [m.grab_chunk() for m in self.managers])
+    unbatched_flat, metas = zip(*(m.grab_chunk() for m in self.managers))
+
+    batched_flat = self._accumulator.collect(unbatched_flat)
+    batch = utils.cached_unflatten(Batch, batched_flat)
+
+    meta = utils.cached_zip_map_nt(ChunkMeta)(np.stack, metas)
+    batch_with_meta = BatchWithMeta(batch=batch, meta=meta)
+
     epoch = self.replay_counter / self.num_replays
-    assert batch.batch.game.stage.shape[-1] == self.chunk_size
-    assert batch.batch.reward.shape[-1] == self.chunk_size - 1
-    return batch, epoch
+    assert batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.reward.shape[-1] == self.chunk_size - 1
+    return batch_with_meta, epoch
 
 class DataSource(AbstractDataSource):
   def __init__(
@@ -774,6 +810,7 @@ class DataSource(AbstractDataSource):
             encode_name=self.encode_name,
         ) for _ in range(batch_size)
     ]
+    self._accumulator = BatchAccumulator(batch_size)
 
   @property
   def batch_size(self) -> int:
@@ -807,13 +844,20 @@ class DataSource(AbstractDataSource):
       yield replay
 
   def __next__(self) -> Tuple[BatchWithMeta[Rank2], float]:
-    batch = process_flat_batches(
-        [m.grab_chunk() for m in self.managers])
+    unbatched_flat, metas = zip(*(m.grab_chunk() for m in self.managers))
+
+    batched_flat = self._accumulator.collect(unbatched_flat)
+    batch = utils.cached_unflatten(Batch, batched_flat)
+
+    meta = utils.cached_zip_map_nt(ChunkMeta)(np.stack, metas)
+    batch_with_meta = BatchWithMeta(batch=batch, meta=meta)
+
     # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)
-    assert batch.batch.game.stage.shape[-1] == self.chunk_size
-    assert batch.batch.reward.shape[-1] == self.chunk_size - 1
-    return batch, epoch
+    assert batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.reward.shape[-1] == self.chunk_size - 1
+    return batch_with_meta, epoch
+
 
 class TimeBatchedDataSource(AbstractDataSource):
 
@@ -872,7 +916,12 @@ class TimeBatchedDataSource(AbstractDataSource):
 def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
   data_source = _make_time_batched_source(**data_source_kwargs)
   while True:
-    batch_queue.put(next(data_source))
+    item = next(data_source)
+    # We convert to pickle to avoid a race condition with BatchAccumulator.
+    # MP Queues don't immediately pickle but instead use a background thread,
+    # so we need to force a copy before the next batch is produced and mutates
+    # the accumulator's buffers.
+    batch_queue.put(pickle.dumps(item))
 
 
 class DataSourceMP(AbstractDataSource):
@@ -899,7 +948,8 @@ class DataSourceMP(AbstractDataSource):
     self.process.terminate()
 
   def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
-    return self.batch_queue.get()
+    pickled_item = self.batch_queue.get()
+    return pickle.loads(pickled_item)
 
   def __del__(self):
     self.shutdown()
