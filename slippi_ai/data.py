@@ -621,6 +621,7 @@ class WebDataConfig:
   shuffle_buffer_size: int = 1000
   cache_dir: Optional[str] = None
   verbose: bool = True
+  num_workers: int = 0
 
 # TODO: support mirroring
 class WebDataSource(AbstractDataSource):
@@ -638,6 +639,7 @@ class WebDataSource(AbstractDataSource):
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
       verbose: bool = True,
+      num_workers: int = 0,
   ):
     self.dataset_path = dataset_path
     self.split = split
@@ -657,19 +659,7 @@ class WebDataSource(AbstractDataSource):
       return observations.build_observation_filter(observation_config)
 
     self.replay_counter = 0
-    replay_iter = self.iter_replays()
-    self.managers = [
-        TrajectoryManager(
-            replay_iter,
-            unroll_length=self.chunk_size,
-            overlap=extra_frames,
-            observation_filter=build_observation_filter(),
-            reward_kwargs=dict(damage_ratio=damage_ratio),
-            encode_name=self.encode_name,
-        ) for _ in range(batch_size)
-    ]
 
-  def iter_replays(self) -> Iterator[WdsReplayInfo]:
     fs: fsspec.AbstractFileSystem
     fs, ds_path = fsspec.core.url_to_fs(self.dataset_path)
     shards = fs.glob(os.path.join(ds_path, wds_glob_pattern(self.split)))
@@ -702,11 +692,31 @@ class WebDataSource(AbstractDataSource):
         dataset
         .repeat()
         .shuffle(self.shuffle_buffer_size)
-        .map(_parse_wds_sample)
     )
-    for item in pipeline:
-      self.replay_counter += 1
-      yield item
+
+    from slippi_ai import datasets
+    sample_ds = datasets.IteratorDataset(iter(pipeline))
+
+    if num_workers > 0:
+      self.replay_ds = datasets.MPMap(
+          sample_ds, map_fn=_parse_wds_sample,
+          num_workers=num_workers, buffer=16 * num_workers)
+    else:
+      self.replay_ds = datasets.MapDataset(sample_ds, map_fn=_parse_wds_sample)
+
+    self.managers = [
+        TrajectoryManager(
+            self.replay_ds,
+            unroll_length=self.chunk_size,
+            overlap=extra_frames,
+            observation_filter=build_observation_filter(),
+            reward_kwargs=dict(damage_ratio=damage_ratio),
+            encode_name=self.encode_name,
+        ) for _ in range(batch_size)
+    ]
+
+  def shutdown(self):
+    self.replay_ds.stop()
 
   @property
   def batch_size(self) -> int:
