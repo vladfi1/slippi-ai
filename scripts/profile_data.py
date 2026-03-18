@@ -20,6 +20,8 @@ class Config:
 
 DEFAULT_CONFIG = Config()
 DEFAULT_CONFIG.dataset.dataset_path = str(paths.TOY_DATASET)
+DEFAULT_CONFIG.data.batch_size = 512
+DEFAULT_CONFIG.data.unroll_length = 80
 
 CONFIG = ff.DEFINE_dict('config', **flag_utils.get_flags_from_default(DEFAULT_CONFIG))
 
