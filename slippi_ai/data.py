@@ -65,6 +65,9 @@ class ReplayMeta(NamedTuple):
         zlib=metadata['compression'] == 'zlib',
     )
 
+  def swap_players(self) -> tp.Self:
+    return self._replace(p0=self.p1, p1=self.p0)
+
 class ReplayInfo(NamedTuple):
   path: file_utils.LocalFile | str
   swap: bool
@@ -72,13 +75,21 @@ class ReplayInfo(NamedTuple):
 
   mirror: bool = False
 
+  @classmethod
+  def init(
+      cls,
+      path: file_utils.LocalFile | str,
+      swap: bool,
+      meta: ReplayMeta,
+      mirror: bool = False,
+  ) -> tp.Self:
+    if swap:
+      meta = meta.swap_players()
+    return cls(path=path, swap=swap, meta=meta, mirror=mirror)
+
   @property
   def main_player(self) -> PlayerMeta:
-    if isinstance(self.swap, np.ndarray):
-      return utils.map_nt(
-          lambda p0, p1: np.where(self.swap, p1, p0),
-          self.meta.p0, self.meta.p1)
-    return self.meta.p1 if self.swap else self.meta.p0
+    return self.meta.p0
 
   def read_game(self) -> Game:
     if isinstance(self.path, str):
@@ -106,7 +117,7 @@ class ReplayInfo(NamedTuple):
 class ChunkMeta(NamedTuple):
   start: int
   end: int
-  info: ReplayInfo
+  meta: ReplayMeta
 
 
 class Batch(NamedTuple, Generic[S]):
@@ -255,7 +266,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
           or replay_meta.p1.character not in allowed_opponents):
         continue
 
-      replays.append(ReplayInfo(replay_path, False, replay_meta))
+      replays.append(ReplayInfo.init(replay_path, False, replay_meta))
 
       continue
 
@@ -277,7 +288,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
         banned_counts[p1.name] += 1
         continue
 
-      replays.append(ReplayInfo(replay_path, swap, replay_meta))
+      replays.append(ReplayInfo.init(replay_path, swap, replay_meta))
 
   if banned_counts:
     print('Banned names:', banned_counts)
@@ -440,7 +451,7 @@ class TrajectoryManager:
         name=name,
         is_resetting=is_resetting,
         reward=rewards,
-        meta=ChunkMeta(start, end, self.info),
+        meta=ChunkMeta(start, end, self.info.meta),
     )
 
 def swap_players(game: Game[S]) -> Game[S]:
@@ -618,7 +629,7 @@ class TimeBatchedDataSource(AbstractDataSource):
         meta=ChunkMeta(
             start=batch.meta.start + start,
             end=batch.meta.start + end,
-            info=batch.meta.info,
+            meta=batch.meta.meta,
         ),
     ), epoch
 

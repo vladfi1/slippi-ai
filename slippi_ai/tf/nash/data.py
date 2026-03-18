@@ -33,7 +33,7 @@ def convert_batch(
     batched_encode_name: tp.Callable[[np.ndarray], np.ndarray],
 ) -> TwoPlayerBatch:
   p1_game = data_lib.swap_players(batch.frames.state_action.state)
-  p1_name_codes = batched_encode_name(batch.meta.info.meta.p1.name)
+  p1_name_codes = batched_encode_name(batch.meta.meta.p1.name)
   unroll_length = batch.frames.state_action.state.stage.shape[1]
   p1_name_codes = np.tile(p1_name_codes[:, None], [1, unroll_length])
 

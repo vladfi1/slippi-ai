@@ -693,7 +693,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     meta = utils.batch_nest_nt(metas)
 
     # Name of the player we're imitating.
-    name = meta.info.main_player.name
+    name = meta.meta.p0.name
     encoded_name: np.ndarray = batch_encode_name(name)
     assert encoded_name.dtype == np.uint8
     assert encoded_name.shape == loss.shape
@@ -711,7 +711,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     # Log losses aggregated by character
     if len(allowed_characters) > 1:
-      characters = meta.info.main_player.character
+      characters = meta.meta.p0.character
       per_character_loss_sums = {}
       per_character_loss_counts = {}
       for character in allowed_characters:
