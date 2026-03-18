@@ -45,17 +45,24 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     def sample(
         policy: policies.Policy[ControllerType],
         rngs: nnx.Rngs,
-        state_action: StateAction[S, ControllerType],
-        needs_reset: jax.Array,
+        state_and_reset: tuple[Game, jax.Array],
+        name_code: jax.Array,
+        prev_action: ControllerType,
         prev_state: policies.RecurrentState,
     ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
       # Note: sample outputs are discretized by the controller_head.
+      game, needs_reset = state_and_reset
+      state_action = StateAction(
+          state=game,
+          action=prev_action,
+          name=name_code,
+      )
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
 
     self._sample = nnx.cached_partial(sample, policy, self._rngs)
     self._jitted_sample = nnx.cached_partial(
-        nnx.jit(sample, donate_argnums=(1, 4)),
+        nnx.jit(sample, donate_argnums=(1, 5)),
         policy, self._rngs,
     )
 
@@ -79,13 +86,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       ) -> tuple[SampleOutputs[ControllerType], tuple[ControllerType, policies.RecurrentState]]:
         gamestate, needs_reset = state_and_reset
         prev_action, prev_state = prev_action_and_state
-        state_action = StateAction(
-            state=gamestate,
-            action=prev_action,
-            name=name_code,
-        )
         sample_outputs, new_state = sample(
-            policy, rngs, state_action, needs_reset, prev_state)
+            policy, rngs, (gamestate, needs_reset), name_code, prev_action, prev_state)
         return sample_outputs, (sample_outputs.controller_state, new_state)
 
       length = len(states_and_resets)
@@ -135,16 +137,11 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       needs_reset: agents.BoolArray,
   ) -> SampleOutputs[ControllerType]:
     """Doesn't take into account delay."""
-    state_action = StateAction(
-        state=self._policy.network.encode_game(game),
-        action=self._prev_controller,
-        name=self._name_code,
-    )
-
+    game = self._policy.network.encode_game(game)
     # Keep hidden state and prev_controller on device.
     sample_fn = self._jitted_sample if self._compile else self._sample
     sample_outputs, self._hidden_state = sample_fn(
-        state_action, needs_reset, self._hidden_state)
+        (game, needs_reset), self._name_code, self._prev_controller, self._hidden_state)
 
     # Use donate_argnums?
     self._prev_controller = sample_outputs.controller_state
