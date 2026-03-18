@@ -132,18 +132,22 @@ class BoolEmbedding(Embedding[np.bool, np.bool]):
 
 embed_bool = BoolEmbedding()
 
-class FloatEmbedding(Embedding[np.float32, np.float32]):
+class FloatEmbedding(Embedding[tp.Any, Out]):
 
-  def __init__(self, name, scale=None, bias=None, lower=-10., upper=10.):
+  def __init__(
+      self, name, scale=None, bias=None, lower=-10., upper=10.,
+      dtype: type = np.float32,
+  ):
     self.name = name
     self.scale = scale
     self.bias = bias
     self.lower = lower
     self.upper = upper
+    self._dtype = dtype
 
   @property
   def dtype(self):
-    return np.float32
+    return self._dtype
 
   @property
   def size(self):
@@ -367,9 +371,13 @@ def ordered_struct_embedding(
       getter=getattr,
   )
 
+# NOTE: embedding dtypes need to match parse_libmelee.py so that dummy()
+# returns the same types as dolphin; this is necessary for arg packing to work.
+# TODO: Both should match the types in types.py and this should be automated.
+
 # Note: some Kirby ability-copy actions states go beyond this.
 embed_action = OneHotEmbedding(
-    'Action', size=0x18F, dtype=np.int32,
+    'Action', size=0x18F, dtype=np.uint16,
     one_hot_policy=OneHotPolicy.CLAMP)
 
 # one larger than SANDBAG
@@ -392,7 +400,7 @@ def _base_player_embedding(
   embed_xy = FloatEmbedding("xy", scale=xy_scale)
 
   embedding = [
-      ("percent", FloatEmbedding("percent", scale=0.01)),
+      ("percent", FloatEmbedding("percent", scale=0.01, dtype=np.uint16)),
       ("facing", BoolEmbedding("facing", off=-1.)),
       ('x', embed_xy),
       ('y', embed_xy),
