@@ -46,7 +46,7 @@ DEFAULT_CONFIG = train_lib.Config(
 
 DEFAULT_CONFIG.controller_head['name'] = 'autoregressive'
 DEFAULT_CONFIG.controller_head['autoregressive'].update(
-    residual_size=2,
+    residual_size=1,
     component_depth=0,
 )
 
