@@ -136,7 +136,9 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def pop(self) -> SampleOutputs[ControllerType]:
     outputs = self._output_queue.get()
     if self.policy.platform == policies.Platform.JAX:
-      outputs = utils.map_single_structure(np.asarray, outputs)
+      import jax
+      outputs = jax.tree.map(np.asarray, outputs)
+      # outputs = utils.map_single_structure(np.asarray, outputs)
     return outputs
 
   def decode_controller(self, controller: ControllerType) -> Controller:
@@ -552,6 +554,7 @@ BATCH_AGENT_FLAGS = dict(
     ),
     jax=dict(
         seed=ff.Integer(0, 'Random seed for JAX agents.'),
+        pack_args=ff.Boolean(False, 'Whether to pack arguments for JAX agents.'),
     ),
 )
 

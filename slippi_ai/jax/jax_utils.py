@@ -3,6 +3,7 @@
 import collections
 import functools
 import logging
+import math
 import os
 import typing as tp
 import types
@@ -545,6 +546,110 @@ def as_vma(x: T, ref) -> T:
     return x
 
   return jax.lax.pcast(x, tuple(ref.vma), to='varying')
+
+PackedArg = list[np.ndarray]
+
+class ArraySpec(tp.NamedTuple):
+  dtype: np.dtype
+  shape: tuple[int, ...]
+
+
+class ArgPacker[T]:
+
+  def __init__(self, batch_rank: int = 0):
+    self.batch_rank = batch_rank
+    self.needs_init = True
+
+  def _init(self, arg: T):
+    assert self.needs_init, 'ArgPacker can only be initialized once.'
+    self.needs_init = False
+
+    self.flat_specs: list[tuple[jax.tree_util.KeyPath, ArraySpec]] = []
+    self.flat_slices: list[tuple[int, int]] = []
+    self.packed_sizes = collections.defaultdict(lambda: 0)
+    leaves, self.structure = jax.tree.flatten_with_path(arg)
+
+    for path, x in leaves:
+      if not isinstance(x, np.ndarray):
+        raise ValueError(f'All leaves must be numpy arrays, got {type(x)}.')
+
+      spec = ArraySpec(dtype=x.dtype, shape=x.shape)
+      self.flat_specs.append((path, spec))
+      size = math.prod(x.shape[self.batch_rank:])
+      start = self.packed_sizes[x.dtype]
+      end = start + size
+      self.flat_slices.append((start, end))
+      self.packed_sizes[x.dtype] = end
+
+    self.dtypes = list(self.packed_sizes.keys())
+    print('dtypes:', self.dtypes)
+
+  def pack(self, arg: T) -> PackedArg:
+    if self.needs_init:
+      self._init(arg)
+
+    leaves = jax.tree.leaves(arg)
+    flattened = {dtype: [] for dtype in self.packed_sizes}
+
+    for (path, spec), x in zip(self.flat_specs, leaves):
+      # if not isinstance(x, np.ndarray):
+      #   raise ValueError(f'All leaves must be numpy arrays, got {type(x)} at {path}.')
+
+      if x.dtype != spec.dtype:
+        raise ValueError(f'Expected dtype {spec.dtype} at {path}, got {x.dtype}.')
+
+      if x.shape != spec.shape:
+        raise ValueError(f'Expected shape {spec.shape} at {path}, got {x.shape}.')
+
+      flattened[x.dtype].append(np.reshape(x, (*x.shape[:self.batch_rank], -1)))
+
+    packed = []
+    for dtype in self.dtypes:
+      packed.append(np.concatenate(flattened[dtype], axis=-1))
+
+    return packed
+
+  def unpack(self, packed_arg: list[np.ndarray] | list[jnp.ndarray]) -> T:
+    dtype_to_array = {
+        dtype: array
+        for dtype, array in zip(self.dtypes, packed_arg)
+    }
+
+    flat_leaves = []
+    for (_, spec), (start, end) in zip(self.flat_specs, self.flat_slices):
+      array = dtype_to_array[spec.dtype][..., start:end]
+      flat_leaves.append(array.reshape((*array.shape[:-1], *spec.shape[self.batch_rank:])))
+
+    return jax.tree.unflatten(self.structure, flat_leaves)
+
+
+def packed_nnx_jit(
+    func: tp.Callable[P, T],
+    pack_argnums: tp.Sequence[int],
+    batch_rank: int = 0,
+    **jit_kwargs,
+) -> tp.Callable[P, T]:
+
+  packers = [ArgPacker(batch_rank) for _ in pack_argnums]
+
+  @nnx.jit(**jit_kwargs)
+  def packed_func(*args, **kwargs) -> T:
+    args = list(args)
+    for packer, argnum in zip(packers, pack_argnums):
+      args[argnum] = packer.unpack(args[argnum])
+
+    return func(*args, **kwargs)  # type: ignore
+
+  @functools.wraps(func)
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    packed_args = list(args)
+    for packer, argnum in zip(packers, pack_argnums):
+      packed_args[argnum] = packer.pack(packed_args[argnum])
+
+    return packed_func(*packed_args, **kwargs)
+
+  return wrapped
+
 
 # TODO: accept kwargs?
 def data_parallel_train(

@@ -9,7 +9,7 @@ from slippi_ai import utils, data, agents
 from slippi_ai.types import Game, S
 from slippi_ai.data import StateAction
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
-from slippi_ai.jax import policies
+from slippi_ai.jax import policies, jax_utils
 
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
@@ -25,6 +25,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       sample_kwargs: dict = {},
       compile: bool = True,
       run_on_cpu: bool = False,
+      pack_args: bool = False,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -60,11 +61,16 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
 
-    self._sample = nnx.cached_partial(sample, policy, self._rngs)
-    self._jitted_sample = nnx.cached_partial(
-        nnx.jit(sample, donate_argnums=(1, 5)),
-        policy, self._rngs,
-    )
+    self._sample = jax_utils.cached_partial(sample, policy, self._rngs)
+
+    if pack_args:
+      jitted_sample = jax_utils.packed_nnx_jit(
+          sample, donate_argnums=(1, 5), pack_argnums=(2,))
+    else:
+      jitted_sample = jax_utils.nnx_jit(sample, donate_argnums=(1, 5))
+
+    self._jitted_sample = jax_utils.cached_partial(
+        jitted_sample, policy, self._rngs)
 
     def multi_sample(
         policy: policies.Policy[ControllerType],
@@ -101,18 +107,23 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
       return sample_outputs, final_state
 
-    self._multi_sample = nnx.cached_partial(multi_sample, policy, self._rngs)
-    self._jitted_multi_sample = nnx.cached_partial(
-        nnx.jit(multi_sample, donate_argnums=(1, 5)),
-        policy, self._rngs,
-    )
+    self._multi_sample = jax_utils.cached_partial(multi_sample, policy, self._rngs)
+
+    if pack_args:
+      jitted_multi_sample = jax_utils.packed_nnx_jit(
+          multi_sample, donate_argnums=(1, 5), pack_argnums=(2,))
+    else:
+      jitted_multi_sample = jax_utils.nnx_jit(multi_sample, donate_argnums=(1, 5))
+
+    self._jitted_multi_sample = jax_utils.cached_partial(
+        jitted_multi_sample, policy, self._rngs)
 
     self._hidden_state = self._policy.initial_state(batch_size, self._rngs)
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
     # Return a copy for buffer donation.
-    return utils.map_single_structure(jnp.copy, self._hidden_state)
+    return jax.tree.map(jnp.copy, self._hidden_state)
 
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     if isinstance(name_code, int):

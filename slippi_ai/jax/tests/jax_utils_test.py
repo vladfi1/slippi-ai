@@ -14,11 +14,10 @@ from flax import nnx
 import numpy as np
 
 import sys
-# sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
-    device_put, data_sharding,
+    device_put, data_sharding, ArgPacker,
 )
 
 
@@ -127,6 +126,106 @@ class ShardMapGradsTest(unittest.TestCase):
         np.array(ref_aux['loss']), np.array(shard_aux['loss']),
         rtol=1e-5, atol=1e-6,
     )
+
+
+class ArgPackerTest(unittest.TestCase):
+
+  def _assert_pytree_equal(self, a, b):
+    leaves_a = jax.tree.leaves(a)
+    leaves_b = jax.tree.leaves(b)
+    self.assertEqual(len(leaves_a), len(leaves_b))
+    for la, lb in zip(leaves_a, leaves_b):
+      np.testing.assert_array_equal(np.asarray(la), np.asarray(lb))
+
+  def test_single_array_roundtrip(self):
+    packer = ArgPacker()
+    x = np.arange(12, dtype=np.float32).reshape(3, 4)
+    packed = packer.pack(x)
+    self.assertEqual(len(packed), 1)  # one dtype
+    self._assert_pytree_equal(packer.unpack(packed), x)
+
+  def test_multiple_arrays_same_dtype(self):
+    packer = ArgPacker()
+    arg = [np.ones((2, 3), dtype=np.float32), np.zeros((2, 5), dtype=np.float32)]
+    packed = packer.pack(arg)
+    self.assertEqual(len(packed), 1)  # only one dtype
+    self._assert_pytree_equal(packer.unpack(packed), arg)
+
+  def test_multiple_dtypes(self):
+    packer = ArgPacker()
+    arg = {
+        'f': np.ones((4, 3), dtype=np.float32),
+        'i': np.arange(8, dtype=np.int32).reshape(4, 2),
+    }
+    packed = packer.pack(arg)
+    self.assertEqual(len(packed), 2)
+    result = packer.unpack(packed)
+    self._assert_pytree_equal(result, arg)
+
+  def test_batch_rank_2(self):
+    packer = ArgPacker(batch_rank=2)
+    arg = [
+        np.ones((2, 3, 4), dtype=np.float32),
+        np.zeros((2, 3, 5), dtype=np.float32),
+    ]
+    packed = packer.pack(arg)
+    self.assertEqual(packed[0].shape, (2, 3, 9))
+    self._assert_pytree_equal(packer.unpack(packed), arg)
+
+  def test_nested_namedtuple(self):
+    import collections
+    Point = collections.namedtuple('Point', ['x', 'y'])
+    packer = ArgPacker()
+    arg = Point(
+        x=np.array([1.0, 2.0], dtype=np.float32),
+        y=np.array([3.0, 4.0], dtype=np.float32),
+    )
+    packed = packer.pack(arg)
+    result = packer.unpack(packed)
+    self.assertIsInstance(result, Point)
+    self._assert_pytree_equal(result, arg)
+
+  def test_unpack_jax_arrays(self):
+    """unpack should work with jax arrays (e.g. after jit)."""
+    packer = ArgPacker()
+    arg = np.arange(6, dtype=np.float32).reshape(2, 3)
+    packed = packer.pack(arg)
+    jax_packed = [jnp.array(p) for p in packed]
+    result = packer.unpack(jax_packed)
+    self._assert_pytree_equal(result, arg)
+
+  def test_pack_multiple_times(self):
+    """pack can be called multiple times after initialization."""
+    packer = ArgPacker()
+    a = np.ones((3, 4), dtype=np.float32)
+    b = np.zeros((3, 4), dtype=np.float32)
+    packer.pack(a)
+    packed_b = packer.pack(b)
+    self._assert_pytree_equal(packer.unpack(packed_b), b)
+
+  def test_non_numpy_raises(self):
+    packer = ArgPacker()
+    with self.assertRaises(ValueError):
+      packer.pack(jnp.ones((2, 3)))
+
+  def test_lazy_init(self):
+    packer = ArgPacker()
+    self.assertTrue(packer.needs_init)
+    packer.pack(np.ones((2, 3), dtype=np.float32))
+    self.assertFalse(packer.needs_init)
+
+  def test_preserves_values(self):
+    """Packed/unpacked values should be numerically identical."""
+    rng = np.random.default_rng(0)
+    packer = ArgPacker()
+    arg = {
+        'a': rng.standard_normal((5, 3)).astype(np.float32),
+        'b': rng.integers(0, 100, (5, 7)).astype(np.int32),
+        'c': rng.standard_normal((5, 2)).astype(np.float32),
+    }
+    packed = packer.pack(arg)
+    result = packer.unpack(packed)
+    self._assert_pytree_equal(result, arg)
 
 
 if __name__ == '__main__':
