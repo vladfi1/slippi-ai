@@ -26,7 +26,7 @@ import webdataset as wds
 
 import melee
 
-from slippi_ai import reward, utils, nametags, paths, observations
+from slippi_ai import reward, utils, nametags, paths, observations, datasets
 from slippi_ai.types import (
     S, Game, game_array_to_nt, array_from_nt,
     BoolArray, FloatArray, Int32Array, Rank1,
@@ -69,10 +69,22 @@ class ReplayMeta(NamedTuple):
   def swap_players(self) -> tp.Self:
     return self._replace(p0=self.p1, p1=self.p0)
 
+class Replay(tp.NamedTuple):
+  """A replay with metadata."""
+  meta: ReplayMeta
+  game: Game[Rank1]
+
+  @property
+  def main_player(self) -> PlayerMeta:
+    return self.meta.p0
+
+  def read_game(self) -> Game[Rank1]:
+    return self.game
+
 class ReplayInfo(NamedTuple):
   path: file_utils.LocalFile | str
   swap: bool
-  meta: ReplayMeta
+  meta: ReplayMeta  # already swapped if swap=True
 
   mirror: bool = False
 
@@ -122,21 +134,12 @@ class ReplayInfo(NamedTuple):
 
     return game
 
-class WdsReplayInfo(tp.NamedTuple):
-  """A replay decoded from a WebDataset sample."""
-  meta: ReplayMeta
-  game: Game[Rank1]
-
-  @property
-  def main_player(self) -> PlayerMeta:
-    return self.meta.p0
-
-  def read_game(self) -> Game[Rank1]:
-    return self.game
+  def to_replay(self) -> Replay:
+    return Replay(meta=self.meta, game=self.read_game())
 
 
-def _parse_wds_sample(sample: dict) -> WdsReplayInfo:
-  """Decode a WebDataset sample dict into a WdsReplayInfo."""
+def _parse_wds_sample(sample: dict) -> Replay:
+  """Decode a WebDataset sample dict into a Replay."""
   meta_dict = json.loads(sample['meta'].decode('utf-8'))
 
   content: bytes = sample['game']
@@ -160,7 +163,7 @@ def _parse_wds_sample(sample: dict) -> WdsReplayInfo:
       slp_md5=meta_dict['slp_md5'],
       zlib=meta_dict['zlib'],  # not really used
   )
-  return WdsReplayInfo(
+  return Replay(
     meta=replay_meta,
     game=game)
 
@@ -498,7 +501,7 @@ class TrajectoryManager:
 
   def __init__(
       self,
-      source: Iterator[ReplayInfo] | Iterator[WdsReplayInfo],
+      source: Iterator[ReplayInfo] | Iterator[Replay],
       unroll_length: int,
       encode_name: Callable[[str], int],
       overlap: int = 1,
@@ -652,7 +655,6 @@ class WebDataConfig:
   shuffle_buffer_size: int = 1000
   cache_dir: Optional[str] = None
   verbose: bool = True
-  num_workers: int = 0
 
 # TODO: support mirroring
 class WebDataSource(AbstractDataSource):
@@ -667,10 +669,11 @@ class WebDataSource(AbstractDataSource):
       damage_ratio: float = 0.01,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
+      num_workers: int = 0,
+      buffer: int = 16,
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
       verbose: bool = True,
-      num_workers: int = 0,
   ):
     self.dataset_path = dataset_path
     self.split = split
@@ -727,13 +730,12 @@ class WebDataSource(AbstractDataSource):
         .shuffle(self.shuffle_buffer_size)
     )
 
-    from slippi_ai import datasets
     sample_ds = datasets.IteratorDataset(iter(pipeline))
 
     if num_workers > 0:
       self.replay_ds = datasets.MPMap(
           sample_ds, map_fn=_parse_wds_sample,
-          num_workers=num_workers, buffer=16 * num_workers)
+          num_workers=num_workers, buffer=buffer * num_workers)
     else:
       self.replay_ds = datasets.MapDataset(sample_ds, map_fn=_parse_wds_sample)
 
@@ -780,6 +782,8 @@ class DataSource(AbstractDataSource):
       balance_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
+      num_workers: int = 0,
+      buffer: int = 16,
   ):
     self.replays = replays
     self._batch_size = batch_size
@@ -799,10 +803,20 @@ class DataSource(AbstractDataSource):
     self.observation_config = observation_config
 
     self.replay_counter = 0
-    replay_iter = self.iter_replays()
+    replay_iter = self.iter_replay_infos()
+
+    replay_info_ds = datasets.IteratorDataset(replay_iter)
+
+    if num_workers > 0:
+      self.replay_ds = datasets.MPMap(
+          replay_info_ds, map_fn=ReplayInfo.to_replay,
+          num_workers=num_workers, buffer=buffer * num_workers)
+    else:
+      self.replay_ds = datasets.MapDataset(replay_info_ds, map_fn=ReplayInfo.to_replay)
+
     self.managers = [
         TrajectoryManager(
-            replay_iter,
+            self.replay_ds,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             observation_filter=build_observation_filter(),
@@ -816,7 +830,10 @@ class DataSource(AbstractDataSource):
   def batch_size(self) -> int:
     return self._batch_size
 
-  def iter_replays(self) -> Iterator[ReplayInfo]:
+  def shutdown(self):
+    self.replay_ds.stop()
+
+  def iter_replay_infos(self) -> Iterator[ReplayInfo]:
     replay_iter = utils.cycle_iterable(self.replays)
 
     if self.balance_characters:
@@ -913,91 +930,6 @@ class TimeBatchedDataSource(AbstractDataSource):
     return self.data_source.batch_size
 
 
-def produce_batches(data_source_kwargs: dict, batch_queue: mp.Queue):
-  data_source = _make_time_batched_source(**data_source_kwargs)
-  while True:
-    item = next(data_source)
-    # We convert to pickle to avoid a race condition with BatchAccumulator.
-    # MP Queues don't immediately pickle but instead use a background thread,
-    # so we need to force a copy before the next batch is produced and mutates
-    # the accumulator's buffers.
-    batch_queue.put(pickle.dumps(item))
-
-
-class DataSourceMP(AbstractDataSource):
-  def __init__(self, buffer=16, **kwargs):
-    self._batch_size = kwargs['batch_size']
-
-    # 'spawn' uses much less memory than 'fork'
-    context = mp.get_context('spawn')
-
-    self.batch_queue = context.Queue(buffer)
-    self.process = context.Process(
-        target=produce_batches, args=(kwargs, self.batch_queue),
-        name='DataSourceMP')
-    self.process.start()
-
-    atexit.register(self.shutdown)
-
-  @property
-  def batch_size(self) -> int:
-    return self._batch_size
-
-  def shutdown(self):
-    self.batch_queue.close()
-    self.process.terminate()
-
-  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
-    pickled_item = self.batch_queue.get()
-    return pickle.loads(pickled_item)
-
-  def __del__(self):
-    self.shutdown()
-
-class MultiDataSourceMP(AbstractDataSource):
-
-  def __init__(
-      self,
-      replays: List[ReplayInfo],
-      num_workers: int = 1,
-      batch_size: int = 64,
-      **kwargs,
-  ):
-    if num_workers > len(replays):
-      num_workers = len(replays)
-      logging.warning(
-          f"num_workers reduced to {num_workers} since there are only "
-          f"{len(replays)} replays.")
-
-    if batch_size % num_workers != 0:
-      raise ValueError(
-          f"batch_size ({batch_size}) must be divisible by num_workers "
-          f"({num_workers})")
-
-    self.sources = []
-    for i in range(num_workers):
-      self.sources.append(DataSourceMP(
-          replays=replays[i::num_workers],
-          batch_size=batch_size // num_workers,
-          **kwargs
-      ))
-
-    self._batch_size = batch_size
-
-  @property
-  def batch_size(self) -> int:
-    return self._batch_size
-
-  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
-    results = [next(source) for source in self.sources]
-    batches, epochs = zip(*results)
-    epoch = np.mean(epochs)
-    return utils.cached_zip_map_nt(BatchWithMeta)(np.concatenate, batches), epoch
-
-  def shutdown(self):
-    for source in self.sources:
-      source.shutdown()
-
 class CachedDataSource(AbstractDataSource):
   """Guaranteed fast, useful for performance benchmarking."""
 
@@ -1029,16 +961,13 @@ class DataConfig:
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
-def _make_single_process_source(
+def _make_source(
     cached: bool = False,
-    buffer: tp.Optional[int] = None,
     burnin: int = 5,
     replays: Optional[List[ReplayInfo]] = None,
     wds_path: Optional[str] = None,
     **kwargs,
 ) -> AbstractDataSource:
-  del buffer
-
   if replays is not None:
     del kwargs['wds']
     source = DataSource(replays=replays, **kwargs)
@@ -1064,32 +993,9 @@ def _make_time_batched_source(
   if unroll_chunks > 0:
     return TimeBatchedDataSource(unroll_chunks=unroll_chunks, **kwargs)
 
-  return _make_single_process_source(**kwargs)
+  return _make_source(**kwargs)
 
-# TODO: this kwarg manipulation is a bit messy
-# There is an asymmetry between the DataSource and WebDataSource code paths:
-# DataSource assumes that the ReplayInfo objects have already been produced,
-# while WebDataSource produces WdsReplayInfo objects on the fly from the WebDataset.
-def make_source(
-    num_workers: int = 0,
-    **kwargs,  # should contain "replays" or "wds_path"
-) -> AbstractDataSource:
-  is_ds = 'replays' in kwargs
-  is_wds = 'wds_path' in kwargs
-
-  if is_ds and is_wds:
-    raise ValueError("Cannot specify both replays and wds_path.")
-
-  if num_workers > 1 and is_wds:
-    logging.warning("num_workers > 1 not supported for WebDataSource, setting to 1.")
-    num_workers = 1
-
-  if num_workers == 1:
-    return DataSourceMP(**kwargs)
-  elif num_workers > 1:
-    return MultiDataSourceMP(num_workers=num_workers, **kwargs)
-
-  return _make_time_batched_source(**kwargs)
+make_source = _make_time_batched_source
 
 def toy_data_source(**kwargs) -> DataSource:
   dataset_config = DatasetConfig(
