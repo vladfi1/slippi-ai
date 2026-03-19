@@ -642,7 +642,8 @@ class ReplayBatchedEnvironment:
     self._push_output()
 
   def _push_output(self):
-    batch, _ = next(self.data_source)
+    batch_with_meta, _ = next(self.data_source)
+    batch = batch_with_meta.batch
 
     gamestates = {}
     for i, p in enumerate(self.players):

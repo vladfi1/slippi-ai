@@ -62,7 +62,7 @@ class DataSourceWdsTest(unittest.TestCase):
             )
 
             batch, epoch = next(source)
-            self.assertEqual(batch.game.stage.shape, (2, 17))
+            self.assertEqual(batch.batch.game.stage.shape, (2, 17))
 
 
 if __name__ == '__main__':

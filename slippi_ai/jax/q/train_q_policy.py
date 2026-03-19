@@ -148,19 +148,19 @@ class TrainManager[Action]:
       self.batch_iterator = utils.PrefetchIteratorMT(self.batch_iterator, prefetch)
       self.cleanup_fns.append(self.batch_iterator.stop)
 
-  def fetch_batch(self) -> tuple[data_lib.Batch, float, dict[str, data_lib.Frames]]:
-    batch, epoch = next(self.data_source)
+  def fetch_batch(self) -> tuple[data_lib.BatchWithMeta, float, dict[str, data_lib.Frames]]:
+    batch_with_meta, epoch = next(self.data_source)
     epoch += self.epoch_offset
-    frames = self.learner.prepare_frames(batch)
+    frames = self.learner.prepare_frames(batch_with_meta.batch)
     if self.prefetch > 0:
       frames = jax_utils.device_put(frames, self.data_sharding)
-    return batch, epoch, frames
+    return batch_with_meta, epoch, frames
 
   def stop(self):
     for fn in self.cleanup_fns:
       fn()
 
-  def step(self) -> tuple[dict, data_lib.Batch]:
+  def step(self) -> tuple[dict, data_lib.BatchWithMeta]:
     stats = {}
 
     with self.data_profiler:

@@ -27,7 +27,7 @@ def default_data_source():
   return data.toy_data_source(batch_size=1, unroll_length=8)
 
 def get_inputs(data_source: data.DataSource):
-  batch = next(data_source)[0]
+  batch = next(data_source)[0].batch
   bm_state = embed_game.from_state(batch.game)
   inputs = embed_game(bm_state), batch.is_resetting
   return tf.nest.map_structure(learner.swap_axes, inputs)

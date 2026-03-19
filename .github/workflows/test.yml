@@ -37,7 +37,7 @@ jobs:
         python tests/no_tf_import.py
         python tests/no_jax_import.py
         python tests/data_test.py
-        python tests/data_batch_snapshot.py --read --path slippi_ai/data/toy_dataset/batch_snapshot.pkl
+        python tests/data_batch_snapshot.py
 
     - name: Cache the test dataset
       uses: actions/cache@v5
