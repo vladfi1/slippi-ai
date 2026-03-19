@@ -45,6 +45,7 @@ if __name__ == '__main__':
   OPPONENT = ff.DEFINE_dict('opponent', **player_flags)
 
   TF_PROFILE = flags.DEFINE_boolean('tf_profile', False, 'Enable TF profiler.')
+  JAX_PROFILER_DIR = flags.DEFINE_string('jax_profiler_dir', None, 'Directory for JAX profiler traces.')
 
   def main(_):
     player_kwargs = {
@@ -101,6 +102,10 @@ if __name__ == '__main__':
         import tensorflow as tf
         tf.profiler.experimental.start('tf_profile')
 
+      if JAX_PROFILER_DIR.value:
+        import jax
+        jax.profiler.start_trace(JAX_PROFILER_DIR.value)
+
       timer = utils.Profiler(burnin=0)
       with timer:
         stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=True)
@@ -108,6 +113,10 @@ if __name__ == '__main__':
       if TF_PROFILE.value:
         import tensorflow as tf
         tf.profiler.experimental.stop()
+
+      if JAX_PROFILER_DIR.value:
+        import jax
+        jax.profiler.stop_trace()
 
     num_frames = NUM_ENVS.value * ROLLOUT_LENGTH.value
     num_minutes = num_frames / (60 * 60)
