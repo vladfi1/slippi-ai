@@ -1,5 +1,8 @@
+# TODO: implement WDS interfaces?
+
 import abc
 import itertools
+import random
 import threading
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as EventMP
@@ -11,6 +14,22 @@ class Dataset[T](abc.ABC, tp.Iterator[T]):
 
   def stop(self):
     """Cleans up any resources used by the dataset."""
+
+  def map[U](self, map_fn: tp.Callable[[T], U]) -> 'Dataset[U]':
+    """Maps a function over the dataset."""
+    return MapDataset(self, map_fn)
+
+  def map_iter[U](self, map_fn: tp.Callable[[T], tp.Iterable[U]]) -> 'Dataset[U]':
+    """Maps a function that returns an iterable over the dataset, flattening the result."""
+    return MapIter(self, map_fn)
+
+  def map_mp[U](self, map_fn: tp.Callable[[T], U], num_workers: int, buffer: int) -> 'Dataset[U]':
+    """Maps a function over the dataset using multiprocessing."""
+    return MPMap(self, map_fn, num_workers=num_workers, buffer=buffer)
+
+  def shuffle(self, buffer: int, seed: int = 0) -> 'Dataset[T]':
+    """Shuffles the dataset using a buffer."""
+    return ShuffleDataset(self, buffer, seed)
 
 class IteratorDataset[T](Dataset[T]):
 
@@ -96,6 +115,24 @@ class MapDataset[T, U](Dataset[U]):
   def __next__(self) -> U:
     item = next(self.dataset)
     return self.map_fn(item)
+
+  def stop(self):
+    self.dataset.stop()
+
+class MapIter[T, U](Dataset[U]):
+  """Maps a function that returns an iterable over a dataset, flattening the result."""
+
+  def __init__(self, dataset: Dataset[T], map_fn: tp.Callable[[T], tp.Iterable[U]]):
+    self.dataset = dataset
+    self.map_fn = map_fn
+    self._iterator = self._iterate()
+
+  def _iterate(self) -> tp.Iterator[U]:
+    for item in self.dataset:
+      yield from self.map_fn(item)
+
+  def __next__(self) -> U:
+    return next(self._iterator)
 
   def stop(self):
     self.dataset.stop()
@@ -192,6 +229,33 @@ class MPMap[T, U](Dataset[U]):
 
     self.dataset.stop()
 
+class ShuffleDataset[T](Dataset[T]):
+  """Shuffles items from a dataset using a buffer."""
+
+  def __init__(self, dataset: Dataset[T], buffer: int, seed: int = 0):
+    self.dataset = dataset
+    self.buffer = buffer
+    self.rng = random.Random(seed)
+    self._iterator = self._iterate()
+
+  def _iterate(self) -> tp.Iterator[T]:
+    buffer = []
+    for item in self.dataset:
+      if len(buffer) < self.buffer:
+        buffer.append(item)
+      else:
+        idx = self.rng.randint(0, self.buffer - 1)
+        yield buffer[idx]
+        buffer[idx] = item
+
+    self.rng.shuffle(buffer)
+    yield from buffer
+
+  def __next__(self) -> T:
+    return next(self._iterator)
+
+  def stop(self):
+    self.dataset.stop()
 
 class ChildDataset[T](Dataset[T]):
 
