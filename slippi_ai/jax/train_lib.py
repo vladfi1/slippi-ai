@@ -383,12 +383,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   )
   value_function = value_function_from_config(config, rngs)
 
-  learner_kwargs = dataclasses.asdict(config.learner)
   learner = learner_lib.Learner(
       policy=policy,
       value_function=value_function,
       mesh=mesh,
-      **learner_kwargs,
+      config=config.learner,
   )
 
   ### Dataset Creation ###

@@ -21,10 +21,16 @@ from slippi_ai.jax.jax_utils import swap_axes
 PS = jax.sharding.PartitionSpec
 Array = jax.Array
 
+@dataclasses.dataclass
+class LRDecayConfig:
+  steps: tp.Optional[int] = None
+  alpha: float = 0.1  # final lr multiplier
 
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
+  lr_decay: LRDecayConfig = dataclasses.field(default_factory=LRDecayConfig)
+
   reward_halflife: float = 4
   use_shard_map: bool = True
   combined: bool = False
@@ -93,29 +99,30 @@ class Learner(nnx.Module):
   def __init__(
       self,
       policy: Policy,
-      learning_rate: float,
-      reward_halflife: float,
       value_function: vf_lib.ValueFunction,
+      config: LearnerConfig,
       mesh: tp.Optional[jax.sharding.Mesh] = None,
       compile: bool = True,
-      combined: bool = False,
-      use_shard_map: bool = True,
-      explicit_pmean: bool = False,
-      smap_optimizer: bool = True,
   ):
     self.policy = policy
     self.value_function = value_function
-    self.discount = 0.5 ** (1 / (reward_halflife * 60))
+    self.discount = 0.5 ** (1 / (config.reward_halflife * 60))
     self.compile = compile
-    self.use_shard_map = use_shard_map
-    self.combined = combined
+    self.config = config
 
-    # Create optimizers using optax
+    if config.lr_decay.steps is None:
+      schedule = config.learning_rate
+    else:
+      schedule = optax.cosine_decay_schedule(
+          init_value=config.learning_rate,
+          decay_steps=config.lr_decay.steps,
+          alpha=config.lr_decay.alpha,
+      )
     self.policy_optimizer = nnx.Optimizer(
-        policy, optax.adam(learning_rate), wrt=nnx.Param)
+        policy, optax.adam(schedule), wrt=nnx.Param)
 
     self.value_optimizer = nnx.Optimizer(
-        self.value_function, optax.adam(learning_rate), wrt=nnx.Param)
+        self.value_function, optax.adam(config.learning_rate), wrt=nnx.Param)
 
     self.jit_step = jit_method(self._step, static_argnames=('train', 'compile'))
     self.jit_step_policy = jit_method(
@@ -126,11 +133,11 @@ class Learner(nnx.Module):
     if mesh is not None:
       jax_utils.replicate_module(self, mesh)
 
-    if use_shard_map:
+    if config.use_shard_map:
       if mesh is None:
         raise ValueError('mesh must be provided when use_shard_map is True.')
 
-      if combined:
+      if config.combined:
         raise NotImplementedError('Combined shard_map not implemented yet.')
 
       # Train and run functions using shard_map. Empirically these have better
@@ -141,8 +148,8 @@ class Learner(nnx.Module):
           optimizer=self.policy_optimizer,
           loss_fn=_policy_loss_fn,
           mesh=mesh,
-          explicit_pmean=explicit_pmean,
-          smap_optimizer=smap_optimizer,
+          explicit_pmean=config.explicit_pmean,
+          smap_optimizer=config.smap_optimizer,
       )
 
       self.sharded_run_policy = jax_utils.shard_map_loss_fn(
@@ -156,8 +163,8 @@ class Learner(nnx.Module):
           optimizer=self.value_optimizer,
           loss_fn=_value_loss_fn,
           mesh=mesh,
-          explicit_pmean=explicit_pmean,
-          smap_optimizer=smap_optimizer,
+          explicit_pmean=config.explicit_pmean,
+          smap_optimizer=config.smap_optimizer,
       )
 
       self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
@@ -254,7 +261,7 @@ class Learner(nnx.Module):
 
     policy_initial_states, value_initial_states = initial_states
 
-    if compile and self.use_shard_map:
+    if compile and self.config.use_shard_map:
       if train:
         with jax.profiler.TraceAnnotation("sharded_train_policy"):
           policy_metrics, policy_final_states = self.sharded_train_policy(
@@ -310,7 +317,7 @@ class Learner(nnx.Module):
       Tuple of (metrics dict, final recurrent states).
     """
     compile = self.compile if compile is None else compile
-    combined = self.combined if combined is None else combined
+    combined = self.config.combined if combined is None else combined
 
     if combined:
       if not compile:
