@@ -111,20 +111,20 @@ class TrainManager:
       hidden_state = jax_utils.device_put(hidden_state, data_sharding)
     self.hidden_state = hidden_state
 
-  def step(self) -> tuple[dict, data_lib.Batch]:
+  def step(self) -> tuple[dict, data_lib.BatchWithMeta]:
     stats = {}
 
     with self.data_profiler:
-      batch, epoch = next(self.data_source)
+      batch_with_meta, epoch = next(self.data_source)
 
     self.last_epoch = epoch
 
     with self.step_profiler:
       learner_stats, self.hidden_state = self.learner.step(
-          batch, self.hidden_state, **self.step_kwargs)
+          batch_with_meta.batch, self.hidden_state, **self.step_kwargs)
       stats.update(learner_stats)
 
-    return stats, batch
+    return stats, batch_with_meta
 
 def print_losses(name: str, stats: dict):
   v_uev = stats[learner_lib.Q_FUNCTION]['v']['uev']

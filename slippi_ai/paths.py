@@ -16,5 +16,6 @@ JAX_IMITATION_CKPT = CHECKPOINTS_DIR / 'jax_demo'
 TOY_DATASET = DATA_PATH / 'toy_dataset'
 TOY_DATA_DIR = TOY_DATASET / 'games'
 TOY_META_PATH = TOY_DATASET / 'meta.json'
+TOY_BATCH_SNAPSHOT = TOY_DATASET / 'batch_snapshot.pkl'
 
 AGENT_OUTPUTS_DIR = DATA_PATH / 'agent_outputs'

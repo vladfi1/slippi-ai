@@ -66,7 +66,8 @@ class TrainManager:
 
   def produce_frames(self):
     while not self.stop_requested.is_set():
-      batch, epoch = next(self.data_source)
+      batch_with_meta, epoch = next(self.data_source)
+      batch = batch_with_meta.batch
 
       if np.any(batch.is_resetting[:, 1:]):
         raise ValueError("Unexpected mid-episode reset.")
@@ -81,7 +82,7 @@ class TrainManager:
           reward=batch.reward,
       )
       frames = utils.map_nt(tf.convert_to_tensor, frames)
-      data = (batch, epoch, frames)
+      data = (batch_with_meta, epoch, frames)
 
       # Try to put data into the queue, but check for stop_requested
       while not self.stop_requested.is_set():
@@ -95,7 +96,7 @@ class TrainManager:
     self.stop_requested.set()
     self.data_thread.join()
 
-  def step(self, compiled: tp.Optional[bool] = None) -> tuple[dict, data_lib.Batch]:
+  def step(self, compiled: tp.Optional[bool] = None) -> tuple[dict, data_lib.BatchWithMeta]:
     with self.data_profiler:
       frames_queue_size = self.frames_queue.qsize()
       batch, epoch, frames = self.frames_queue.get()

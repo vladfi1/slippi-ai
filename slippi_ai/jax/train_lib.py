@@ -95,9 +95,10 @@ class TrainManager:
       # Non-MT prefetching doesn't seem to help.
       # self.batch_iterator = utils.prefetch_iterator(self.batch_iterator, prefetch)
 
-  def fetch_batch(self) -> tuple[data_lib.Batch, float, data_lib.Frames]:
-    batch, epoch = next(self.data_source)
+  def fetch_batch(self) -> tuple[data_lib.BatchWithMeta, float, data_lib.Frames]:
+    batch_with_meta, epoch = next(self.data_source)
     epoch += self.epoch_offset
+    batch = batch_with_meta.batch
 
     if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
@@ -128,13 +129,13 @@ class TrainManager:
     # and empirically improves performance by ~10%.
     frames = jax_utils.device_put(frames, self.data_sharding)
 
-    return (batch, epoch, frames)
+    return (batch_with_meta, epoch, frames)
 
   def stop(self):
     for fn in self.cleanup_fns:
       fn()
 
-  def step(self) -> tuple[dict, data_lib.Batch]:
+  def step(self) -> tuple[dict, data_lib.BatchWithMeta]:
     stats = {}
 
     with self.data_profiler:
