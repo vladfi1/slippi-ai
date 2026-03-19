@@ -81,6 +81,9 @@ class Replay(tp.NamedTuple):
   def read_game(self) -> Game[Rank1]:
     return self.game
 
+  def mirror(self) -> tp.Self:
+    return self._replace(game=mirror_game(self.game))
+
 class ReplayInfo(NamedTuple):
   path: file_utils.LocalFile | str
   swap: bool
@@ -671,6 +674,7 @@ class WebDataSource(AbstractDataSource):
       observation_config: Optional[observations.ObservationConfig] = None,
       num_workers: int = 0,
       buffer: int = 16,
+      mirror: bool = False,
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
       verbose: bool = True,
@@ -719,7 +723,8 @@ class WebDataSource(AbstractDataSource):
       logging.warning("No cache_dir specified for WebDataSource.")
 
     dataset = wds.compat.WebDataset(
-        shard_urls, shardshuffle=100,
+        shard_urls,
+        shardshuffle=1000,
         cache_dir=cache_dir,
         verbose=self.verbose,
     )
@@ -727,17 +732,24 @@ class WebDataSource(AbstractDataSource):
     pipeline = (
         dataset
         .repeat()
-        .shuffle(self.shuffle_buffer_size)
     )
 
     sample_ds = datasets.IteratorDataset(iter(pipeline))
 
     if num_workers > 0:
-      self.replay_ds = datasets.MPMap(
-          sample_ds, map_fn=_parse_wds_sample,
-          num_workers=num_workers, buffer=buffer * num_workers)
+      replay_ds = sample_ds.map_mp(
+          _parse_wds_sample,
+          num_workers=num_workers, buffer=buffer)
     else:
-      self.replay_ds = datasets.MapDataset(sample_ds, map_fn=_parse_wds_sample)
+      replay_ds = sample_ds.map(_parse_wds_sample)
+
+    if mirror:
+      replay_ds = replay_ds.map_iter(
+          lambda replay: (replay, replay.mirror())
+      )
+      self.num_replays *= 2
+
+    self.replay_ds = replay_ds.shuffle(self.shuffle_buffer_size)
 
     self.managers = [
         TrajectoryManager(
@@ -1051,6 +1063,7 @@ def build_sources(
           wds_path=dataset_config.wds_path,
           split=split,
           name_map=name_map,
+          mirror=dataset_config.mirror and split == 'train',  # mirror only in train
           **dataclasses.asdict(data_config),
           **kwargs,
       )
