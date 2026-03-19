@@ -137,42 +137,58 @@ class MPMap[T, U](Dataset[U]):
   def __init__(self, dataset: Dataset[T], map_fn: tp.Callable[[T], U], num_workers: int, buffer: int):
     self.dataset = dataset
     self.map_fn = map_fn
+    self.buffer_size = buffer
     context = mp.get_context('forkserver')
-    self.input_queue = context.Queue()
-    self.output_queue = context.Queue()
+    self.queues = [(context.Queue(), context.Queue()) for _ in range(num_workers)]
     self.stop_event = context.Event()
     self.workers = [
         context.Process(
             target=_mp_map_worker,
             args=(
                 map_fn,
-                self.input_queue,
-                self.output_queue,
+                input_queue,
+                output_queue,
                 self.stop_event,
             ),
             daemon=True,
-        ) for _ in range(num_workers)
+        ) for input_queue, output_queue in self.queues
     ]
 
+    # Queue up buffered items
     for _ in range(buffer):
-      self.input_queue.put(next(self.dataset))
+      for input_queue, _ in self.queues:
+        input_queue.put(next(self.dataset))
 
     for worker in self.workers:
       worker.start()
 
+    self._iterator = self._iter()
+
+  def _iter(self) -> tp.Iterator[U]:
+    queue_iter = itertools.cycle(self.queues)
+
+    for item in self.dataset:
+      input_queue, output_queue = next(queue_iter)
+      input_queue.put(item)
+      yield output_queue.get()
+
+    # Drain remaining items from output queues
+    for _ in range(self.buffer_size):
+      for _, output_queue in queue_iter:
+        yield output_queue.get()
+
   def __next__(self) -> U:
-    item = next(self.dataset)
-    self.input_queue.put(item)
-    return self.output_queue.get()
+    return next(self._iterator)
 
   def stop(self):
     self.stop_event.set()
     for worker in self.workers:
       worker.join()
 
-    self.output_queue.close()
-    self.input_queue.cancel_join_thread()
-    self.input_queue.close()
+    for input_queue, output_queue in self.queues:
+      output_queue.close()
+      input_queue.cancel_join_thread()
+      input_queue.close()
 
     self.dataset.stop()
 

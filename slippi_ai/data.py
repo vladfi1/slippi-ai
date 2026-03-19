@@ -810,7 +810,7 @@ class DataSource(AbstractDataSource):
     if num_workers > 0:
       self.replay_ds = datasets.MPMap(
           replay_info_ds, map_fn=ReplayInfo.to_replay,
-          num_workers=num_workers, buffer=buffer * num_workers)
+          num_workers=num_workers, buffer=buffer)
     else:
       self.replay_ds = datasets.MapDataset(replay_info_ds, map_fn=ReplayInfo.to_replay)
 
