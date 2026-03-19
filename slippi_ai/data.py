@@ -174,6 +174,9 @@ class Batch(NamedTuple, tp.Generic[S]):
   name: Int32Array[S]
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
+
+class BatchWithMeta(NamedTuple, tp.Generic[S]):
+  batch: Batch[S]
   meta: ChunkMeta
 
 def _charset(chars: Optional[Iterable[melee.Character]]) -> Set[int]:
@@ -573,9 +576,9 @@ class TrajectoryManager:
 
 Rank2 = tuple[int, int]
 
-def process_flat_batches(flat_batches: list) -> Batch[Rank2]:
+def process_flat_batches(flat_batches: list) -> BatchWithMeta[Rank2]:
   batched_flat = [np.stack(xs) for xs in zip(*flat_batches)]
-  return utils.cached_unflatten(Batch, batched_flat)
+  return utils.cached_unflatten(BatchWithMeta, batched_flat)
 
 
 def swap_players(game: Game[S]) -> Game[S]:
@@ -601,7 +604,7 @@ Shape = tp.TypeVarTuple('Shape')
 class AbstractDataSource(abc.ABC):
 
   @abc.abstractmethod
-  def __next__(self) -> tuple[Batch[Rank2], float]:
+  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
     """Returns the next batch and epoch number."""
 
   def shutdown(self):
@@ -722,12 +725,12 @@ class WebDataSource(AbstractDataSource):
   def batch_size(self) -> int:
     return self._batch_size
 
-  def __next__(self) -> Tuple[Batch[Rank2], float]:
+  def __next__(self) -> Tuple[BatchWithMeta[Rank2], float]:
     batch = process_flat_batches(
         [m.grab_chunk() for m in self.managers])
     epoch = self.replay_counter / self.num_replays
-    assert batch.game.stage.shape[-1] == self.chunk_size
-    assert batch.reward.shape[-1] == self.chunk_size - 1
+    assert batch.batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.batch.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
 class DataSource(AbstractDataSource):
@@ -803,13 +806,13 @@ class DataSource(AbstractDataSource):
       self.replay_counter += 1
       yield replay
 
-  def __next__(self) -> Tuple[Batch[Rank2], float]:
+  def __next__(self) -> Tuple[BatchWithMeta[Rank2], float]:
     batch = process_flat_batches(
         [m.grab_chunk() for m in self.managers])
     # TODO: the epoch isn't quite correct if we are balancing replays
     epoch = self.replay_counter / len(self.replays)
-    assert batch.game.stage.shape[-1] == self.chunk_size
-    assert batch.reward.shape[-1] == self.chunk_size - 1
+    assert batch.batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.batch.reward.shape[-1] == self.chunk_size - 1
     return batch, epoch
 
 class TimeBatchedDataSource(AbstractDataSource):
@@ -830,12 +833,13 @@ class TimeBatchedDataSource(AbstractDataSource):
     self.extra_frames = extra_frames
     self._current_index = unroll_chunks
 
-  def __next__(self) -> tuple[Batch[Rank2], float]:
+  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
     if self._current_index == self.unroll_chunks:
       self._current_batch_and_epoch = next(self.data_source)
       self._current_index = 0
 
-    batch, epoch = self._current_batch_and_epoch
+    batch_with_meta, epoch = self._current_batch_and_epoch
+    batch = batch_with_meta.batch
 
     start = self._current_index * self.unroll_length
     end = start + self.unroll_length + self.extra_frames
@@ -843,15 +847,17 @@ class TimeBatchedDataSource(AbstractDataSource):
 
     self._current_index += 1
 
-    return Batch(
-        game=utils.cached_map_nt(Game)(slice, batch.game),
-        name=slice(batch.name),
-        is_resetting=slice(batch.is_resetting),
-        reward=batch.reward[:, start:end - 1],
+    return BatchWithMeta(
+        batch=Batch(
+            game=utils.cached_map_nt(Game)(slice, batch.game),
+            name=slice(batch.name),
+            is_resetting=slice(batch.is_resetting),
+            reward=batch.reward[:, start:end - 1],
+        ),
         meta=ChunkMeta(
-            start=batch.meta.start + start,
-            end=batch.meta.start + end,
-            meta=batch.meta.meta,
+            start=batch_with_meta.meta.start + start,
+            end=batch_with_meta.meta.start + end,
+            meta=batch_with_meta.meta.meta,
         ),
     ), epoch
 
@@ -892,7 +898,7 @@ class DataSourceMP(AbstractDataSource):
     self.batch_queue.close()
     self.process.terminate()
 
-  def __next__(self) -> tuple[Batch[Rank2], float]:
+  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
     return self.batch_queue.get()
 
   def __del__(self):
@@ -932,11 +938,11 @@ class MultiDataSourceMP(AbstractDataSource):
   def batch_size(self) -> int:
     return self._batch_size
 
-  def __next__(self) -> tuple[Batch[Rank2], float]:
+  def __next__(self) -> tuple[BatchWithMeta[Rank2], float]:
     results = [next(source) for source in self.sources]
     batches, epochs = zip(*results)
     epoch = np.mean(epochs)
-    return utils.cached_zip_map_nt(Batch)(np.concatenate, batches), epoch
+    return utils.cached_zip_map_nt(BatchWithMeta)(np.concatenate, batches), epoch
 
   def shutdown(self):
     for source in self.sources:
@@ -954,7 +960,7 @@ class CachedDataSource(AbstractDataSource):
   def batch_size(self) -> int:
     return self.source.batch_size
 
-  def __next__(self) -> Tuple[Batch, float]:
+  def __next__(self) -> Tuple[BatchWithMeta, float]:
     batch = self._get_batch()[0]
     self.counter += 1
     return batch, self.counter

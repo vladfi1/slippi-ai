@@ -17,9 +17,8 @@ from slippi_ai import data, paths, utils
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('path', None, 'Path to read/write the batch snapshot.')
+flags.DEFINE_string('path', str(paths.TOY_BATCH_SNAPSHOT), 'Path to read/write the batch snapshot.')
 flags.DEFINE_boolean('write', False, 'Write mode: save batch to --path.')
-flags.DEFINE_boolean('read', False, 'Read mode: compare batch against --path.')
 flags.DEFINE_string('dataset_path', str(paths.TOY_DATASET), 'Path to the dataset.')
 flags.DEFINE_integer('batch_size', 2, 'Batch size.')
 flags.DEFINE_integer('unroll_length', 16, 'Unroll length.')
@@ -43,8 +42,6 @@ def make_source() -> data.DataSource:
 def main(_):
   if not FLAGS.path:
     raise ValueError('--path is required.')
-  if FLAGS.write == FLAGS.read:
-    raise ValueError('Exactly one of --write or --read must be set.')
 
   source = make_source()
   batch, epoch = next(source)

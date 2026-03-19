@@ -31,12 +31,13 @@ def batch_to_frames(
 
 
 def convert_batch(
-    batch: data_lib.Batch[data_lib.Rank2],  # batch-major
+    batch_with_meta: data_lib.BatchWithMeta[data_lib.Rank2],  # batch-major
     encode_name: tp.Callable[[str], types.Int32Array[data_lib.Rank1]],
 ) -> TwoPlayerBatch[data_lib.Rank2]:
+  batch = batch_with_meta.batch
   p1_game = data_lib.swap_players(batch.game)
   # Note: the name data is a numpy array of strings with shape [B]
-  p1_name_code = encode_name(batch.meta.meta.p1.name)  # [B]
+  p1_name_code = encode_name(batch_with_meta.meta.meta.p1.name)  # [B]
 
   full_p1_name_code = np.broadcast_to(
     p1_name_code[:, None], batch.name.shape)  # [B, T]
@@ -65,7 +66,7 @@ def convert_batch(
       p0_frames=p0_frames,
       p1_frames=p1_frames,
       # is_resetting=batch.is_resetting,
-      meta=batch.meta,
+      meta=batch_with_meta.meta,
   )
 
 
