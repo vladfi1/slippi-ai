@@ -751,9 +751,16 @@ class WebDataSource(AbstractDataSource):
 
     self.replay_ds = replay_ds.shuffle(self.shuffle_buffer_size)
 
+    def iter_replays():
+      for replay in replay_ds:
+        self.replay_counter += 1
+        yield replay
+
+    replay_iter = iter_replays()
+
     self.managers = [
         TrajectoryManager(
-            self.replay_ds,
+            replay_iter,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             observation_filter=build_observation_filter(),
