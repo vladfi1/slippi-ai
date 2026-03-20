@@ -38,6 +38,7 @@ class LearnerConfig:
   # Options for shard_map
   explicit_pmean: bool = False
   smap_optimizer: bool = True
+  pack_data: bool = False
 
 # TODO: move to jax_utils
 P = tp.ParamSpec('P')
@@ -150,6 +151,7 @@ class Learner(nnx.Module):
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
+          pack_data=config.pack_data,
       )
 
       self.sharded_run_policy = jax_utils.shard_map_loss_fn(
@@ -165,6 +167,7 @@ class Learner(nnx.Module):
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
+          pack_data=config.pack_data,
       )
 
       self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
