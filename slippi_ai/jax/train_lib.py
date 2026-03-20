@@ -127,7 +127,8 @@ class TrainManager:
 
     # When combined with prefetching this eliminates MemcpyH2D gaps in xprof,
     # and empirically improves performance by ~10%.
-    frames = jax_utils.device_put(frames, self.data_sharding)
+    if self.prefetch > 0:
+      frames = jax_utils.device_put(frames, self.data_sharding)
 
     return (batch_with_meta, epoch, frames)
 
@@ -425,6 +426,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   encode_name = nametags.name_encoder(name_map)
   encode_name_uint8 = lambda name: np.uint8(encode_name(name))
   batch_encode_name = np.vectorize(encode_name_uint8)
+
+  if runtime.prefetch > 0 and config.learner.pack_data:
+    logging.warning('Packing data, disabling prefetch')
+    runtime.prefetch = 0
 
   manager_kwargs = dict(
       rngs=rngs,

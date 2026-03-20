@@ -663,14 +663,11 @@ def data_parallel_train(
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
+    pack_data: bool = False,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
 
-  @nnx.jit(
-      donate_argnums=(0, 1, 3),
-      static_argnames=static_argnames,
-  )
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
       data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
@@ -721,7 +718,14 @@ def data_parallel_train(
 
     return update_fn(module, optimizer, data, state, *args)
 
-  return cached_partial(train, module, optimizer)
+  jit_train = packed_nnx_jit(
+      train,
+      pack_argnums=(2,) if pack_data else (),
+      donate_argnums=(0, 1, 3),
+      static_argnames=static_argnames,
+  )
+
+  return cached_partial(jit_train, module, optimizer)
 
 # TODO: share code with data_parallel_train?
 def data_parallel_train_with_rngs(
