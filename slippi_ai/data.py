@@ -723,8 +723,8 @@ class WebDataSource(AbstractDataSource):
       logging.warning("No cache_dir specified for WebDataSource.")
 
     dataset = wds.compat.WebDataset(
-        shard_urls,
-        shardshuffle=1000,
+        shard_urls,  # TODO: shuffle urls?
+        shardshuffle=False,
         cache_dir=cache_dir,
         verbose=self.verbose,
     )
