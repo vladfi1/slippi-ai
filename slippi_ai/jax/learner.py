@@ -30,6 +30,8 @@ class LRDecayConfig:
 class LearnerConfig:
   learning_rate: float = 1e-4
   lr_decay: LRDecayConfig = dataclasses.field(default_factory=LRDecayConfig)
+  weight_decay: float = 0
+  nesterov_momentum: bool = False
 
   reward_halflife: float = 4
   use_shard_map: bool = True
@@ -119,11 +121,17 @@ class Learner(nnx.Module):
           decay_steps=config.lr_decay.steps,
           alpha=config.lr_decay.alpha,
       )
+
     self.policy_optimizer = nnx.Optimizer(
-        policy, optax.adam(schedule), wrt=nnx.Param)
+        policy,
+        optax.adamw(
+            schedule,
+            weight_decay=config.weight_decay,
+            nesterov=config.nesterov_momentum),
+        wrt=nnx.Param)
 
     self.value_optimizer = nnx.Optimizer(
-        self.value_function, optax.adam(config.learning_rate), wrt=nnx.Param)
+        self.value_function, optax.adamw(config.learning_rate), wrt=nnx.Param)
 
     self.jit_step = jit_method(self._step, static_argnames=('train', 'compile'))
     self.jit_step_policy = jit_method(
