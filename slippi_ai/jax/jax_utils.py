@@ -650,6 +650,133 @@ def packed_nnx_jit(
 
   return wrapped
 
+# This is a simpler version of what nnx transforms already do internally.
+# Maybe there's a way to reuse some of their code?
+def functionalize(
+    func: tp.Callable[..., T],
+    argnums: tp.Sequence[int],
+    inputs: tp.Sequence[tp.Any],
+):
+  if len(argnums) != len(inputs):
+    raise ValueError(f'Length of argnums {len(argnums)} must match length of inputs {len(inputs)}.')
+
+  graphdefs: list[nnx.GraphDef] = []
+  for item in inputs:
+    graphdefs.append(nnx.graphdef(item))
+
+  @functools.wraps(func)
+  def wrapped(*args, **kwargs) -> tuple[T, list[dict]]:
+    args = list(args)
+
+    for argnum, graphdef in zip(argnums, graphdefs):
+      args[argnum] = nnx.merge(graphdef, args[argnum])
+
+    output = func(*args, **kwargs)
+
+    pure_outputs = []
+    for argnum in argnums:
+      pure_outputs.append(nnx.state(args[argnum]).to_pure_dict())
+
+    return output, pure_outputs
+
+  return wrapped
+
+CachedArgs = tp.TypeVarTuple('CachedArgs')
+
+class CachedFunctionalJit(tp.Generic[*CachedArgs, P, T]):
+
+  def __init__(
+      self,
+      func: tp.Callable[tp.Concatenate[tuple[*CachedArgs], P], T],
+      *args: *CachedArgs,
+      donate_argnums: tp.Sequence[int] = (),
+      **jit_kwargs,
+  ):
+    self.func = func
+    self.donate_argnums = donate_argnums
+    self.jit_kwargs = jit_kwargs
+
+    self.graphdefs: list[nnx.GraphDef] = []
+    self.pure_states: list[dict] = []
+
+    for arg in args:
+      graphdef, state = nnx.split(arg)
+      self.graphdefs.append(graphdef)
+      self.pure_states.append(state.to_pure_dict())
+
+    def pure_func(
+        pure_args: list[dict], *args: P.args, **kwargs: P.kwargs) -> tuple[T, list[dict]]:
+      cached_args = self._from_pure_states(pure_args)
+      output = func(cached_args, *args, **kwargs)
+      pure_out = [nnx.state(arg).to_pure_dict() for arg in cached_args]
+      return output, pure_out
+
+    if 0 not in donate_argnums:
+      donate_argnums = (0, *donate_argnums)
+
+    # Note: this is regular jax.jit, not nnx.jit
+    self.jitted_func = jit(pure_func, donate_argnums=donate_argnums, **jit_kwargs)
+
+  def _from_pure_states(self, pure_states: list[dict], copy: bool = False) -> tuple[*CachedArgs]:
+    if len(pure_states) != len(self.graphdefs):
+      raise ValueError(f'Length of pure_states {len(pure_states)} must match number of cached args {len(self.graphdefs)}.')
+
+    return tuple(
+        # Note: nnx.merge handles both States and pure dicts
+        nnx.merge(graphdef, state, copy=copy)
+        for graphdef, state in zip(self.graphdefs, pure_states))
+
+  def cached_args(self) -> tuple[*CachedArgs]:
+    return self._from_pure_states(self.pure_states)
+
+  def update_pure_state(self, index: int, new_state: dict):
+    self.pure_states[index] = new_state
+
+  def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    output, pure_out = self.jitted_func(self.pure_states, *args, **kwargs)
+    self.pure_states = pure_out
+    return output
+
+@tp.overload
+def cached_functional_jit(
+    func: tp.Callable[tp.Concatenate[In1, P], T],
+    arg1: In1,
+    **jit_kwargs,
+) -> CachedFunctionalJit[tuple[In1], P, T]: ...
+
+@tp.overload
+def cached_functional_jit(
+    func: tp.Callable[tp.Concatenate[In1, In2, P], T],
+    arg1: In1,
+    arg2: In2,
+    **jit_kwargs,
+) -> CachedFunctionalJit[tuple[In1, In2], P, T]: ...
+
+@tp.overload
+def cached_functional_jit(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, P], T],
+    arg1: In1,
+    arg2: In2,
+    arg3: In3,
+    **jit_kwargs,
+) -> CachedFunctionalJit[tuple[In1, In2, In3], P, T]: ...
+
+def cached_functional_jit(
+    func: tp.Callable[..., T],
+    *args,
+    donate_argnums: tp.Sequence[int] = (),
+    **jit_kwargs,
+):
+  def packed_fn(cached: tuple, *args, **kwargs):
+    return func(*cached, *args, **kwargs)
+
+  offset = len(args) - 1
+  donate_argnums = tuple(i - offset for i in donate_argnums)
+
+  return CachedFunctionalJit(
+    packed_fn, *args,
+    donate_argnums=donate_argnums,
+    **jit_kwargs)
 
 # TODO: accept kwargs?
 def data_parallel_train(
