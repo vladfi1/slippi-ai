@@ -56,7 +56,7 @@ def default_config():
   config.controller_head['name'] = ch_name
   config.controller_head[ch_name]['component_depth'] = 2
   config.controller_head[ch_name]['residual_size'] = 128
-  config.dataset.mirror = True
+  config.dataset.mirror = False
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
   config.dataset.data_dir = os.environ.get("DATA_DIR")
