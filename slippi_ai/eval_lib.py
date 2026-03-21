@@ -555,6 +555,7 @@ BATCH_AGENT_FLAGS = dict(
     jax=dict(
         seed=ff.Integer(0, 'Random seed for JAX agents.'),
         pack_args=ff.Boolean(False, 'Whether to pack arguments for JAX agents.'),
+        functionalize=ff.Boolean(False, 'Whether to functionalize the sample function for JAX agents.'),
     ),
 )
 

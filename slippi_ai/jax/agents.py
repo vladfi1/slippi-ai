@@ -26,6 +26,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       compile: bool = True,
       run_on_cpu: bool = False,
       pack_args: bool = False,
+      functionalize: bool = False,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -41,7 +42,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     default_controller = self._policy.controller_head.dummy_controller([batch_size])
     self._prev_controller = default_controller
 
-    self._rngs = nnx.Rngs(seed) if rngs is None else rngs
+    if rngs is None:
+      rngs = nnx.Rngs(seed)
 
     def sample(
         policy: policies.Policy[ControllerType],
@@ -61,16 +63,20 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
 
-    self._sample = jax_utils.cached_partial(sample, policy, self._rngs)
+    self._sample = jax_utils.cached_partial(sample, policy, rngs)
 
-    if pack_args:
-      jitted_sample = jax_utils.packed_nnx_jit(
-          sample, donate_argnums=(1, 5), pack_argnums=(2,))
+    if functionalize:
+      self._jitted_sample = jax_utils.cached_functional_jit(
+          sample, policy, rngs, donate_argnums=(5,))
     else:
-      jitted_sample = jax_utils.nnx_jit(sample, donate_argnums=(1, 5))
+      if pack_args:
+        jitted_sample = jax_utils.packed_nnx_jit(
+            sample, donate_argnums=(1, 5), pack_argnums=(2,))
+      else:
+        jitted_sample = jax_utils.nnx_jit(sample, donate_argnums=(1, 5))
 
-    self._jitted_sample = jax_utils.cached_partial(
-        jitted_sample, policy, self._rngs)
+      self._jitted_sample = jax_utils.cached_partial(
+          jitted_sample, policy, rngs)
 
     def multi_sample(
         policy: policies.Policy[ControllerType],
@@ -107,18 +113,22 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
       return sample_outputs, final_state
 
-    self._multi_sample = jax_utils.cached_partial(multi_sample, policy, self._rngs)
+    self._multi_sample = jax_utils.cached_partial(multi_sample, policy, rngs)
 
-    if pack_args:
-      jitted_multi_sample = jax_utils.packed_nnx_jit(
-          multi_sample, donate_argnums=(1, 5), pack_argnums=(2,))
+    if functionalize:
+      self._jitted_multi_sample = jax_utils.cached_functional_jit(
+          multi_sample, policy, rngs, donate_argnums=(5,))
     else:
-      jitted_multi_sample = jax_utils.nnx_jit(multi_sample, donate_argnums=(1, 5))
+      if pack_args:
+        jitted_multi_sample = jax_utils.packed_nnx_jit(
+            multi_sample, donate_argnums=(1, 5), pack_argnums=(2,))
+      else:
+        jitted_multi_sample = jax_utils.nnx_jit(multi_sample, donate_argnums=(1, 5))
 
-    self._jitted_multi_sample = jax_utils.cached_partial(
-        jitted_multi_sample, policy, self._rngs)
+      self._jitted_multi_sample = jax_utils.cached_partial(
+          jitted_multi_sample, policy, rngs)
 
-    self._hidden_state = self._policy.initial_state(batch_size, self._rngs)
+    self._hidden_state = self._policy.initial_state(batch_size, rngs)
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
