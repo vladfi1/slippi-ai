@@ -13,6 +13,7 @@ import wandb
 import melee
 from slippi_ai import flag_utils, paths
 from slippi_ai.jax import train_lib, embed, networks
+from skypilot import launch
 
 NET_NAME = networks.TransformerLike.name()
 
@@ -109,6 +110,9 @@ if __name__ == '__main__':
       dir=ff.String(None, 'directory to save logs'),
   )
 
+  flags.adopt_module_key_flags(launch)
+
+  @launch.wrap
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
