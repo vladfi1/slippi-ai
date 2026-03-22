@@ -17,6 +17,7 @@ class Config:
   ram: int = 16
   disk: int = 32
   reuse: bool = True
+  fast: bool = False
 
 SKY = ff.DEFINE_dict('sky', **flag_utils.get_flags_from_dataclass(Config))
 
@@ -141,7 +142,7 @@ def launch(config: Config):
       cluster_name=cluster,
       idle_minutes_to_autostop=10,
       down=True,
-      fast=True,
+      fast=config.fast,
   )
   print(f'Provisioning: sky api logs {request_id[:8]}')
 
