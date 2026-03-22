@@ -14,7 +14,9 @@ class Config:
   launch: bool = False
   gpu: str = 'RTX4090:1'
   cluster: tp.Optional[str] = None
-  memory: int = 24
+  ram: int = 16
+  disk: int = 32
+  reuse: bool = True
 
 SKY = ff.DEFINE_dict('sky', **flag_utils.get_flags_from_dataclass(Config))
 
@@ -43,6 +45,33 @@ ENV_VARS = [
     'FSSPEC_S3_KEY', 'FSSPEC_S3_SECRET', 'FSSPEC_S3_ENDPOINT_URL',
 ]
 
+def find_free_cluster(config: Config) -> tp.Optional[str]:
+  clusters = sky.get(sky.status())
+  for cluster in clusters:
+    if cluster.status != sky.ClusterStatus.UP:
+      continue
+
+    if cluster.accelerators is None:
+      continue
+
+    # TODO: better way to parse this
+    accelerators: dict = eval(cluster.accelerators)
+
+    gpu, num = config.gpu.split(':')
+    num = int(num)
+
+    if accelerators.get(gpu, 0) < num:
+      continue
+
+    jobs = sky.get(sky.queue(cluster.name, skip_finished=True))
+    if len(jobs) > 0:
+      continue
+
+    return cluster.name
+
+  return None
+
+
 def launch(config: Config):
   vast_kwargs = dict(
       args='--gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864',
@@ -53,9 +82,9 @@ def launch(config: Config):
   resources = sky.Resources(
       infra='vast',
       accelerators=config.gpu,
-      memory=f'{config.memory}+',
+      memory=f'{config.ram}+',
       image_id='docker:vladfi/slippi-ai:jax',
-      disk_size=16,
+      disk_size=config.disk,
       _cluster_config_overrides=dict(
           vast=dict(create_instance_kwargs=vast_kwargs,)
       ),
@@ -100,9 +129,16 @@ def launch(config: Config):
       file_mounts={'/root/.s3cfg': '~/.s3cfg'},
   )
 
+  cluster = config.cluster
+  if config.reuse and cluster is None:
+    free_cluster = find_free_cluster(config)
+    if free_cluster is not None:
+      print(f'Found free cluster {free_cluster}, reusing it.')
+      cluster = free_cluster
+
   request_id = sky.launch(
       task,
-      cluster_name=config.cluster,
+      cluster_name=cluster,
       idle_minutes_to_autostop=10,
       down=True,
       fast=True,
