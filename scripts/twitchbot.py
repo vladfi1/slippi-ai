@@ -12,6 +12,9 @@ import threading
 import typing as tp
 from typing import Optional, Union
 
+# Allow each agent to only use as much memory as it needs.
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
 from absl import app, flags
 import fancyflags as ff
 from twitchio.ext import commands, routines
@@ -20,9 +23,8 @@ import ray
 
 import melee
 
-from slippi_ai.tf import train_lib
-from slippi_ai.tf import saving
-from slippi_ai import flag_utils, eval_lib
+from slippi_ai import saving
+from slippi_ai import flag_utils, eval_lib, utils
 from slippi_ai import dolphin as dolphin_lib
 
 NAME_TO_STAGE = {
@@ -65,12 +67,14 @@ MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
-agent_flags = eval_lib.AGENT_FLAGS.copy()
+agent_flags = utils.map_nt(lambda x: x, eval_lib.AGENT_FLAGS)
 agent_flags.update(
     async_inference=ff.Boolean(True),
-    jit_compile=ff.Boolean(True),
     run_on_cpu=ff.Boolean(False),
 )
+agent_flags['tf']['jit_compile'] = ff.Boolean(True)
+agent_flags['jax']['functionalize'] = ff.Boolean(True)
+
 del agent_flags['path']  # not used
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
@@ -161,14 +165,14 @@ class SingleAgent(AgentConfig):
     if self._loaded:
       return
     self.state = saving.load_state_from_disk(self.agent_kwargs['path'])
-    self.config = flag_utils.dataclass_from_dict(
-        train_lib.Config, self.state['config'])
     self._loaded = True
 
   @property
   def delay(self) -> int:
     self._load()
-    return self.config.policy.delay
+    # TODO: find a more robust way of doing this.
+    # Note that this could be a tf or jax state/config.
+    return self.state['config']['policy']['delay']
 
   @property
   def batch_steps(self) -> int:
@@ -337,8 +341,15 @@ class BotSession:
         games_completed=self._games_completed,
     )
 
+GPU_KWARGS = dict(
+  num_gpus=0.1,
+  runtime_env={
+    'XLA_PYTHON_CLIENT_PREALLOCATE': 'false',
+  }
+)
+
 RemoteBotSession = ray.remote(num_gpus=0)(BotSession)
-RemoteGpuBotSession = ray.remote(num_gpus=0.1)(BotSession)
+RemoteGpuBotSession = ray.remote(**GPU_KWARGS)(BotSession)
 
 def get_ports(gamestate: melee.GameState, display_name: str):
   name_to_port = {
@@ -450,7 +461,7 @@ class Session:
     self._thread.join()
 
 RemoteSession = ray.remote(num_gpus=0)(Session)
-RemoteGpuSession = ray.remote(num_gpus=0.1)(Session)
+RemoteGpuSession = ray.remote(**GPU_KWARGS)(Session)
 
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
