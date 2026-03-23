@@ -86,6 +86,12 @@ if __name__ == '__main__':
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
           use_controller_rnn=ff.Boolean(False),
+          use_learned_char=ff.Boolean(True),
+          use_learned_action=ff.Boolean(True),
+          use_char_action_joint=ff.Boolean(True),
+          use_item_sum=ff.Boolean(True),
+          use_items=ff.Boolean(True),
+          hybrid_embed=ff.Boolean(False),
       ),
   )
 

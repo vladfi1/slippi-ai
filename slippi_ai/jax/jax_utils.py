@@ -85,7 +85,8 @@ def get_stats(x: Array) -> dict:
 
 def where(cond: Array, x: Array, y: Array) -> Array:
   """Broadcasting jnp.where, with cond of shape [B]."""
-  while cond.ndim < x.ndim:
+  shape = jnp.broadcast_shapes(x.shape, y.shape)
+  while cond.ndim < len(shape):
     cond = jnp.expand_dims(cond, -1)
   return jnp.where(cond, x, y)
 
