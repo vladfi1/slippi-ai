@@ -1450,13 +1450,23 @@ class FrameTransformer(StateActionNetwork):
 
 class MultiEmbed(nnx.Module):
 
-  def __init__(self, sizes: tuple[int, ...], features: int, rngs: nnx.Rngs):
+  def __init__(
+      self,
+      sizes: tuple[int, ...],
+      features: int,
+      rngs: nnx.Rngs,
+      embedding_init: tp.Optional[nnx.Initializer] = None,
+  ):
     self._sizes = sizes
     total_size = math.prod(sizes)
+    kwargs = {}
+    if embedding_init is not None:
+      kwargs['embedding_init'] = embedding_init
     self._embed = nnx.Embed(
         num_embeddings=total_size,
         features=features,
         rngs=rngs,
+        **kwargs,
     )
 
   def __call__(self, *inputs: Array) -> Array:
@@ -1484,6 +1494,12 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
         rnn_cell='lstm',
         use_self_nana=True,
         use_controller_rnn=False,
+        use_learned_char=True,
+        use_learned_action=True,
+        use_char_action_joint=True,
+        use_item_sum=True,
+        use_items=True,
+        hybrid_embed=False,
     )
 
   def __init__(
@@ -1495,9 +1511,21 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
       rnn_cell: str = 'lstm',
       use_self_nana: bool = True,
       use_controller_rnn: bool = False,
+      use_learned_char: bool = True,
+      use_learned_action: bool = True,
+      use_char_action_joint: bool = True,
+      use_item_sum: bool = True,
+      use_items: bool = True,
+      hybrid_embed: bool = False,
   ):
     self._embed_state_action = embed_state_action
     self._use_self_nana = use_self_nana
+    self._use_learned_char = use_learned_char
+    self._hybrid_embed = hybrid_embed
+    self._use_learned_action = use_learned_action
+    self._use_char_action_joint = use_char_action_joint
+    self._use_item_sum = use_item_sum
+    self._use_items = use_items
     embed_state_action_deep = embed_state_action.map(lambda e: e)
     embed_state_action_shallow = embed_state_action.map_shallow(lambda e: e)
 
@@ -1512,11 +1540,6 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
     self._item_embedding = embed_lib.struct_embedding_from_nt(
         'item',
         tp.cast(Item, embed_state_action_deep.state.items.item_0))
-    self._item_linear = nnx.Linear(
-        in_features=self._item_embedding.size,
-        out_features=hidden_size,
-        rngs=rngs,
-    )
     self._item_mlp = jax_utils.MLP(
         rngs=rngs,
         input_size=self._item_embedding.size,
@@ -1557,6 +1580,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
         sizes=(embed_char.size, embed_action.size),
         features=hidden_size,
         rngs=rngs,
+        embedding_init=nnx.initializers.zeros,
     )
 
     output_shape = jax_utils.eval_shape_method(self.__call__, embed_state_action.dummy(()))
@@ -1577,14 +1601,29 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
     return self._embed_game.from_state(game)
 
   def _embed_player_or_nana(self, raw: PlayerOrNana, default: PlayerOrNana) -> Array:
-    action = self._embed_action(raw.action) + self._embed_char_action(raw.character, raw.action)
+    if self._use_learned_action:
+      action = self._embed_action(raw.action)
+      if self._use_char_action_joint:
+        action = action + self._embed_char_action(raw.character, raw.action)
+      if self._hybrid_embed:
+        action = jnp.concatenate([action, default.action], axis=-1)
+    else:
+      action = default.action
+
+    if self._use_learned_char:
+      char = self._embed_char(raw.character)
+      if self._hybrid_embed:
+        char = jnp.concatenate([char, default.character], axis=-1)
+    else:
+      char = default.character
+
     parts = [
         default.percent,
         default.facing,
         default.x, default.y,
         action,
         default.invulnerable,
-        self._embed_char(raw.character),
+        char,
         default.jumps_left,
         default.shield_strength,
         default.on_ground,
@@ -1622,13 +1661,20 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
         *default_game.fod_platforms,
     ]
 
-    # Process items as a batch
-    stacked_items: Item = jax.tree.map(
-      lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
-    item_embed = self._item_embedding(stacked_items)
-    item_embed = self._item_linear(item_embed)
-    items_embed = jnp.sum(item_embed, axis=-2)  # Sum over items
-    parts.append(items_embed)
+    if self._use_items:
+      # Process items as a batch
+      stacked_items: Item = jax.tree.map(
+        lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
+      item_embed = self._item_embedding(stacked_items)
+      assert item_embed.shape[-2:] == (len(raw_game.items), self._item_embedding.size)
+      if self._use_item_sum:
+        item_embed = self._item_mlp(item_embed)
+        item_embed = jnp.where(stacked_items.exists[..., None], item_embed, 0)
+        items_embed = jnp.sum(item_embed, axis=-2)
+      else:
+        # Flatten items to concatenate them
+        items_embed = item_embed.reshape(*item_embed.shape[:-2], -1)
+      parts.append(items_embed)
 
     parts.append(tp.cast(Array, default_state_action_embed.name))
 
