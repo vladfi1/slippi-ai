@@ -309,10 +309,10 @@ class PeekableQueue(tp.Generic[T]):
   def put(self, item: T):
     self.queue.put(item)
 
-  def get(self) -> T:
+  def get(self, block: bool = True, timeout: tp.Optional[float] = None) -> T:
     if self._peeked:
       return self._peeked.pop()
-    return self.queue.get()
+    return self.queue.get(block=block, timeout=timeout)
 
   def peek_n(self, n: int) -> list[T]:
     while len(self._peeked) < n:

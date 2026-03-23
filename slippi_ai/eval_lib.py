@@ -269,11 +269,13 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       batch_size: int,
       console_delay: int = 0,
       batch_steps: int = 0,
+      timeout: tp.Optional[float] = None,
       **agent_kwargs,
   ):
     self.observation_config = observation_config
     self._batch_size = batch_size
     self._batch_steps = batch_steps
+    self._timeout = timeout
     self._agent = build_basic_agent(
         policy=policy,
         batch_size=batch_size,
@@ -291,6 +293,7 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     elif headroom == 0:
       logging.warning('No headroom, agent will effectively run synchronously.')
 
+    self._skipped_outputs = 0
     self._output_queue: utils.PeekableQueue[SampleOutputs[ControllerType]] \
       = utils.PeekableQueue()
 
@@ -303,8 +306,8 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     self._state_queue = queue.Queue()
     self._worker_thread = None
 
-    self.pop = self._output_queue.get
-    self.peek_n = self._output_queue.peek_n
+    # self.pop = self._output_queue.get
+    # self.peek_n = self._output_queue.peek_n
 
     self._observation_filter = observations.build_observation_filter(
         observation_config, shape=(batch_size,))
@@ -360,7 +363,22 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def push(self, game: Game[Rank1], needs_reset: BoolArray[Rank1]):
     self._observation_filter.reset_batched(needs_reset)
     self._observation_filter.filter_batched(game)
+    if self._skipped_outputs > 0:
+      self._skipped_outputs -= 1
+      return
     self._state_queue.put((game, needs_reset))
+
+  def pop(self) -> SampleOutputs:
+    try:
+      output = self._output_queue.get(timeout=self._timeout)
+      self._timeout = None  # once the agent is compiled, we don't need a timeout anymore
+      return output
+    except queue.Empty:
+      self._skipped_outputs += 1
+      # logging.warning(
+      #     f'Agent timed out after {self._timeout_ms} ms, '
+      #     f'skipping output (total skipped: {self._skipped_outputs}).')
+      return self.dummy_sample_outputs
 
   def __del__(self):
     self.stop()
@@ -512,6 +530,7 @@ class Agent:
       controller: tp.Optional[melee.Controller] = None,
       name_change_mode: NameChangeMode = NameChangeMode.FIXED,
       mirror: bool = False,
+      warmup: bool = True,
       **agent_kwargs,
   ):
     self._controller = controller
@@ -536,7 +555,8 @@ class Agent:
     self.name_index = 0
 
     self._agent = build_delayed_agent(state, batch_size=1, **agent_kwargs)
-    self._agent.warmup()
+    if warmup:
+      self._agent.warmup()
     # Forward async interface
     self.run = self._agent.run
     self.start = self._agent.start
@@ -843,8 +863,13 @@ class EnsembleAgent:
     logging.info(f'Setting auto-model to {model}')
 
     path = os.path.join(self._models_path, model)
-    agent_kwargs = dict(self._agent_kwargs, path=path)
-    self._agent = build_agent(**agent_kwargs)
+    agent_kwargs: dict[str, tp.Any] = dict(self._agent_kwargs, path=path)
+
+    # Compilation on the first step can take a long time, so we use a timeout
+    # to avoid desynchronization during netplay.
+    if agent_kwargs.get('async_inference', False):
+      agent_kwargs['timeout'] = 0.001  # 10ms, less than one frame
+    self._agent = build_agent(warmup=False, **agent_kwargs)
     self._agent.start()
     self.current_model = model
     return self._agent
