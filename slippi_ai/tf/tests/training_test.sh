@@ -6,7 +6,6 @@ python slippi_ai/tf/scripts/train.py \
   --config.dataset.data_dir=$DATASET/games \
   --config.dataset.meta_path=$DATASET/meta.json \
   --config.dataset.test_ratio=0.5 \
-  --config.data.compressed=True \
   --config.data.balance_characters=True \
   --config.data.batch_size=2 \
   --config.data.num_workers=0 \
