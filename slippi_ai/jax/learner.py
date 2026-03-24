@@ -3,7 +3,6 @@ import dataclasses
 import logging
 from typing import Optional
 import typing as tp
-import types
 
 import jax
 import jax.numpy as jnp
@@ -16,87 +15,19 @@ from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import value_function as vf_lib
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax.jax_utils import swap_axes
+from slippi_ai.jax.policy_learner import (
+    LRDecayConfig, LearnerConfig as PolicyLearnerConfig,
+    jit_method, Metrics, _policy_loss_fn,
+)
+from slippi_ai.jax.vf_learner import value_loss_fn
 
 
 PS = jax.sharding.PartitionSpec
 Array = jax.Array
 
 @dataclasses.dataclass
-class LRDecayConfig:
-  # Allow float for scientific notation at the command line.
-  steps: tp.Optional[float] = None
-  alpha: float = 0.1  # final lr multiplier
-
-@dataclasses.dataclass
-class LearnerConfig:
-  learning_rate: float = 1e-4
-  lr_decay: LRDecayConfig = dataclasses.field(default_factory=LRDecayConfig)
-  weight_decay: float = 0
-  nesterov_momentum: bool = False
-
+class LearnerConfig(PolicyLearnerConfig):
   reward_halflife: float = 4
-  use_shard_map: bool = True
-  combined: bool = False
-
-  # Options for shard_map
-  explicit_pmean: bool = False
-  smap_optimizer: bool = True
-  pack_data: bool = False
-
-# TODO: move to jax_utils
-P = tp.ParamSpec('P')
-T = tp.TypeVar('T')
-
-def jit_method(
-    method: tp.Callable[P, T],
-    *,
-    donate_argnums: Optional[int | tuple[int, ...]] = None,
-    static_argnames: tp.Optional[tp.Iterable[str]] = None,
-) -> tp.Callable[P, T]:
-  if not isinstance(method, types.MethodType):
-    raise TypeError('jit_method can only be applied to methods.')
-
-  if donate_argnums is None:
-    donate_argnums = ()
-  elif isinstance(donate_argnums, int):
-    donate_argnums = (donate_argnums,)
-
-  jitted = nnx.jit(
-      donate_argnums=(0,) + tuple(i+1 for i in donate_argnums),
-      static_argnames=static_argnames,
-  )(method.__func__)
-
-  return nnx.cached_partial(jitted, method.__self__)
-
-def _sharding_callback(sharding: tp.Optional[jax.sharding.Sharding]):
-  print(sharding)
-  import ipdb; ipdb.set_trace()
-
-Metrics = dict[str, tp.Any]
-
-def _policy_loss_fn(
-    policy: Policy, frames: Frames, initial_states: RecurrentState,
-# ) -> tp.Tuple[Metrics, RecurrentState]:
-) -> tuple[jax_utils.Loss, Metrics, RecurrentState]:
-  tm_frames: Frames = jax.tree.map(swap_axes, frames)
-  tm_loss, tm_metrics, final_states = policy.imitation_loss(tm_frames, initial_states)
-  bm_loss = jnp.mean(tm_loss, axis=0)
-  bm_metrics = jax.tree.map(swap_axes, tm_metrics)
-  return bm_loss, bm_metrics, final_states
-
-def _value_loss_fn(
-    value_function: vf_lib.ValueFunction,
-    frames: Frames,
-    initial_states: RecurrentState,
-    discount: float,
-# ) -> tp.Tuple[Metrics, RecurrentState]:
-) -> tuple[jax_utils.Loss, Metrics, RecurrentState]:
-  tm_frames: Frames = jax.tree.map(swap_axes, frames)
-  value_outputs, final_states = value_function.loss(
-      tm_frames, initial_states, discount)
-  loss = jnp.mean(value_outputs.loss, axis=0)
-  bm_metrics = jax.tree.map(swap_axes, value_outputs.metrics)
-  return loss, bm_metrics, final_states
 
 class Learner(nnx.Module):
 
@@ -172,7 +103,7 @@ class Learner(nnx.Module):
       self.sharded_train_value_function = jax_utils.data_parallel_train(
           module=self.value_function,
           optimizer=self.value_optimizer,
-          loss_fn=_value_loss_fn,
+          loss_fn=value_loss_fn,
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
@@ -181,7 +112,7 @@ class Learner(nnx.Module):
 
       self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
           module=self.value_function,
-          loss_fn=_value_loss_fn,
+          loss_fn=value_loss_fn,
           mesh=mesh,
       )
 

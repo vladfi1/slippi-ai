@@ -12,15 +12,14 @@ import wandb
 
 import melee
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import train_lib, embed, networks
+from slippi_ai.jax import train_lib, train_policy, embed, networks
 from skypilot import launch
 
 NET_NAME = networks.TransformerLike.name()
 
 def default_config():
-  config = train_lib.Config()
+  config = train_lib.Config(max_names=32)
 
-  config.max_names = 32
   config.policy.delay = 21
   config.data.batch_size=512
   config.data.unroll_length=80
@@ -95,7 +94,7 @@ if __name__ == '__main__':
       ),
   )
 
-  TOY_VF = flags.DEFINE_bool('toy_vf', False, 'Use a toy value function for quick testing')
+  NO_VF = flags.DEFINE_bool('no_vf', False, 'Use a toy value function for quick testing')
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
@@ -164,12 +163,7 @@ if __name__ == '__main__':
     update_network_config(config.network)
 
     vf_net_config = config.value_function.network
-    if TOY_VF.value:
-      vf_net_config['name'] = 'mlp'
-      vf_net_config['mlp'].update(depth=0)
-      vf_net_config['embed']['name'] = 'simple'
-    else:
-      update_network_config(vf_net_config)
+    update_network_config(vf_net_config)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
@@ -181,6 +175,10 @@ if __name__ == '__main__':
         # config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
-    train_lib.train(config)
+
+    if NO_VF.value:
+      train_policy.train(config)
+    else:
+      train_lib.train(config)
 
   app.run(main)
