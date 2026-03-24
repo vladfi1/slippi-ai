@@ -22,7 +22,6 @@ import fsspec
 import numpy as np
 import pyarrow
 import pyarrow.parquet as pq
-import webdataset as wds
 
 import melee
 
@@ -443,6 +442,8 @@ def write_wds_shards(
     output_dir: str,
     shard_writer_config: ShardWriterConfig = ShardWriterConfig(),
 ):
+  import webdataset as wds
+
   config.validate()
 
   if config.mirror:
@@ -721,6 +722,8 @@ class WebDataSource(AbstractDataSource):
       os.makedirs(cache_dir, exist_ok=True)
     else:
       logging.warning("No cache_dir specified for WebDataSource.")
+
+    import webdataset as wds
 
     dataset = wds.compat.WebDataset(
         shard_urls,  # TODO: shuffle urls?
