@@ -1,4 +1,4 @@
-"""Train (and test) a network via imitation learning - JAX version."""
+"""Train a policy network via imitation learning - JAX version."""
 
 import contextlib
 import dataclasses
@@ -25,15 +25,16 @@ from slippi_ai import (
     nametags,
     utils,
     data as data_lib,
+    observations as obs_lib,
 )
-from slippi_ai import data as data_lib
+from slippi_ai.policies import Platform
 
-from slippi_ai.jax import(
-    train_policy,
-    networks,
+from slippi_ai.jax import (
+    networks, controller_heads,
     jax_utils, saving,
-    learner as learner_lib,
-    value_function as vf_lib,
+    embed as embed_lib,
+    policy_learner as learner_lib,
+    policies as policies_lib,
 )
 
 
@@ -46,13 +47,12 @@ class TrainManager:
 
   def __init__(
       self,
-      learner: learner_lib.Learner,
+      learner: learner_lib.PolicyLearner,
       data_source: data_lib.AbstractDataSource,
       step_kwargs={},
       prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
       data_sharding: tp.Optional[jax.sharding.NamedSharding] = None,
-      # TODO: pass in epoch offset when resuming from checkpoint
       epoch_offset: float = 0,
   ):
     self.learner = learner
@@ -65,7 +65,6 @@ class TrainManager:
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
 
-    # Initialize hidden state (and shard if multi-device)
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
       hidden_state = jax_utils.device_put(hidden_state, data_sharding)
@@ -87,9 +86,6 @@ class TrainManager:
       self.batch_iterator = utils.PrefetchIteratorMT(self.batch_iterator, prefetch)
       self.cleanup_fns.append(self.batch_iterator.stop)
 
-      # Non-MT prefetching doesn't seem to help.
-      # self.batch_iterator = utils.prefetch_iterator(self.batch_iterator, prefetch)
-
   def fetch_batch(self) -> tuple[data_lib.BatchWithMeta, float, data_lib.Frames]:
     batch_with_meta, epoch = next(self.data_source)
     epoch += self.epoch_offset
@@ -98,20 +94,11 @@ class TrainManager:
     if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
 
-    # Construct StateAction from raw batch data
     state_action = data_lib.StateAction(
         state=batch.game,
         action=batch.game.p0.controller,
         name=batch.name,
     )
-
-    # Encode frames using the policy's network
-    # TODO: when prefetching, calling network.encode can result strange
-    # errors, such as:
-    # 'SimpleEmbedNetwork' object has no attribute '_embed_state_action'
-    # I believe this is due to a race condition with flax's in-place Module
-    # updates, which can briefly cause members of the modules to disappear.
-    # This should be mitigated by the use of nnx.cached_partial in the Learner.
     state_action = self._encode_state_action(state_action)
 
     frames = data_lib.Frames(
@@ -120,8 +107,6 @@ class TrainManager:
         reward=batch.reward,
     )
 
-    # When combined with prefetching this eliminates MemcpyH2D gaps in xprof,
-    # and empirically improves performance by ~10%.
     if self.prefetch > 0:
       frames = jax_utils.device_put(frames, self.data_sharding)
 
@@ -167,16 +152,54 @@ def log_stats(
 
 _field = utils.field
 
+
 @dataclasses.dataclass
-class ValueFunctionConfig:
-  separate_network_config: bool = True
+class RuntimeConfig:
+  max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_step: tp.Optional[int] = None  # maximum number of training steps
+  log_interval: int = 10  # seconds between logging
+
+  num_evals_per_epoch: float = 1  # number evaluations per training epoch
+  num_eval_epochs: float = 1  # number of epochs per evaluation
+  max_eval_steps: tp.Optional[int] = None  # for testing
+  eval_at_start: bool = False
+
+  compile: bool = True  # whether to JIT compile the training step
+  multi_device: bool = True  # whether to use multi-device data parallelism
+  prefetch: int = 1  # number of batches to prefetch in data loader
+
+  profile_server_port: tp.Optional[int] = None
+  profile_trace_dir: tp.Optional[str] = None
+
+
+@dataclasses.dataclass
+class Config:
+  runtime: RuntimeConfig = _field(RuntimeConfig)
+
+  dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
+  data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
+
+  learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
+
   network: dict = _field(networks.default_network_config)
+  controller_head: dict = _field(controller_heads.default_config)
 
+  embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
 
-@dataclasses.dataclass
-class Config(train_policy.Config):
-  learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)  # pyright: ignore[reportIncompatibleVariableOverride]
-  value_function: ValueFunctionConfig = _field(ValueFunctionConfig)
+  policy: policies_lib.PolicyConfig = _field(policies_lib.PolicyConfig)
+
+  max_names: int = 16
+
+  expt_root: str = 'experiments/jax'
+  expt_dir: tp.Optional[str] = None
+  tag: tp.Optional[str] = None
+
+  restore_path: tp.Optional[str] = None
+
+  seed: int = 0
+  version: int = 1
+  platform: str = Platform.JAX.value
 
 
 def _get_loss(stats: dict):
@@ -187,22 +210,6 @@ def _get_loss(stats: dict):
     return loss.mean().item()
   return loss
 
-def value_function_from_config(
-    config: Config,
-    rngs: nnx.Rngs,
-) -> vf_lib.ValueFunction:
-  vf_config = config.value_function
-  network_config = config.network
-  if vf_config.separate_network_config:
-    network_config = vf_config.network
-
-  return vf_lib.ValueFunction(
-      rngs=rngs,
-      network_config=network_config,
-      num_names=config.max_names,
-      embed_config=config.embed,
-  )
-
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
@@ -210,7 +217,6 @@ def train(config: Config):
 
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
-  # Giving XLA all available memory avoids fragmentation issues
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
 
   if config.runtime.profile_server_port is not None:
@@ -226,7 +232,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   pickle_path = os.path.join(expt_dir, 'latest.pkl')
 
-  # attempt to restore parameters
   restored = False
   combined_state: tp.Optional[dict] = None
   if config.restore_path:
@@ -242,7 +247,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.info('not restoring any params')
 
-  # Training state. TODO: use orbax?
   step = 0
   train_time = 0.0
   best_eval_loss = float('inf')
@@ -262,24 +266,18 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, combined_state['config'])
 
-    # We can update the delay as it doesn't affect the network architecture.
     if restore_config.policy.delay != config.policy.delay:
       logging.warning(
           f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
-      best_eval_loss = float('inf')  # Old losses don't apply to new delay.
+      best_eval_loss = float('inf')
 
-    # These we can't change after the fact.
-    for key in ['network', 'controller_head', 'embed', 'max_names', 'value_function']:
+    for key in ['network', 'controller_head', 'embed', 'max_names']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
         if config.restore_path is None:
-          # In this case we are implicitly restoring from the same experiment,
-          # and it would be surprising to use the old config.
-          # TODO: improve this check, maybe ask the user for confirmation?
           raise ValueError(
               f'Requested {key} config doesn\'t match existing config.')
-
         logging.warning(
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
@@ -290,7 +288,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
-  # Multi-device setup
   runtime = config.runtime
   mesh: tp.Optional[jax.sharding.Mesh] = None
   data_sharding = None
@@ -311,19 +308,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if num_devices > 1:
       logging.warning(
           'Multiple devices detected but multi-device training not enabled.')
-
     if config.learner.use_shard_map:
       logging.warning(
           'Learner.use_shard_map enabled without multi-device training; disabling.')
       config.learner.use_shard_map = False
-
     logging.info('Single-device training')
 
-
-  # Initialize RNG
   rngs = nnx.Rngs(config.seed)
 
-  # Build policy and value function
   policy = saving.policy_from_configs(
       network_config=config.network,
       controller_head_config=config.controller_head,
@@ -332,19 +324,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       max_name=config.max_names,
       rngs=rngs,
   )
-  value_function = value_function_from_config(config, rngs)
 
-  learner = learner_lib.Learner(
+  learner = learner_lib.PolicyLearner(
       policy=policy,
-      value_function=value_function,
-      mesh=mesh,
       config=config.learner,
+      mesh=mesh,
   )
 
   ### Dataset Creation ###
   name_map: tp.Optional[dict[str, int]] = None
   if restored:
-    assert isinstance(combined_state, dict)  # appease type checker
+    assert isinstance(combined_state, dict)
     name_map = combined_state['name_map']
 
   train_data_config = config.data
@@ -365,7 +355,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)
 
-  # Record name map
   logging.info(name_map)
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
@@ -394,7 +383,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       learner, test_data, dict(train=False, compile=runtime.compile),
       **manager_kwargs)
 
-  # TrainManager should probably be a proper context manager.
   exit_stack.callback(train_manager.stop)
   exit_stack.callback(test_manager.stop)
 
@@ -407,10 +395,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.info('GPU memory usage not available (pynvml not installed)')
 
-  # TODO: use orbax instead?
   def save(eval_loss=None):
     nonlocal best_eval_loss
-    # Local Save
     state = jax_utils.get_module_state(learner)
 
     counters = dict(
@@ -421,7 +407,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         train_epoch=train_manager.last_epoch,
     )
 
-    # easier to always bundle the config with the state
     combined = dict(
         state=state,
         step=step,
@@ -436,7 +421,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       f.write(pickled_state)
 
   if restored:
-    assert isinstance(combined_state, dict)  # appease type checker
+    assert isinstance(combined_state, dict)
     jax_utils.set_module_state(learner, combined_state['state'])
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
@@ -521,7 +506,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     def time_mean(x: jax.Array) -> np.ndarray:
       assert x.shape[0] == config.data.batch_size
-      # time dim is unroll_length [+ overlap for value stats]
       return np.mean(np.asarray(x), axis=1)
 
     start_time = time.perf_counter()
@@ -532,7 +516,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs
       and (runtime.max_eval_steps is None or eval_steps < runtime.max_eval_steps)
     ):
-      # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
         test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
@@ -548,7 +531,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     eval_time = time.perf_counter() - start_time
 
-    # [eval_steps, batch_size], mean taken over time
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)
 
     data_time = test_manager.data_profiler.mean_time()
@@ -557,7 +539,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     sps = len(per_step_eval_stats) / eval_time
     frames_per_step = test_data.batch_size * config.data.unroll_length
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
-
 
     train_epoch = epoch_tracker.last
     counters = dict(
@@ -581,7 +562,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         eval_timings=timings,
     )
 
-    # Calculate the mean eval loss
     eval_loss = eval_stats['policy']['loss'].mean()
 
     print(f'EVAL step={step} epoch={train_epoch:.3f} loss={eval_loss:.4f}')
@@ -591,19 +571,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' num_batches={len(per_step_eval_stats)}')
     print()
 
-    # Save if the eval loss is the best so far
     if eval_loss < best_eval_loss:
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
 
-    # Stats have shape [num_eval_steps, batch_size]
     loss = eval_stats['policy']['loss']
     assert loss.shape == (len(per_step_eval_stats), test_data.batch_size)
 
     meta = utils.batch_nest_nt(metas)
 
-    # Name of the player we're imitating.
     name = meta.meta.p0.name
     encoded_name: np.ndarray = batch_encode_name(name)
     assert encoded_name.dtype == np.uint8
@@ -620,7 +597,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         counts=np.array(counts, dtype=np.uint32),
     )
 
-    # Log losses aggregated by character
     if len(allowed_characters) > 1:
       characters = meta.meta.p0.character
       per_character_loss_sums = {}
@@ -652,7 +628,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     with train_profiler:
       train_stats, _ = train_manager.step()
 
-    # Update counters
     step += 1
     total_frames += FRAMES_PER_STEP
     train_time += train_profiler.last_time
