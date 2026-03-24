@@ -23,7 +23,8 @@ Array = jax.Array
 
 @dataclasses.dataclass
 class LRDecayConfig:
-  steps: tp.Optional[int] = None
+  # Allow float for scientific notation at the command line.
+  steps: tp.Optional[float] = None
   alpha: float = 0.1  # final lr multiplier
 
 @dataclasses.dataclass
@@ -118,7 +119,7 @@ class Learner(nnx.Module):
     else:
       schedule = optax.cosine_decay_schedule(
           init_value=config.learning_rate,
-          decay_steps=config.lr_decay.steps,
+          decay_steps=int(config.lr_decay.steps),
           alpha=config.lr_decay.alpha,
       )
 
