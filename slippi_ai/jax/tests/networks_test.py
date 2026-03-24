@@ -63,20 +63,5 @@ class NetworksTest(unittest.TestCase):
       jax.tree.map(assert_tensors_close, unroll_outputs, step_outputs)
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
 
-  def test_unroll_vs_step_sa_frame_tx(self):
-    self.skipTest('frame_tx test is very slow')
-    rngs = nnx.Rngs(0)
-    embed_config = embed.EmbedConfig()
-    state_action_embedding = embed_config.make_state_action_embedding(num_names=8)
-    config = networks.FrameTransformer.default_config()
-    config.update(
-        num_layers=2,
-        hidden_size=8,
-        num_heads=2,
-    )
-    network = networks.FrameTransformer(
-        rngs=rngs, embed_state_action=state_action_embedding, **config)
-    self._test_unroll_vs_step_sa_net(network)
-
 if __name__ == '__main__':
   unittest.main(failfast=True)
