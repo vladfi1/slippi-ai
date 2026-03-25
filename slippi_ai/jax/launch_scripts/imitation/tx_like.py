@@ -2,7 +2,6 @@
 
 """Train a model using imitation learning."""
 
-import dataclasses
 import os
 
 from absl import app, flags
@@ -143,7 +142,11 @@ if __name__ == '__main__':
       if config.tag is None:
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
-        config.tag = f"{char}_d{delay}_{net}_{n}x{h}"
+
+        rfs = config.policy.frame_skip
+        rfs = f'rfs{rfs}'
+
+        config.tag = f"{char}_d{delay}_{n}x{h}_{rfs}"
 
     config.dataset.allowed_characters = char
 

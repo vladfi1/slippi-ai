@@ -27,18 +27,18 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
       self,
       rngs: nnx.Rngs | nnx.RngStream,
       inputs: Array,
-      prev_controller_state: ControllerType,
+      prev_controller_state: list[ControllerType],
       temperature: tp.Optional[float] = None,
-  ) -> SampleOutputs[ControllerType]:
+  ) -> list[SampleOutputs[ControllerType]]:
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod
   def distance(
       self,
       inputs: Array,
-      prev_controller_state: ControllerType,
-      target_controller_state: ControllerType,
-  ) -> DistanceOutputs[ControllerType]:
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
     """A struct of distances (generally, negative log probs)."""
 
   @classmethod
@@ -90,7 +90,7 @@ class Independent(ControllerHead[ControllerType]):
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
     return self.embed_controller
 
-  def controller_prediction(self, inputs, prev_controller_state) -> ControllerType:
+  def controller_prediction(self, inputs, prev_controller_state: ControllerType) -> ControllerType:
     controller_prediction = self.to_controller_input(inputs)
 
     # TODO: come up with a better way to do this that generalizes nicely across
@@ -102,18 +102,41 @@ class Independent(ControllerHead[ControllerType]):
     leaf_logits = jnp.split(controller_prediction, split_indices, axis=-1)
     return self.embed_controller.unflatten(iter(leaf_logits))
 
-  def sample(self, rngs, inputs, prev_controller_state, temperature=None):
-    logits = self.controller_prediction(inputs, prev_controller_state)
+  def sample(
+      self,
+      rngs: nnx.Rngs | nnx.RngStream,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      temperature: tp.Optional[float] = None,
+  ) -> list[SampleOutputs[ControllerType]]:
+    """Sample a controller state given input features and previous state."""
+    outputs: list[SampleOutputs[ControllerType]] = []
 
-    sample = self.embed_controller.map(
-        lambda e, l: e.sample(rngs, l, temperature=temperature), logits)
-    return SampleOutputs(controller_state=sample, logits=logits)
+    for prev in prev_controller_state:
+      logits = self.controller_prediction(inputs, prev)
+      sample = self.embed_controller.map(
+          lambda e, l: e.sample(rngs(), l, temperature=temperature), logits)
+      outputs.append(SampleOutputs(controller_state=sample, logits=logits))
 
-  def distance(self, inputs, prev_controller_state, target_controller_state):
-    logits = self.controller_prediction(inputs, prev_controller_state)
-    distance = self.embed_controller.map(
-        lambda e, l, t: e.distance(l, t), logits, target_controller_state)
-    return DistanceOutputs(distance=distance, logits=logits)
+    return outputs
+
+  @abc.abstractmethod
+  def distance(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    """A struct of distances (generally, negative log probs)."""
+    outputs = []
+
+    for prev, target in zip(prev_controller_state, target_controller_state):
+      logits = self.controller_prediction(inputs, prev)
+      distance = self.embed_controller.map(
+          lambda e, l, t: e.distance(l, t), logits, target)
+      outputs.append(DistanceOutputs(distance=distance, logits=logits))
+
+    return outputs
 
 
 class AutoRegressiveComponent(nnx.Module):
@@ -221,40 +244,61 @@ class AutoRegressive(ControllerHead[ControllerType]):
   def sample(
       self,
       rngs: nnx.Rngs | nnx.RngStream,
-      inputs, prev_controller_state, temperature=None):
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      temperature: tp.Optional[float] = None,
+  ) -> list[SampleOutputs[ControllerType]]:
     residual = self.to_residual(inputs)
-    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
 
-    sample_outputs: list[SampleOutputs] = []
-    for res_block, prev in zip(self.res_blocks, prev_controller_flat):
-      sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
-      residual, sample = sample_fn(
-          rngs(), residual, prev, temperature=temperature)
-      sample_outputs.append(sample)
+    outputs: list[SampleOutputs[ControllerType]] = []
 
-    samples, logits = zip(*sample_outputs)
-    return SampleOutputs(
-        controller_state=self.embed_controller.unflatten(iter(samples)),
-        logits=self.embed_controller.unflatten(iter(logits)),
-    )
+    # TODO: use jax.scan
+    for prev in prev_controller_state:
+      prev_controller_flat = list(self.embed_controller.flatten(prev))
 
-  def distance(self, inputs, prev_controller_state, target_controller_state):
+      component_outputs: list[SampleOutputs] = []
+      for res_block, prev in zip(self.res_blocks, prev_controller_flat):
+        sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
+        residual, sample = sample_fn(
+            rngs(), residual, prev, temperature=temperature)
+        component_outputs.append(sample)
+
+      samples, logits = zip(*component_outputs)
+      outputs.append(SampleOutputs(
+          controller_state=self.embed_controller.unflatten(iter(samples)),
+          logits=self.embed_controller.unflatten(iter(logits)),
+      ))
+
+    return outputs
+
+  def distance(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
     residual = self.to_residual(inputs)
-    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
-    target_controller_flat = list(self.embed_controller.flatten(target_controller_state))
 
-    distance_outputs: list[DistanceOutputs] = []
-    for res_block, prev, target in zip(
-        self.res_blocks, prev_controller_flat, target_controller_flat):
-      distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
-      residual, distance = distance_fn(residual, prev, target)
-      distance_outputs.append(distance)
+    outputs: list[DistanceOutputs[ControllerType]] = []
 
-    distances, logits = zip(*distance_outputs)
-    return DistanceOutputs(
-        distance=self.embed_controller.unflatten(iter(distances)),
-        logits=self.embed_controller.unflatten(iter(logits)),
-    )
+    for prev, target in zip(prev_controller_state, target_controller_state):
+      prev_controller_flat = list(self.embed_controller.flatten(prev))
+      target_controller_flat = list(self.embed_controller.flatten(target))
+
+      component_outputs: list[DistanceOutputs] = []
+      for res_block, prev, target in zip(
+          self.res_blocks, prev_controller_flat, target_controller_flat):
+        distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
+        residual, distance = distance_fn(residual, prev, target)
+        component_outputs.append(distance)
+
+      distances, logits = zip(*component_outputs)
+      outputs.append(DistanceOutputs(
+          distance=self.embed_controller.unflatten(iter(distances)),
+          logits=self.embed_controller.unflatten(iter(logits)),
+      ))
+
+    return outputs
 
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,

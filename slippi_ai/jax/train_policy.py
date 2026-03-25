@@ -49,6 +49,8 @@ class TrainManager:
       self,
       learner: learner_lib.PolicyLearner,
       data_source: data_lib.AbstractDataSource,
+      *,
+      frame_skip: int,
       step_kwargs={},
       prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
@@ -57,6 +59,7 @@ class TrainManager:
   ):
     self.learner = learner
     self.data_source = data_source
+    self.frame_skip = frame_skip
     self.rngs = rngs or nnx.Rngs(0)
     self.step_kwargs = step_kwargs
     self.data_profiler = utils.Profiler()
@@ -94,18 +97,8 @@ class TrainManager:
     if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
 
-    state_action = data_lib.StateAction(
-        state=batch.game,
-        action=batch.game.p0.controller,
-        name=batch.name,
-    )
-    state_action = self._encode_state_action(state_action)
-
-    frames = data_lib.Frames(
-        state_action=state_action,
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
+    frames = batch.to_frames(self.frame_skip)
+    frames = frames._replace(state_action=self._encode_state_action(frames.state_action))
 
     if self.prefetch > 0:
       frames = jax_utils.device_put(frames, self.data_sharding)
@@ -201,6 +194,10 @@ class Config:
   version: int = 1
   platform: str = Platform.JAX.value
 
+  def validate(self):
+    if self.data.unroll_length % self.policy.frame_skip != 0:
+      raise ValueError('unroll_length must be divisible by frame_skip')
+
 
 def _get_loss(stats: dict):
   loss = stats['policy']['loss']
@@ -218,6 +215,8 @@ def train(config: Config):
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+
+  config.validate()
 
   if config.runtime.profile_server_port is not None:
     jax.profiler.start_server(config.runtime.profile_server_port)
@@ -349,7 +348,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=policy.delay + 1,
+      extra_frames=policy.delay + config.policy.frame_skip,
       observation_config=config.observation,
   )
   exit_stack.callback(train_data.shutdown)
@@ -374,13 +373,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       rngs=rngs,
       data_sharding=data_sharding,
       prefetch=runtime.prefetch,
+      frame_skip=config.policy.frame_skip,
   )
 
   train_manager = TrainManager(
-      learner, train_data, dict(train=True, compile=runtime.compile),
-      epoch_offset=train_epoch, **manager_kwargs)
+      learner, train_data,
+      step_kwargs=dict(train=True, compile=runtime.compile),
+      epoch_offset=train_epoch,
+      **manager_kwargs)
   test_manager = TrainManager(
-      learner, test_data, dict(train=False, compile=runtime.compile),
+      learner, test_data,
+      step_kwargs=dict(train=False, compile=runtime.compile),
       **manager_kwargs)
 
   exit_stack.callback(train_manager.stop)

@@ -27,7 +27,7 @@ import melee
 
 from slippi_ai import reward, utils, nametags, paths, observations, datasets
 from slippi_ai.types import (
-    S, Game, game_array_to_nt, array_from_nt,
+    S, Game, Controller, game_array_to_nt, array_from_nt,
     BoolArray, FloatArray, Int32Array, Rank1,
     # Re-exported for backward compatibility; canonical home is types.py.
     Action, NAME_DTYPE, StateAction, Frames,
@@ -183,6 +183,45 @@ class Batch(NamedTuple, tp.Generic[S]):
   name: Int32Array[S]
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
+
+  def to_frames(self, frame_skip: int) -> Frames[S, Controller[S]]:
+    B, T = self.is_resetting.shape
+    assert self.reward.shape == (B, T - 1)
+
+    if T % frame_skip != 0:
+      raise ValueError(f"Unroll length {T} is not divisible by frame_skip {frame_skip}.")
+
+    sliced_reward = self.reward[:, frame_skip - 1:]
+    sliced_batch = self._replace(reward=sliced_reward)
+
+    def reshape(x: np.ndarray):
+      B, T = x.shape
+      return x.reshape(B, T // frame_skip, frame_skip)
+
+    reshaped = utils.cached_map_nt(Batch)(reshape, sliced_batch)
+
+    game = utils.cached_map_nt(Game)(lambda x: x[..., -1], reshaped.game)
+
+    flat_actions = utils.cached_flatten(Controller)(reshaped.game.p0.controller)
+    flat_unstacked_actions = [np.unstack(x, axis=-1) for x in flat_actions]
+    actions = [
+        utils.cached_unflatten(Controller, zipped)
+        for zipped in zip(*flat_unstacked_actions)]
+    assert len(actions) == frame_skip
+
+    is_resetting = reshaped.is_resetting.any(axis=-1)
+    reward = reshaped.reward.sum(axis=-1)
+
+    return Frames(
+        state_action=StateAction(
+            state=game,
+            action=actions,
+            name=reshaped.name[..., -1],
+        ),
+        is_resetting=is_resetting,
+        reward=reward,
+    )
+
 
 class BatchWithMeta(NamedTuple, tp.Generic[S]):
   batch: Batch[S]
