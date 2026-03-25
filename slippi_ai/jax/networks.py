@@ -684,15 +684,43 @@ class EmbedModule(abc.ABC, tp.Generic[Action]):
   def __call__(self, state_action: StateAction[S, Action]) -> Array:
     """Embeds the state and action into an Array suitable for the network."""
 
+class Embeddings(tp.NamedTuple, tp.Generic[Action]):
+  config: embed_lib.EmbedConfig[Action]
+  num_names: int
+  embed_game: embed_lib.Embedding[Game, Game]
+  embed_action: embed_lib.Embedding[Controller, Action]
+  embed_state_action: embed_lib.Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]
+
+  @classmethod
+  def init(
+    cls,
+    config: embed_lib.EmbedConfig[Action],
+    num_names: int,
+    embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
+  ) -> tp.Self:
+    embed_game = config.make_game_embedding()
+    embed_action = config.make_controller_embedding() if embed_action is None else embed_action
+    embed_state_action = embed_lib.get_state_action_embedding(
+        embed_game=embed_game,
+        embed_action=embed_action,
+        num_names=num_names,
+    )
+    return cls(
+        config=config,
+        num_names=num_names,
+        embed_game=embed_game,
+        embed_action=embed_action,
+        embed_state_action=embed_state_action,
+    )
+
 class SimpleEmbedModule(EmbedModule[Action]):
 
   def __init__(
       self,
-      embed_game: embed_lib.Embedding[Game[Rank], Game[Rank]],
-      embed_state_action: embed_lib.Embedding[StateAction[Rank, Controller], StateAction[Rank, Action]],
+      embeddings: Embeddings[Action],
   ):
-    self._embed_game = embed_game
-    self._embed_state_action = embed_state_action
+    self._embed_game = embeddings.embed_game
+    self._embed_state_action = embeddings.embed_state_action
 
   @property
   def output_size(self) -> int:
@@ -955,7 +983,7 @@ class MultiEmbed(nnx.Module):
 
 PlayerOrNana = tp.TypeVar('PlayerOrNana', Player, Nana)
 
-class EnhancedEmbedModule(nnx.Module, EmbedModule):
+class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 
   @classmethod
   def default_config(cls) -> dict[str, tp.Any]:
@@ -976,7 +1004,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
   def __init__(
       self,
       rngs: nnx.Rngs,
-      embed_state_action: embed_lib.StructEmbedding[StateAction],
+      embeddings: Embeddings[Action],
       hidden_size: int,
       item_mlp_layers: int,
       rnn_cell: str = 'lstm',
@@ -989,7 +1017,6 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
       use_items: bool = True,
       hybrid_embed: bool = False,
   ):
-    self._embed_state_action = embed_state_action
     self._use_self_nana = use_self_nana
     self._use_learned_char = use_learned_char
     self._hybrid_embed = hybrid_embed
@@ -997,20 +1024,13 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
     self._use_char_action_joint = use_char_action_joint
     self._use_item_sum = use_item_sum
     self._use_items = use_items
-    embed_state_action_deep = embed_state_action.map(lambda e: e)
-    embed_state_action_shallow = embed_state_action.map_shallow(lambda e: e)
 
-    self._embed_game = tp.cast(
-        embed_lib.StructEmbedding[Game],
-        embed_state_action_shallow.state)
-    self._embed_controller = tp.cast(
-        embed_lib.StructEmbedding[Controller],
-        embed_state_action_shallow.action)
+    self._embed_game = embeddings.embed_game
+    self._embed_controller = embeddings.embed_action
+    self._embed_state_action = embeddings.embed_state_action
 
     # Embed all items using the same Linear layer
-    self._item_embedding = embed_lib.struct_embedding_from_nt(
-        'item',
-        tp.cast(Item, embed_state_action_deep.state.items.item_0))
+    self._item_embedding = embeddings.config.make_item_embedding()
     self._item_mlp = jax_utils.MLP(
         rngs=rngs,
         input_size=self._item_embedding.size,
@@ -1027,9 +1047,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
       )
 
     # Assumes that p0 and p1 have the same embedding structure
-    embed_char = tp.cast(
-        embed_lib.OneHotEmbedding,
-        embed_state_action_deep.state.p0.character)
+    embed_char = embed_lib.embed_char
     embed_char.size
 
     self._embed_char = nnx.Embed(
@@ -1038,23 +1056,21 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
         rngs=rngs,
     )
 
-    embed_action = tp.cast(
-        embed_lib.StructEmbedding,
-        embed_state_action_deep.state.p0.action)
+    # This refers to the character's action state in-game, not the controller.
     self._embed_action = nnx.Embed(
-        num_embeddings=embed_action.size,
+        num_embeddings=embed_lib.embed_action.size,
         features=hidden_size,
         rngs=rngs,
     )
 
     self._embed_char_action = MultiEmbed(
-        sizes=(embed_char.size, embed_action.size),
+        sizes=(embed_char.size, embed_lib.embed_action.size),
         features=hidden_size,
         rngs=rngs,
         embedding_init=nnx.initializers.zeros,
     )
 
-    output_shape = jax_utils.eval_shape_method(self.__call__, embed_state_action.dummy(()))
+    output_shape = jax_utils.eval_shape_method(self.__call__, self.dummy(()))
     assert output_shape.ndim == 1
     self._output_size = output_shape.shape[0]
 
@@ -1062,13 +1078,13 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
   def output_size(self) -> int:
     return self._output_size
 
-  def dummy(self, shape: Tuple[int, ...]) -> StateAction:
+  def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_state_action.dummy(shape)
 
-  def encode(self, state_action: StateAction) -> StateAction:
+  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     return self._embed_state_action.from_state(state_action)
 
-  def encode_game(self, game: Game) -> Game:
+  def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_game.from_state(game)
 
   def _embed_player_or_nana(self, raw: PlayerOrNana, default: PlayerOrNana) -> Array:
@@ -1112,7 +1128,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule):
       parts.append(self._embed_player_or_nana(raw.nana, default.nana))
     return jnp.concatenate(parts, axis=-1)
 
-  def __call__(self, state_action: StateAction) -> Array:
+  def __call__(self, state_action: StateAction[tp.Any, Action]) -> Array:
     raw_game = state_action.state
     default_state_action_embed = self._embed_state_action.map(
         lambda e, v: e(v), state_action)
@@ -1165,18 +1181,10 @@ SIMPLE_CONSTRUCTORS = {
     cls.name(): cls for cls in _simple_networks
 }
 
-OTHER_CONSTRUCTORS = []
-
-NAME_TO_CONSTRUCTOR: dict[str, type[StateActionNetwork]] = {
-    cls.name(): cls for cls in OTHER_CONSTRUCTORS
-}
-
 DEFAULT_CONFIG: dict[str, Any] = dict(
     name='mlp',
     **{name: cls.default_config() for name, cls in SIMPLE_CONSTRUCTORS.items()},
 )
-for cls in OTHER_CONSTRUCTORS:
-  DEFAULT_CONFIG[cls.name()] = cls.default_config()
 
 DEFAULT_CONFIG['embed'] = dict(
     name='simple',
@@ -1220,22 +1228,26 @@ def construct_network(
 def build_embed_module(
     rngs: nnx.Rngs,
     config: dict,
-    embed_state_action: embed_lib.StructEmbedding[StateAction],
-    embed_game: embed_lib.StructEmbedding[Game],
+    embed_config: embed_lib.EmbedConfig[Action],
+    num_names: int,
+    embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
 ):
+  embeddings = Embeddings.init(
+      config=embed_config,
+      num_names=num_names,
+      embed_action=embed_action,
+  )
+
   name = config['name']
   logging.info('Using embed module: %s', name)
 
   if name == 'simple':
-    return SimpleEmbedModule(
-        embed_game=embed_game,
-        embed_state_action=embed_state_action,
-    )
+    return SimpleEmbedModule(embeddings)
 
   if name == 'enhanced':
     return EnhancedEmbedModule(
         rngs=rngs,
-        embed_state_action=embed_state_action,
+        embeddings=embeddings,
         **config['enhanced'],
     )
 
@@ -1243,7 +1255,7 @@ def build_embed_module(
 
 def build_embed_network(
     rngs: nnx.Rngs,
-    embed_config: embed_lib.EmbedConfig,
+    embed_config: embed_lib.EmbedConfig[Action],
     num_names: int,
     network_config: dict,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
@@ -1259,39 +1271,24 @@ def build_embed_network(
   Returns:
     Constructed SimpleEmbedNetwork.
   """
-  embed_game = embed_config.make_game_embedding()
-  embed_state_action = embed_lib.get_state_action_embedding(
-      embed_game=embed_game,
-      embed_action=embed_action or embed_config.controller.make_embedding(),
+  name = network_config['name']
+  assert name in SIMPLE_CONSTRUCTORS, f'Unknown network name: {name}'
+
+  embed_module = build_embed_module(
+      rngs=rngs,
+      config=network_config['embed'],
+      embed_config=embed_config,
       num_names=num_names,
+      embed_action=embed_action,
   )
 
-  name = network_config['name']
+  network = construct_network(
+      rngs=rngs,
+      input_size=embed_module.output_size,
+      **network_config,
+  )
 
-  if name in SIMPLE_CONSTRUCTORS:
-    embed_module = build_embed_module(
-        rngs=rngs,
-        config=network_config['embed'],
-        embed_state_action=embed_state_action,
-        embed_game=embed_game,
-    )
-
-    network = construct_network(
-        rngs=rngs,
-        input_size=embed_module.output_size,
-        **network_config,
-    )
-
-    return SimpleEmbedNetwork(
-        embed_module=embed_module,
-        network=network,
-    )
-
-  if name in NAME_TO_CONSTRUCTOR:
-    return NAME_TO_CONSTRUCTOR[name](
-        rngs=rngs,
-        embed_state_action=embed_state_action,
-        **network_config[name],
-    )
-
-  raise ValueError(f'Unknown network name: {name}')
+  return SimpleEmbedNetwork(
+      embed_module=embed_module,
+      network=network,
+  )
