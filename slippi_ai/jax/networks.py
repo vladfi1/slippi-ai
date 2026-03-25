@@ -13,8 +13,10 @@ import tree
 
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
-from slippi_ai.data import StateAction, Action
-from slippi_ai.types import Controller, Game, Player, Nana, Item, S
+from slippi_ai.types import (
+  Controller, Game, Player, Nana, Item, S,
+  Action, StateAction, Frames,
+)
 
 Array = jax.Array
 
@@ -689,12 +691,13 @@ class Embeddings(tp.NamedTuple, tp.Generic[Action]):
   num_names: int
   embed_game: embed_lib.Embedding[Game, Game]
   embed_action: embed_lib.Embedding[Controller, Action]
-  embed_state_action: embed_lib.Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]
+  embed_state_action: embed_lib.StateActionEmbedding[Action]
 
   @classmethod
   def init(
     cls,
     config: embed_lib.EmbedConfig[Action],
+    frame_skip: int,
     num_names: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
   ) -> tp.Self:
@@ -703,6 +706,7 @@ class Embeddings(tp.NamedTuple, tp.Generic[Action]):
     embed_state_action = embed_lib.get_state_action_embedding(
         embed_game=embed_game,
         embed_action=embed_action,
+        frame_skip=frame_skip,
         num_names=num_names,
     )
     return cls(
@@ -1081,7 +1085,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
   def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_state_action.dummy(shape)
 
-  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
+  def encode(self, state_action: StateAction[S, Controller]):
     return self._embed_state_action.from_state(state_action)
 
   def encode_game(self, game: Game[S]) -> Game[S]:
@@ -1168,7 +1172,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     if self._use_controller_rnn:
       parts.append(self._controller_rnn(state_action.action))
     else:
-      parts.append(self._embed_controller(state_action.action))
+      parts.extend(map(self._embed_controller, state_action.action))
 
     return jnp.concatenate(parts, axis=-1)
 
@@ -1229,11 +1233,13 @@ def build_embed_module(
     rngs: nnx.Rngs,
     config: dict,
     embed_config: embed_lib.EmbedConfig[Action],
+    frame_skip: int,
     num_names: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
 ):
   embeddings = Embeddings.init(
       config=embed_config,
+      frame_skip=frame_skip,
       num_names=num_names,
       embed_action=embed_action,
   )
@@ -1258,6 +1264,7 @@ def build_embed_network(
     embed_config: embed_lib.EmbedConfig[Action],
     num_names: int,
     network_config: dict,
+    frame_skip: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
 ) -> StateActionNetwork[Action]:
   """Build a SimpleEmbedNetwork from config.
@@ -1267,7 +1274,7 @@ def build_embed_network(
     embed_config: Configuration for embeddings.
     num_names: Number of player names for the name embedding.
     network_config: Network configuration dict.
-
+    frame_skip: Number of frames to skip for the action embedding.
   Returns:
     Constructed SimpleEmbedNetwork.
   """
@@ -1278,6 +1285,7 @@ def build_embed_network(
       rngs=rngs,
       config=network_config['embed'],
       embed_config=embed_config,
+      frame_skip=frame_skip,
       num_names=num_names,
       embed_action=embed_action,
   )

@@ -254,12 +254,8 @@ NAME_DTYPE = np.int32
 
 class StateAction(NamedTuple, Generic[S, Action]):
   state: Game[S]
-  # The action could actually be an "encoded" action type,
-  # which might discretize certain components of the controller
-  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
-  # generic. We could use a dataclass instead, but TF can't trace them.
-  # Note that this is the action taken on the _previous_ frame.
-  action: Action
+  # Previous player actions, length = frame skip
+  action: list[Action]
 
   # Encoded name
   name: np.ndarray[S, np.dtype[NAME_DTYPE]]
