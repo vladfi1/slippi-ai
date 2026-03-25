@@ -14,22 +14,22 @@ from slippi_ai.jax.controller_heads import (
 )
 from slippi_ai.jax import embed, networks, jax_utils
 from slippi_ai import data, types, utils, policies
-from slippi_ai.types import S
+from slippi_ai.types import S, Game, Frames
 
 Array = jax.Array
 RecurrentState = networks.RecurrentState
 
 
 class UnrollOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
-  log_probs: Array  # [T, B]
-  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
+  log_probs: list[Array]  # [T, B]
+  distances: list[DistanceOutputs[ControllerType]]  # Struct of [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
 
 class UnrollWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   imitation_loss: Array  # [T, B]
-  distances: DistanceOutputs[ControllerType]  # Struct of [T, B]
+  distances: list[DistanceOutputs[ControllerType]]  # Struct of [T, B]
   outputs: Array  # [T, B]
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
@@ -48,11 +48,17 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       network: networks.StateActionNetwork[ControllerType],
       controller_head: ControllerHead[ControllerType],
       delay: int = 0,
+      frame_skip: int = 1,
   ):
     self.network = network
     self._controller_head = controller_head
 
     self._delay = delay
+    self._frame_skip = frame_skip
+
+    if delay % frame_skip != 0:
+      raise ValueError(f"Delay {delay} must be divisible by frame_skip {frame_skip}.")
+    self._skip_delay = delay // frame_skip
 
   @property
   def delay(self) -> int:
@@ -62,7 +68,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   def controller_head(self) -> ControllerHead[ControllerType]:
     return self._controller_head
 
-  def encode_game(self, game: data.Game) -> data.Game:
+  def encode_game(self, game: Game) -> Game:
     return self.network.encode_game(game)
 
   def initial_state(self, batch_size: networks.Shape, rngs: tp.Optional[nnx.Rngs] = None) -> RecurrentState:
@@ -72,7 +78,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
   def unroll(
       self,
-      frames: data.Frames[S, ControllerType],
+      frames: Frames[S, ControllerType],
       initial_state: RecurrentState,
   ) -> UnrollOutputs[S, ControllerType]:
     """Computes prediction loss on a batch of frames.
@@ -91,18 +97,23 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
     # Predict next action.
     action = frames.state_action.action
-    prev_action = jax.tree.map(lambda t: t[:-1], action)
-    next_action = jax.tree.map(lambda t: t[1:], action)
+    prev_action = utils.map_nt(lambda t: t[:-1], action)
+    next_action = utils.map_nt(lambda t: t[1:], action)
 
     distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
-    distances = distance_outputs.distance
-    policy_loss = jax_utils.add_n(jax.tree.leaves(distances))
-    log_probs = -policy_loss
+    losses = [
+        jax_utils.add_n(jax.tree.leaves(do.distance))
+        for do in distance_outputs]
+    policy_loss = jax_utils.add_n(losses) / len(losses)
+    log_probs = [-loss for loss in losses]
 
     metrics = dict(
         loss=policy_loss,
-        controller=types.nt_to_nest(distances),
+        controller={
+            i: types.nt_to_nest(do.distance)
+            for i, do in enumerate(distance_outputs)
+        },
     )
 
     return UnrollOutputs(
@@ -126,19 +137,19 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
     state_action = frames.state_action
     # Includes "overlap" frame.
-    unroll_length = state_action.state.stage.shape[0] - self._delay
+    unroll_length = frames.is_resetting.shape[0] - self._skip_delay
 
     frames = data.Frames(
         state_action=data.StateAction(
             state=jax.tree.map(
                 lambda t: t[:unroll_length], state_action.state),
             action=jax.tree.map(
-                lambda t: t[self._delay:], state_action.action),
-            name=state_action.name[self._delay:],
+                lambda t: t[self._skip_delay:], state_action.action),
+            name=state_action.name[self._skip_delay:],
         ),
         is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.
-        reward=frames.reward[self._delay:],
+        reward=frames.reward[self._skip_delay:],
     )
 
     unroll_outputs = self.unroll(frames, initial_state)
@@ -147,7 +158,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     # Take time-mean
     # metrics = jax.tree.map(lambda t: jnp.mean(t, axis=0), metrics)
 
-    loss = -unroll_outputs.log_probs
+    loss = metrics['loss']
 
     # All metrics and loss should have shape [T, B]
     return loss, metrics, unroll_outputs.final_state
@@ -158,23 +169,27 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       initial_state: RecurrentState,
   ) -> UnrollWithOutputs[S, ControllerType]:
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
-    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     outputs, final_state = self.network.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
     # Predict next action.
     action = frames.state_action.action
-    prev_action = jax.tree.map(lambda t: t[:-1], action)
-    next_action = jax.tree.map(lambda t: t[1:], action)
+    prev_action = utils.map_nt(lambda t: t[:-1], action)
+    next_action = utils.map_nt(lambda t: t[1:], action)
 
     distance_outputs = self._controller_head.distance(
         outputs, prev_action, next_action)
-    distances = distance_outputs.distance
-    policy_loss = jax_utils.add_n(jax.tree.leaves(distances))
+    losses = [
+        jax_utils.add_n(jax.tree.leaves(do.distance))
+        for do in distance_outputs]
+    policy_loss = jax_utils.add_n(losses) / len(losses)
 
     metrics = dict(
         loss=policy_loss,
-        controller=types.nt_to_nest(distances),
+        controller={
+            i: types.nt_to_nest(do)
+            for i, do in enumerate(distance_outputs)
+        },
     )
 
     return UnrollWithOutputs(
@@ -243,3 +258,4 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 @dataclasses.dataclass
 class PolicyConfig:
   delay: int = 0
+  frame_skip: int = 1  # 1 means no frame skip

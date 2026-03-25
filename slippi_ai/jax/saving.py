@@ -1,4 +1,5 @@
 import pickle
+import typing as tp
 
 import numpy as np
 import jax
@@ -6,6 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai.flag_utils import dataclass_from_dict
+from slippi_ai.types import Action
 from slippi_ai.jax import controller_heads, embed, jax_utils, networks, policies
 
 VERSION = 2
@@ -40,18 +42,19 @@ def upgrade_config(config: dict):
 def policy_from_configs(
     network_config: dict,
     controller_head_config: dict,
-    embed_config: embed.EmbedConfig,
+    embed_config: embed.EmbedConfig[Action],
     policy_config: policies.PolicyConfig,
     max_name: int,
     rngs: nnx.Rngs,
-) -> policies.Policy:
+) -> policies.Policy[Action]:
   """Build a Policy from configuration."""
-  embed_controller = embed_config.controller.make_embedding()
+  embed_controller = embed_config.make_controller_embedding()
 
   network = networks.build_embed_network(
       rngs=rngs,
       embed_config=embed_config,
       num_names=max_name,
+      frame_skip=policy_config.frame_skip,
       network_config=network_config,
   )
 

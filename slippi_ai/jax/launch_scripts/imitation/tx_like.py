@@ -2,7 +2,6 @@
 
 """Train a model using imitation learning."""
 
-import dataclasses
 import os
 
 from absl import app, flags
@@ -150,7 +149,9 @@ if __name__ == '__main__':
         else:
           bf16 = ''
 
-        config.tag = f"{char}_d{delay}_{net}_{n}x{h}{bf16}"
+        rfs = f'rfs{config.policy.frame_skip}'
+
+        config.tag = f"{char}_d{delay}_{net}_{n}x{h}{bf16}_{rfs}"
 
     config.dataset.allowed_characters = char
 
