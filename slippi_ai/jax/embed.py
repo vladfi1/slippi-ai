@@ -428,37 +428,6 @@ def _base_player_embedding(
 
   return embedding
 
-def make_player_embedding(
-    xy_scale: float = 0.05,
-    shield_scale: float = 0.01,
-    speed_scale: float = 0.5,
-    with_speeds: bool = False,
-    with_controller: bool = False,
-    with_nana: bool = True,
-    legacy_jumps_left: bool = False,
-) -> StructEmbedding[Player]:
-  embedding = _base_player_embedding(
-      xy_scale=xy_scale,
-      shield_scale=shield_scale,
-      speed_scale=speed_scale,
-      with_speeds=with_speeds,
-      legacy_jumps_left=legacy_jumps_left,
-  )
-
-  if with_nana:
-    nana_embedding = embedding.copy()
-    nana_embedding.append(('exists', embed_bool))
-    embed_nana = ordered_struct_embedding(
-        "nana", nana_embedding, types.Nana)
-    embedding.append(('nana', embed_nana))
-
-  if with_controller:
-    # TODO: make this configurable
-    embed_controller_default = get_controller_embedding()  # continuous sticks
-    embedding.append(('controller', embed_controller_default))
-
-  return ordered_struct_embedding("player", embedding, Player)
-
 @dataclasses.dataclass
 class PlayerConfig:
   xy_scale: float = 0.05
@@ -470,6 +439,29 @@ class PlayerConfig:
   with_controller: bool = False
   with_nana: bool = True
   legacy_jumps_left: bool = False
+
+  def make_embedding(self) -> StructEmbedding[Player]:
+    embedding = _base_player_embedding(
+        xy_scale=self.xy_scale,
+        shield_scale=self.shield_scale,
+        speed_scale=self.speed_scale,
+        with_speeds=self.with_speeds,
+        legacy_jumps_left=self.legacy_jumps_left,
+    )
+
+    if self.with_nana:
+      nana_embedding = embedding.copy()
+      nana_embedding.append(('exists', embed_bool))
+      embed_nana = ordered_struct_embedding(
+          "nana", nana_embedding, types.Nana)
+      embedding.append(('nana', embed_nana))
+
+    if self.with_controller:
+      # TODO: make this configurable
+      embed_controller_default = get_controller_embedding()  # continuous sticks
+      embedding.append(('controller', embed_controller_default))
+
+    return ordered_struct_embedding("player", embedding, Player)
 
 default_player_config = PlayerConfig()
 
@@ -504,63 +496,6 @@ class ItemsType(enum.Enum):
 @dataclasses.dataclass
 class ItemsConfig:
   type: ItemsType = ItemsType.FLAT
-
-def make_items_embedding(
-    items_config: ItemsConfig,
-    xy_scale: float,
-) -> Embedding[Items, tp.Any]:
-  if items_config.type is ItemsType.SKIP:
-    return ordered_struct_embedding("items", [], Items)
-
-  embed_item = make_item_embedding(xy_scale)
-
-  # TODO: Can bulk-embed these more efficiently
-  return ordered_struct_embedding("items", [
-      (field, embed_item) for field in Items._fields
-  ], Items)
-
-def make_game_embedding(
-    with_randall: bool = True,
-    with_fod: bool = True,
-    items_config: ItemsConfig = ItemsConfig(),
-    player_config: dict = dataclasses.asdict(default_player_config),
-):
-  embed_player = make_player_embedding(**player_config)
-
-  if with_randall:
-    embed_xy = FloatEmbedding("randall_xy", scale=player_config['xy_scale'])
-    embed_randall = struct_embedding_from_nt(
-        "randall", Randall(x=embed_xy, y=embed_xy))
-  else:
-    # Older agents don't use Randall
-    embed_randall = ordered_struct_embedding(
-        "randall", [], Randall)
-    assert embed_randall._size == 0
-
-  if with_fod:
-    embed_height = FloatEmbedding("fod_height", scale=player_config['xy_scale'])
-    embed_fod = struct_embedding_from_nt(
-        "fod", FoDPlatforms(left=embed_height, right=embed_height))
-  else:
-    # Older agents don't use FoD
-    embed_fod = ordered_struct_embedding(
-        "fod", [], FoDPlatforms)
-    assert embed_fod._size == 0
-
-  embed_items = make_items_embedding(
-      items_config=items_config,
-      xy_scale=player_config['xy_scale'])
-
-  embedding = Game(
-      p0=embed_player,
-      p1=embed_player,
-      stage=embed_stage,
-      randall=embed_randall,
-      fod_platforms=embed_fod,
-      items=embed_items,
-  )
-
-  return struct_embedding_from_nt("game", embedding)
 
 # Embeddings for controllers
 embed_buttons = ordered_struct_embedding(
@@ -733,25 +668,70 @@ class ControllerConfig:
         return make_custom_v1_embedding(self.custom_v1)
 
 @dataclasses.dataclass
-class EmbedConfig:
+class EmbedConfig(tp.Generic[Action]):
   player: PlayerConfig = utils.field(PlayerConfig)
   controller: ControllerConfig = utils.field(ControllerConfig)
   with_randall: bool = True
   with_fod: bool = True
   items: ItemsConfig = utils.field(ItemsConfig)
 
+  def make_item_embedding(self):
+    return make_item_embedding(xy_scale=self.player.xy_scale)
+
+  def make_items_embedding(self):
+    if self.items.type is ItemsType.SKIP:
+      return ordered_struct_embedding("items", [], Items)
+
+    embed_item = self.make_item_embedding()
+
+    # TODO: Can bulk-embed these more efficiently
+    return ordered_struct_embedding("items", [
+        (field, embed_item) for field in Items._fields
+    ], Items)
+
   def make_game_embedding(self):
-    return make_game_embedding(
-        player_config=dataclasses.asdict(self.player),
-        with_randall=self.with_randall,
-        with_fod=self.with_fod,
-        items_config=self.items,
+    embed_player = self.player.make_embedding()
+
+    if self.with_randall:
+      embed_xy = FloatEmbedding("randall_xy", scale=self.player.xy_scale)
+      embed_randall = struct_embedding_from_nt(
+          "randall", Randall(x=embed_xy, y=embed_xy))
+    else:
+      # Older agents don't use Randall
+      embed_randall = ordered_struct_embedding(
+          "randall", [], Randall)
+      assert embed_randall._size == 0
+
+    if self.with_fod:
+      embed_height = FloatEmbedding("fod_height", scale=self.player.xy_scale)
+      embed_fod = struct_embedding_from_nt(
+          "fod", FoDPlatforms(left=embed_height, right=embed_height))
+    else:
+      # Older agents don't use FoD
+      embed_fod = ordered_struct_embedding(
+          "fod", [], FoDPlatforms)
+      assert embed_fod._size == 0
+
+    embed_items = self.make_items_embedding()
+
+    embedding = Game(
+        p0=embed_player,
+        p1=embed_player,
+        stage=embed_stage,
+        randall=embed_randall,
+        fod_platforms=embed_fod,
+        items=embed_items,
     )
+
+    return struct_embedding_from_nt("game", embedding)
+
+  def make_controller_embedding(self) -> Embedding[Controller, Action]:
+    return self.controller.make_embedding()
 
   def make_state_action_embedding(self, num_names: int):
     return get_state_action_embedding(
         embed_game=self.make_game_embedding(),
-        embed_action=self.controller.make_embedding(),
+        embed_action=self.make_controller_embedding(),
         num_names=num_names,
     )
 
@@ -759,9 +739,9 @@ NAME_DTYPE = np.int32
 
 def get_state_action_embedding(
   embed_game: Embedding[Game, Any],
-  embed_action: Embedding[Action, Any],
+  embed_action: Embedding[Controller, Action],
   num_names: int,
-) -> StructEmbedding[StateAction]:
+) -> Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]:
   embedding = StateAction(
       state=embed_game,
       action=embed_action,
