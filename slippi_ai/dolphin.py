@@ -93,8 +93,8 @@ class Dolphin:
     platform = None
 
     # TODO: some of this logic should be moved to Console
-    path = path or default_dolphin_install_path()[0]
-    version = get_dolphin_version(path)
+    # Note: leave path as None to tell libmelee to look for the iso/user.json
+    version = get_dolphin_version(path or default_dolphin_install_path()[0])
 
     if render is None:
       render = not headless
