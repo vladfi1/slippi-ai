@@ -689,6 +689,7 @@ class EmbedModule(abc.ABC, tp.Generic[Action]):
 class Embeddings(tp.NamedTuple, tp.Generic[Action]):
   config: embed_lib.EmbedConfig[Action]
   num_names: int
+  frame_skip: int
   embed_game: embed_lib.Embedding[Game, Game]
   embed_action: embed_lib.Embedding[Controller, Action]
   embed_state_action: embed_lib.StateActionEmbedding[Action]
@@ -712,6 +713,7 @@ class Embeddings(tp.NamedTuple, tp.Generic[Action]):
     return cls(
         config=config,
         num_names=num_names,
+        frame_skip=frame_skip,
         embed_game=embed_game,
         embed_action=embed_action,
         embed_state_action=embed_state_action,
@@ -842,19 +844,27 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
     self._initial_state_fn = cells[0].initialize_carry
     self._cells = nnx.List(cells)
 
-  def __call__(self, controller: Action) -> Array:
-    input_flat: list[Array] = list(self._embed_controller.flatten(controller))
-    input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
+  def __call__(
+      self,
+      controller: Action,
+      prev_state: tp.Optional[RecurrentState] = None,
+  ) -> tuple[Array, RecurrentState]:
+    if prev_state is None:
+      input_flat: list[Array] = list(self._embed_controller.flatten(controller))
+      input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
 
-    # TODO: pass rngs properly? maybe reuse from __init__?
-    hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
+      # TODO: pass rngs properly? maybe reuse from __init__?
+      hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
+    else:
+      hidden_state = prev_state
 
     for cell, embed, component in zip(
         self._cells, self._embed_flat,
         self._embed_controller.flatten(controller)):
       hidden_state, output = cell(hidden_state, embed(component))
 
-    return output  # type: ignore
+    return output, hidden_state  # type: ignore
+
 
 P = tp.ParamSpec('P')
 T = tp.TypeVar('T')
@@ -997,6 +1007,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
         rnn_cell='lstm',
         use_self_nana=True,
         use_controller_rnn=False,
+        share_crnn=True,
         use_learned_char=True,
         use_learned_action=True,
         use_char_action_joint=True,
@@ -1014,6 +1025,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       rnn_cell: str = 'lstm',
       use_self_nana: bool = True,
       use_controller_rnn: bool = False,
+      share_crnn: bool = True,
       use_learned_char: bool = True,
       use_learned_action: bool = True,
       use_char_action_joint: bool = True,
@@ -1043,12 +1055,19 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 
     self._use_controller_rnn = use_controller_rnn
     if use_controller_rnn:
-      self._controller_rnn = ControllerRNN(
+      build_crnn = lambda: ControllerRNN(
           rngs=rngs,
           embed_controller=self._embed_controller,
           hidden_size=hidden_size,
           rnn_cell=rnn_cell,
       )
+
+      if share_crnn:
+        controller_rnns = [build_crnn()] * embeddings.frame_skip
+      else:
+        controller_rnns = [build_crnn() for _ in range(embeddings.frame_skip)]
+
+      self._controller_rnns = nnx.List(controller_rnns)
 
     # Assumes that p0 and p1 have the same embedding structure
     embed_char = embed_lib.embed_char
@@ -1170,7 +1189,11 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     parts.append(tp.cast(Array, default_state_action_embed.name))
 
     if self._use_controller_rnn:
-      parts.append(self._controller_rnn(state_action.action))
+      # TODO: use scan?
+      crnn_state = None
+      for action, crnn in zip(state_action.action, self._controller_rnns):
+        output, crnn_state = crnn(action, crnn_state)
+      parts.append(output)
     else:
       parts.extend(map(self._embed_controller, state_action.action))
 
