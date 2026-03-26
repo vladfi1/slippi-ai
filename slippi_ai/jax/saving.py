@@ -61,6 +61,7 @@ def policy_from_configs(
       rngs=rngs,
       input_size=network.output_size,
       embed_controller=embed_controller,
+      frame_skip=policy_config.frame_skip,
       **controller_head_config,
   )
 

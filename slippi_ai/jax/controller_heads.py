@@ -80,8 +80,10 @@ class Independent(ControllerHead[ControllerType]):
       self,
       rngs: nnx.Rngs,
       input_size: int,
+      frame_skip: int,
       embed_controller: embed.Embedding[Controller, ControllerType],
   ):
+    del frame_skip
     self.embed_controller = embed_controller
     self.to_controller_input = nnx.Linear(
         input_size, self.embed_controller.size, rngs=rngs)
@@ -214,28 +216,40 @@ class AutoRegressive(ControllerHead[ControllerType]):
         residual_size=128,
         component_depth=0,
         remat=False,
+        shared=False,
     )
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       input_size: int,
+      frame_skip: int,
       embed_controller: embed.Embedding[Controller, ControllerType],
       residual_size: int,
       component_depth: int,
       remat: bool = False,
+      shared: bool = False,
   ):
     self.embed_controller = embed_controller
     self.to_residual = nnx.Linear(input_size, residual_size, rngs=rngs)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
     self.remat = remat
-    self.res_blocks = nnx.List([
-        AutoRegressiveComponent(
-            rngs, e,
-            residual_size=residual_size, depth=component_depth)
-        for e in self.embed_flat
-    ])
+
+    def build_res_blocks():
+      return nnx.List([
+          AutoRegressiveComponent(
+              rngs, e,
+              residual_size=residual_size, depth=component_depth)
+          for e in self.embed_flat
+      ])
+
+    if shared:
+      res_blocks = [build_res_blocks()] * frame_skip
+    else:
+      res_blocks = [build_res_blocks() for _ in range(frame_skip)]
+
+    self.res_blocks = nnx.List(res_blocks)
 
   @property
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
@@ -253,11 +267,11 @@ class AutoRegressive(ControllerHead[ControllerType]):
     outputs: list[SampleOutputs[ControllerType]] = []
 
     # TODO: use jax.scan
-    for prev in prev_controller_state:
+    for prev, res_blocks in zip(prev_controller_state, self.res_blocks):
       prev_controller_flat = list(self.embed_controller.flatten(prev))
 
       component_outputs: list[SampleOutputs] = []
-      for res_block, prev in zip(self.res_blocks, prev_controller_flat):
+      for res_block, prev in zip(res_blocks, prev_controller_flat):
         sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
         residual, sample = sample_fn(
             rngs(), residual, prev, temperature=temperature)
@@ -281,13 +295,13 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
     outputs: list[DistanceOutputs[ControllerType]] = []
 
-    for prev, target in zip(prev_controller_state, target_controller_state):
+    for prev, target, res_blocks in zip(prev_controller_state, target_controller_state, self.res_blocks):
       prev_controller_flat = list(self.embed_controller.flatten(prev))
       target_controller_flat = list(self.embed_controller.flatten(target))
 
       component_outputs: list[DistanceOutputs] = []
       for res_block, prev, target in zip(
-          self.res_blocks, prev_controller_flat, target_controller_flat):
+          res_blocks, prev_controller_flat, target_controller_flat):
         distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
         residual, distance = distance_fn(residual, prev, target)
         component_outputs.append(distance)
@@ -315,6 +329,7 @@ def construct(
     rngs: nnx.Rngs,
     input_size: int,
     embed_controller: embed.Embedding[Controller, ControllerType],
+    frame_skip: int,
     name: str,
     **config,
 ) -> ControllerHead[ControllerType]:
@@ -324,6 +339,7 @@ def construct(
     rngs: Random number generators for initialization.
     input_size: Size of the input features from the network.
     embed_controller: Controller embedding to use.
+    frame_skip: Number of frames to skip between controller updates.
     name: Name of the controller head type ('independent' or 'autoregressive').
     **config: Controller head-specific config dicts keyed by name.
 
@@ -336,5 +352,6 @@ def construct(
       rngs=rngs,
       input_size=input_size,
       embed_controller=embed_controller,
+      frame_skip=frame_skip,
   )
   return ch_type.construct(**kwargs)
