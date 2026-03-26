@@ -9,7 +9,6 @@ import logging
 import math
 import multiprocessing as mp
 import os
-import pickle
 import random
 import shutil
 from typing import (
@@ -22,6 +21,7 @@ import fsspec
 import numpy as np
 import pyarrow
 import pyarrow.parquet as pq
+import tqdm
 
 import melee
 
@@ -315,9 +315,8 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   banned_counts = collections.Counter()
 
-  for row in meta_rows:
+  for row in tqdm.tqdm(meta_rows, desc="Loading Replay Metadata"):
     replay_meta = ReplayMeta.from_metadata(row)
-    replay_path = config.get_replay(replay_meta.slp_md5)
 
     if not config.swap:
       is_banned = False
@@ -333,6 +332,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
           or replay_meta.p1.character not in allowed_opponents):
         continue
 
+      replay_path = config.get_replay(replay_meta.slp_md5)
       replays.append(ReplayInfo.init(replay_path, False, replay_meta))
 
       continue
@@ -355,6 +355,7 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
         banned_counts[p1.name] += 1
         continue
 
+      replay_path = config.get_replay(replay_meta.slp_md5)
       replays.append(ReplayInfo.init(replay_path, swap, replay_meta))
 
   if banned_counts:
