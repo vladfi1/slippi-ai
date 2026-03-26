@@ -24,7 +24,7 @@ dolphin_flags = dolphin_lib.DOLPHIN_FLAGS.copy()
 dolphin_flags.update(
     online_delay=ff.Integer(15),
     connect_code=ff.String(None, required=True),
-    user_json_path=ff.String(None, required=True),
+    # user_json_path=ff.String(None, required=True),
     # blocking_input=ff.Boolean(False),
 )
 DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)

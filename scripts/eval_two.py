@@ -58,10 +58,6 @@ FLAGS = flags.FLAGS
 def main(_):
   eval_lib.disable_gpus()
 
-  if DOLPHIN.value['iso'] is None:
-    raise ValueError('Dolphin ISO path must be specified via --dolphin.iso or ISO_PATH env var')
-  # Note: libmelee will attempt find the dolphin path if it isn't given.
-
   players = {
       port: eval_lib.get_player(**player.value)
       for port, player in PLAYERS.items()
@@ -83,21 +79,22 @@ def main(_):
 
       eval_lib.update_character(player, agent.config)
 
-  # TODO: use an envs.Environment like in RL
-  dolphin = dolphin_lib.Dolphin(
-      players=players,
-      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
-  )
+  dolphin = None
+  try:
+    # TODO: use an envs.Environment like in RL
+    dolphin = dolphin_lib.Dolphin(
+        players=players,
+        **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
+    )
 
-  for agent in agents:
-    agent.set_controller(dolphin.controllers[agent._port])
+    for agent in agents:
+      agent.set_controller(dolphin.controllers[agent._port])
 
-  step_timer = utils.Profiler()
+    step_timer = utils.Profiler()
 
-  num_games = 0
+    num_games = 0
 
   # Main loop
-  try:
     for gamestate in dolphin.iter_gamestates(skip_menu_frames=False):
       if dolphin_lib.is_menu_state(gamestate):
         if num_games == NUM_GAMES.value:
@@ -117,7 +114,8 @@ def main(_):
   finally:
     for agent in agents:
       agent.stop()
-    dolphin.stop()
+    if dolphin is not None:
+      dolphin.stop()
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
