@@ -140,13 +140,24 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
+        ops = config.dataset.allowed_opponents
+        if ops == 'all':
+          op = ''
+        elif ops == char:
+          op = '_ditto'
+        else:
+          op = f"_vs_{ops}"
+
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
 
         rfs = config.policy.frame_skip
         rfs = f'rfs{rfs}'
 
-        config.tag = f"{char}_d{delay}_{n}x{h}_{rfs}"
+        chd = config.controller_head['autoregressive']['component_depth']
+        chs = config.controller_head['autoregressive']['residual_size']
+
+        config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chd}x{chs}_{rfs}"
 
     config.dataset.allowed_characters = char
 
