@@ -41,10 +41,7 @@ DEFAULT_CONFIG = train_policy.Config(
 )
 
 DEFAULT_CONFIG.controller_head['name'] = 'autoregressive'
-DEFAULT_CONFIG.controller_head['autoregressive'].update(
-    residual_size=1,
-    component_depth=0,
-)
+DEFAULT_CONFIG.controller_head['autoregressive']['component']['lstm']['hidden_size'] = 1
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115

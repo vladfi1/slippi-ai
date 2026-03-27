@@ -14,7 +14,7 @@ from slippi_ai.controller_heads import (
 )
 from slippi_ai import controller_heads
 
-from slippi_ai.jax import embed, jax_utils
+from slippi_ai.jax import embed, jax_utils, networks
 from slippi_ai.types import Controller
 
 Array = jax.Array
@@ -140,70 +140,75 @@ class Independent(ControllerHead[ControllerType]):
 
     return outputs
 
+NetworkState = tuple[Array, networks.RecurrentState]
+
+class AutoRegressiveEncoder(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      network_config: dict,
+  ):
+    self.network = networks.construct_network(rngs, input_size, **network_config)
+
+  def __call__(self, inputs: Array) -> NetworkState:
+    batch_shape = inputs.shape[:-1]
+    state = self.network.initial_state(batch_shape, rngs=nnx.Rngs(0))
+    return self.network.step(inputs, state)
 
 class AutoRegressiveComponent(nnx.Module):
-  """Autoregressive residual component."""
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       embedder: embed.Embedding,
-      residual_size: int,
-      depth: int = 0,
+      network_config: dict,
   ):
     self.embedder = embedder
 
-    # Build encoder MLP
-    self._encoder = jax_utils.MLP(
-        rngs,
-        input_size=residual_size + embedder.size,
-        features=[residual_size] * depth + [embedder.distribution_size()],
-        activation=nnx.relu,
-        activate_final=False,
-    )
-
-    # The decoder doesn't need depth, because a single Linear decoding a one-hot
-    # has full expressive power over the output
-    self.decoder = nnx.Linear(
-        embedder.size, residual_size,
-        kernel_init=nnx.initializers.zeros_init(),
+    self.network = networks.construct_network(rngs, embedder.size, **network_config)
+    self.encoder = nnx.Linear(
+        self.network.output_size + embedder.size, embedder.distribution_size(),
         rngs=rngs)
 
   def sample(
       self,
       rng: jax.Array,
-      residual: Array,
+      residual: NetworkState,
       prev_raw: Array,
       **kwargs,
-  ) -> tp.Tuple[Array, SampleOutputs]:
+  ) -> tp.Tuple[NetworkState, SampleOutputs]:
+    output, state = residual
     # Directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw)
-    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
-    logits = self._encoder(input_)
+    logits = self.encoder(input_)
     # Sample the component
     sample = self.embedder.sample(rng, logits, **kwargs)
     # Condition future components on the current sample
     sample_embedding = self.embedder(sample)
-    residual = residual + self.decoder(sample_embedding)
+    residual = self.network.step(sample_embedding, state)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
   def distance(
       self,
-      residual: Array,
+      residual: NetworkState,
       prev_raw: Array,
       target_raw: Array,
-  ) -> tp.Tuple[Array, DistanceOutputs]:
+  ) -> tp.Tuple[NetworkState, DistanceOutputs]:
+    output, state = residual
     # Directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw)
-    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
-    logits = self._encoder(input_)
+    logits = self.encoder(input_)
     # Compute the distance between prediction and target
     distance = self.embedder.distance(logits, target_raw)
     # Auto-regress using the target (aka teacher forcing)
     target_embedding = self.embedder(target_raw)
-    residual = residual + self.decoder(target_embedding)
+    residual = self.network.step(target_embedding, state)
     return residual, DistanceOutputs(distance=distance, logits=logits)
 
 
@@ -212,9 +217,12 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
   @classmethod
   def default_config(cls):
+    network_config = networks.default_config()
+    del network_config['embed']  # no embed module
+    network_config['name'] = 'lstm'
+
     return dict(
-        residual_size=128,
-        component_depth=0,
+        component=network_config,
         remat=False,
         shared=False,
     )
@@ -225,13 +233,12 @@ class AutoRegressive(ControllerHead[ControllerType]):
       input_size: int,
       frame_skip: int,
       embed_controller: embed.Embedding[Controller, ControllerType],
-      residual_size: int,
-      component_depth: int,
+      component: dict,
       remat: bool = False,
       shared: bool = False,
   ):
     self.embed_controller = embed_controller
-    self.to_residual = nnx.Linear(input_size, residual_size, rngs=rngs)
+    self.encoder = AutoRegressiveEncoder(rngs, input_size, component)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
     self.remat = remat
@@ -240,7 +247,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       return nnx.List([
           AutoRegressiveComponent(
               rngs, e,
-              residual_size=residual_size, depth=component_depth)
+              network_config=component)
           for e in self.embed_flat
       ])
 
@@ -262,7 +269,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       prev_controller_state: list[ControllerType],
       temperature: tp.Optional[float] = None,
   ) -> list[SampleOutputs[ControllerType]]:
-    residual = self.to_residual(inputs)
+    residual = self.encoder(inputs)
 
     outputs: list[SampleOutputs[ControllerType]] = []
 
@@ -291,7 +298,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       prev_controller_state: list[ControllerType],
       target_controller_state: list[ControllerType],
   ) -> list[DistanceOutputs[ControllerType]]:
-    residual = self.to_residual(inputs)
+    residual = self.encoder(inputs)
 
     outputs: list[DistanceOutputs[ControllerType]] = []
 
