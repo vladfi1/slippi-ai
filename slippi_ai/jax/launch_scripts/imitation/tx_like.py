@@ -52,8 +52,11 @@ def default_config():
 
   ch_name = 'autoregressive'
   config.controller_head['name'] = ch_name
-  config.controller_head[ch_name]['component_depth'] = 2
-  config.controller_head[ch_name]['residual_size'] = 128
+  component_config = config.controller_head[ch_name]['component']
+  component_name = 'lstm'
+  component_config['name'] = component_name
+  component_config[component_name]['hidden_size'] = 256
+
   config.dataset.mirror = False
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
