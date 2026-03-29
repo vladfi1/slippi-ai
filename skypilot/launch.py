@@ -116,7 +116,11 @@ def launch(config: Config):
       raise ValueError(f'Environment variable {key} is not set, but is required for launching on the cluster.')
     secrets[key] = os.environ[key]
 
+  # TODO: this is a bit of a hack.
+  tag = flags.FLAGS.get_flag_value('config.tag', None)
+
   task = sky.Task(
+      name=tag,
       num_nodes=1,
       workdir='.',
       setup='''\
