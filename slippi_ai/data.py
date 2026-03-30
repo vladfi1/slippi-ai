@@ -83,6 +83,9 @@ class Replay(tp.NamedTuple):
   def mirror(self) -> tp.Self:
     return self._replace(game=mirror_game(self.game))
 
+  def swap(self) -> tp.Self:
+    return self._replace(game=swap_players(self.game), meta=self.meta.swap_players())
+
 class ReplayInfo(NamedTuple):
   path: file_utils.LocalFile | str
   swap: bool
@@ -657,11 +660,11 @@ def read_wds_meta(dataset_path: str) -> dict:
 
 @dataclasses.dataclass
 class WebDataConfig:
+  swap: bool = False  # TODO: unify with regular swap
   shuffle_buffer_size: int = 1000
   cache_dir: Optional[str] = None
   verbose: bool = True
 
-# TODO: support mirroring
 class WebDataSource(AbstractDataSource):
 
   def __init__(
@@ -677,6 +680,7 @@ class WebDataSource(AbstractDataSource):
       num_workers: int = 0,
       buffer: int = 16,
       mirror: bool = False,
+      swap: bool = False,
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
       verbose: bool = True,
@@ -750,6 +754,12 @@ class WebDataSource(AbstractDataSource):
     if mirror:
       replay_ds = replay_ds.map_iter(
           lambda replay: (replay, replay.mirror())
+      )
+      self.num_replays *= 2
+
+    if swap:
+      replay_ds = replay_ds.map_iter(
+          lambda replay: (replay, replay.swap())
       )
       self.num_replays *= 2
 
