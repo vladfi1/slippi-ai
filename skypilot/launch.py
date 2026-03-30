@@ -151,7 +151,7 @@ def launch(config: Config):
   print(f'Provisioning: sky api logs {request_id[:8]}')
 
   try:
-      job_id, handle = sky.get(request_id)
+      job_id, handle = sky.stream_and_get(request_id)
       print(f'Launched job with ID: {job_id}')
 
       if handle is None:
