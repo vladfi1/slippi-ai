@@ -87,6 +87,7 @@ if __name__ == '__main__':
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
+          hidden_size=ff.Integer(None),
           use_controller_rnn=ff.Boolean(False),
           share_crnn=ff.Boolean(True),
           use_learned_char=ff.Boolean(False),
@@ -172,8 +173,10 @@ if __name__ == '__main__':
 
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
-    embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
-    embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
+    enhanced = embed_config['enhanced']
+    if enhanced['hidden_size'] is None:
+      enhanced['hidden_size'] = net_config['hidden_size'] // 4
+    enhanced['use_self_nana'] = char in ['popo', 'all']
 
     def update_embed_config(config: dict):
       config['name'] = embed_name
