@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Test imitation learning training loop - JAX version."""
+"""Test policy + value function imitation learning."""
 
 from absl import app
 import wandb
@@ -31,7 +31,7 @@ DEFAULT_CONFIG = train_lib.Config(
         unroll_length=5,
     ),
     learner=train_lib.learner_lib.LearnerConfig(),
-    runtime=train_lib.RuntimeConfig(
+    runtime=train_lib.train_policy.RuntimeConfig(
         log_interval=4,
         max_runtime=10,
         num_evals_per_epoch=2,
