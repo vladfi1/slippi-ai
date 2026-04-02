@@ -229,11 +229,19 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         config.data.unroll_length)
     config.learner.unroll_batch_size = config.data.unroll_length
 
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = config.observation.frame_skip.skip
+
   # Set wandb config after potential overrides from checkpoint or compatible policy.
   wandb.config.update(dataclasses.asdict(config))
 
+  if config.observation.frame_skip.skip == 0:
+    raise ValueError('Frame skip not set.')
+
   rngs = nnx.Rngs(config.seed)
-  q_function = q_lib.build_q_function(rngs, config.q_function)
+  q_function = q_lib.build_q_function(
+      rngs, config.q_function,
+      frame_skip=config.observation.frame_skip.skip)
 
   mesh = jax_utils.get_mesh()
   data_sharding = jax_utils.data_sharding(mesh)
@@ -407,11 +415,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     per_step_eval_stats: list[dict] = []
 
-    # Stats have shape [B, 2, T]
-    def time_mean(x: jax.Array, axis: int = 2) -> np.ndarray:
-      assert x.shape[axis] == test_data_config.unroll_length
-      # Need to convert to numpy as np.mean will perform the computation in jax.
-      return np.mean(np.asarray(x), axis=axis)
+    # Stats have shape [B, 2]
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
@@ -419,7 +423,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     num_eval_steps = 0
     while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       if test_stats_jax is not None:
-        test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+        test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
       test_stats_jax, _ = test_manager.step()
 
@@ -429,7 +433,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         break
 
     assert test_stats_jax is not None
-    test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+    test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)

@@ -67,9 +67,11 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       config: QFunctionConfig,
       embed_action: embed_lib.Embedding[Controller, Action],
+      frame_skip: int,
   ):
     self.config = config
     self.embed_action = embed_action
+    self.frame_skip = frame_skip
     self.core_net = networks.build_embed_network(
         rngs, config.embed, config.num_names, config.network, embed_action=self.embed_action)
     self.action_net = networks.construct_network(
@@ -111,13 +113,19 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
   def q_values_from_hidden_states(
       self,
-      values: jax.Array, # [..., 2]
-      hidden_states: RecurrentState,  # [..., 2, H]
-      actions: Action,  # [..., 2]
-  ) -> jax.Array:  # [..., 2]
+      values: jax.Array, # [T / FS, ..., 2]
+      hidden_states: RecurrentState,  # [T / FS, ..., 2, H]
+      reset: jax.Array,  # [T / FS, FS, ...]
+      actions: Action,  # [T / FS, FS, ..., 2]
+  ) -> jax.Array:  # [T / FS, ..., 2]
     action_inputs = self.embed_action(actions)
-    action_outputs, _ = self.action_net.step(action_inputs, hidden_states)
-    return self._q_values_from_outputs(action_outputs, values)
+
+    skip_major_actions = jnp.swapaxes(action_inputs, 0, 1)  # [FS, T / FS, ..., 2]
+    reset = jnp.swapaxes(reset, 0, 1)  # [FS, T / FS, ...]
+    outputs, _ = self.action_net.unroll(skip_major_actions, reset, hidden_states)
+    outputs = outputs[-1]
+
+    return self._q_values_from_outputs(outputs, values)
 
   def multi_q_values_from_hidden_states(
       self,
@@ -165,13 +173,23 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       is_resetting: jax.Array,  # [T, B]
       next_actions: Action,  # [T, B, 2]
       initial_state: RecurrentState,  #  [B, 2]
-  ) -> tuple[UnrollOutputs, RecurrentState]:
-    separate_outputs, hidden_states = self.core_net.scan(
+  ) -> tuple[UnrollOutputs, RecurrentState]:  # ([T / FS, ...], [B, ...])
+    # TODO: could save some memory by only returning the skipped outputs and hidden states
+    outputs, hidden_states = self.core_net.scan(
         state_action, is_resetting, initial_state)
-    values = self._values_from_outputs(separate_outputs)
+
+    skip_outputs, skip_hidden_states = utils.map_nt(
+        lambda x: x[::self.frame_skip],
+        (outputs, hidden_states))
+
+    values = self._values_from_outputs(skip_outputs)
+
+    skip_actions, skip_reset = utils.map_nt(
+        lambda x: x.reshape(-1, self.frame_skip, *x.shape[1:]),
+        (next_actions, is_resetting))
 
     q_values = self.q_values_from_hidden_states(
-        values, hidden_states, next_actions)
+        values, skip_hidden_states, skip_reset, skip_actions)
 
     final_state = jax.tree.map(lambda t: t[-1], hidden_states)
 
@@ -188,15 +206,19 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     num_batches, r = divmod(total_unroll_length, batch_size)
     if r != 0:
       raise ValueError(f'Unroll length {total_unroll_length} is not divisible by batch size {batch_size}.')
+    if batch_size % self.frame_skip != 0:
+      raise ValueError(f'Unroll batch size {batch_size} must be divisible by frame skip {self.frame_skip}.')
 
     def to_batched(x: jax.Array) -> jax.Array:
       assert x.shape[0] == total_unroll_length
       return x.reshape((num_batches, batch_size) + x.shape[1:])
 
-    state_action, is_resetting = jax.tree.map(
+    state_action, is_resetting = utils.map_nt(
         lambda x: to_batched(x[:-1]),
         (frames.state_action, frames.is_resetting))
-    next_actions = jax.tree.map(lambda x: to_batched(x[1:]), frames.state_action.action)
+    next_actions = utils.map_nt(
+        lambda x: to_batched(x[1:]),
+        frames.state_action.action)
 
     # nnx will complain about trace levels if we use jax.lax.scan
     scan_fn = nnx.scan(
@@ -208,12 +230,13 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     unroll_outputs, final_state = scan_fn(
         self, state_action, is_resetting, next_actions, initial_state)
 
-    # Reshape outputs back to [T, B]
+    # Reshape outputs back to [T / FS, B]
     def to_unbatched(x: jax.Array) -> jax.Array:
-      assert x.shape[:2] == (num_batches, batch_size)
-      return x.reshape((total_unroll_length,) + x.shape[2:])
+      assert x.shape[0] == num_batches
+      assert x.shape[1] == batch_size // self.frame_skip
+      return x.reshape((-1,) + x.shape[2:])
 
-    unroll_outputs: UnrollOutputs = jax.tree.map(to_unbatched, unroll_outputs)
+    unroll_outputs = utils.map_nt(to_unbatched, unroll_outputs)
     values, q_values = unroll_outputs
 
     last_state_action, last_is_resetting = utils.map_nt(
@@ -233,31 +256,13 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
     return outputs, final_state
 
-  def loss(
-      self,
-      frames: data.Frames[Rank3, Action],
-      initial_state: RecurrentState,
-      discount: float,
-  ) -> tp.Tuple[QOutputs, RecurrentState]:
-    """Computes prediction loss on a batch of frames.
-
-    Args:
-      frames: Time-major batch of states, actions, and rewards.
-        Assumed to have one frame of overlap.
-      initial_state: Batch of initial recurrent states.
-      discount: Per-frame discount factor for returns.
-    """
-    outputs, hidden_states = self.loss_and_hidden_states(
-        frames, initial_state, discount)
-    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
-    return outputs, final_state
-
   def loss_and_hidden_states(
       self,
       frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
       initial_state: RecurrentState,
       discount: float,
   ) -> tp.Tuple[QOutputs, RecurrentState]:
+
     all_outputs, all_hidden_states = self.core_net.scan(
         frames.state_action, frames.is_resetting, initial_state)
 
@@ -284,16 +289,21 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
   def _get_outputs(
       self,
-      frames: data.Frames[Rank3, Action],
-      values: jax.Array,
-      q_values: jax.Array,
-      last_value: jax.Array,
+      frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
+      values: jax.Array,  # [T / FS, ...]
+      q_values: jax.Array,  # [T / FS, ...]
+      last_value: jax.Array,  # [...]
       discount: float,
   ):
+    reward = frames.reward.reshape(
+        -1, self.frame_skip, *frames.reward.shape[1:]).sum(axis=1)  # [T / FS, ...]
+    is_resetting = frames.is_resetting[1:].reshape(
+        -1, self.frame_skip, *frames.is_resetting.shape[1:]).any(axis=1)  # [T / FS, ...]
+
     value_targets = rl_lib.generalized_returns_with_resetting(
-        rewards=frames.reward,
+        rewards=reward,
         values=values,
-        is_resetting=frames.is_resetting[1:],
+        is_resetting=is_resetting,
         bootstrap=last_value,
         discount=discount,
     )
@@ -333,6 +343,10 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         metrics=metrics,
     )
 
-def build_q_function(rngs: nnx.Rngs, config: QFunctionConfig) -> QFunction[tp.Any]:
+def build_q_function(
+    rngs: nnx.Rngs,
+    config: QFunctionConfig,
+    frame_skip: int,
+) -> QFunction[tp.Any]:
   embed_action = config.embed.controller.make_embedding()
-  return QFunction(rngs, config, embed_action)
+  return QFunction(rngs, config, embed_action, frame_skip)

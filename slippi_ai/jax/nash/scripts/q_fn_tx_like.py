@@ -18,7 +18,7 @@ def default_config():
 
   config.delay = 0
   config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
   config.data.damage_ratio = 0.01
   config.data.num_workers = 2
@@ -133,7 +133,7 @@ if __name__ == '__main__':
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
 
-        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
+        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_ofs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
