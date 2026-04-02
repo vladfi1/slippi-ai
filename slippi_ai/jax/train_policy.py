@@ -286,6 +286,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   for comp in ['network', 'controller_head']:
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = config.observation.frame_skip.skip
+
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
   runtime = config.runtime
