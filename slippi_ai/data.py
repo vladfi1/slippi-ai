@@ -513,6 +513,7 @@ class TrajectoryManager:
       unroll_length: int,
       encode_name: Callable[[str], int],
       overlap: int = 1,
+      random_offset: int = 0,
       game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
@@ -520,6 +521,7 @@ class TrajectoryManager:
     self.source = source
     self.unroll_length = unroll_length
     self.overlap = overlap
+    self.random_offset = random_offset
     self.game_filter = game_filter or (lambda _: True)
     self.observation_filter = observation_filter
     self.reward_kwargs = reward_kwargs
@@ -546,7 +548,11 @@ class TrajectoryManager:
 
     self.flat_game = utils.cached_flatten(Game)(game)
     self.game_len = game_len(game)
-    self.frame = 0
+    # TODO: make offset based on epoch instead of random
+    if self.random_offset > 0:
+      self.frame = random.randint(0, self.random_offset - 1)
+    else:
+      self.frame = 0
     self.info = info
     # self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
     self.name_code = self.encode_name(info.main_player.name)
@@ -674,6 +680,7 @@ class WebDataSource(AbstractDataSource):
       batch_size: int,
       unroll_length: int,
       extra_frames: int = 1,
+      random_offset: int = 0,
       damage_ratio: float = 0.01,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
@@ -777,6 +784,7 @@ class WebDataSource(AbstractDataSource):
             replay_iter,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
+            random_offset=random_offset,
             observation_filter=build_observation_filter(),
             reward_kwargs=dict(damage_ratio=damage_ratio),
             encode_name=self.encode_name,
@@ -811,6 +819,7 @@ class DataSource(AbstractDataSource):
       batch_size: int = 64,
       unroll_length: int = 64,
       extra_frames: int = 1,
+      random_offset: int = 0,
       damage_ratio: float = 0.01,
       balance_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
@@ -852,6 +861,7 @@ class DataSource(AbstractDataSource):
             self.replay_ds,
             unroll_length=self.chunk_size,
             overlap=extra_frames,
+            random_offset=random_offset,
             observation_filter=build_observation_filter(),
             reward_kwargs=dict(damage_ratio=damage_ratio),
             encode_name=self.encode_name,
@@ -991,6 +1001,7 @@ class DataConfig:
   cached: bool = False
   unroll_chunks: int = 0
   burnin: int = 5  # get rid of early-game correlations
+  random_offset: int = 0  # improve data diversity for frameskip
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
