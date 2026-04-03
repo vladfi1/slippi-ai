@@ -328,7 +328,12 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       discount: float,
   ):
     reward = frames.reward.reshape(
-        -1, self.frame_skip, *frames.reward.shape[1:]).sum(axis=1)  # [T / FS, ...]
+        -1, self.frame_skip, *frames.reward.shape[1:])  # [T / FS, FS, ...]
+
+    # Apply discounting within each frame skip window.
+    discounts = discount ** jnp.arange(self.frame_skip)
+    reward = jnp.tensordot(reward, discounts, axes=([1], [0]))  # [T / FS, ...]
+
     is_resetting = frames.is_resetting[1:].reshape(
         -1, self.frame_skip, *frames.is_resetting.shape[1:]).any(axis=1)  # [T / FS, ...]
 
@@ -337,7 +342,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         values=values,
         is_resetting=is_resetting,
         bootstrap=last_value,
-        discount=discount,
+        discount=discount ** self.frame_skip,
     )
     value_targets = jax.lax.stop_gradient(value_targets)
 
