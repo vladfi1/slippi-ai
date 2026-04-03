@@ -195,6 +195,38 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
     return UnrollOutputs(values=values, q_values=q_values), final_state
 
+  def loss(
+      self,
+      frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
+      initial_state: RecurrentState,  # [B, 2]
+      discount: float,
+  ) -> tuple[QOutputs, RecurrentState]:
+    state_action, is_resetting = utils.map_nt(
+        lambda x: x[:-1],
+        (frames.state_action, frames.is_resetting))
+    next_actions = utils.map_nt(
+        lambda x: x[1:], frames.state_action.action)
+
+    unroll_outputs, final_state = self.unroll(
+        state_action, is_resetting, next_actions, initial_state)
+
+    last_state_action, last_is_resetting = utils.map_nt(
+        lambda x: x[-1], (frames.state_action, frames.is_resetting))
+    last_output, _ = self.core_net.step_with_reset(
+        last_state_action, last_is_resetting, final_state)
+
+    last_value = self._values_from_outputs(last_output)
+
+    outputs = self._get_outputs(
+        frames=frames,
+        values=unroll_outputs.values,
+        q_values=unroll_outputs.q_values,
+        last_value=last_value,
+        discount=discount,
+    )
+
+    return outputs, final_state
+
   def loss_batched(
       self,
       frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
