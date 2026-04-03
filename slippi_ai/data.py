@@ -128,7 +128,11 @@ class ReplayInfo(NamedTuple):
     return table['root'].combine_chunks()
 
   def read_game(self) -> Game[Rank1]:
-    game_struct = self.read_pq()
+    try:
+      game_struct = self.read_pq()
+    except Exception:
+      logging.error(f"Error at {self.path}")
+      raise
     game = game_array_to_nt(game_struct)
 
     if self.swap:
