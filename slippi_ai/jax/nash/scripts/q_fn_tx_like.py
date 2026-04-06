@@ -18,7 +18,7 @@ def default_config():
 
   config.delay = 0
   config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
   config.data.damage_ratio = 0.01
   config.data.num_workers = 2
@@ -127,13 +127,14 @@ if __name__ == '__main__':
         head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
 
         if imitation_config is not None:
-          fs = imitation_config.observation.frame_skip.skip
+          fs = imitation_config.policy.frame_skip
         else:
-          fs = config.observation.frame_skip.skip
+          fs = config.q_function.frame_skip
+
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
 
-        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
+        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 

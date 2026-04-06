@@ -30,7 +30,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=6,
     ),
     runtime=train_q_fn.RuntimeConfig(
         log_interval=4,
@@ -50,7 +50,9 @@ DEFAULT_CONFIG = train_q_fn.Config(
         ),
     ),
     delay=0,
+    test_unroll_multiplier=2,
 )
+DEFAULT_CONFIG.q_function.frame_skip = 2
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
