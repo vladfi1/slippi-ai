@@ -39,7 +39,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
         max_eval_steps=3,
     ),
     q_function=q_lib.QFunctionConfig(
-        network=network_config,
+        core_net=network_config,
         embed=embed_lib.EmbedConfig(
             player=embed_lib.PlayerConfig(with_nana=False),
             items=embed_lib.ItemsConfig(type=embed_lib.ItemsType.SKIP),

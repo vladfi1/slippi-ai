@@ -266,7 +266,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   jax_utils.replicate_module(learner, mesh)
 
   logging.info("Network configuration")
-  logging.info(f'Using network: {config.q_function.network["name"]}')
+  logging.info(f'Using network: {config.q_function.core_net["name"]}')
 
   # Set up dataset for training on both sides of each replay
   config.dataset.swap = False
