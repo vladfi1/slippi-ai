@@ -289,9 +289,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, hidden_states = q_function.loss_and_hidden_states(
+    q_outputs, core_outputs, final_state = q_function.loss_and_core_outputs(
         frames, initial_states, self.discount)
-    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
 
     actions = policy_samples
     if self.config.include_action_taken_in_samples:
@@ -303,9 +302,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     assert _SAMPLE_AXIS == 0
      # [S, S, T, B, 2]
-    sample_q_values = q_function.multi_q_values_from_hidden_states(
+    sample_q_values = q_function.multi_q_values_from_core_outputs(
         values=q_outputs.values,
-        hidden_states=hidden_states,
+        core_outputs=core_outputs,
         actions=actions,
         batch_size=self.config.sample_batch_size,
     )
@@ -316,7 +315,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
-    return bm_loss, bm_metrics, final_state, q_outputs.values, hidden_states, q_values
+    return bm_loss, bm_metrics, final_state, q_outputs.values, core_outputs, q_values
 
   def _compute_nash(
       self,
@@ -373,7 +372,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       policy_samples: Action,  # [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
-      q_hidden_states: RecurrentState,  # [T, B, 2]
+      q_core_outputs: jax.Array,  # [T, B, 2, O_core]
       nash_solution: nash.NashVariables,  # [T, B]
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = nash_utils.bm_to_tm(bm_frames)
@@ -448,9 +447,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
         merge, nash_policy_samples, opponent_actions)
 
       def q_fn(actions: Action):
-        two_player_qs = self.q_function.q_values_from_hidden_states(
+        two_player_qs = self.q_function.q_values_from_core_outputs(
           values=values,
-          hidden_states=q_hidden_states,
+          core_outputs=q_core_outputs,
           actions=actions,
         )
         return p1_averaged_qs(two_player_qs)  # [T, B]
@@ -527,7 +526,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,
       policy_samples: Action,  # [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
-      q_hidden_states: RecurrentState,  # [T, B, 2]
+      q_core_outputs: jax.Array,  # [T, B, 2, O_core]
       nash_solution: nash.NashVariables,  # [T, B]
       train: bool = True,
   ):
@@ -540,7 +539,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     fn = self.train_nash_policy if train else self.run_nash_policy
     return fn(
         frames, initial_state, policy_samples,
-        values, q_hidden_states, nash_solution,
+        values, q_core_outputs, nash_solution,
     )
 
   def step(
@@ -566,7 +565,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       metrics[Q_FUNCTION],
       final_states[Q_FUNCTION],
       values,
-      q_hidden_states,
+      q_core_outputs,
       q_values,
     ) = self.step_q_function(
         zipped_frames, initial_states[Q_FUNCTION], policy_samples)
@@ -581,6 +580,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         zipped_frames, initial_states[NASH_POLICY], policy_samples,
-        values, q_hidden_states, nash_variables, train=train)
+        values, q_core_outputs, nash_variables, train=train)
 
     return metrics, final_states
