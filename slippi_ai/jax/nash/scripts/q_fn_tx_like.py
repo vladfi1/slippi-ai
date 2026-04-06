@@ -17,7 +17,7 @@ def default_config():
   config = train_q_fn.Config()
 
   config.delay = 0
-  config.data.batch_size = 512
+  config.data.batch_size = 256
   config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
   config.data.damage_ratio = 0.01
@@ -48,17 +48,23 @@ if __name__ == '__main__':
   __spec__ = None
 
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
-  os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-  os.environ['TF_CUDA_MALLOC_ASYNC_SUPPORTED_PREALLOC'] = '-1'
+  # os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+  # os.environ['TF_CUDA_MALLOC_ASYNC_SUPPORTED_PREALLOC'] = '-1'
 
   # Flag parsing might be too late to set these env vars
   # CUDA_MALLOC_ASYNC = flags.DEFINE_bool(
   #     'cuda_malloc_async', False, 'Whether to use CUDA malloc async allocator')
 
-  NET = ff.DEFINE_dict(
-      'net',
-      name=ff.String(NET_NAME),
-      hidden_size=ff.Integer(512),
+  CORE_NET = ff.DEFINE_dict(
+      'core_net',
+      hidden_size=ff.Integer(1024),
+      num_layers=ff.Integer(1),
+      ffw_multiplier=ff.Integer(2),
+      recurrent_layer=ff.String('lstm'),
+  )
+  ACTION_NET = ff.DEFINE_dict(
+      'action_net',
+      hidden_size=ff.Integer(256),
       num_layers=ff.Integer(1),
       ffw_multiplier=ff.Integer(2),
       recurrent_layer=ff.String('lstm'),
@@ -103,9 +109,6 @@ if __name__ == '__main__':
           train_lib.Config,
           saving.upgrade_config(imitation_state['config']))
 
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
-
     char = CHAR.value
 
     if TOY_DATA.value:
@@ -120,9 +123,13 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
-        n = config.q_function.network[net]['num_layers']
-        h = net_config['hidden_size']
-        net_str = f"{n}x{h}"
+        def net_str(net_config: dict):
+          n = net_config['num_layers']
+          h = net_config['hidden_size']
+          return f"{n}x{h}"
+
+        core_str = net_str(CORE_NET.value)
+        action_str = net_str(ACTION_NET.value)
 
         head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
 
@@ -134,25 +141,22 @@ if __name__ == '__main__':
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
 
-        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}"
+        config.tag = f"nq_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}"
 
     config.dataset.allowed_characters = char
 
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
-    embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
+    embed_config['enhanced']['hidden_size'] = CORE_NET.value['hidden_size'] // 4
     embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
 
-    def update_embed_config(config: dict):
-      config['name'] = embed_name
-      config[embed_name].update(embed_config[embed_name])
+    config.q_function.core_net['name'] = NET_NAME
+    config.q_function.core_net[NET_NAME].update(CORE_NET.value)
+    config.q_function.core_net['embed']['name'] = embed_name
+    config.q_function.core_net['embed'][embed_name].update(embed_config[embed_name])
 
-    def update_network_config(config: dict):
-      config['name'] = net
-      config[net].update(net_config)
-      update_embed_config(config['embed'])
-
-    update_network_config(config.q_function.network)
+    config.q_function.action_net['name'] = NET_NAME
+    config.q_function.action_net[NET_NAME].update(ACTION_NET.value)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
