@@ -116,14 +116,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
     frames = self._get_delayed_frames(frames)
 
     if unroll_batch_size is None:
-      q_outputs, final_state = q_function.loss(
-          frames, initial_state, self.discount)
-    else:
-      q_outputs, final_state = q_function.loss_batched(
-          frames, initial_state, self.discount, unroll_batch_size)
+      unroll_batch_size = frames.reward.shape[0]
 
-    bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
-    bm_metrics = jax.tree.map(lambda x: jnp.moveaxis(x, 0, 2), q_outputs.metrics)
+    q_outputs, final_state = q_function.loss_batched(
+        frames, initial_state, self.discount, unroll_batch_size)
+
+    bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])  # [T, B, 2] -> [B]
+    # metrics: [T, B, 2] -> [B, 2]
+    bm_metrics = jax.tree.map(lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
     return bm_loss, bm_metrics, final_state
 
