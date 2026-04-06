@@ -333,6 +333,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       nash_policy_optimizer_state=policy_optimizer_state,
   )
 
+  frame_skip = imitation_config.policy.frame_skip
+
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = frame_skip
+
   # Set up dataset for training on both sides of each replay
   config.dataset.swap = False
   config.dataset.allowed_opponents = config.dataset.allowed_characters
@@ -342,7 +347,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       dataset_config=config.dataset,
       train_data_config=config.data,
       name_map=name_map,
-      extra_frames=1 + nash_policy.delay,
+      extra_frames=frame_skip + nash_policy.delay,
       observation_config=imitation_config.observation,
   )
 
@@ -350,6 +355,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     nash_source = nash_data.TwoPlayerDataSource(
         source=source,
         name_map=name_map,
+        frame_skip=frame_skip,
     )
     exit_stack.callback(nash_source.shutdown)
     return nash_source
