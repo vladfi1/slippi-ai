@@ -120,14 +120,26 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     else:
       return qs
 
-  def _action_rnn_initial_state(
+  def _action_net_initial_state(
       self, core_outputs: jax.Array,  # [..., 2, O_core]
   ) -> RecurrentState:
-    """Projects core_net outputs to an initial state for action_rnn."""
+    """Projects core_net outputs to an initial state for the action_net."""
     batch_shape = core_outputs.shape[:-1]
     zero_state = self.action_init.initial_state(batch_shape, rngs=nnx.Rngs(0))
     _, init_state = self.action_init.step(core_outputs, zero_state)
     return init_state
+
+  def q_values_from_action_state(
+      self,
+      values: jax.Array,  # [..., 2]
+      action_init_state: networks.RecurrentState,  # [..., 2, H]
+      actions: list[Action],  # frame_skip x [..., 2]
+  ) -> jax.Array:  # [..., 2]
+    embedded = [self.embed_action(a) for a in actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
+    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
+    outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
+    return self._q_values_from_outputs(outputs[-1], values)
 
   def q_values_from_core_outputs(
       self,
@@ -135,25 +147,30 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       core_outputs: jax.Array,  # [..., 2, O_core]
       actions: list[Action],  # frame_skip x [..., 2]
   ) -> jax.Array:  # [..., 2]
-    init_state = self._action_rnn_initial_state(core_outputs)
-    embedded = [self.embed_action(a) for a in actions]
-    stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
-    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
-    outputs, _ = self.action_net.unroll(stacked, reset, init_state)
-    return self._q_values_from_outputs(outputs[-1], values)
+    init_state = self._action_net_initial_state(core_outputs)
+    return self.q_values_from_action_state(values, init_state, actions)
 
-  def multi_q_values_from_core_outputs(
+  def multi_q_values_from_action_state(
       self,
       values: jax.Array,  # [T, B, 2]
-      core_outputs: jax.Array,  # [T, B, 2, O_core]
-      actions: Action,  # [S, T, B, 2]
+      action_init_state: networks.RecurrentState,  # [T, B, 2, H]
+      actions: list[Action],  # frame_skip x [S, T, B, 2]
       batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
   ) -> jax.Array:  # [S, S, T, B, 2]
-    action_inputs = self.embed_action(actions)
-    action_rnn_state = self._action_rnn_initial_state(core_outputs)
+    # Embed each frame in the frame_skip, then transpose to [S, FS, T, B, 2, E]
+    embedded = [self.embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
+    action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
 
-    action_outputs, _ = jax_utils.lax_map(
-        lambda x: self.action_net.step(x, action_rnn_state),
+    action_rnn_state = action_init_state
+
+    def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
+      # embedded_fs: [FS, T, B, 2, E]
+      reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
+      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_rnn_state)
+      return outputs[-1]  # [T, B, 2, O]
+
+    action_outputs = jax_utils.lax_map(
+        process_one_sample,
         action_inputs,
         batch_size=batch_size,
     )
@@ -258,15 +275,15 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
     return outputs, final_state
 
-  def loss_and_core_outputs(
+  def loss_and_action_state(
       self,
       frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
       initial_state: RecurrentState,
       discount: float,
-  ) -> tp.Tuple[QOutputs, jax.Array, RecurrentState]:
-    """Returns (q_outputs, core_outputs, final_state).
+  ) -> tp.Tuple[QOutputs, RecurrentState, RecurrentState]:
+    """Returns (q_outputs, action_init_state, final_state).
 
-    core_outputs has shape [T, B, 2, O].
+    action_init_state has shape [T, B, 2, H] (action_net initial state per step).
     final_state is the core_net recurrent state after the last frame.
     """
     state_action_T = utils.map_nt(lambda x: x[:-1], frames.state_action)
@@ -280,10 +297,12 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         frames.is_resetting[-1], final_state)
     last_value = self._values_from_outputs(last_output)
 
+    action_init_state = self._action_net_initial_state(core_outputs)
+
     next_actions = jax.tree.map(
         lambda t: t[1:], frames.state_action.action)
-    q_values = self.q_values_from_core_outputs(
-        values, core_outputs, next_actions)
+    q_values = self.q_values_from_action_state(
+        values, action_init_state, next_actions)
 
     outputs = self._get_outputs(
         frames=frames,
@@ -293,7 +312,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         discount=discount,
     )
 
-    return outputs, core_outputs, final_state
+    return outputs, action_init_state, final_state
 
   def _get_outputs(
       self,

@@ -48,7 +48,7 @@ QFunctionOutputs = tuple[
     Metrics,  # [B]
     RecurrentState,  # final state [B]
     Values,  # [T, B, 2]
-    RecurrentState,  # [T, B, 2, H]
+    RecurrentState,  # action_init_state [T, B, 2, H]
     QValues,  # [S, S, T, B, 2]
 ]
 
@@ -141,7 +141,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     policy_samples = TMS
     vs = TM
-    q_hidden = TM
+    q_action_init = TM
     qs = TMSS
     nash_solution = TM
     metrics = BM
@@ -161,7 +161,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     q_function_specs = ShardingSpecs(
         extra_in_specs=(policy_samples,),
-        extra_out_specs=(vs, q_hidden, qs),
+        extra_out_specs=(vs, q_action_init, qs),
     )
 
     self.run_q_function = jax_utils.shard_map_loss_fn(
@@ -191,7 +191,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
     nash_policy_specs = ShardingSpecs(
-        extra_in_specs=(policy_samples, vs, q_hidden, nash_solution),
+        extra_in_specs=(policy_samples, vs, q_action_init, nash_solution),
         extra_out_specs=None,
     )
 
@@ -246,7 +246,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       bm_frames: Frames[nash_data.Rank3, Action],
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
-  ) -> tuple[Loss, Metrics, RecurrentState, Action]:
+  ) -> tuple[Loss, Metrics, RecurrentState, list[Action]]:
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
 
@@ -261,10 +261,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
     @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
     def sample(rngs: nnx.Rngs):
       # A bit surprising that nnx doesn't complain about trace levels here
-      return sample_policy.controller_head.sample(
+      sample_outputs = sample_policy.controller_head.sample(
           rngs=rngs,
           inputs=sample_policy_outputs.outputs,
-          prev_controller_state=prev_action).controller_state
+          prev_controller_state=prev_action)
+      return [so.controller_state for so in sample_outputs]
 
     policy_samples = sample(rngs.fork(split=self.num_samples))
 
@@ -284,12 +285,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_function: q_lib.QFunction[Action],
       bm_frames: Frames[nash_data.Rank3, Action],
       initial_states: RecurrentState,
-      policy_samples: Action,
+      policy_samples: list[Action],
   ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, core_outputs, final_state = q_function.loss_and_core_outputs(
+    q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
         frames, initial_states, self.discount)
 
     actions = policy_samples
@@ -302,9 +303,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     assert _SAMPLE_AXIS == 0
      # [S, S, T, B, 2]
-    sample_q_values = q_function.multi_q_values_from_core_outputs(
+    sample_q_values = q_function.multi_q_values_from_action_state(
         values=q_outputs.values,
-        core_outputs=core_outputs,
+        action_init_state=action_init_state,
         actions=actions,
         batch_size=self.config.sample_batch_size,
     )
@@ -315,7 +316,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
-    return bm_loss, bm_metrics, final_state, q_outputs.values, core_outputs, q_values
+    return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values
 
   def _compute_nash(
       self,
@@ -370,9 +371,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
       bm_frames: Frames[nash_data.Rank3, Action],
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
-      policy_samples: Action,  # [S, T, B, 2]
+      policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
-      q_core_outputs: jax.Array,  # [T, B, 2, O_core]
+      q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = nash_utils.bm_to_tm(bm_frames)
@@ -395,23 +396,26 @@ class Learner(nnx.Module, tp.Generic[Action]):
         frames, initial_states)
     nash_policy_imitation_loss = nash_policy_outputs.imitation_loss
 
-    def nash_policy_distance_fn(policy_sample: Action):
-      return nash_policy.controller_head.distance(
+    def nash_policy_distance_fn(policy_sample: list[Action]):
+      distance_outputs = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
-          target_controller_state=policy_sample).distance
+          target_controller_state=policy_sample)
+      return jax_utils.add_n([
+          jax_utils.add_n(
+              nash_policy.controller_head.controller_embedding.flatten(do.distance)
+          )
+          for do in distance_outputs
+      ])
 
     if self.config.sample_batch_size > 0:
       nash_policy_distance_fn = jax.remat(nash_policy_distance_fn)
 
     # [S, T, B, 2]
-    nash_policy_distances = jax_utils.lax_map(
+    nash_policy_log_probs = -jax_utils.lax_map(
         nash_policy_distance_fn, actions,
         batch_size=self.config.sample_batch_size,
     )
-    nash_policy_log_probs = -jax_utils.add_n(
-      nash_policy.controller_head.controller_embedding.flatten(
-        nash_policy_distances))
 
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
 
@@ -422,16 +426,18 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
     # Estimate nash_policy vs computed nash
-    nash_policy_samples = nash_policy.controller_head.sample(   # [T, B, 2]
-        rngs=rngs,
-        inputs=nash_policy_outputs.outputs,
-        prev_controller_state=prev_action).controller_state
+    nash_policy_samples = [  # list[Controller[T, B, 2]]
+        so.controller_state
+        for so in nash_policy.controller_head.sample(
+            rngs=rngs,
+            inputs=nash_policy_outputs.outputs,
+            prev_controller_state=prev_action)]
 
     # TODO: this is fairly inefficient -- we should instead pre-compute the
     # q-function's "outputs" on both the nash policy and the sampled actions,
     # the latter which we already have from the q-function unroll, and then use
     # QFunction._q_values_from_outputs.
-    def compute_nash_policy_q_vs(opponent_actions: Action) -> jax.Array:
+    def compute_nash_policy_q_vs(opponent_actions: list[Action]) -> jax.Array:
       # Line up nash policy vs the other policy samples.
       def merge(nps: jax.Array, ps: jax.Array):
         # nps is [T, B, 2], ps is [T, B, 2]
@@ -446,10 +452,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
       merged_actions = utils.map_nt(  # [2, T, B, 2]
         merge, nash_policy_samples, opponent_actions)
 
-      def q_fn(actions: Action):
-        two_player_qs = self.q_function.q_values_from_core_outputs(
+      def q_fn(actions: list[Action]):
+        two_player_qs = self.q_function.q_values_from_action_state(
           values=values,
-          core_outputs=q_core_outputs,
+          action_init_state=q_action_init_state,
           actions=actions,
         )
         return p1_averaged_qs(two_player_qs)  # [T, B]
@@ -509,7 +515,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       self,
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
-      policy_samples: Action,  # [T, B, 2]
+      policy_samples: list[Action],
   ):
     frames = Frames[nash_data.Rank3, Action](
         state_action=self.q_function.core_net.encode(zipped_frames.state_action),
@@ -524,9 +530,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
       self,
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
-      policy_samples: Action,  # [S, T, B, 2]
+      policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
-      q_core_outputs: jax.Array,  # [T, B, 2, O_core]
+      q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
       train: bool = True,
   ):
@@ -539,7 +545,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     fn = self.train_nash_policy if train else self.run_nash_policy
     return fn(
         frames, initial_state, policy_samples,
-        values, q_core_outputs, nash_solution,
+        values, q_action_init_state, nash_solution,
     )
 
   def step(
@@ -565,7 +571,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       metrics[Q_FUNCTION],
       final_states[Q_FUNCTION],
       values,
-      q_core_outputs,
+      q_action_init_state,
       q_values,
     ) = self.step_q_function(
         zipped_frames, initial_states[Q_FUNCTION], policy_samples)
@@ -580,6 +586,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         zipped_frames, initial_states[NASH_POLICY], policy_samples,
-        values, q_core_outputs, nash_variables, train=train)
+        values, q_action_init_state, nash_variables, train=train)
 
     return metrics, final_states
