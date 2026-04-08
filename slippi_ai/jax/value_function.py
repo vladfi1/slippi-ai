@@ -35,12 +35,14 @@ class ValueFunction(nnx.Module):
       network_config: dict,
       num_names: int,
       embed_config: embed.EmbedConfig,
+      frame_skip: int,
   ):
     self.network = networks.build_embed_network(
         rngs=rngs,
         embed_config=embed_config,
         num_names=num_names,
         network_config=network_config,
+        frame_skip=frame_skip,
     )
     self.value_head = nnx.Linear(self.network.output_size, 1, rngs=rngs)
 
