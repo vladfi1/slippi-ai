@@ -57,12 +57,34 @@ def replicate_module(module: nnx.Module, mesh: Mesh):
   """Replicate module parameters across all devices in the mesh."""
   shard_module(module, replicate_sharding(mesh))
 
-
-
 def num_devices() -> int:
   """Get the number of local devices."""
   return jax.local_device_count()
 
+ModT = tp.TypeVar('ModT', bound=nnx.Module)
+
+def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
+  """Stack a list of modules by adding a leading axis to their parameters."""
+  modules = list(modules)
+
+  if not modules:
+    raise ValueError('Cannot stack an empty list of modules.')
+
+  def stack_fn(*params):
+    return jnp.stack(params, axis=axis)
+
+  stacked_state = jax.tree.map(stack_fn, *[nnx.state(m) for m in modules])
+  graphdef = nnx.graphdef(modules[0])
+  return nnx.merge(graphdef, stacked_state)
+
+def unstack_pytree(
+    pytree: T,
+    axis: int = 0,
+) -> list[T]:
+  """Unstack a pytree along the given axis, returning a list of pytrees."""
+  leaves, structure = jax.tree.flatten(pytree)
+  unstacked_leaves = [jnp.unstack(x, axis=axis) for x in leaves]
+  return [jax.tree.unflatten(structure, xs) for xs in zip(*unstacked_leaves)]
 
 # Other utilities
 
@@ -291,7 +313,6 @@ State = tp.TypeVar('State')
 GradsT = tp.TypeVar('GradsT')
 AuxT = tp.TypeVar('AuxT')
 Loss = Array
-ModT = tp.TypeVar('ModT', bound=nnx.Module)
 Grads = tp.Any
 
 
