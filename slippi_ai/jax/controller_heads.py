@@ -12,7 +12,7 @@ from slippi_ai.controller_heads import (
     DistanceOutputs,
     ControllerType,
 )
-from slippi_ai import controller_heads
+from slippi_ai import controller_heads, utils
 
 from slippi_ai.jax import embed, jax_utils, networks
 from slippi_ai.types import Controller
@@ -300,26 +300,43 @@ class AutoRegressive(ControllerHead[ControllerType]):
   ) -> list[DistanceOutputs[ControllerType]]:
     residual = self.encoder(inputs)
 
-    outputs: list[DistanceOutputs[ControllerType]] = []
+    stacked_res_blocks: nnx.List[AutoRegressiveComponent] = nnx.List(
+        jax_utils.stack_modules(res_blocks)
+        for res_blocks in zip(*self.res_blocks))
+    stack = lambda *xs: jnp.stack(xs, axis=0)
+    stacked_prev_controller_state = utils.map_nt(stack, *prev_controller_state)
+    stacked_target_controller_state = utils.map_nt(stack, *target_controller_state)
 
-    for prev, target, res_blocks in zip(prev_controller_state, target_controller_state, self.res_blocks):
-      prev_controller_flat = list(self.embed_controller.flatten(prev))
-      target_controller_flat = list(self.embed_controller.flatten(target))
+    def single_action_distance(
+        res_blocks: tp.Iterable[AutoRegressiveComponent],
+        prev_controller: ControllerType,
+        target_controller: ControllerType,
+        residual: NetworkState,
+    ):
+      prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
+      target_controller_flat = list(self.embed_controller.flatten(target_controller))
 
-      component_outputs: list[DistanceOutputs] = []
+      component_distances: list[DistanceOutputs] = []
       for res_block, prev, target in zip(
           res_blocks, prev_controller_flat, target_controller_flat):
         distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
         residual, distance = distance_fn(residual, prev, target)
-        component_outputs.append(distance)
+        component_distances.append(distance)
 
-      distances, logits = zip(*component_outputs)
-      outputs.append(DistanceOutputs(
+      distances, logits = zip(*component_distances)
+      distance_outputs = DistanceOutputs(
           distance=self.embed_controller.unflatten(iter(distances)),
           logits=self.embed_controller.unflatten(iter(logits)),
-      ))
+      )
+      return distance_outputs, residual
 
-    return outputs
+    stacked_outputs, _ = nnx.scan(
+        single_action_distance,
+        in_axes=(0, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        stacked_res_blocks, stacked_prev_controller_state,
+        stacked_target_controller_state, residual)
+
+    return jax_utils.unstack_pytree(stacked_outputs, axis=0)
 
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,
