@@ -59,8 +59,6 @@ def replicate_module(module: nnx.Module, mesh: Mesh):
   """Replicate module parameters across all devices in the mesh."""
   shard_module(module, replicate_sharding(mesh))
 
-
-
 def num_devices() -> int:
   """Get the number of local devices."""
   return jax.local_device_count()
@@ -132,6 +130,15 @@ def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
   stacked_state = jax.tree.map(stack_fn, *[nnx.state(m) for m in modules])
   graphdef = nnx.graphdef(modules[0])
   return nnx.merge(graphdef, stacked_state)
+
+def unstack_pytree(
+    pytree: T,
+    axis: int = 0,
+) -> list[T]:
+  """Unstack a pytree along the given axis, returning a list of pytrees."""
+  leaves, structure = jax.tree.flatten(pytree)
+  unstacked_leaves = [jnp.unstack(x, axis=axis) for x in leaves]
+  return [jax.tree.unflatten(structure, xs) for xs in zip(*unstacked_leaves)]
 
 # Other utilities
 
