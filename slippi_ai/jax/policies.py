@@ -187,7 +187,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     metrics = dict(
         loss=policy_loss,
         controller={
-            i: types.nt_to_nest(do)
+            i: types.nt_to_nest(do.distance)
             for i, do in enumerate(distance_outputs)
         },
     )
