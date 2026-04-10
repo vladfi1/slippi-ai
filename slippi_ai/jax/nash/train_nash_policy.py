@@ -47,6 +47,7 @@ class RuntimeConfig:
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
+  eval_at_start: bool = False
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -413,7 +414,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       f.write(pickled_state)
 
   FRAMES_PER_MINUTE = 60 * 60
-  FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
+  FRAMES_PER_STEP = 2 * config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step)
   epoch_tracker = utils.Tracker(train_manager.last_epoch)
@@ -466,14 +467,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     train_lib.log_stats(all_stats, total_steps)
 
   last_train_epoch_evaluated = 0.
+  needs_first_eval = runtime.eval_at_start
 
   def maybe_eval(force: bool = False):
-    nonlocal best_eval_loss, last_train_epoch_evaluated
+    nonlocal best_eval_loss, last_train_epoch_evaluated, needs_first_eval
 
     train_epoch = train_manager.last_epoch
-    if not force and (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
+    if (not force and not needs_first_eval
+        and (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1):
       return
     last_train_epoch_evaluated = train_epoch
+    needs_first_eval = False
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
