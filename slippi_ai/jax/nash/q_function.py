@@ -157,16 +157,13 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       actions: list[Action],  # frame_skip x [S, T, B, 2]
       batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
   ) -> jax.Array:  # [S, S, T, B, 2]
-    # Embed each frame in the frame_skip, then transpose to [S, FS, T, B, 2, E]
     embedded = [self.embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
-
-    action_rnn_state = action_init_state
 
     def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
       # embedded_fs: [FS, T, B, 2, E]
       reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
-      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_rnn_state)
+      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_init_state)
       return outputs[-1]  # [T, B, 2, O]
 
     action_outputs = jax_utils.lax_map(

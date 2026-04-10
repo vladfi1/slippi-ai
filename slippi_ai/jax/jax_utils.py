@@ -241,6 +241,13 @@ def scan_method(
 
   return functools.partial(nnx.scan(unbound_f, in_axes=in_axes, out_axes=out_axes, **scan_kwargs), bound_self)
 
+def functionalize(f: tp.Callable[P, T]) -> tp.Callable[P, T]:
+  """Hides nnx modules from nnx transformations to prevent trace errors."""
+  @functools.wraps(f)
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    return f(*args, **kwargs)
+  return wrapped
+
 def dynamic_rnn(
     cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
     inputs: InputTree,
@@ -257,7 +264,12 @@ def dynamic_rnn(
     outputs: Stacked outputs over time
     final_state: Final recurrent state
   """
-  return scan_method(cell_fn)(inputs, initial_state)
+
+  return nnx.scan(
+      functionalize(cell_fn),
+      in_axes=(0, nnx.Carry),
+      out_axes=(0, nnx.Carry),
+  )(inputs, initial_state)
 
 
 def scan_rnn(
@@ -669,37 +681,6 @@ def packed_nnx_jit(
       packed_args[argnum] = packer.pack(packed_args[argnum])
 
     return packed_func(*packed_args, **kwargs)
-
-  return wrapped
-
-# This is a simpler version of what nnx transforms already do internally.
-# Maybe there's a way to reuse some of their code?
-def functionalize(
-    func: tp.Callable[..., T],
-    argnums: tp.Sequence[int],
-    inputs: tp.Sequence[tp.Any],
-):
-  if len(argnums) != len(inputs):
-    raise ValueError(f'Length of argnums {len(argnums)} must match length of inputs {len(inputs)}.')
-
-  graphdefs: list[nnx.GraphDef] = []
-  for item in inputs:
-    graphdefs.append(nnx.graphdef(item))
-
-  @functools.wraps(func)
-  def wrapped(*args, **kwargs) -> tuple[T, list[dict]]:
-    args = list(args)
-
-    for argnum, graphdef in zip(argnums, graphdefs):
-      args[argnum] = nnx.merge(graphdef, args[argnum])
-
-    output = func(*args, **kwargs)
-
-    pure_outputs = []
-    for argnum in argnums:
-      pure_outputs.append(nnx.state(args[argnum]).to_pure_dict())
-
-    return output, pure_outputs
 
   return wrapped
 

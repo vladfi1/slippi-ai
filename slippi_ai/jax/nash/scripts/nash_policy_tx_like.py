@@ -18,14 +18,16 @@ NET_NAME = 'tx_like'
 def default_config():
   config = train_nash_policy.Config()
 
-  config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.batch_size = 256
+  config.data.unroll_length = 84
   config.data.damage_ratio = 0.01
-  config.data.num_workers = 2
+  config.data.num_workers = 1
   config.data.unroll_chunks = 4
-  config.learner.learning_rate = 1e-4
+  config.learner.learning_rate = 3e-5
 
-  config.dataset.mirror = True
+  config.learner.num_samples = 3
+
+  config.dataset.mirror = False
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
@@ -83,9 +85,16 @@ if __name__ == '__main__':
         d = imitation_config.policy.delay
         n = network[NET_NAME]['num_layers']
         h = network[NET_NAME]['hidden_size']
-        fs = imitation_config.observation.frame_skip.skip
+        ch_name = 'autoregressive'
+        ch_config = imitation_config.controller_head
+        assert ch_config['name'] == ch_name, f"Expected controller head name {ch_name} but got {ch_config['name']}"
+        ch_config = ch_config[ch_name]
+        assert ch_config['component']['name'] == NET_NAME, f"Expected controller head component name {NET_NAME} but got {ch_config['component']['name']}"
+        chn = ch_config['component'][NET_NAME]['num_layers']
+        chh = ch_config['component'][NET_NAME]['hidden_size']
+        fs = imitation_config.policy.frame_skip
         ns = config.learner.num_samples
-        config.tag = f"np_{char}_d{d}_{NET_NAME}_{n}x{h}_fs{fs}_ns{ns}"
+        config.tag = f"np_{char}_d{d}_{n}x{h}_ch{chn}x{chh}_rfs{fs}_ns{ns}"
 
     config.dataset.allowed_characters = char
 
