@@ -98,7 +98,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.sample_policy = sample_policy
     self.nash_policy = nash_policy
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.discount = rl_lib.discount_from_halflife(
+      config.reward_halflife / q_function.frame_skip)
 
     learning_rate = config.learning_rate
 
@@ -260,7 +261,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
     def sample(rngs: nnx.Rngs):
-      # A bit surprising that nnx doesn't complain about trace levels here
+      # nnx doesn't complain about trace levels because the controller head
+      # manually iterates over the action components instead of using nnx.scan
       sample_outputs = sample_policy.controller_head.sample(
           rngs=rngs,
           inputs=sample_policy_outputs.outputs,
@@ -347,7 +349,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       # bug triggered by vmapping over the merged T*B sharded dimension.
       # Only triggered by qpax_fast, probably because it has matrices with
       # some dimensions equal to one.
-      def solve_one(pm):
+      def solve_one(pm: nash.PayoffMatrix):
         return solver(pm, error=self.config.nash_error)
 
       # First vmap over sharded batch dim.
@@ -396,6 +398,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         frames, initial_states)
     nash_policy_imitation_loss = nash_policy_outputs.imitation_loss
 
+    # Note that this inefficiently recomputes the controller head encoder
+    # outputs for each sample.
     def nash_policy_distance_fn(policy_sample: list[Action]):
       distance_outputs = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
@@ -406,7 +410,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
               nash_policy.controller_head.controller_embedding.flatten(do.distance)
           )
           for do in distance_outputs
-      ])
+      ]) / len(distance_outputs)
 
     if self.config.sample_batch_size > 0:
       nash_policy_distance_fn = jax.remat(nash_policy_distance_fn)
