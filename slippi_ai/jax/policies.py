@@ -65,6 +65,10 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     return self._delay
 
   @property
+  def frame_skip(self) -> int:
+    return self._frame_skip
+
+  @property
   def controller_head(self) -> ControllerHead[ControllerType]:
     return self._controller_head
 
@@ -207,7 +211,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       initial_state: RecurrentState,
       is_resetting: Optional[Array] = None,
       **kwargs,
-  ) -> tp.Tuple[SampleOutputs[ControllerType], RecurrentState]:
+  ) -> tp.Tuple[list[SampleOutputs[ControllerType]], RecurrentState]:
     if is_resetting is None:
       batch_size = state_action.state.stage.shape[0]
       is_resetting = jnp.zeros([batch_size], dtype=jnp.bool_)
@@ -230,7 +234,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       **kwargs,
   ) -> Tuple[list[SampleOutputs[ControllerType]], RecurrentState]:
     # TODO: use scan?
-    actions = []
+    actions: list[SampleOutputs[ControllerType]] = []
     hidden_state = initial_state
     for game in states:
       state_action = data.StateAction[S, ControllerType](
@@ -240,8 +244,8 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
       )
       next_action, hidden_state = self.sample(
           rngs, state_action, hidden_state, **kwargs)
-      actions.append(next_action)
-      prev_action = next_action.controller_state
+      actions.extend(next_action)
+      prev_action = next_action[-1].controller_state
 
     return actions, hidden_state
 
