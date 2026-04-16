@@ -1,3 +1,4 @@
+import collections
 import enum
 import typing as tp
 
@@ -7,7 +8,7 @@ import numpy as np
 from flax import nnx
 
 from slippi_ai import utils, data, agents
-from slippi_ai.types import Game, S
+from slippi_ai.types import Game, S, BoolArray, Rank1
 from slippi_ai.data import StateAction
 from slippi_ai.policies import Platform
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
@@ -58,10 +59,13 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     # Agents only work with the discretized action space; you will need
     # to call `decode` on the action before sending it to Dolphin.
     default_controller = self._policy.controller_head.dummy_controller([batch_size])
-    self._prev_controller = default_controller
+    self._prev_controller = [default_controller] * policy.frame_skip
 
     if rngs is None:
       rngs = nnx.Rngs(seed)
+
+    self._sample_outputs = collections.deque[SampleOutputs[ControllerType]]()
+    self._needs_reset: BoolArray[Rank1] = np.full([batch_size], False)
 
     def sample(
         policy: policies.Policy[ControllerType],
@@ -69,14 +73,14 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         rngs: nnx.Rngs,
         state_and_reset: tuple[Game, jax.Array],
         name_code: jax.Array,
-        prev_action: ControllerType,
+        prev_actions: list[ControllerType],
         prev_state: policies.RecurrentState,
-    ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
+    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
       # Note: sample outputs are discretized by the controller_head.
       game, needs_reset = state_and_reset
       state_action = StateAction(
           state=game,
-          action=prev_action,
+          action=prev_actions,
           name=name_code,
       )
       return policy.sample(
@@ -122,22 +126,21 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
           rngs: nnx.Rngs,
           state_and_reset: tuple[Game, jax.Array],
           prev_action_and_state: tuple[ControllerType, policies.RecurrentState],
-      ) -> tuple[SampleOutputs[ControllerType], tuple[ControllerType, policies.RecurrentState]]:
+      ) -> tuple[list[SampleOutputs[ControllerType]], tuple[ControllerType, policies.RecurrentState]]:
         gamestate, needs_reset = state_and_reset
         prev_action, prev_state = prev_action_and_state
         sample_outputs, new_state = sample(
             policy, rngs, (gamestate, needs_reset), name_code, prev_action, prev_state)
-        return sample_outputs, (sample_outputs.controller_state, new_state)
+        return sample_outputs, (sample_outputs[-1].controller_state, new_state)
 
       length = len(states_and_resets)
 
       stacked_sample_outputs, (_, final_state) = scan_fn(
           rngs.fork(split=length), stacked_states_and_resets, (prev_action, initial_state))
 
-      sample_outputs = [
-          utils.map_nt(lambda t: t[i], stacked_sample_outputs)
-          for i in range(length)
-      ]
+      sample_outputs: list[SampleOutputs[ControllerType]] = []
+      for i in range(length):
+        sample_outputs.extend(utils.map_nt(lambda t, i=i: t[i], stacked_sample_outputs))
 
       return sample_outputs, final_state
 
@@ -206,14 +209,24 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       needs_reset: agents.BoolArray,
   ) -> SampleOutputs[ControllerType]:
     """Sample an action and leave the output tree on device."""
-    game = self._policy.network.encode_game(game)
-    # Keep hidden state and prev_controller on device.
-    sample_fn = self._jitted_sample if self._compile else self._sample
-    sample_outputs, self._hidden_state = sample_fn(
-        (game, needs_reset), self._name_code, self._prev_controller, self._hidden_state)
+    self._needs_reset |= needs_reset
 
-    # Use donate_argnums?
-    self._prev_controller = sample_outputs.controller_state
+    if not self._sample_outputs:
+      game = self._policy.network.encode_game(game)
+      # Keep hidden state and prev_controller on device.
+      sample_fn = self._jitted_sample if self._compile else self._sample
+      sample_outputs, self._hidden_state = sample_fn(
+          (game, self._needs_reset), self._name_code,
+          self._prev_controller, self._hidden_state)
+
+      # Use donate_argnums?
+      self._prev_controller = [so.controller_state for so in sample_outputs]
+
+      self._sample_outputs.extend(sample_outputs)
+
+      self._needs_reset[:] = False
+
+    sample_outputs = self._sample_outputs.popleft()
 
     return sample_outputs
 
@@ -221,6 +234,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       self,
       states: list[tuple[Game, agents.BoolArray]],
   ) -> list[SampleOutputs[ControllerType]]:
+    raise NotImplementedError('multi_step + frame_skip is not implemented yet.')
+
     states_and_resets = [
         (self._policy.network.encode_game(game), needs_reset)
         for game, needs_reset in states

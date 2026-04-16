@@ -355,7 +355,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=policy.delay + policy._frame_skip,
+      extra_frames=policy.delay + policy.frame_skip,
       observation_config=config.observation,
   )
   exit_stack.callback(train_data.shutdown)

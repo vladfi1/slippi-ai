@@ -70,6 +70,7 @@ def policy_from_configs(
       network=network,
       controller_head=controller_head,
       delay=policy_config.delay,
+      frame_skip=policy_config.frame_skip,
   )
 
   return policy
