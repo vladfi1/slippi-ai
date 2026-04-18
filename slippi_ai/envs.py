@@ -15,19 +15,20 @@ from melee import GameState, Stage
 
 from slippi_ai import dolphin, utils, observations
 from slippi_ai.controller_lib import send_controller
-from slippi_ai.types import Controller, Game, reify_tuple_type
+from slippi_ai.types import Controller, Game, reify_tuple_type, S, Rank1, BoolArray
 from slippi_ai import data
 from slippi_db.parse_libmelee import Parser
 
 Port = int
 Controllers = Mapping[Port, Controller]
+Rank0 = tuple[()]
 
 def is_initial_frame(gamestate: GameState) -> bool:
   return gamestate.frame == -123
 
-class EnvOutput(tp.NamedTuple):
-  gamestates: Mapping[int, Game]
-  needs_reset: bool
+class EnvOutput(tp.NamedTuple, tp.Generic[S]):
+  gamestates: Mapping[int, Game[S]]
+  needs_reset: BoolArray[S]
 
 class Environment:
   """Wraps dolphin to provide an RL interface."""
@@ -72,7 +73,7 @@ class Environment:
   def stop(self):
     self._dolphin.stop()
 
-  def current_state(self) -> EnvOutput:
+  def current_state(self) -> EnvOutput[Rank0]:
     if self._prev_state is None:
       self._prev_state = self._dolphin.step()
 
@@ -100,13 +101,13 @@ class Environment:
 
     return EnvOutput(games, needs_reset)
 
-  def multi_current_state(self) -> list[EnvOutput]:
+  def multi_current_state(self) -> list[EnvOutput[Rank0]]:
     return [self.current_state()]
 
   def step(
     self,
     controllers: Controllers,
-  ) -> EnvOutput:
+  ) -> EnvOutput[Rank0]:
     """Send controllers for each AI. Return the next state."""
 
     for port, controller in controllers.items():
@@ -120,7 +121,7 @@ class Environment:
   def multi_step(
     self,
     controllers: list[Controllers],
-  ) -> list[EnvOutput]:
+  ) -> list[EnvOutput[Rank0]]:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
 
@@ -168,22 +169,22 @@ class SafeEnvironment:
         },
         num_retries=self._num_retries)
 
-  def current_state(self) -> EnvOutput:
+  def current_state(self) -> EnvOutput[Rank0]:
     return self._retry(lambda: self._env.current_state())
 
-  def multi_current_state(self) -> list[EnvOutput]:
+  def multi_current_state(self) -> list[EnvOutput[Rank0]]:
     return self._retry(lambda: self._env.multi_current_state())
 
   def step(
     self,
     controllers: Controllers,
-  ) -> EnvOutput:
+  ) -> EnvOutput[Rank0]:
     return self._retry(lambda: self._env.step(controllers))
 
   def multi_step(
     self,
     controllers: list[Controllers],
-  ) -> list[EnvOutput]:
+  ) -> list[EnvOutput[Rank0]]:
     return self._retry(lambda: self._env.multi_step(controllers))
 
   def stop(self):
@@ -251,17 +252,17 @@ class BatchedEnvironment:
     finally:
       self.stop()
 
-  def current_state(self) -> EnvOutput:
+  def current_state(self) -> EnvOutput[Rank1]:
     current_states = [env.current_state() for env in self._envs]
     return utils.batch_nest_nt(current_states)
 
-  def multi_current_state(self) -> list[EnvOutput]:
+  def multi_current_state(self) -> list[EnvOutput[Rank1]]:
     return [self.current_state()]
 
   def step(
     self,
     controllers: Controllers,
-  ) -> EnvOutput:
+  ) -> EnvOutput[Rank1]:
     get_action = lambda i: utils.map_single_structure(
         lambda x: x[i], controllers)
 
@@ -274,17 +275,17 @@ class BatchedEnvironment:
   def multi_step(
     self,
     controllers: list[Controllers],
-  ) -> list[EnvOutput]:
+  ) -> list[EnvOutput[Rank1]]:
     """Batched step to reduce communication overhead."""
     return [self.step(c) for c in controllers]
 
   def push(self, controllers: Controllers):
     self._output_queue.appendleft(self.step(controllers))
 
-  def pop(self) -> EnvOutput:
+  def pop(self) -> EnvOutput[Rank1]:
     return self._output_queue.pop()
 
-  def peek(self) -> EnvOutput:
+  def peek(self) -> EnvOutput[Rank1]:
     return self._output_queue[-1]
 
 def build_environment(
@@ -429,7 +430,7 @@ class AsyncEnvMP:
       # Fall back to raising a generic error message.
       raise EnvError("run_env process died")
 
-  def recv(self) -> EnvOutput:
+  def recv(self) -> EnvOutput[Rank1]:
     # TODO: ensure that enough data has been pushed?
     try:
       output = self._recv()
@@ -568,17 +569,17 @@ class AsyncBatchedEnvironmentMP:
         self._state_queue.appendleft(utils.concat_nest_nt(batch))
         self._num_in_transit -= 1
 
-  def pop(self) -> EnvOutput:
+  def pop(self) -> EnvOutput[Rank1]:
     if not self._state_queue:
       self._receive()
     return self._state_queue.pop()
 
-  def peek_n(self, n: int) -> list[EnvOutput]:
+  def peek_n(self, n: int) -> list[EnvOutput[Rank1]]:
     while len(self._state_queue) < n:
       self._receive()
     return utils.peek_deque(self._state_queue, n)
 
-  def peek(self) -> EnvOutput:
+  def peek(self) -> EnvOutput[Rank1]:
     if not self._state_queue:
       self._receive()
     return self._state_queue[-1]
@@ -606,7 +607,7 @@ class FakeBatchedEnvironment:
   def stop(self):
     pass
 
-  def pop(self) -> EnvOutput:
+  def pop(self) -> EnvOutput[Rank1]:
     return self._output_queue.popleft()
 
   def push(self, controllers: Controllers):
@@ -621,10 +622,10 @@ class FakeBatchedEnvironment:
   def multi_step(
     self,
     controllers: list[Controllers],
-  ) -> list[EnvOutput]:
+  ) -> list[EnvOutput[Rank1]]:
     return [self.step(c) for c in controllers]
 
-  def peek(self) -> EnvOutput:
+  def peek(self) -> EnvOutput[Rank1]:
     return self._output_queue[0]
 
 class ReplayBatchedEnvironment:
@@ -665,7 +666,7 @@ class ReplayBatchedEnvironment:
   def stop(self):
     pass
 
-  def pop(self) -> EnvOutput:
+  def pop(self) -> EnvOutput[Rank1]:
     return self._output_queue.popleft()
 
   def push(self, controllers: Controllers):
@@ -679,8 +680,8 @@ class ReplayBatchedEnvironment:
   def multi_step(
     self,
     controllers: list[Controllers],
-  ) -> list[EnvOutput]:
+  ) -> list[EnvOutput[Rank1]]:
     return [self.step(c) for c in controllers]
 
-  def peek(self) -> EnvOutput:
+  def peek(self) -> EnvOutput[Rank1]:
     return self._output_queue[0]
