@@ -16,7 +16,7 @@ from slippi_ai import (
     policies,
 )
 from slippi_ai.data import NAME_DTYPE
-from slippi_ai.types import Game, FloatArray, BoolArray
+from slippi_ai.types import Game, FloatArray, BoolArray, Rank1
 from slippi_ai.controller_heads import (
     SampleOutputs, ControllerType as CT,
 )
@@ -103,7 +103,7 @@ class RolloutWorker:
         for port, agent in self._agents.items()
     }
 
-    self._prev_agent_outputs = collections.deque()
+    self._prev_agent_outputs = collections.deque[dict[Port, SampleOutputs]]()
     self._prev_agent_outputs.append({
         port: agent.dummy_sample_outputs
         for port, agent in self._agents.items()
@@ -235,13 +235,13 @@ class RolloutWorker:
         raise ValueError('Agent batch steps must divide rollout length.')
 
     # Buffers for per-frame data.
-    gamestates: dict[Port, list[Game]] = {
+    gamestates: dict[Port, list[Game[Rank1]]] = {
         port: [] for port in self._agents
     }
     sample_outputs: dict[Port, list[SampleOutputs]] = {
         port: [] for port in self._agents
     }
-    is_resetting: list[bool] = []
+    is_resetting: list[BoolArray[Rank1]] = []
 
     initial_states = {
         port: agent.hidden_state
@@ -251,7 +251,7 @@ class RolloutWorker:
     step_profiler = utils.Profiler()
 
     def record_state(
-        env_output: env_lib.EnvOutput,
+        env_output: env_lib.EnvOutput[Rank1],
         prev_agent_outputs: dict[Port, SampleOutputs],
     ):
       for port, game in env_output.gamestates.items():
@@ -308,7 +308,6 @@ class RolloutWorker:
 
     # Now batch everything up into time-major Trajectories.
     trajectories = {}
-    is_resetting = np.array(is_resetting)
     for port, agent in self._agents.items():
       states = utils.batch_nest_nt(gamestates[port])
       trajectories[port] = Trajectory(
@@ -320,7 +319,7 @@ class RolloutWorker:
               dtype=NAME_DTYPE),
           actions=utils.batch_nest_nt(sample_outputs[port]),
           rewards=reward.compute_rewards(states, self._damage_ratio),
-          is_resetting=is_resetting,
+          is_resetting=np.stack(is_resetting, axis=0),
           initial_state=initial_states[port],
           # Note that delayed actions aren't time-concatenated, mainly to
           # simplify the case where the delay is 0.
