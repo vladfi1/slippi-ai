@@ -26,6 +26,12 @@ T = tp.TypeVar('T')
 
 DATA_AXIS = 'data'
 
+def data_spec(axis: int, name: str = DATA_AXIS) -> PS:
+  """Convenience function for creating a PartitionSpec for data parallelism."""
+  axes: list[str | None] = [None] * (axis + 1)
+  axes[axis] = name
+  return PS(*axes)
+
 def get_mesh(axis_name: str = DATA_AXIS) -> Mesh:
   """Create a 1D device mesh for data parallelism."""
   return Mesh(jax.devices(), (axis_name,))
@@ -1123,7 +1129,8 @@ def data_parallel_train(
     optimizer: nnx.Optimizer[ModT],
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
@@ -1131,8 +1138,8 @@ def data_parallel_train(
     smap_optimizer: bool = True,
     pack_data: bool = False,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
@@ -1154,7 +1161,7 @@ def data_parallel_train(
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
       grads, (aux, new_state) = shard_map_grads(
-          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
+          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis_name)(
               module, (data, state), PSpecCache(*args, **kwargs))
 
       optimizer.update(module, grads)
@@ -1162,11 +1169,13 @@ def data_parallel_train(
       return aux, new_state
 
     sharded_grads_fn = sharded_grads(
-        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
+        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis_name)
+
+    DS = data_spec(data_axis, name=data_axis_name)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), PS(), DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def update_fn(
@@ -1200,20 +1209,21 @@ def data_parallel_train_with_rngs(
     rngs: nnx.Rngs,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   # Shard the Rngs across devices.
-  num_shards: int = mesh.shape[data_axis]
+  num_shards: int = mesh.shape[data_axis_name]
   rngs = rngs.fork(split=num_shards)
-  shard_module(rngs, data_sharding(mesh, data_axis))
+  shard_module(rngs, data_sharding(mesh, data_axis_name))
 
   @nnx.jit(
       donate_argnums=(0, 1, 2, 4),
@@ -1239,7 +1249,7 @@ def data_parallel_train_with_rngs(
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
       grads, (aux, new_state) = shard_map_grads(
-          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
+          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis_name)(
               module, (data, state), PSpecCache(*args, **kwargs))
 
       optimizer.update(module, grads)
@@ -1247,11 +1257,13 @@ def data_parallel_train_with_rngs(
       return aux, new_state
 
     sharded_grads_fn = sharded_grads(
-        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
+        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis_name)
+
+    DS = data_spec(data_axis, name=data_axis_name)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), PS(), DS, DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def update_fn(
@@ -1279,15 +1291,16 @@ def shard_map_loss_fn(
     module: ModT,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
 
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   @nnx.jit(
       donate_argnums=(2,),
@@ -1307,9 +1320,11 @@ def shard_map_loss_fn(
     else:
       _extra_out_specs = tuple(extra_out_specs)
 
+    DS = data_spec(data_axis, name=data_axis_name)
+
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def sharded_loss_fn(
@@ -1330,20 +1345,21 @@ def shard_map_loss_fn_with_rngs(
     rngs: nnx.Rngs,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
 
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   # Shard the Rngs across devices.
-  num_shards: int = mesh.shape[data_axis]
+  num_shards: int = mesh.shape[data_axis_name]
   rngs = rngs.fork(split=num_shards)
-  shard_module(rngs, data_sharding(mesh, data_axis))
+  shard_module(rngs, data_sharding(mesh, data_axis_name))
 
   @nnx.jit(
       donate_argnums=(1, 3),
@@ -1363,9 +1379,11 @@ def shard_map_loss_fn_with_rngs(
     else:
       _extra_out_specs = tuple(extra_out_specs)
 
+    DS = data_spec(data_axis, name=data_axis_name)
+
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), DS, DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def sharded_loss_fn(
