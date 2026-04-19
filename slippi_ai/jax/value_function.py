@@ -118,22 +118,3 @@ class ValueFunction(nnx.Module):
     )
 
     return value_outputs, final_state
-
-
-class FakeValueFunction(nnx.Module):
-
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    del batch_size, rngs
-    return ()
-
-  def loss(self, frames: data.Frames, initial_state, discount, **_):
-    del discount
-
-    outputs = ValueOutputs(
-        returns=jnp.zeros_like(frames.reward),
-        loss=jnp.array(0.0),
-        advantages=jnp.zeros_like(frames.reward),
-        metrics={},
-    )
-
-    return outputs, initial_state
