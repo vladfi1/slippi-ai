@@ -279,7 +279,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
       component_outputs: list[SampleOutputs] = []
       for res_block, prev in zip(res_blocks, prev_controller_flat):
-        sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
+        sample_fn = jax.remat(res_block.sample) if self.remat else res_block.sample
         residual, sample = sample_fn(
             rngs(), residual, prev, temperature=temperature)
         component_outputs.append(sample)
@@ -319,7 +319,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       component_distances: list[DistanceOutputs] = []
       for res_block, prev, target in zip(
           res_blocks, prev_controller_flat, target_controller_flat):
-        distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
+        distance_fn = jax.remat(res_block.distance) if self.remat else res_block.distance
         residual, distance = distance_fn(residual, prev, target)
         component_distances.append(distance)
 
