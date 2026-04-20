@@ -57,6 +57,7 @@ class Config:
 
   # Loads obs config and name map to be compatible with a given policy.
   compatible_policy: tp.Optional[str] = None
+  frame_skip: int = 1
 
   max_names: int = 16
 
@@ -81,6 +82,7 @@ class Config:
     self.embed = policy_config.embed
     self.observation = policy_config.observation
     self.max_names = policy_config.max_names
+    self.frame_skip = policy_config.policy.frame_skip
     self.dataset.copy_characteristics_from(policy_config.dataset)
 
 
@@ -210,7 +212,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, restored_state['config'])
 
-    for key in ['network', 'embed', 'observation', 'max_names']:
+    for key in ['network', 'embed', 'observation', 'max_names', 'frame_skip']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
@@ -229,6 +231,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     # embed config, so the value function needs to use the same config.
     config.make_compatible_with(imitation_config)
     name_map = imitation_state['name_map']
+    config.dataset = imitation_config.dataset
   else:
     logging.warning('No compatible policy or checkpoint specified.')
 
@@ -242,6 +245,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       network_config=config.network,
       num_names=config.max_names,
       embed_config=config.embed,
+      frame_skip=config.frame_skip,
   )
 
   mesh = jax_utils.get_mesh()
