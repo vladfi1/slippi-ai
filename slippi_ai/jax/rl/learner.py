@@ -13,13 +13,17 @@ import optax
 from flax import nnx
 
 from slippi_ai import data, reward as reward_lib, utils
+from slippi_ai.types import S, Frames, StateAction, Game, FloatArray, BoolArray
 from slippi_ai.evaluators import Trajectory
 from slippi_ai.jax import jax_utils, embed, rl_lib
 from slippi_ai.jax import value_function as vf_lib
-from slippi_ai.jax.policies import Policy, UnrollOutputs, ControllerType
+from slippi_ai.jax.policies import (
+  Policy, UnrollOutputs, ControllerType, Rank2, SampleOutputs,
+)
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax.agents import DType
 
+T = tp.TypeVar('T')
 Array = jax.Array
 field = lambda f: dataclasses.field(default_factory=f)
 
@@ -67,46 +71,58 @@ class LearnerConfig:
       self.policy_loss_scale = _DEFAULT_FP16_POLICY_LOSS_SCALE
       logging.warning(f'Set default policy loss scale for FP16 to {self.policy_loss_scale} to stabilize training.')
 
+class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
+  states: Game[Rank2]  # [U/FS + 1, B]
+  name: np.ndarray[Rank2, np.dtype[np.int32]]  # [U/FS + 1, B]
+  actions: list[SampleOutputs[ControllerType]]  # FS * [U/FS + 1, B]
+  rewards: FloatArray[Rank2]  # [U/FS, B]
+  is_resetting: BoolArray[Rank2]  # [U/FS + 1, B]
+  initial_state: RecurrentState  # [B]
+  delayed_actions: list[SampleOutputs[ControllerType]]  # D x [B]
+
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
   value_function: RecurrentState
 
 
-class LearnerOutputs(tp.NamedTuple):
-  teacher: UnrollOutputs
+class LearnerOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
+  teacher: UnrollOutputs[S, ControllerType]
   value: vf_lib.ValueOutputs
 
 
-def get_frames(trajectory: Trajectory) -> data.Frames:
+def get_frames(trajectory: FrameSkipTrajectory[ControllerType]) -> data.Frames[Rank2, ControllerType]:
   """Gives time-major frames with actions taken."""
   state_action = data.StateAction(
       state=trajectory.states,
-      action=trajectory.actions.controller_state,
+      action=[so.controller_state for so in trajectory.actions],
       name=trajectory.name,
   )
   return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
 
-def get_delayed_frames(trajectory: Trajectory) -> data.Frames:
+def get_delayed_frames(
+    trajectory: FrameSkipTrajectory[ControllerType],
+) -> data.Frames[Rank2, ControllerType]:
   """Gives time-major frames with delayed actions, for teacher/policy unroll."""
   delay = len(trajectory.delayed_actions)
 
   if delay == 0:
     return get_frames(trajectory)
 
+  raise NotImplementedError("Delayed frames not implemented yet.")
+
   # Extract controller states from delayed actions, each is [B, ...]
   delayed_cs = [sa.controller_state for sa in trajectory.delayed_actions]
 
   # Add time dimension: [B, ...] -> [1, B, ...]
-  delayed_cs_with_time = [
-      jax.tree.map(lambda t: t[np.newaxis], cs) for cs in delayed_cs
-  ]
+  delayed_cs_with_time = utils.map_single_structure(
+      lambda x: x[np.newaxis], delayed_cs)
 
   # Concatenate: [T+1, B, ...] + D * [1, B, ...] -> [T+1+D, B, ...]
   # Then take [delay:] to align -> [T+1, B, ...]
   actions = jax.tree.map(
       lambda *ts: jnp.concatenate(ts, axis=0),
-      trajectory.actions.controller_state,
+      *[so.controller_state for so in trajectory.actions],
       *delayed_cs_with_time,
   )
   actions = jax.tree.map(lambda t: t[delay:], actions)
@@ -118,6 +134,16 @@ def get_delayed_frames(trajectory: Trajectory) -> data.Frames:
   )
   return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
+def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Frames[Rank2, ControllerType]:
+  return Frames(
+      state_action=StateAction[Rank2, ControllerType](
+          state=frames.state_action.state,
+          action=[so.controller_state for so in frames.state_action.action],
+          name=frames.state_action.name,
+      ),
+      is_resetting=frames.is_resetting,
+      reward=frames.reward,
+  )
 
 def update_rewards(
     trajectory: Trajectory,
@@ -159,9 +185,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   def __init__(
       self,
       config: LearnerConfig,
-      policy: Policy[ControllerType],
-      teacher: Policy[ControllerType],
-      value_function: vf_lib.ValueFunction,
+      policy: Policy[ControllerType, RecurrentState],
+      teacher: Policy[ControllerType, RecurrentState],
+      value_function: vf_lib.ValueFunction[ControllerType],
   ) -> None:
     self._config = config
     self.policy = policy
@@ -189,7 +215,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         optax.adam(config.learning_rate),
         wrt=nnx.Param)
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.discount = rl_lib.discount_from_halflife(
+        config.reward_halflife / policy.frame_skip)
 
     mbs = self._config.microbatch_size
 
@@ -269,7 +296,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     """Returns policy state for actor update via evaluators.update_variables."""
     return self.policy.get_state(to_numpy=to_numpy)
 
-  def _sum_leaves(self, embedding: embed.Embedding, struct) -> Array:
+  def _sum_leaves(self, embedding: embed.Embedding[tp.Any, T], struct: T) -> Array:
     return functools.reduce(jnp.add, embedding.flatten(struct))
 
   def _compute_kl(self, logits_p: ControllerType, logits_q: ControllerType) -> Array:
@@ -294,7 +321,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   def _unroll_teacher(
       self,
       teacher: Policy[ControllerType],
-      trajectory: Trajectory,
+      trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: RecurrentState,
   ) -> tuple[jax_utils.Loss, ControllerType, RecurrentState]:
     teacher_frames = get_delayed_frames(trajectory)
@@ -304,8 +331,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def _unroll_vf(
       self,
-      value_function: vf_lib.ValueFunction,
-      trajectory: Trajectory,
+      value_function: vf_lib.ValueFunction[ControllerType],
+      trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: RecurrentState,
   ) -> tuple[jax_utils.Loss, Metrics, RecurrentState, Advantage]:
     value_frames = get_frames(trajectory)
@@ -327,10 +354,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def ppo_loss(
       self,
-      policy: Policy,
+      policy: Policy[ControllerType, RecurrentState],
       advantages: jax.Array,
-      teacher_logits: ControllerType,
-      trajectory: Trajectory,
+      teacher_logits: list[ControllerType],
+      trajectory: FrameSkipTrajectory[ControllerType],
   ) -> tp.Tuple[jax_utils.Loss, dict]:
     """Computes policy gradients for one PPO step.
 
@@ -347,19 +374,26 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     delay = policy.delay  # D
     remove_first = lambda t: t[delay:] if delay > 0 else t
     remove_last = lambda t: t[:t.shape[0] - delay] if delay > 0 else t
+    assert delay == 0
 
     # Advantages from [0, U]: take [D, U] -> U-D steps.
     advantages = jax.lax.stop_gradient(advantages[delay:])
 
+    def batch_fs(xs: list[T]) -> T:
+      return utils.map_nt(
+          lambda *xs: jnp.stack(xs, axis=1),
+          *xs
+      )
+
     # Teacher logits: [D, U+D] -> truncate last D -> [D, U].
     # Note: no stop_gradient needed since teacher has no trainable variables.
-    teacher_logits = utils.map_nt(remove_last, teacher_logits)
+    teacher_logits = batch_fs(utils.map_nt(remove_last, teacher_logits))
 
     # Policy frames: states [0, U-D+1], actions [D, U+1].
-    policy_frames = data.Frames(
-        state_action=data.StateAction(
-            state=jax.tree.map(remove_last, trajectory.states),
-            action=jax.tree.map(remove_first, trajectory.actions.controller_state),
+    policy_frames = Frames[Rank2, ControllerType](
+        state_action=StateAction(
+            state=utils.map_nt(remove_last, trajectory.states),
+            action=utils.map_nt(remove_first, [so.controller_state for so in trajectory.actions]),
             name=remove_last(trajectory.name),
         ),
         is_resetting=remove_last(trajectory.is_resetting),
@@ -368,23 +402,23 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
     # Actor (old policy) logits and log probs for steps [D+1, U+1].
     actor_outputs = utils.map_single_structure(
-        lambda t: t[1 + delay:], trajectory.actions)
-    actor_logits = actor_outputs.logits
+        lambda t: t[1 + delay:], batch_fs(trajectory.actions))
     actor_log_probs = jax.lax.stop_gradient(
-        self._get_log_prob(actor_logits, actor_outputs.controller_state))
+        self._get_log_prob(actor_outputs.logits, actor_outputs.controller_state))
 
     policy_dtype = jax_utils.module_dtype(policy)
     initial_state = jax_utils.cast_floats_to_dtype(
         trajectory.initial_state, policy_dtype)
     policy_outputs = policy.unroll(policy_frames, initial_state)
-    new_logits = policy_outputs.distances.logits
-    new_log_probs = policy_outputs.log_probs
+    distance_outputs = batch_fs(policy_outputs.distances)
+    new_logits = distance_outputs.logits
+    new_log_probs = batch_fs(policy_outputs.log_probs)
 
     # KL divergences (computed over full output distribution, not just sampled action).
     # Forward KL to teacher: incentivizes refining human actions over covering all of them.
     teacher_kl = self._compute_kl(new_logits, teacher_logits)
     # KL of old actor from new policy: used for monitoring / reverting bad updates.
-    actor_kl = self._compute_kl(actor_logits, new_logits)
+    actor_kl = self._compute_kl(actor_outputs.logits, new_logits)
     reverse_teacher_kl = self._compute_kl(teacher_logits, new_logits)
     entropy = self._compute_entropy(new_logits)
 
@@ -396,7 +430,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     clipped_log_rhos = jnp.clip(log_rhos, -eps, eps)
     clipped_rhos = jnp.exp(clipped_log_rhos)
 
-    ppo_objective = jnp.minimum(rhos * advantages, clipped_rhos * advantages)
+    fs_advantages = jnp.expand_dims(advantages, axis=1)  # [U / FS, 1, B]
+    ppo_objective = jnp.minimum(rhos * fs_advantages, clipped_rhos * fs_advantages)
 
     loss = (
         - self._config.policy_gradient_weight * ppo_objective
@@ -421,7 +456,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       self,
       advantages: list[jax.Array],
       teacher_logits: list[ControllerType],
-      trajectories: list[Trajectory],
+      trajectories: list[FrameSkipTrajectory[ControllerType]],
       train: bool = True,
   ) -> dict:
     """One epoch of PPO: accumulate gradients over all trajectories."""
@@ -587,7 +622,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def ppo(
       self,
-      trajectories: list[Trajectory],
+      trajectories: list[FrameSkipTrajectory[ControllerType]],
       initial_state: LearnerState,
       step: int,
       jit: bool = True,
