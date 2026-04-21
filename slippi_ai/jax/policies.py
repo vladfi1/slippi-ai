@@ -34,7 +34,6 @@ class UnrollWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
-Rank1 = tuple[int]
 Rank2 = tuple[int, int]
 
 class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
