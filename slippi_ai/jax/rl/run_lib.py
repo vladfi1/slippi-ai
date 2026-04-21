@@ -30,7 +30,10 @@ from slippi_ai.jax import train_vf
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib
 from slippi_ai.jax.rl import learner as learner_lib
-from slippi_ai.types import Game
+from slippi_ai.types import Game, Action, StateAction, Frames
+from slippi_ai.jax.networks import RecurrentState
+
+Rank2 = tuple[int, int]
 
 field = lambda f: dataclasses.field(default_factory=f)
 
@@ -165,11 +168,11 @@ cast_floats = jax_utils.jit(
   jax_utils.cast_floats_to_dtype,
   static_argnames='dtype')
 
-class LearnerManager:
+class LearnerManager(tp.Generic[Action]):
 
   def __init__(
       self,
-      learner: learner_lib.Learner,
+      learner: learner_lib.Learner[Action],
       config: Config,
       build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
       port: int,
@@ -187,15 +190,22 @@ class LearnerManager:
     self._agent_dtype = config.agent.jax.dtype.dtype
     self._learner_dtype = jnp.float32
 
-    batch_size = config.actor.num_envs
+    self.batch_size = config.actor.num_envs
     if config.opponent.should_train():
-      batch_size *= 2
-    self._hidden_state = learner.initial_state(batch_size)
+      self.batch_size *= 2
+    self._hidden_state = learner.initial_state(self.batch_size)
 
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
+
+    self.frame_skip = learner.policy.frame_skip
+
+    self._prev_actions = [
+        learner.policy.controller_head.dummy_sample_outputs([self.batch_size])
+    ] * (self.frame_skip - 1)
+    self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size], False)
 
     with self.reset_profiler:
       self.actor = self._build_actor()
@@ -210,7 +220,7 @@ class LearnerManager:
       for _ in range(self._burnin_steps_after_reset):
         self.unroll()
 
-  def _rollout(self) -> tuple[evaluators.Trajectory, dict]:
+  def _rollout(self):
     trajectories, timings = self.actor.rollout(self._unroll_length)
 
     # The sim-env rollout worker directly returns batched trajectories.
@@ -221,12 +231,57 @@ class LearnerManager:
     else:
       trajectory = trajectories[self._port]
 
-    if self._learner_dtype != self._agent_dtype:
-      trajectory = trajectory._replace(
-        initial_state=cast_floats(
-          trajectory.initial_state, dtype=self._learner_dtype))
+    trajectory: evaluators.Trajectory[Action, RecurrentState]
 
-    return trajectory, timings
+    assert not trajectory.delayed_actions, 'Not implemented'
+
+    # Previous actions for time steps [-FS+1, -1]
+    prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
+
+    # Create full action sequence of length for time steps [-FS+1, U]
+    actions = utils.map_nt(
+        lambda *xs: np.concatenate(xs, axis=0),
+        *prev_actions,
+        trajectory.actions,
+    )
+    # Split into skipped (previous) actions for time steps [0, U / FS]
+    actions = [
+        utils.map_nt(lambda t: t[i::self.frame_skip], actions)
+        for i in range(self.frame_skip)
+    ]
+    self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
+
+    state = utils.map_single_structure(
+      lambda x: x[::self.frame_skip], trajectory.states)
+
+    is_resetting = np.concatenate([
+        self._prev_is_resetting,
+        trajectory.is_resetting,
+    ], axis=0)
+    self._prev_is_resetting = is_resetting[-self.frame_skip:-1]
+    is_resetting = is_resetting.reshape(
+      (-1, self.frame_skip, self.batch_size)).any(axis=1)
+
+    rewards = reward.compute_rewards(
+        trajectory.states,
+        **dataclasses.asdict(self._config.learner.reward))
+    rewards = rewards.reshape((-1, self.frame_skip, self.batch_size)).sum(axis=1)
+
+    initial_state = trajectory.initial_state
+    if self._learner_dtype != self._agent_dtype:
+      initial_state = cast_floats(initial_state, dtype=self._learner_dtype)
+
+    fs_trajectory = learner_lib.FrameSkipTrajectory(
+        states=state,
+        name=trajectory.name[::self.frame_skip],
+        actions=actions,
+        rewards=rewards,
+        is_resetting=is_resetting,
+        initial_state=initial_state,
+        delayed_actions=trajectory.delayed_actions,
+    )
+
+    return fs_trajectory, timings
 
   def unroll(self):
     """Advance hidden state without training (e.g. for burnin)."""
