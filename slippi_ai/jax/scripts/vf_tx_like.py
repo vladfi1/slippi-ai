@@ -18,7 +18,7 @@ def default_config():
   config = train_vf.Config(max_names=32)
 
   config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.unroll_length = 84
   config.data.damage_ratio = 0.01
   config.data.num_workers = 1
   config.data.unroll_chunks = 4
@@ -61,7 +61,7 @@ if __name__ == '__main__':
       'wandb',
       project=ff.String('slippi-ai'),
       mode=ff.Enum('online', ['online', 'offline', 'disabled']),
-      group=ff.String('value_function'),
+      group=ff.String('imitation'),
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
@@ -75,7 +75,7 @@ if __name__ == '__main__':
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
       config.dataset.meta_path = str(paths.TOY_META_PATH)
       config.dataset.test_ratio = 0.5
-      char = 'all'
+      config.dataset.allowed_characters = 'all'
       config.data.cached = True
       config.data.num_workers = 0
       config.runtime.log_interval = 15
@@ -86,7 +86,10 @@ if __name__ == '__main__':
       imitation_config = flag_utils.dataclass_from_dict(
           train_lib.Config, imitation_state['config'])
 
-      char = imitation_config.dataset.allowed_characters
+      for key in ['allowed_characters', 'allowed_opponents']:
+        setattr(config.dataset, key, getattr(imitation_config.dataset, key))
+
+      char = config.dataset.allowed_characters
 
       if config.tag is None:
         ops = config.dataset.allowed_opponents
