@@ -16,7 +16,7 @@ from slippi_ai import (
     policies,
 )
 from slippi_ai.data import NAME_DTYPE
-from slippi_ai.types import Game, FloatArray, BoolArray, Rank1
+from slippi_ai.types import Game, FloatArray, BoolArray, Rank1, S
 from slippi_ai.controller_heads import (
     SampleOutputs, ControllerType as CT,
 )
@@ -28,20 +28,19 @@ Timings = dict
 Rank2 = tuple[int, int]
 
 # Mimics data.Batch
-class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
+class Trajectory(tp.NamedTuple, tp.Generic[S, CT, RS]):
   # The [T+1, ...] arrays overlap in time by 1.
-  states: Game[Rank2]  # [T+1, B]
-  name: np.ndarray[Rank2, np.dtype[np.int32]]  # [T+1, B]
+  states: Game[S]  # [T+1, B]
+  name: np.ndarray[S, np.dtype[np.int32]]  # [T+1, B]
   actions: SampleOutputs[CT]  # [T+1, B]
-  rewards: FloatArray[Rank2]  # [T, B]
-  is_resetting: BoolArray[Rank2]  # [T+1, B]
+  rewards: FloatArray[S]  # [T, B]
+  is_resetting: BoolArray[S]  # [T+1, B]
   initial_state: RS  # [B]
   delayed_actions: list[SampleOutputs[CT]]  # [D, B]
 
   @classmethod
-  def batch(cls, trajectories: list[tp.Self]) -> tp.Self:
-    # TODO: test?
-    batch_dims = Trajectory(
+  def batch_dims(cls) -> tp.Self:
+    return cls(
         states=1,
         name=1,
         actions=1,
@@ -50,9 +49,13 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
         initial_state=0,
         delayed_actions=0,
     )
+
+  @classmethod
+  def batch(cls, trajectories: list['Trajectory[Rank1, CT, RS]']) -> 'Trajectory[Rank2, CT, RS]':
+    # TODO: test?
     return utils.map_nt(
         lambda axis, *ts: utils.concat_nest_nt(ts, axis),
-        batch_dims, *trajectories)
+        cls.batch_dims(), *trajectories)
 
 
 class RolloutWorker:
@@ -379,7 +382,7 @@ class RolloutWorker:
     self._env.stop()
 
 class RolloutMetrics(tp.NamedTuple):
-  reward: float
+  reward: np.float32
 
   @classmethod
   def from_trajectory(cls, trajectory: Trajectory) -> tp.Self:
