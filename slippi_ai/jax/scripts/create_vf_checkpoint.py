@@ -17,7 +17,7 @@ from absl import app, flags
 import fancyflags as ff
 from flax import nnx
 
-from slippi_ai import flag_utils, paths
+from slippi_ai import data as data_lib, flag_utils, nametags, paths
 from slippi_ai.jax import saving, jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import value_function as vf_lib
@@ -52,12 +52,13 @@ CONFIG = ff.DEFINE_dict(
 
 OUTPUT = flags.DEFINE_string(
     'output', str(paths.JAX_VF_CHECKPOINT), 'Path to write the checkpoint.')
+DATASET = flags.DEFINE_string(
+    'dataset', str(paths.TOY_DATASET), 'Path to dataset for building name_map.')
 
 
 def main(_):
   config = flag_utils.dataclass_from_dict(train_vf.Config, CONFIG.value)
 
-  name_map = {}
   if config.compatible_policy:
     policy_state = saving.load_state_from_disk(config.compatible_policy)
     policy_config = flag_utils.dataclass_from_dict(
@@ -66,6 +67,14 @@ def main(_):
     config.frame_skip = policy_config.policy.frame_skip
     config.max_names = policy_config.max_names
     name_map = policy_state['name_map']
+  else:
+    dataset_config = data_lib.DatasetConfig(dataset_path=DATASET.value)
+    train_replays, test_replays = data_lib.train_test_split(dataset_config)
+    names = []
+    for replay in train_replays + test_replays:
+      names.append(replay.meta.p0.name)
+      names.append(replay.meta.p1.name)
+    name_map = nametags.name_map_from_entries(names, config.max_names)
 
   rngs = nnx.Rngs(config.seed)
   mesh = jax_utils.get_mesh()

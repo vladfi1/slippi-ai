@@ -16,7 +16,7 @@ import pickle
 from absl import app, flags
 import fancyflags as ff
 
-from slippi_ai import flag_utils, paths
+from slippi_ai import data as data_lib, flag_utils, nametags, paths
 from flax import nnx
 
 from slippi_ai.jax import saving, jax_utils
@@ -55,11 +55,21 @@ CONFIG = ff.DEFINE_dict(
 
 OUTPUT = flags.DEFINE_string(
     'output', str(paths.JAX_POLICY_CHECKPOINT), 'Path to write the checkpoint.')
+DATASET = flags.DEFINE_string(
+    'dataset', str(paths.TOY_DATASET), 'Path to dataset for building name_map.')
 
 
 def main(_):
   config = flag_utils.dataclass_from_dict(train_policy.Config, CONFIG.value)
   config = dataclasses.replace(config, version=saving.VERSION)
+
+  dataset_config = data_lib.DatasetConfig(dataset_path=DATASET.value)
+  train_replays, test_replays = data_lib.train_test_split(dataset_config)
+  names = []
+  for replay in train_replays + test_replays:
+    names.append(replay.meta.p0.name)
+    names.append(replay.meta.p1.name)
+  name_map = nametags.name_map_from_entries(names, config.max_names)
 
   rngs = nnx.Rngs(config.seed)
 
@@ -84,7 +94,7 @@ def main(_):
       state=state,
       step=0,
       config=dataclasses.asdict(config),
-      name_map={},
+      name_map=name_map,
       counters=dict(
           step=0,
           total_frames=0,
