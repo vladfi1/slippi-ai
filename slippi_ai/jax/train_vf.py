@@ -103,6 +103,10 @@ def check_compatibility(vf_state: dict, policy_state: dict) -> list[str]:
     errors.append(
         f'embed config mismatch: vf={vf_config.embed}'
         f' policy={policy_config.embed}')
+  if vf_config.frame_skip != policy_config.policy.frame_skip:
+    errors.append(
+        f'frame_skip mismatch: vf={vf_config.frame_skip}'
+        f' policy={policy_config.policy.frame_skip}')
   for key in data_lib.DatasetConfig.characteristic_keys():
     if getattr(vf_config.dataset, key) != getattr(policy_config.dataset, key):
       errors.append(
