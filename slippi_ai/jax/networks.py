@@ -230,6 +230,7 @@ class RecurrentWrapper(Network[Array, Array]):
     # flax's RNNCells have the arguments reversed
     core = self._core
     if self._remat:
+      # core = jax_utils.remat_method(self._core.__call__, prevent_cse=False)
       core = nnx.remat(self._core, prevent_cse=False)
     next_state, output = core(prev_state, inputs)
     return output, next_state
@@ -360,8 +361,13 @@ class Compose(Network[InputTree, OutputTree]):
 
 class Sequential(Network[InputTree, InputTree]):
 
-  def __init__(self, layers: tp.Sequence[Network[InputTree, InputTree]]):
+  def __init__(
+      self,
+      layers: tp.Sequence[Network[InputTree, InputTree]],
+      remat: bool = False,
+  ):
     self._layers = nnx.List(layers)
+    self.remat = remat
 
   @property
   def output_size(self) -> int:
@@ -373,21 +379,30 @@ class Sequential(Network[InputTree, InputTree]):
   def step(self, inputs, prev_state):
     next_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, prev_state):
-      inputs, next_state = layer.step(inputs, state)
+      step_fn = layer.step
+      if self.remat:
+        step_fn = jax_utils.remat_method(layer.step)
+      inputs, next_state = step_fn(inputs, state)
       next_states.append(next_state)
     return inputs, next_states
 
   def unroll(self, inputs, reset, initial_state):
     final_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, initial_state):
-      inputs, final_state = layer.unroll(inputs, reset, state)
+      unroll_fn = layer.unroll
+      if self.remat:
+        unroll_fn = jax_utils.remat_method(layer.unroll)
+      inputs, final_state = unroll_fn(inputs, reset, state)
       final_states.append(final_state)
     return inputs, final_states
 
   def scan(self, inputs, reset, initial_state):
     hidden_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, initial_state):
-      inputs, hidden_state = layer.scan(inputs, reset, state)
+      scan_fn = layer.scan
+      if self.remat:
+        scan_fn = jax_utils.remat_method(layer.scan)
+      inputs, hidden_state = scan_fn(inputs, reset, state)
       hidden_states.append(hidden_state)
     return inputs, hidden_states
 
@@ -570,7 +585,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
     for _ in range(num_layers):
       recurrent = ResidualWrapper(
-          recurrent_constructor(rngs, hidden_size, hidden_size))
+          recurrent_constructor(rngs, hidden_size, hidden_size, remat=remat))
       layers.append(recurrent)
 
       ffw_layer = ResBlock(
@@ -578,10 +593,10 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
           activation=activation_fn)
       layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
 
-    if remat:
-      layers = [RematWrapper(layer) for layer in layers]
+    # Don't use RematWrapper as it changes the network state structure which
+    # prevents loading form checkpoints.
 
-    super().__init__(layers)
+    super().__init__(layers, remat=remat)
 
 
 class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
