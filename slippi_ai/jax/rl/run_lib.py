@@ -141,6 +141,8 @@ class Config:
   teacher: tp.Optional[str] = None
   restore: tp.Optional[str] = None
 
+  remat: bool = False
+
   override_delay: tp.Optional[int] = None
 
 
@@ -391,6 +393,9 @@ def run(config: Config):
 
   if config.override_delay is not None:
     teacher_state['config']['policy']['delay'] = config.override_delay
+
+  rl_state['config']['network']['tx_like']['remat'] = config.remat
+  rl_state['config']['controller_head']['autoregressive']['remat'] = config.remat
 
   teacher = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
