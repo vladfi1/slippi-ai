@@ -24,7 +24,7 @@ from slippi_ai import (
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as train_lib
 from slippi_ai.jax.rl import learner as learner_lib
-from slippi_ai.types import Game, Action, StateAction, Frames
+from slippi_ai.types import Action, Game
 from slippi_ai.jax.networks import RecurrentState
 
 Rank2 = tuple[int, int]
