@@ -330,17 +330,52 @@ Data = tp.TypeVar('Data')
 State = tp.TypeVar('State')
 GradsT = tp.TypeVar('GradsT')
 AuxT = tp.TypeVar('AuxT')
+Outputs = tp.TypeVarTuple('Outputs')
 Loss = Array
 Grads = tp.Any
 
+def no_loss(
+    loss_fn: tp.Callable[P, tuple[Loss, *Outputs]],
+) -> tp.Callable[P, tuple[*Outputs]]:
+
+  @functools.wraps(loss_fn)
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> tuple[*Outputs]:
+    return loss_fn(*args, **kwargs)[1:]
+
+  return wrapped
 
 def grad_with_aux(
-    f: tp.Callable[P, tp.Tuple[Loss, AuxT]],
+    f: tp.Callable[P, tuple[Loss, AuxT]],
     argnums: int | tp.Sequence[int] = 0,
+    take_mean: bool = True,
 ) -> tp.Callable[P, tuple[Grads, AuxT]]:
   """Adds type signature to nnx.grad."""
-  return nnx.grad(f, argnums=argnums, has_aux=True)
 
+  if take_mean:
+    def g(*args: P.args, **kwargs: P.kwargs):
+      loss, aux = f(*args, **kwargs)
+      return jnp.mean(loss), aux
+  else:
+    g = f
+
+  return nnx.grad(g, argnums=argnums, has_aux=True)
+
+def grad_with_aux_tuple(
+    f: tp.Callable[P, tuple[Loss, *Outputs]],
+    take_mean: bool = True,
+) -> tp.Callable[P, tuple[Grads, *Outputs]]:
+
+  def packed_loss_fn(*args: P.args, **kwargs: P.kwargs):
+    outputs = f(*args, **kwargs)
+    return outputs[0], outputs[1:]
+
+  packed_grad_fn = grad_with_aux(packed_loss_fn, take_mean=take_mean)
+
+  def grad_fn(*args: P.args, **kwargs: P.kwargs):
+    grad, aux = packed_grad_fn(*args, **kwargs)
+    return (grad, *aux)
+
+  return grad_fn
 
 def pcast_module(module: ModT, axis_name: str, *, to: str) -> ModT:
   graphdef, state = nnx.split(module)
@@ -372,7 +407,6 @@ def loss_fn_with_mean(
 
 
 Inputs = tp.TypeVarTuple('Inputs')
-Outputs = tp.TypeVarTuple('Outputs')
 
 def sharded_grads(
     # Note: loss_fn should return loss of shape [B]
@@ -489,6 +523,7 @@ def _typed_transform(
 jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
 shard_map = _typed_transform(jax.shard_map)
+annotate_function = _typed_transform(jax.profiler.annotate_function)
 
 def grad0(
     f: tp.Callable[tp.Concatenate[T, P], Loss],
@@ -787,7 +822,48 @@ def cached_functional_jit(
     donate_argnums=donate_argnums,
     **jit_kwargs)
 
-# TODO: accept kwargs?
+def train_fn(
+    module: ModT,
+    optimizer: nnx.Optimizer[ModT],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+
+  grad_fn = grad_with_aux_tuple(loss_fn)
+
+  def train(
+      module: ModT, optimizer: nnx.Optimizer[ModT],
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[AuxT, State, *Outputs]:
+    outputs = grad_fn(module, data, state, *args, **kwargs)
+    optimizer.update(module, outputs[0])
+    return outputs[1:]
+
+  jit_train = nnx.jit(train, donate_argnums=(0, 1, 3))
+
+  return cached_partial(jit_train, module, optimizer)
+
+def train_fn_with_rngs(
+    module: ModT,
+    optimizer: nnx.Optimizer[ModT],
+    rngs: nnx.Rngs,
+    loss_fn: tp.Callable[tp.Concatenate[ModT, nnx.Rngs, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+
+  grad_fn = grad_with_aux_tuple(loss_fn)
+
+  def train(
+      module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[AuxT, State, *Outputs]:
+    outputs = grad_fn(module, rngs, data, state, *args, **kwargs)
+    optimizer.update(module, outputs[0])
+    return outputs[1:]
+
+  jit_train = nnx.jit(train, donate_argnums=(0, 1, 2, 4))
+
+  return cached_partial(jit_train, module, optimizer, rngs)
+
+
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
