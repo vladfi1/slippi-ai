@@ -1,6 +1,7 @@
 """JAX RL training loop — single-agent version."""
 
 import dataclasses
+import enum
 import itertools
 import logging
 import os
@@ -100,7 +101,7 @@ class AgentConfig:
           raise ValueError(f'Character {char} not in {allowed_chars}')
 
 
-class OpponentType:
+class OpponentType(enum.Enum):
   CPU = 'cpu'
   SELF = 'self'
   OTHER = 'other'
@@ -108,7 +109,7 @@ class OpponentType:
 
 @dataclasses.dataclass
 class OpponentConfig:
-  type: str = OpponentType.CPU
+  type: OpponentType = OpponentType.CPU
   other: AgentConfig = field(AgentConfig)
 
   update_interval: tp.Optional[int] = None
