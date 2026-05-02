@@ -97,48 +97,55 @@ if __name__ == '__main__':
 
 
     if config.teacher is not None:
-      imitation_state = saving.load_state_from_disk(config.teacher)
-      imitation_config = flag_utils.dataclass_from_dict(
-          train_lib.Config, imitation_state['config'])
-      char_str = imitation_config.dataset.allowed_characters
-      chars = chars_from_string(char_str)
+      teacher = config.teacher
+    else:
+      assert config.restore
+      rl_state = saving.load_state_from_disk(config.restore)
+      teacher = rl_state['rl_config']['teacher']
+      del rl_state
 
-      if config.agent.char is None:
-        assert chars is not None
-        config.agent.char = chars
-      elif chars is not None:
-        for char in config.agent.char:
-          if char not in chars:
-            raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
+    imitation_state = saving.load_state_from_disk(teacher)
+    imitation_config = flag_utils.dataclass_from_dict(
+        train_lib.Config, imitation_state['config'])
+    char_str = imitation_config.dataset.allowed_characters
+    chars = chars_from_string(char_str)
 
-      if config.agent.name is None:
-        config.agent.name = [MP] * len(config.agent.char)
+    if config.agent.char is None:
+      assert chars is not None
+      config.agent.char = chars
+    elif chars is not None:
+      for char in config.agent.char:
+        if char not in chars:
+          raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
 
-      delay = imitation_config.policy.delay
-      if delay == 0:
-        config.actor.num_env_steps = 0
-        config.agent.batch_steps = 0
+    if config.agent.name is None:
+      config.agent.name = [MP] * len(config.agent.char)
 
-      if config.runtime.tag is None:
-        if config.opponent.type is run_lib.OpponentType.SELF:
-          if config.opponent.train:
-            opp = 'ditto'
-          elif config.opponent.update_interval is not None:
-            opp = f'ditto-{config.opponent.update_interval}'
-          else:
-            opp = 'ditto-fixed'
-        elif config.opponent.type is run_lib.OpponentType.CPU:
-          opp = 'vs_cpu'
-        elif config.opponent.type is run_lib.OpponentType.OTHER:
-          # assert config.opponent.other.path is not None
-          # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
-          opp = 'vs-fixed'
+    delay = imitation_config.policy.delay
+    if delay == 0:
+      config.actor.num_env_steps = 0
+      config.agent.batch_steps = 0
+
+    if config.runtime.tag is None:
+      if config.opponent.type is run_lib.OpponentType.SELF:
+        if config.opponent.train:
+          opp = 'ditto'
+        elif config.opponent.update_interval is not None:
+          opp = f'ditto-{config.opponent.update_interval}'
         else:
-          raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
+          opp = 'ditto-fixed'
+      elif config.opponent.type is run_lib.OpponentType.CPU:
+        opp = 'vs_cpu'
+      elif config.opponent.type is run_lib.OpponentType.OTHER:
+        # assert config.opponent.other.path is not None
+        # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
+        opp = 'vs-fixed'
+      else:
+        raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
 
-        fs = imitation_config.policy.frame_skip
+      fs = imitation_config.policy.frame_skip
 
-        config.runtime.tag = f"{char_str}_d{delay}_{opp}_kl_{KLW.value:.0e}_rfs{fs}"
+      config.runtime.tag = f"{char_str}_d{delay}_{opp}_kl_{KLW.value:.0e}_rfs{fs}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
