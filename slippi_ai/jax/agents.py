@@ -222,13 +222,12 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       # Use donate_argnums?
       self._prev_controller = [so.controller_state for so in sample_outputs]
 
+      sample_outputs = jax.copy_to_host_async(sample_outputs)
       self._sample_outputs.extend(sample_outputs)
 
       self._needs_reset[:] = False
 
-    sample_outputs = self._sample_outputs.popleft()
-
-    return sample_outputs
+    return self._sample_outputs.popleft()
 
   def multi_step(
       self,
