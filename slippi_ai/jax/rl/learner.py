@@ -346,6 +346,11 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       clipped_rhos = jnp.exp(clipped_log_rhos)
 
       fs_advantages = jnp.expand_dims(advantages, axis=1)  # [U / FS, 1, B]
+      # If we assume 1-frame advantages are i.i.d. normals, then the standard
+      # deviation of the sum over FS frames should grow by sqrt(FS), so we
+      # divide by sqrt(FS) to keep the scale of the advantages invariant.
+      fs_advantages /= jnp.sqrt(self.policy.frame_skip)
+      # fs_advantages /= self.policy.frame_skip
       ppo_objective = jnp.minimum(rhos * fs_advantages, clipped_rhos * fs_advantages)
 
       loss = jnp.mean(
