@@ -35,7 +35,6 @@ DEFAULT_CONFIG = train_nash_rl.Config(
     char=[melee.Character.FOX],
     name=['Diamond Player'],
   ),
-  opponent=run_lib.OpponentConfig(type=run_lib.OpponentType.SELF),
 )
 
 if __name__ == '__main__':
