@@ -262,6 +262,7 @@ def run(config: Config):
   if config.override_delay is not None:
     teacher_state['config']['policy']['delay'] = config.override_delay
 
+  teacher = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
 
   pretraining_config = flag_utils.dataclass_from_dict(
@@ -289,14 +290,13 @@ def run(config: Config):
   q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config.q_function)
   jax_utils.set_module_state(q_function, q_fn_state['state']['q_function'])
 
-  frame_skip = pretraining_config.policy.frame_skip
-
   # mesh = jax_utils.get_mesh()
 
   learner = rl_learner.Learner(
       config=config.learner,
       q_function=q_function,
       policy=policy,
+      teacher=teacher,
       rngs=nnx.Rngs(0),
       # mesh=mesh,
       # frame_skip=frame_skip,
