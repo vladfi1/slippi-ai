@@ -302,8 +302,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # Teacher logits: [D, U+D] -> truncate last D -> [D, U].
     # Note: no stop_gradient needed since teacher has no trainable variables.
     teacher_logits = batch_fs([
-        utils.map_nt(remove_last, so.logits)
-        for so in outputs.teacher.distances
+        utils.map_nt(remove_last, do.logits)
+        for do in outputs.teacher.distances
     ])
 
     # Policy frames: states [0, U-D+1], actions [D, U+1].
