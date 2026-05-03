@@ -63,7 +63,6 @@ class Config:
   learner: rl_learner.LearnerConfig = field(rl_learner.LearnerConfig)
   actor: run_lib.ActorConfig = field(run_lib.ActorConfig)
   agent: run_lib.AgentConfig = field(run_lib.AgentConfig)
-  opponent: run_lib.OpponentConfig = field(run_lib.OpponentConfig)
   reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
 
   # Exactly one of teacher or restore must be set.
@@ -317,31 +316,17 @@ def run(config: Config):
   main_agent_kwargs['state'] = rl_state
 
   main_players = [dolphin_lib.AI() for _ in range(batch_size)]
-  if config.opponent.type == run_lib.OpponentType.CPU:
-    opponent_players = [dolphin_lib.CPU() for _ in range(batch_size)]
-  else:
-    opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
+  opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
 
-  if config.opponent.type == run_lib.OpponentType.CPU:
-    names = list(itertools.islice(itertools.cycle(config.agent.name), batch_size))
-    main_agent_kwargs['name'] = names
-    if config.agent.char is not None:
-      chars = itertools.islice(itertools.cycle(config.agent.char), batch_size)
-      for char, player in zip(chars, main_players):
-        player.character = char
-    agent_kwargs = {PORT: main_agent_kwargs}
-  elif config.opponent.type == run_lib.OpponentType.SELF:
-    opponent_kwargs = main_agent_kwargs.copy()
-    name_combinations = list(itertools.product(
-      config.agent.name, config.agent.name))
-    name_combination_batch = list(itertools.islice(
-      itertools.cycle(name_combinations), batch_size))
-    main_agent_names, opp_names = zip(*name_combination_batch)
-    main_agent_kwargs['name'] = list(main_agent_names)
-    opponent_kwargs['name'] = list(opp_names)
-    agent_kwargs = {PORT: main_agent_kwargs, ENEMY_PORT: opponent_kwargs}
-  else:
-    raise ValueError(f'Unknown opponent type: {config.opponent.type}')
+  opponent_kwargs = main_agent_kwargs.copy()
+  name_combinations = list(itertools.product(
+    config.agent.name, config.agent.name))
+  name_combination_batch = list(itertools.islice(
+    itertools.cycle(name_combinations), batch_size))
+  main_agent_names, opp_names = zip(*name_combination_batch)
+  main_agent_kwargs['name'] = list(main_agent_names)
+  opponent_kwargs['name'] = list(opp_names)
+  agent_kwargs = {PORT: main_agent_kwargs, ENEMY_PORT: opponent_kwargs}
 
   dolphin_kwargs = [
     dict(
