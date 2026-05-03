@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import logging
 import typing as tp
 
@@ -9,7 +10,7 @@ import optax
 
 from slippi_ai import utils
 from slippi_ai.types import S, Frames, Action, StateAction
-from slippi_ai.jax.policies import Policy, RecurrentState
+from slippi_ai.jax.policies import Policy, RecurrentState, DistanceOutputs
 from slippi_ai.jax import embed, rl_lib, jax_utils
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 from slippi_ai.nash import data as nash_data
@@ -20,6 +21,7 @@ from slippi_ai.jax.nash import (
 from slippi_ai.jax.nash import nash
 from slippi_ai.jax.rl.learner import FrameSkipTrajectory
 
+T = tp.TypeVar('T')
 Rank3 = tuple[int, int, int]
 
 @dataclasses.dataclass
@@ -68,6 +70,7 @@ SAMPLE_POLICY = 'sample_policy'
 Q_FUNCTION = 'q_function'
 NASH = 'nash'
 NASH_POLICY = 'nash_policy'
+TEACHER = 'teacher'
 
 def masked_mean(x: jax.Array, mask: jax.Array) -> jax.Array:
   masked_sum = jnp.sum(x * mask, keepdims=True)
@@ -97,17 +100,22 @@ class Learner(nnx.Module, tp.Generic[Action]):
       config: LearnerConfig,
       q_function: q_lib.QFunction[Action],
       policy: Policy[Action],
+      teacher: Policy[Action],
       rngs: nnx.Rngs,  # used for sampling
       # mesh: jax.sharding.Mesh,
       # explicit_pmean: bool = False,
       # smap_optimizer: bool = True,
+      sample_from_teacher: bool = False,
       nash_policy_optimizer_state: tp.Optional[tp.Any] = None,
       q_function_optimizer_state: tp.Optional[tp.Any] = None,
   ):
     self.config = config
     self.q_function = q_function
-    self.sample_policy = policy
     self.nash_policy = policy
+    self.teacher = teacher
+    self.sample_from_teacher = sample_from_teacher
+
+    self._controller_embedding = policy.controller_head.controller_embedding
 
     self.discount = rl_lib.discount_from_halflife(
       config.reward_halflife / q_function.frame_skip)
@@ -169,12 +177,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
+    sample_policy = teacher if sample_from_teacher else self.nash_policy
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(self._unroll_sample_policy),
             donate_argnums=(0, 1, 3),
         ),
-        self.sample_policy, rngs,
+        sample_policy, rngs,
     )
 
     # q_function_specs = ShardingSpecs(
@@ -230,6 +239,22 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
     self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
+    def unroll_teacher(
+        teacher: Policy[Action],
+        frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
+        initial_states: RecurrentState,  # [B, 2]
+    ) -> tuple[list[DistanceOutputs[Action]], RecurrentState]:
+      teacher_outputs = teacher.unroll(frames, initial_states)
+      return teacher_outputs.distances, teacher_outputs.final_state
+
+    self.run_teacher = jax_utils.cached_partial(
+        jax_utils.nnx_jit(
+            unroll_teacher,
+            donate_argnums=(0, 2),
+        ),
+        self.teacher,
+    )
+
     # nash_policy_specs = ShardingSpecs(
     #     extra_in_specs=(policy_samples, vs, q_action_init, nash_solution),
     #     extra_out_specs=None,
@@ -253,6 +278,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return {
         Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
+        TEACHER: self.teacher.initial_state((batch_size, 2), rngs),
         # nash_policy state comes from the actor
         # NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
     }
@@ -260,6 +286,22 @@ class Learner(nnx.Module, tp.Generic[Action]):
   def policy_variables(self):
     """Returns policy state for actor update via evaluators.update_variables."""
     return self.nash_policy.get_state()
+
+  def _sum_leaves(self, embedding: embed.Embedding[tp.Any, T], struct: T) -> jax.Array:
+    return functools.reduce(jnp.add, embedding.flatten(struct))
+
+  def _compute_kl(self, logits_p: Action, logits_q: Action) -> jax.Array:
+    """Computes total KL(P||Q) summed over all controller components."""
+    kls = self._controller_embedding.map(
+        lambda e, lp, lq: e.kl_divergence(lp, lq),
+        logits_p, logits_q)
+    return self._sum_leaves(self._controller_embedding, kls)
+
+  def _compute_entropy(self, logits: Action) -> jax.Array:
+    """Computes total entropy H(P) summed over all controller components."""
+    entropies = self._controller_embedding.map(
+        lambda e, l: e.entropy(l), logits)
+    return self._sum_leaves(self._controller_embedding, entropies)
 
   def _unroll_sample_policy(
       self,
@@ -387,10 +429,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
       initial_states: RecurrentState,  # [B, 2]
-      policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
+      policy_samples: list[Action],  # FS x [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
+      teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
+      fs_actor_logits: list[Action],  # FS x [T, B, 2]
   ) -> tuple[Loss, dict, RecurrentState]:
 
     action = frames.state_action.action
@@ -494,12 +538,37 @@ class Learner(nnx.Module, tp.Generic[Action]):
     ]
     nash_policy_total_loss = jax_utils.add_n(losses)
 
+    def batch_fs(xs: list[T]) -> T:
+      return utils.map_nt(
+          lambda *xs: jnp.stack(xs, axis=1),
+          *xs
+      )
+
+    nash_policy_logits = batch_fs([
+        do.logits for do in nash_policy_outputs.distances])
+
+    teacher_logits = batch_fs([
+        do.logits for do in teacher_outputs
+    ])
+
+    actor_logits = batch_fs(fs_actor_logits)
+    actor_logits = utils.map_nt(lambda x: x[1:], actor_logits)
+
+    teacher_kl = self._compute_kl(nash_policy_logits, teacher_logits)  # [T, FS, B, 2]
+    reverse_teacher_kl = self._compute_kl(teacher_logits, nash_policy_logits)  # [T, FS, B, 2]
+    actor_kl = self._compute_kl(actor_logits, nash_policy_logits)  # [T, FS, B, 2]
+    entropy = self._compute_entropy(nash_policy_logits)  # [T, FS, B, 2]
+
     metrics = dict(
         nash_entropy=nash_entropy,
         nash_cross_entropy=nash_cross_entropy,
         nash_policy_qs=nash_policy_qs,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
+        teacher_kl=teacher_kl,
+        reverse_teacher_kl=reverse_teacher_kl,
+        actor_kl=actor_kl,
+        entropy=entropy,
     )
 
     if self.config.include_action_taken_in_samples:
@@ -540,13 +609,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
       values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
+      teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
+      actor_logits: list[Action],  # FS x [T, B, 2]
       train: bool = True,
   ):
     fn = self.train_nash_policy if train else self.run_nash_policy
 
     return fn(
-        tm_frames, initial_state, policy_samples,
-        values, q_action_init_state, nash_solution,
+        tm_frames, initial_state, policy_samples, values, q_action_init_state,
+        nash_solution, teacher_outputs, actor_logits,
     )
 
   def step(
@@ -585,10 +656,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     ) = self.compute_nash(q_values)
 
     (
+      teacher_outputs,
+      final_states[TEACHER],
+    ) = self.run_teacher(frames, initial_states[TEACHER])
+
+    actor_logits = [so.logits for so in trajectory.actions]
+    (
       metrics[NASH_POLICY],
       _,
     ) = self.step_nash_policy(
-        frames, trajectory.initial_state, policy_samples,
-        values, q_action_init_state, nash_variables, train=train)
+        frames, trajectory.initial_state, policy_samples, values,
+        q_action_init_state, nash_variables, teacher_outputs, actor_logits,
+        train=train)
 
     return metrics, final_states
