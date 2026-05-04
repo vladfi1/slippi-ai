@@ -15,7 +15,6 @@ from slippi_ai.jax import embed, rl_lib, jax_utils
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 from slippi_ai.nash import data as nash_data
 from slippi_ai.jax.nash import (
-    utils as nash_utils,
     q_function as q_lib,
 )
 from slippi_ai.jax.nash import nash
@@ -27,18 +26,22 @@ Rank3 = tuple[int, int, int]
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
-  reward_halflife: float = 4  # only for q_function metrics
+  reward_halflife: float = 4
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
+  sample_from_teacher: bool = False
   include_action_taken_in_samples: bool = True
 
   nash_error: float = 1e-3
 
   nash_weight: float = 1
-  imitation_weight: float = 0
+  kl_teacher_weight: float = 0
+  reverse_kl_teacher_weight: float = 0
 
   nash_solver: str = 'qpax_fast'
+
+  value_burnin_steps: int = 0
 
 _SAMPLE_AXIS = 0
 
@@ -93,6 +96,18 @@ def get_frames(trajectory: FrameSkipTrajectory[Action]) -> Frames[Rank3, Action]
   )
   return Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
+def batch_fs(xs: list[T]) -> T:
+  return utils.map_nt(
+      lambda *xs: jnp.stack(xs, axis=1),
+      *xs
+  )
+
+def warmup_schedule(burnin_steps: int, base_value: float):
+  burnin = optax.constant_schedule(0)
+  normal = optax.constant_schedule(base_value)
+  return optax.join_schedules([burnin, normal], [burnin_steps])
+
+
 class Learner(nnx.Module, tp.Generic[Action]):
 
   def __init__(
@@ -106,12 +121,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
       # explicit_pmean: bool = False,
       # smap_optimizer: bool = True,
       sample_from_teacher: bool = False,
-      nash_policy_optimizer_state: tp.Optional[tp.Any] = None,
+      policy_optimizer_state: tp.Optional[tp.Any] = None,
       q_function_optimizer_state: tp.Optional[tp.Any] = None,
   ):
     self.config = config
     self.q_function = q_function
-    self.nash_policy = policy
+    self.policy = policy
     self.teacher = teacher
     self.sample_from_teacher = sample_from_teacher
 
@@ -122,11 +137,16 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     learning_rate = config.learning_rate
 
-    self.nash_policy_optimizer = nnx.Optimizer(
-        policy, optax.adam(learning_rate), wrt=nnx.Param)
+    self.policy_schedule = warmup_schedule(
+        config.value_burnin_steps,
+        config.learning_rate,
+    )
 
-    if nash_policy_optimizer_state is not None:
-      jax_utils.set_module_state(self.nash_policy_optimizer, nash_policy_optimizer_state)
+    self.policy_optimizer = nnx.Optimizer(
+        policy, optax.adam(self.policy_schedule), wrt=nnx.Param)
+
+    if policy_optimizer_state is not None:
+      jax_utils.set_module_state(self.policy_optimizer, policy_optimizer_state)
 
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(learning_rate), wrt=nnx.Param)
@@ -177,7 +197,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
-    sample_policy = teacher if sample_from_teacher else self.nash_policy
+    sample_policy = teacher if sample_from_teacher else policy
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(self._unroll_sample_policy),
@@ -261,8 +281,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # )
 
     self.train_nash_policy = jax_utils.train_fn_with_rngs(
-        module=self.nash_policy,
-        optimizer=self.nash_policy_optimizer,
+        module=policy,
+        optimizer=self.policy_optimizer,
         rngs=rngs,
         loss_fn=self._unroll_nash_policy,
     )
@@ -272,7 +292,32 @@ class Learner(nnx.Module, tp.Generic[Action]):
             jax_utils.no_loss(self._unroll_nash_policy),
             donate_argnums=(0, 1, 3),
         ),
-        self.nash_policy, rngs,
+        policy, rngs,
+    )
+
+    def post_update(
+        policy: Policy[Action],
+        frames: Frames[nash_data.Rank3, Action],
+        initial_state: RecurrentState,
+        fs_actor_logits: list[Action],  # FS x [T, B, 2]
+    ) -> Metrics:
+      policy_outputs = policy.unroll(frames, initial_state)
+      policy_logits = batch_fs([
+          do.logits for do in policy_outputs.distances])
+
+      actor_logits = batch_fs(fs_actor_logits)
+      actor_logits = utils.map_nt(lambda x: x[1:], actor_logits)
+
+      actor_kl = self._compute_kl(actor_logits, policy_logits)
+
+      metrics = {
+          'post_update_actor_kl': actor_kl
+      }
+      return metrics
+
+    self.post_update = jax_utils.cached_partial(
+        jax_utils.nnx_jit(post_update),
+        policy,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -285,7 +330,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
   def policy_variables(self):
     """Returns policy state for actor update via evaluators.update_variables."""
-    return self.nash_policy.get_state()
+    return self.policy.get_state()
 
   def _sum_leaves(self, embedding: embed.Embedding[tp.Any, T], struct: T) -> jax.Array:
     return functools.reduce(jnp.add, embedding.flatten(struct))
@@ -381,15 +426,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
       self,
       q_values: jax.Array,  # [S, S, T, B, 2]
   ) -> tuple[nash.NashVariables, Metrics]:
-    s1, s2, t, b, n = q_values.shape
-    assert n == 2
-
-    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
-    mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
-
-    payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
-
     with jax.enable_x64():
+      s1, s2, t, b, n = q_values.shape
+      assert n == 2
+
+      p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
+      mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
+
+      payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
+
       payoff_matrices = payoff_matrices.astype(jnp.float64)
       assert payoff_matrices.dtype == jnp.float64
 
@@ -532,18 +577,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
     nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
 
-    losses = [
-        self.config.nash_weight * nash_cross_entropy,
-        self.config.imitation_weight * nash_policy_imitation_loss,
-    ]
-    nash_policy_total_loss = jax_utils.add_n(losses)
-
-    def batch_fs(xs: list[T]) -> T:
-      return utils.map_nt(
-          lambda *xs: jnp.stack(xs, axis=1),
-          *xs
-      )
-
     nash_policy_logits = batch_fs([
         do.logits for do in nash_policy_outputs.distances])
 
@@ -558,6 +591,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     reverse_teacher_kl = self._compute_kl(teacher_logits, nash_policy_logits)  # [T, FS, B, 2]
     actor_kl = self._compute_kl(actor_logits, nash_policy_logits)  # [T, FS, B, 2]
     entropy = self._compute_entropy(nash_policy_logits)  # [T, FS, B, 2]
+
+    def fs_mean(x: jax.Array) -> jax.Array:
+      assert x.shape[1] == self.frame_skip
+      return jnp.mean(x, axis=1)
+
+    losses = [
+        self.config.nash_weight * nash_cross_entropy,
+        self.config.kl_teacher_weight * fs_mean(teacher_kl),
+        self.config.reverse_kl_teacher_weight * fs_mean(reverse_teacher_kl),
+    ]
+    nash_policy_total_loss = jax_utils.add_n(losses)
 
     metrics = dict(
         nash_entropy=nash_entropy,
@@ -668,5 +712,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
         frames, trajectory.initial_state, policy_samples, values,
         q_action_init_state, nash_variables, teacher_outputs, actor_logits,
         train=train)
+
+    post_update_metrics = self.post_update(
+        frames, trajectory.initial_state, actor_logits)
+    metrics[NASH_POLICY].update(post_update_metrics)
 
     return metrics, final_states
