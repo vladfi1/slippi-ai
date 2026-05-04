@@ -72,6 +72,8 @@ class Config:
   # Required: path to a pre-trained Q-function checkpoint.
   q_function: tp.Optional[str] = None
 
+  remat: bool = True
+
   override_delay: tp.Optional[int] = None
 
 
@@ -112,10 +114,10 @@ class LearnerManager(tp.Generic[Action]):
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
 
-    self.frame_skip = learner.nash_policy.frame_skip
+    self.frame_skip = learner.policy.frame_skip
 
     self._prev_actions = [
-        learner.nash_policy.controller_head.dummy_sample_outputs([self.batch_size, 2])
+        learner.policy.controller_head.dummy_sample_outputs([self.batch_size, 2])
     ] * (self.frame_skip - 1)
     self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size, 2], False)
 
@@ -261,6 +263,9 @@ def run(config: Config):
   if config.override_delay is not None:
     teacher_state['config']['policy']['delay'] = config.override_delay
 
+  rl_state['config']['network']['tx_like']['remat'] = config.remat
+  rl_state['config']['controller_head']['autoregressive']['remat'] = config.remat
+
   teacher = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
 
@@ -299,7 +304,7 @@ def run(config: Config):
       rngs=nnx.Rngs(0),
       # mesh=mesh,
       # frame_skip=frame_skip,
-      nash_policy_optimizer_state=rl_state['state']['policy_optimizer'],
+      policy_optimizer_state=rl_state['state']['policy_optimizer'],
       q_function_optimizer_state=q_fn_state['state']['q_function_optimizer'],
   )
 
@@ -363,6 +368,9 @@ def run(config: Config):
   rl_config_dict = dataclasses.asdict(config)
 
   def save(step: int):
+    if config.runtime.save_interval < 0:
+      return
+
     combined_state = dict(
       state=jax_utils.get_module_state(learner),
       config=teacher_state['config'],
@@ -385,7 +393,7 @@ def run(config: Config):
   ) -> dict:
     step_time = step_profiler.mean_time()
     fps = config.actor.num_envs * config.actor.rollout_length / step_time
-    mps = fps / (60 * 60)
+    mps = 2 * fps / (60 * 60)
 
     timings = dict(
       rollout=learner_manager.rollout_profiler.mean_time(),
