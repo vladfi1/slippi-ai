@@ -120,7 +120,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       # mesh: jax.sharding.Mesh,
       # explicit_pmean: bool = False,
       # smap_optimizer: bool = True,
-      sample_from_teacher: bool = False,
       policy_optimizer_state: tp.Optional[tp.Any] = None,
       q_function_optimizer_state: tp.Optional[tp.Any] = None,
   ):
@@ -128,7 +127,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.q_function = q_function
     self.policy = policy
     self.teacher = teacher
-    self.sample_from_teacher = sample_from_teacher
 
     self._controller_embedding = policy.controller_head.controller_embedding
 
@@ -197,7 +195,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
-    sample_policy = teacher if sample_from_teacher else policy
+    sample_policy = teacher if config.sample_from_teacher else policy
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(self._unroll_sample_policy),
