@@ -11,7 +11,7 @@ import optax
 from slippi_ai import utils
 from slippi_ai.types import S, Frames, Action, StateAction
 from slippi_ai.jax.policies import Policy, RecurrentState, DistanceOutputs
-from slippi_ai.jax import embed, rl_lib, jax_utils
+from slippi_ai.jax import embed, rl_lib, jax_utils, saving
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 from slippi_ai.nash import data as nash_data
 from slippi_ai.jax.nash import (
@@ -113,22 +113,24 @@ class Learner(nnx.Module, tp.Generic[Action]):
   def __init__(
       self,
       config: LearnerConfig,
-      q_function: q_lib.QFunction[Action],
-      policy: Policy[Action],
-      teacher: Policy[Action],
+      q_function_config: q_lib.QFunctionConfig,
+      policy_config: dict,
+      state: dict,
       rngs: nnx.Rngs,  # used for sampling
       # mesh: jax.sharding.Mesh,
       # explicit_pmean: bool = False,
       # smap_optimizer: bool = True,
-      policy_optimizer_state: tp.Optional[tp.Any] = None,
-      q_function_optimizer_state: tp.Optional[tp.Any] = None,
   ):
     self.config = config
-    self.q_function = q_function
-    self.policy = policy
-    self.teacher = teacher
 
-    self._controller_embedding = policy.controller_head.controller_embedding
+    q_function = q_lib.build_q_function(rngs, q_function_config)
+
+    self.q_function = q_function
+
+    self.policy = saving.policy_from_config_dict(policy_config)
+    self.teacher = saving.policy_from_config_dict(policy_config)
+
+    self._controller_embedding = self.policy.controller_head.controller_embedding
 
     self.discount = rl_lib.discount_from_halflife(
       config.reward_halflife / q_function.frame_skip)
@@ -141,16 +143,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
 
     self.policy_optimizer = nnx.Optimizer(
-        policy, optax.adam(self.policy_schedule), wrt=nnx.Param)
-
-    if policy_optimizer_state is not None:
-      jax_utils.set_module_state(self.policy_optimizer, policy_optimizer_state)
+        self.policy, optax.adam(self.policy_schedule), wrt=nnx.Param)
 
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    if q_function_optimizer_state is not None:
-      jax_utils.set_module_state(self.q_function_optimizer, q_function_optimizer_state)
+    jax_utils.set_module_state(self, state)
 
     if not config.include_action_taken_in_samples and config.num_samples < 2:
       raise ValueError('num_samples must be at least 2 if not including action taken in samples')
@@ -163,8 +161,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         logging.warning(f'sample_batch_size {config.sample_batch_size} does not divide num_samples {ns}')
 
     self.num_samples = config.num_samples
-    self.delay = policy.delay
-    self.frame_skip = policy.frame_skip
+    self.delay = self.policy.delay
+    self.frame_skip = self.policy.frame_skip
     assert self.q_function.frame_skip == self.frame_skip
 
     # jax_utils.replicate_module(self, mesh)
@@ -195,7 +193,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
-    sample_policy = teacher if config.sample_from_teacher else policy
+    sample_policy = self.teacher if config.sample_from_teacher else self.policy
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(self._unroll_sample_policy),
@@ -279,7 +277,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # )
 
     self.train_nash_policy = jax_utils.train_fn_with_rngs(
-        module=policy,
+        module=self.policy,
         optimizer=self.policy_optimizer,
         rngs=rngs,
         loss_fn=self._unroll_nash_policy,
@@ -290,7 +288,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
             jax_utils.no_loss(self._unroll_nash_policy),
             donate_argnums=(0, 1, 3),
         ),
-        policy, rngs,
+        self.policy, rngs,
     )
 
     def post_update(
@@ -315,7 +313,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     self.post_update = jax_utils.cached_partial(
         jax_utils.nnx_jit(post_update),
-        policy,
+        self.policy,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
