@@ -233,8 +233,13 @@ def run(config: Config):
   elif config.restore:
     restore_path = config.restore
 
+  jax_state = {}
+
   if restore_path:
     rl_state = jax_saving.load_state_from_disk(restore_path)
+    jax_state = rl_state['state']
+    policy_config = rl_state['config']
+
     previous_config = flag_utils.dataclass_from_dict(
       Config, rl_state['rl_config'])
     previous_teacher = previous_config.teacher
@@ -254,24 +259,24 @@ def run(config: Config):
   elif config.teacher:
     logging.info('Initializing from teacher: %s', config.teacher)
     teacher_state = jax_saving.load_state_from_disk(config.teacher)
+    policy_config = teacher_state['config']
     run_lib.reset_optimizer_steps(teacher_state)
     rl_state = teacher_state
+    for key in ['policy', 'policy_optimizer']:
+      jax_state[key] = teacher_state['state'][key]
+    jax_state['teacher'] = jax_state['policy']
     step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
   if config.override_delay is not None:
-    teacher_state['config']['policy']['delay'] = config.override_delay
+    policy_config['policy']['delay'] = config.override_delay
 
-  rl_state['config']['network']['tx_like']['remat'] = config.remat
-  rl_state['config']['controller_head']['autoregressive']['remat'] = config.remat
-
-  teacher = jax_saving.load_policy_from_state(teacher_state)
-  policy = jax_saving.load_policy_from_state(rl_state)
+  policy_config['network']['tx_like']['remat'] = config.remat
+  policy_config['controller_head']['autoregressive']['remat'] = config.remat
 
   pretraining_config = flag_utils.dataclass_from_dict(
-      train_lib.Config,
-      jax_saving.upgrade_config(teacher_state['config']))
+      train_lib.Config, policy_config)
 
   if config.q_function is None:
     raise ValueError('Must provide a Q-function checkpoint via `q_function`.')
@@ -279,8 +284,15 @@ def run(config: Config):
   with open(config.q_function, 'rb') as f:
     q_fn_state = pickle.load(f)
 
+  # Note: the original Q-function must exist on-disk even when restoring from a
+  # checkpoint just for the config.
+  # TODO: just save the Q-function config in the checkpoint to avoid this.
+  # TODO: support training a Q-function from scratch?
   q_fn_config = flag_utils.dataclass_from_dict(
     train_q_fn.Config, q_fn_state['config'])
+  if not restore_path:
+    for key in ['q_function', 'q_function_optimizer']:
+      jax_state[key] = q_fn_state['state'][key]
 
   if q_fn_config.observation != pretraining_config.observation:
     raise ValueError(
@@ -291,21 +303,16 @@ def run(config: Config):
       'Q-function delay does not match policy delay: '
       f'{q_fn_config.delay} vs {pretraining_config.policy.delay}')
 
-  q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config.q_function)
-  jax_utils.set_module_state(q_function, q_fn_state['state']['q_function'])
-
   # mesh = jax_utils.get_mesh()
 
   learner = rl_learner.Learner(
       config=config.learner,
-      q_function=q_function,
-      policy=policy,
-      teacher=teacher,
+      q_function_config=q_fn_config.q_function,
+      policy_config=policy_config,
       rngs=nnx.Rngs(0),
+      state=jax_state,
       # mesh=mesh,
       # frame_skip=frame_skip,
-      policy_optimizer_state=rl_state['state']['policy_optimizer'],
-      q_function_optimizer_state=q_fn_state['state']['q_function_optimizer'],
   )
 
   if restore_path:
