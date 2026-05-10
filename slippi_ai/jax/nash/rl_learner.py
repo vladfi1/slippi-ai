@@ -26,6 +26,7 @@ Rank3 = tuple[int, int, int]
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
+  q_fn_learning_rate: tp.Optional[float] = None
   reward_halflife: float = 4
 
   num_samples: int = 1
@@ -149,8 +150,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.policy_optimizer = nnx.Optimizer(
         self.policy, optax.adam(self.policy_schedule), wrt=nnx.Param)
 
+    q_fn_learning_rate = config.q_fn_learning_rate or learning_rate
+
     self.q_function_optimizer = nnx.Optimizer(
-        q_function, optax.adam(learning_rate), wrt=nnx.Param)
+        q_function, optax.adam(q_fn_learning_rate), wrt=nnx.Param)
 
     jax_utils.set_module_state(self, state)
 
