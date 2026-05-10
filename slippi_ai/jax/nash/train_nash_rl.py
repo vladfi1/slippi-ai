@@ -185,7 +185,7 @@ class LearnerManager(tp.Generic[Action]):
   def _burnin_step(self):
     trajectory, _ = self._rollout()
     _, self._hidden_state = self._learner.step(
-      trajectory, self._hidden_state, train=False)
+      trajectory, self._hidden_state, train=False, step=0)
 
   def reset_env(self):
     with self.reset_profiler:
@@ -193,7 +193,7 @@ class LearnerManager(tp.Generic[Action]):
       for _ in range(self._burnin):
         self._burnin_step()
 
-  def step(self):
+  def step(self, step: int):
     with self.update_profiler:
       policy_variables = self._learner.policy_variables()
       self.actor.update_variables(
@@ -204,7 +204,7 @@ class LearnerManager(tp.Generic[Action]):
 
     with self.learner_profiler:
       metrics, self._hidden_state = self._learner.step(
-        trajectory, self._hidden_state, train=True)
+        trajectory, self._hidden_state, train=True, step=step)
 
     return trajectory, dict(learner=metrics, actor=actor_metrics)
 
@@ -264,7 +264,7 @@ def run(config: Config):
     rl_state = teacher_state
     for key in ['policy', 'policy_optimizer']:
       jax_state[key] = teacher_state['state'][key]
-    jax_state['teacher'] = jax_state['policy']
+    jax_state['teacher'] = jax_state['nash_policy'] = jax_state['policy']
     step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
@@ -449,7 +449,7 @@ def run(config: Config):
           logging.info('Resetting environments')
           learner_manager.reset_env()
 
-        trajectory, metrics = learner_manager.step()
+        trajectory, metrics = learner_manager.step(step=step)
 
       logger.record(get_log_data(trajectory, metrics))
       maybe_flush(step)
