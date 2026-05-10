@@ -30,8 +30,8 @@ class LearnerConfig:
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
-  sample_from_teacher: bool = False
   include_action_taken_in_samples: bool = True
+  epoch_length: int = 100
 
   nash_error: float = 1e-3
 
@@ -127,7 +127,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     self.q_function = q_function
 
+    # We use the policy to sample and act, and regress the nash_policy towards
+    # the resulting Nash distribution. At the end of each epoch, we copy the
+    # nash_policy's weights to the policy.
     self.policy = saving.policy_from_config_dict(policy_config)
+    self.nash_policy = saving.policy_from_config_dict(policy_config)
     self.teacher = saving.policy_from_config_dict(policy_config)
 
     self._controller_embedding = self.policy.controller_head.controller_embedding
@@ -193,13 +197,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
-    sample_policy = self.teacher if config.sample_from_teacher else self.policy
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(self._unroll_sample_policy),
             donate_argnums=(0, 1, 3),
         ),
-        sample_policy, rngs,
+        self.policy, rngs,
     )
 
     # q_function_specs = ShardingSpecs(
@@ -277,7 +280,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # )
 
     self.train_nash_policy = jax_utils.train_fn_with_rngs(
-        module=self.policy,
+        module=self.nash_policy,
         optimizer=self.policy_optimizer,
         rngs=rngs,
         loss_fn=self._unroll_nash_policy,
@@ -288,7 +291,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
             jax_utils.no_loss(self._unroll_nash_policy),
             donate_argnums=(0, 1, 3),
         ),
-        self.policy, rngs,
+        self.nash_policy, rngs,
     )
 
     def post_update(
@@ -313,15 +316,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     self.post_update = jax_utils.cached_partial(
         jax_utils.nnx_jit(post_update),
-        self.policy,
+        self.nash_policy,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return {
         Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
         TEACHER: self.teacher.initial_state((batch_size, 2), rngs),
-        # nash_policy state comes from the actor
-        # NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
+        NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
+        # (sample) policy is also used by the actor
     }
 
   def policy_variables(self):
@@ -666,6 +669,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       # tm_frames: Frames[nash_data.Rank3, Action], # [T, B, 2]
       trajectory: FrameSkipTrajectory[Action],  # [T, B, 2]
       initial_states: dict[str, RecurrentState],  # [B, 2]
+      step: int,
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
     # TODO: take into account delay
@@ -701,16 +705,22 @@ class Learner(nnx.Module, tp.Generic[Action]):
     ) = self.run_teacher(frames, initial_states[TEACHER])
 
     actor_logits = [so.logits for so in trajectory.actions]
+    # Need to make a copy since the original one gets donated
+    initial_nash_state = jax.tree.map(
+      lambda x: x.copy(), initial_states[NASH_POLICY])
     (
       metrics[NASH_POLICY],
-      _,
+      final_states[NASH_POLICY],
     ) = self.step_nash_policy(
-        frames, trajectory.initial_state, policy_samples, values,
+        frames, initial_states[NASH_POLICY], policy_samples, values,
         q_action_init_state, nash_variables, teacher_outputs, actor_logits,
         train=train)
 
     post_update_metrics = self.post_update(
-        frames, trajectory.initial_state, actor_logits)
+        frames, initial_nash_state, actor_logits)
     metrics[NASH_POLICY].update(post_update_metrics)
+
+    if train and step % self.config.epoch_length == 0:
+      jax_utils.set_module_state(self.policy, jax_utils.get_module_state(self.nash_policy))
 
     return metrics, final_states
