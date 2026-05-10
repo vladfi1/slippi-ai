@@ -41,7 +41,7 @@ if __name__ == '__main__':
 
   CONFIG.dolphin.emulation_speed = 0
   CONFIG.learner.learning_rate=3e-5
-  CONFIG.learner.reward_halflife=8
+  CONFIG.learner.reward_halflife=4
   CONFIG.learner.num_samples = 4
   CONFIG.learner.sample_batch_size = 1
   CONFIG.reward.damage_ratio=0.01
@@ -125,12 +125,9 @@ if __name__ == '__main__':
       else:
         klw_str = ""
 
-      if config.learner.sample_from_teacher:
-        sft = "_sft"
-      else:
-        sft = ""
+      ep = config.learner.epoch_length
 
-      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}{sft}"
+      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
