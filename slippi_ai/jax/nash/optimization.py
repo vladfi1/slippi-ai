@@ -703,7 +703,10 @@ def solve_lp_simplex(
   if expected_dtype is not None:
     assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, got {dtype}"
 
-  eps = jnp.asarray(1e-9, dtype=dtype)
+  # Use a dtype-relative epsilon. For float32, 1e-9 < machine epsilon (~1.2e-7),
+  # so it fails to guard against near-zero pivots, causing tableau overflow and NaN.
+  # sqrt(eps_machine) balances numerical safety with sensitivity (~1.1e-4 for f32).
+  eps = jnp.sqrt(jnp.finfo(dtype).eps).astype(dtype)
   inf_val = jnp.asarray(jnp.inf, dtype=dtype)
 
   # Standard form: max [c; 0]^T [x; s] s.t. [G | I][x; s] = h, x,s >= 0
