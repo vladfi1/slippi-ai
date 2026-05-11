@@ -34,13 +34,9 @@ class LearnerConfig:
   include_action_taken_in_samples: bool = True
   epoch_length: int = 100
 
-  nash_error: float = 1e-3
-
   nash_weight: float = 1
   kl_teacher_weight: float = 0
   reverse_kl_teacher_weight: float = 0
-
-  nash_solver: str = 'qpax_fast'
 
   value_burnin_steps: int = 0
 
@@ -428,38 +424,22 @@ class Learner(nnx.Module, tp.Generic[Action]):
       self,
       q_values: jax.Array,  # [S, S, T, B, 2]
   ) -> tuple[nash.NashVariables, Metrics]:
-    with jax.enable_x64():
-      s1, s2, t, b, n = q_values.shape
-      assert n == 2
+    s1, s2, t, b, n = q_values.shape
+    assert n == 2
 
-      p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
-      mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
+    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
+    mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
 
-      payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
+    payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
 
-      payoff_matrices = payoff_matrices.astype(jnp.float64)
-      assert payoff_matrices.dtype == jnp.float64
+    # Use separate vmaps over T and B to avoid an XLA SPMD partitioner
+    # bug triggered by vmapping over the merged T*B sharded dimension.
+    # Only triggered by qpax_fast, probably because it has matrices with
+    # some dimensions equal to one.
 
-      if self.config.nash_solver == 'qpax':
-        solver = nash._solve_zero_sum_nash_qpax
-      elif self.config.nash_solver == 'qpax_fast':
-        solver = nash._solve_zero_sum_nash_qpax_fast
-      elif self.config.nash_solver == 'ippd':
-        solver = nash._solve_zero_sum_nash_ippd
-      else:
-        raise ValueError(f'Unknown nash_solver {self.config.nash_solver}')
+    solve_vmap = jax_utils.multi_vmap(nash._solve_nash_simplex_impl, axes=[0, 1])
 
-      # Use separate vmaps over T and B to avoid an XLA SPMD partitioner
-      # bug triggered by vmapping over the merged T*B sharded dimension.
-      # Only triggered by qpax_fast, probably because it has matrices with
-      # some dimensions equal to one.
-      def solve_one(pm: nash.PayoffMatrix):
-        return solver(pm, error=self.config.nash_error)
-
-      # First vmap over sharded batch dim.
-      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[1, 0])
-
-      nash_variables, tm_metrics = solve_vmap(payoff_matrices)
+    nash_variables, tm_metrics = solve_vmap(payoff_matrices)
 
     nash_variables = utils.map_single_structure(
         lambda x: x.astype(jnp.float32), nash_variables)
