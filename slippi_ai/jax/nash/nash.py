@@ -151,10 +151,13 @@ def _solve_nash_simplex_impl(
 
   # Initial basis: slack variables s_i in row i (columns n..n+m-1)
   basis = jnp.arange(n, n + m, dtype=jnp.int32)
-  done = jnp.zeros([], dtype=jnp.bool_)
 
-  def step(carry: tuple[jax.Array, jax.Array, jax.Array], _):
-    tab, basis, done = carry
+  def cond_fun(carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array]) -> jax.Array:
+    _, _, done, step = carry
+    return ~done & (step < max_steps)
+
+  def body_fun(carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array]):
+    tab, basis, done, step = carry
 
     obj = tab[m, :n + m]
     entering = jnp.argmax(obj).astype(jnp.int32)
@@ -174,14 +177,16 @@ def _solve_nash_simplex_impl(
 
     new_basis = basis.at[leaving].set(entering)
 
-    update = ~done & ~optimal & (pval > eps)
+    can_pivot = ~optimal & (pval > eps)
     return (
-        jnp.where(update, new_tab, tab),
-        jnp.where(update, new_basis, basis),
-        done | optimal,
-    ), None
+        jnp.where(can_pivot, new_tab, tab),
+        jnp.where(can_pivot, new_basis, basis),
+        ~can_pivot,
+        step + 1,
+    )
 
-  (tab, basis, _), _ = jax.lax.scan(step, (tab, basis, done), None, length=max_steps)
+  init = (tab, basis, jnp.zeros([], dtype=jnp.bool_), jnp.zeros([], dtype=jnp.int32))
+  tab, basis, _, step = jax.lax.while_loop(cond_fun, body_fun, init)
 
   # Extract p2: z[j] = tab[row, -1] for the row where basis[row] == j
   eq = basis[:, None] == jnp.arange(n)[None, :]  # (m, n)
@@ -198,7 +203,7 @@ def _solve_nash_simplex_impl(
   # Note: tab[m, -1] = -sum(z*) in this convention, so use sum_z directly.
   v = sum_z ** -1 + shift
 
-  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), {}
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), {'num_steps': step}
 
 
 _simplex_static_argnames = ('max_steps', 'expected_dtype')
