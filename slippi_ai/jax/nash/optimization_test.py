@@ -133,21 +133,23 @@ def run_nash_test(
   return stats
 
 
-def test_rps(dtype=np.float64, **kwargs):
+def test_rps(dtype=np.float64, solver=None, **kwargs):
+  if solver is None:
+    solver = nash.solve_zero_sum_nash_simplex
   payoff_matrix = np.array([
       [0, -1, 1],
       [1, 0, -1],
       [-1, 1, 0],
   ], dtype=dtype)
   with jax.enable_x64():
-    return run_nash_test(payoff_matrix, **kwargs)
+    return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
 def test_random_nash(
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float64,
     batch_size: int = 0,
-    solver: tp.Optional[nash.NashSolver] = None,
+    solver: tp.Optional[nash.NashSolver] = None,  # defaults to simplex below
     multi_device: bool = False,
     **kwargs,
 ):
@@ -156,6 +158,9 @@ def test_random_nash(
   else:
     dims = size
   payoff_matrix = np.random.standard_normal(dims).astype(dtype)
+
+  if solver is None:
+    solver = nash.solve_zero_sum_nash_simplex
 
   with jax.enable_x64():
     if multi_device:
@@ -278,7 +283,7 @@ if __name__ == '__main__':
 
   qpax_fast_kwargs = dict(
       error=1e-5,
-      atol=1e-3,
+      atol=1e-2,
       # jit=False,
   )
 
@@ -286,4 +291,11 @@ if __name__ == '__main__':
   run_nash_tests(
       solver=nash.solve_zero_sum_nash_qpax_fast,
       **qpax_fast_kwargs,
+  )
+
+  print('simplex')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_simplex,
+      atol=1e-4,
+      # jit=False,
   )

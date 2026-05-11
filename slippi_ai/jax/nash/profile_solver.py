@@ -10,6 +10,7 @@ _SOLVERS = {
     'ippd': nash.solve_zero_sum_nash_ippd,
     'qpax': nash.solve_zero_sum_nash_qpax,
     'qpax_fast': nash.solve_zero_sum_nash_qpax_fast,
+    'simplex': nash.solve_zero_sum_nash_simplex,
 }
 
 ITERS = flags.DEFINE_integer('iters', 10, 'Number of tests to run')
@@ -44,19 +45,26 @@ def main(_):
   if PROFILE_TRACE_DIR.value is not None:
     jax.profiler.start_trace(PROFILE_TRACE_DIR.value)
 
+  solver_kwargs = {}
+
+  if SOLVER.value != 'simplex':
+    solver_kwargs.update(
+        error=ERROR.value,
+        is_linear=LINEAR.value,
+        cholesky=CHOLESKY.value,
+    )
+
   optimization_test.random_nash_tests(
       num_tests=ITERS.value,
       batch_size=BATCH_SIZE.value,
       size=(SIZE.value, SIZE.value),
       solver=_SOLVERS[SOLVER.value],
       dtype=dtypes[DTYPE.value],
-      error=ERROR.value,
       atol=ATOL.value,
       verify=VERIFY.value,
-      is_linear=LINEAR.value,
-      cholesky=CHOLESKY.value,
       max_steps=MAX_STEPS.value,
       multi_device=MULTI_DEVICE.value,
+      **solver_kwargs,
   )
 
   if PROFILE_TRACE_DIR.value is not None:
