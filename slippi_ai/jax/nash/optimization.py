@@ -681,3 +681,157 @@ def vmap1_qpax_feasibility_solver(
 ):
   solver = jax_utils.partial(solve_feasibility_qpax, problem)
   return jax_utils.vmap1(solver, static_argnames=qpax_static_argnames)
+
+
+def solve_lp_simplex(
+    c: jax.Array,
+    G: jax.Array,
+    h: jax.Array,
+    *,
+    max_steps: int = 200,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[jax.Array, jax.Array, Stats]:
+  """Solve LP: max c^T x s.t. G x <= h, x >= 0 using the simplex method.
+
+  Requires h >= 0 so that x=0 is a feasible initial point (natural BFS).
+  Returns (x_opt, ineq_dual, stats) where ineq_dual[i] >= 0 is the dual
+  variable for constraint G[i] @ x <= h[i].
+  """
+  m, n = G.shape
+  dtype = G.dtype
+
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, got {dtype}"
+
+  eps = jnp.asarray(1e-9, dtype=dtype)
+  inf_val = jnp.asarray(jnp.inf, dtype=dtype)
+
+  # Standard form: max [c; 0]^T [x; s] s.t. [G | I][x; s] = h, x,s >= 0
+  # Tableau rows 0..m-1: [G | I | h]; row m: [c | 0 | 0]
+  tab = jnp.concatenate([
+      jnp.concatenate([G, jnp.eye(m, dtype=dtype), h[:, None]], axis=1),
+      jnp.concatenate([c[None, :], jnp.zeros([1, m + 1], dtype=dtype)], axis=1),
+  ], axis=0)
+
+  # Initial basis: slack variables (columns n..n+m-1)
+  basis = jnp.arange(n, n + m, dtype=jnp.int32)
+
+  def cond_fun(carry: tuple) -> jax.Array:
+    _, _, done, step = carry
+    return ~done & (step < max_steps)
+
+  def body_fun(carry: tuple) -> tuple:
+    tab, basis, done, step = carry
+
+    obj = tab[m, :n + m]
+    entering = jnp.argmax(obj).astype(jnp.int32)
+    optimal = obj[entering] <= eps
+
+    col = tab[:m, entering]
+    rhs = tab[:m, -1]
+    ratios = jnp.where(col > eps, rhs / col, inf_val)
+    leaving = jnp.argmin(ratios).astype(jnp.int32)
+    pval = tab[leaving, entering]
+
+    prow = tab[leaving, :]
+    entering_col_vals = tab[:, entering]
+    new_tab = tab - (entering_col_vals / pval)[:, None] * prow[None, :]
+    is_pivot_row = jnp.arange(m + 1) == leaving
+    new_tab = jnp.where(is_pivot_row[:, None], (prow / pval)[None, :], new_tab)
+
+    new_basis = basis.at[leaving].set(entering)
+
+    can_pivot = ~optimal & (pval > eps)
+    return (
+        jnp.where(can_pivot, new_tab, tab),
+        jnp.where(can_pivot, new_basis, basis),
+        ~can_pivot,
+        step + 1,
+    )
+
+  init = (tab, basis, jnp.zeros([], dtype=jnp.bool_), jnp.zeros([], dtype=jnp.int32))
+  tab, basis, _, num_steps = jax.lax.while_loop(cond_fun, body_fun, init)
+
+  # Extract primal: x[j] = tableau RHS for the row where basis == j
+  eq = basis[:, None] == jnp.arange(n)[None, :]  # (m, n)
+  x = jnp.sum(jnp.where(eq, tab[:m, -1:], jnp.zeros_like(tab[:m, -1:])), axis=0)
+
+  # Dual variables: u[i] = -tab[m, n+i] (reduced cost of slack s_i)
+  ineq_dual = -tab[m, n:n + m]
+
+  return x, ineq_dual, {'num_steps': num_steps}
+
+
+def solve_optimization_simplex_with_extras(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    max_steps: int = 200,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    **_,
+) -> tuple[Variables, jax.Array, Stats]:
+  """Solve a linear program using simplex, also returning inequality dual variables.
+
+  Assumes:
+  - The objective and constraint_violations are linear in the variables.
+  - No equality constraints (equality_violations must return an empty array).
+  - Variables are implicitly non-negative (x >= 0); do NOT include -x <= 0 in
+    constraint_violations — simplex enforces non-negativity structurally.
+  - The initial variables returned by problem.initial_variables() are feasible,
+    i.e. constraint_violations(initial) <= 0, so h = -violations(initial) >= 0.
+  """
+  variables = problem.initial_variables(parameters)
+  flatten, unflatten, _ = _setup_flatten(variables)
+  x0 = flatten(variables)
+
+  dtype = x0.dtype
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, got {dtype}"
+
+  def obj_fn(x: jax.Array) -> jax.Array:
+    return problem.objective(parameters, unflatten(x))
+
+  def constr_fn(x: jax.Array) -> jax.Array:
+    return problem.constraint_violations(parameters, unflatten(x))
+
+  # For a linear LP, the Jacobian is constant (independent of x0).
+  c_min = jax.grad(obj_fn)(x0)       # gradient of the objective to minimize
+  G = jax.jacrev(constr_fn)(x0)      # [m, n]
+  # constr_fn(x) = G @ x - h  =>  h = G @ x0 - constr_fn(x0)
+  h = jnp.matvec(G, x0) - constr_fn(x0)
+
+  x_opt, ineq_dual, stats = solve_lp_simplex(-c_min, G, h, max_steps=max_steps, expected_dtype=dtype)
+  return unflatten(x_opt), ineq_dual, stats
+
+
+def solve_optimization_simplex(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    max_steps: int = 200,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    **_,
+) -> tuple[Variables, Stats]:
+  """Solve a linear program defined by a ConstrainedOptimizationProblem using simplex."""
+  variables, _, stats = solve_optimization_simplex_with_extras(
+      problem, parameters, max_steps=max_steps, expected_dtype=expected_dtype)
+  return variables, stats
+
+
+solve_feasibility_simplex = as_feasibility_solver(solve_optimization_simplex)
+
+simplex_static_argnames = ('max_steps', 'expected_dtype')
+
+
+def jitted_simplex_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_simplex, problem)
+  return jax_utils.jit(solver, static_argnames=simplex_static_argnames)
+
+
+def vmap1_simplex_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_simplex, problem)
+  return jax_utils.vmap1(solver, static_argnames=simplex_static_argnames)
