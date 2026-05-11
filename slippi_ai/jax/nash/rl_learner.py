@@ -138,7 +138,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self._controller_embedding = self.policy.controller_head.controller_embedding
 
     self.discount = rl_lib.discount_from_halflife(
-      config.reward_halflife / q_function.frame_skip)
+      config.reward_halflife, frame_skip=q_function.frame_skip)
 
     learning_rate = config.learning_rate
 

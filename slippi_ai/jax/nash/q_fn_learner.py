@@ -50,7 +50,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.discount = rl_lib.discount_from_halflife(
+      config.reward_halflife, frame_skip=self.q_function.frame_skip)
 
     jax_utils.replicate_module(self, mesh)
 
