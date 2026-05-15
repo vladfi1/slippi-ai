@@ -364,6 +364,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     bm_metrics = utils.map_single_structure(
         lambda x: jnp.swapaxes(x, 0, 1), tm_metrics)
 
+    bm_metrics['sample_payoff_matrix'] = payoff_matrices[0].astype(jnp.float32)  # [B, S1, S2]
+
     return nash_variables, bm_metrics
 
 
