@@ -136,6 +136,7 @@ if __name__ == '__main__':
       config.dataset.meta_path = str(paths.TOY_META_PATH)
       config.dataset.test_ratio = 0.5
       char = 'all'
+      config.dataset.allowed_opponents = 'all'
       config.data.cached = True
       config.data.num_workers = 0
       config.runtime.log_interval = 15
