@@ -98,6 +98,7 @@ class Config:
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
+  remat: bool = True
 
   expt_root: str = 'experiments/nash_policy'
   expt_dir: tp.Optional[str] = None
@@ -261,6 +262,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     raise ValueError('Must initialize policies from a checkpoint.')
 
   assert isinstance(name_map, dict)
+
+  if config.remat:
+    from slippi_ai.jax import controller_heads
+    assert isinstance(nash_policy.controller_head, controller_heads.AutoRegressive)
+    nash_policy.controller_head.remat = True  # save memory at the cost of extra compute
 
   # Initialize q_function
   if config.initialize_q_function_from:
