@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import logging
 import typing as tp
@@ -332,9 +333,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
 
-    with jax.enable_x64():
-      payoff_matrices = payoff_matrices.astype(jnp.float64)
-      assert payoff_matrices.dtype == jnp.float64
+    with contextlib.ExitStack() as stack:
+      is_ip_solver = self.config.nash_solver in ['qpax', 'qpax_fast', 'ippd']
+
+      if is_ip_solver:
+        stack.enter_context(jax.enable_x64())
+
+        payoff_matrices = payoff_matrices.astype(jnp.float64)
+        assert payoff_matrices.dtype == jnp.float64
 
       if self.config.nash_solver == 'qpax':
         solver = nash._solve_zero_sum_nash_qpax
@@ -342,18 +348,24 @@ class Learner(nnx.Module, tp.Generic[Action]):
         solver = nash._solve_zero_sum_nash_qpax_fast
       elif self.config.nash_solver == 'ippd':
         solver = nash._solve_zero_sum_nash_ippd
+      elif self.config.nash_solver == 'simplex':
+        solver = nash._solve_nash_simplex_impl
       else:
         raise ValueError(f'Unknown nash_solver {self.config.nash_solver}')
+
+      solver_kwargs = {}
+      if is_ip_solver:
+        solver_kwargs['error'] = self.config.nash_error
 
       # Use separate vmaps over T and B to avoid an XLA SPMD partitioner
       # bug triggered by vmapping over the merged T*B sharded dimension.
       # Only triggered by qpax_fast, probably because it has matrices with
       # some dimensions equal to one.
+      # https://github.com/jax-ml/jax/issues/35815
       def solve_one(pm: nash.PayoffMatrix):
-        return solver(pm, error=self.config.nash_error)
+        return solver(pm, **solver_kwargs)
 
-      # First vmap over sharded batch dim.
-      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[1, 0])
+      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[0, 1])
 
       nash_variables, tm_metrics = solve_vmap(payoff_matrices)
 
