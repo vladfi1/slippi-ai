@@ -425,6 +425,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     """Do a test step, then log both train and test stats."""
     test_stats, _ = test_manager.step()
 
+    sample_pm = train_stats[learner_lib.NASH].pop('sample_payoff_matrix')
+    test_stats[learner_lib.NASH].pop('sample_payoff_matrix')
+
     elapsed_time = log_tracker.update(time.time())
     total_steps = step
     steps = step_tracker.update(total_steps)
@@ -466,6 +469,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     )
     train_lib.log_stats(all_stats, total_steps)
 
+    pm = np.asarray(sample_pm)[0]  # [S, S]
+    n_cols = pm.shape[1]
+    table = wandb.Table(columns=[str(i) for i in range(n_cols)], data=pm.tolist())
+    wandb.log({'train/nash/payoff_matrix': table}, step=total_steps)
+
   last_train_epoch_evaluated = 0.
   needs_first_eval = runtime.eval_at_start
 
@@ -489,6 +497,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       # Get _previous_ step's stats to allow jax runahead
       if test_stats_jax is not None:
+        test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
         test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
 
@@ -501,6 +510,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         break
 
     assert test_stats_jax is not None
+    test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
     test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
