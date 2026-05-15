@@ -164,12 +164,13 @@ def print_losses(name: str, stats: dict):
   nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy']
   spl, nent, nxent = map(train_lib.mean, (spl, nent, nxent))
 
-  tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
+  # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
   ns = np.asarray(stats[learner_lib.NASH]['num_steps'])
 
   print(
       f'{name}: spl={spl:.3f} nent={nent:.3f} nxent={nxent:.3f} '
-      f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
+      # f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
+      f' nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
