@@ -1275,7 +1275,7 @@ def build_embed_module(
     num_names: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
 ):
-  embeddings = Embeddings.init(
+  embeddings: Embeddings[Action] = Embeddings.init(
       config=embed_config,
       frame_skip=frame_skip,
       num_names=num_names,
