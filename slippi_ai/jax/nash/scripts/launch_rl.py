@@ -52,8 +52,8 @@ if __name__ == '__main__':
   CONFIG.reward.approaching_factor=1e-3
   # CONFIG.teacher=f'pickled_models/jax/{MODEL}'
   CONFIG.actor.rollout_length=84
-  CONFIG.actor.num_envs=200
-  CONFIG.actor.inner_batch_size=8
+  CONFIG.actor.num_envs=int(os.environ.get('NUM_ENVS', 200))
+  CONFIG.actor.inner_batch_size=int(os.environ.get('INNER_BATCH_SIZE', 8))
   CONFIG.actor.async_envs=True
   CONFIG.actor.num_env_steps=4
   CONFIG.actor.gpu_inference=True
