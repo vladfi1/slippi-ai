@@ -84,7 +84,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         rngs, input_size=self.core_net.output_size, **config.action_net)
     # Unrolled over the frame_skip actions to compute Q-values.
     self.action_net = networks.construct_network(
-        rngs, input_size=self.embed_action.size, **config.action_net)
+        rngs, input_size=2 * self.embed_action.size, **config.action_net)
 
     self.value_head = jax_utils.MLP(
       rngs=rngs,
@@ -139,10 +139,11 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       action_init_state: networks.RecurrentState,  # [..., 2, H]
       actions: list[Action],  # frame_skip x [..., 2]
   ) -> jax.Array:  # [..., 2]
-    embedded = [self._embed_action(a) for a in actions]
-    stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
-    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
-    outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
+    embedded = [self.embed_action(a) for a in actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, ..., 2, embed_size]
+    merged = to_merged_outputs(stacked)  # [FS, ..., 2, 2 * embed_size]
+    reset = jnp.zeros(merged.shape[:-1], dtype=bool)  # [FS, ...]
+    outputs, _ = self.action_net.unroll(merged, reset, action_init_state)
     return self._q_values_from_outputs(outputs[-1], values)
 
   def q_values_from_core_outputs(
