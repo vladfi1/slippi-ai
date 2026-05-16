@@ -324,7 +324,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         values=values,
         is_resetting=frames.is_resetting[1:],
         bootstrap=last_value,
-        discount=discount ** self.frame_skip,
+        discount=discount,
     )
     value_targets = jax.lax.stop_gradient(value_targets)
 
