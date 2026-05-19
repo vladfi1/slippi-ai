@@ -160,10 +160,13 @@ if __name__ == '__main__':
         rfs = config.policy.frame_skip
         rfs = f'rfs{rfs}'
 
-        chd = config.controller_head['autoregressive']['component_depth']
-        chs = config.controller_head['autoregressive']['residual_size']
+        ch = config.controller_head['autoregressive']['component']
+        assert ch['name'] == 'tx_like'
+        ch = ch['tx_like']
+        chn = ch['num_layers']
+        chs = ch['hidden_size']
 
-        config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chd}x{chs}_{rfs}"
+        config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chn}x{chs}_{rfs}"
 
     config.dataset.allowed_characters = char
 
