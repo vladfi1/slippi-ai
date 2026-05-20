@@ -10,6 +10,7 @@ import fancyflags as ff
 from slippi_ai import flag_utils, paths
 from slippi_ai.jax import embed, saving, train_lib
 from slippi_ai.jax.nash import train_q_fn
+from skypilot import launch
 
 NET_NAME = 'tx_like'
 
@@ -98,6 +99,9 @@ if __name__ == '__main__':
       dir=ff.String(None, 'directory to save logs'),
   )
 
+  flags.adopt_module_key_flags(launch)
+
+  @launch.wrap
   def main(_):
     config = flag_utils.dataclass_from_dict(train_q_fn.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
