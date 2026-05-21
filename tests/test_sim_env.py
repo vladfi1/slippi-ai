@@ -28,7 +28,7 @@ class SimEnvTest(unittest.TestCase):
             1: dolphin.AI(melee.Character.FOX),
             2: dolphin.AI(melee.Character.FALCO),
         },
-        length=8,
+        frame_buffer_length=8,
     )
     try:
       initial = env.current_state()
@@ -85,7 +85,7 @@ class SimEnvTest(unittest.TestCase):
       env.stop()
 
   def test_push_pop_queue_and_partial_reset(self):
-    env = self._sim_env(num_envs=2, length=4)
+    env = self._sim_env(num_envs=2, frame_buffer_length=4)
     try:
       first = env.pop()
       self.assertTrue(np.all(first.needs_reset))
@@ -106,7 +106,7 @@ class SimEnvTest(unittest.TestCase):
       env.stop()
 
   def test_partial_reset_clears_observed_previous_controllers(self):
-    env = self._sim_env(num_envs=2, length=8)
+    env = self._sim_env(num_envs=2, frame_buffer_length=8)
     try:
       controllers = {
           1: sim_env.neutral_controllers(2),
@@ -135,7 +135,7 @@ class SimEnvTest(unittest.TestCase):
         melee.Stage.BATTLEFIELD,
         melee.Stage.YOSHIS_STORY,
     ]
-    env = self._sim_env(num_envs=3, length=2, stage=stages)
+    env = self._sim_env(num_envs=3, frame_buffer_length=2, stage=stages)
     try:
       current = env.current_state()
       self.assertEqual(current.gamestates[1].stage.tolist(), [stage.value for stage in stages])
@@ -161,7 +161,7 @@ class SimEnvTest(unittest.TestCase):
   def test_per_env_character_pool(self):
     env = self._sim_env(
         num_envs=4,
-        length=8,
+        frame_buffer_length=8,
         character_pool='fox,falco',
     )
     try:
@@ -191,7 +191,7 @@ class SimEnvTest(unittest.TestCase):
   def test_character_pool_assignment_stays_fixed_on_reset(self):
     env = self._sim_env(
         num_envs=1,
-        length=8,
+        frame_buffer_length=8,
         character_pool='fox,falco',
     )
     try:
@@ -212,7 +212,7 @@ class SimEnvTest(unittest.TestCase):
       env.stop()
 
   def test_max_frame_terminal_is_reported_separately(self):
-    env = self._sim_env(num_envs=2, length=128, max_frame_id=0)
+    env = self._sim_env(num_envs=2, frame_buffer_length=128, max_frame_id=0)
     try:
       controllers = {
           1: sim_env.neutral_controllers(2),
@@ -237,7 +237,7 @@ class SimEnvTest(unittest.TestCase):
             1: dolphin.AI(melee.Character.FOX),
             2: dolphin.AI(melee.Character.FALCO),
         },
-        length=8,
+        frame_buffer_length=8,
     )
     try:
       state = env.current_game_batch(
@@ -280,7 +280,7 @@ class SimEnvTest(unittest.TestCase):
             1: dolphin.AI(melee.Character.FOX),
             2: dolphin.AI(melee.Character.FALCO),
         },
-        length=8,
+        frame_buffer_length=8,
         stage=[
             melee.Stage.FINAL_DESTINATION,
             melee.Stage.BATTLEFIELD,

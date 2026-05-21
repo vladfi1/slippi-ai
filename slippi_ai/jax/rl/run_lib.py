@@ -265,8 +265,7 @@ def concise_name(name: str) -> str:
 
 def reset_optimizer_steps(imitation_state: dict):
   for key in ['policy_optimizer', 'value_optimizer']:
-    if key in imitation_state['state']:
-      imitation_state['state'][key]['step'] = 0
+    imitation_state['state'][key]['step'] = 0
 
 
 def run(config: Config):
@@ -413,12 +412,12 @@ def run(config: Config):
         itertools.cycle(char_combinations), batch_size))
 
     main_agent_chars, opp_agent_chars = zip(*char_combination_batch)
-    for main_player, opp_player, main_char, opp_char in zip(
-        main_players, opponent_players, main_agent_chars, opp_agent_chars):
-      if main_char is not None:
-        main_player.character = main_char
-      if opp_char is not None:
-        opp_player.character = opp_char
+    for player, char in zip(main_players, main_agent_chars):
+      if char is not None:
+        player.character = char
+    for player, char in zip(opponent_players, opp_agent_chars):
+      if char is not None:
+        player.character = char
 
   dolphin_kwargs = [
       dict(

@@ -93,14 +93,14 @@ class SimBatchedEnvironment:
       num_envs: int,
       players: tp.Mapping[int, dolphin.Player] | None = None,
       *,
-      length: int = 128,
+      frame_buffer_length: int = 128,
       stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
       data_dir: str | None = None,
   ):
     self._num_envs = int(num_envs)
-    self._length = int(length)
+    self._frame_buffer_length = int(frame_buffer_length)
     self._max_frame_id = int(max_frame_id)
     self.num_steps = 1
 
@@ -176,7 +176,7 @@ class SimBatchedEnvironment:
     # writes controller actions / reads observations at the current cursor.
     self._env = melee_sim.EnvBatch(
         batch_size=self._num_envs,
-        length=self._length,
+        length=self._frame_buffer_length,
         num_players=2,
         data_dir=data_dir,
     )
@@ -425,7 +425,8 @@ class SimBatchedEnvironment:
       })
 
   def _ensure_cursor_room(self):
-    if self._env.t >= self._length:
+    # Native frame ring size. Cursor wrap does not reset the match.
+    if self._env.t >= self._frame_buffer_length:
       self._env.reset_cursor()
 
   def _reset_finished_lanes_for_next_observation(self, needs_reset: np.ndarray):

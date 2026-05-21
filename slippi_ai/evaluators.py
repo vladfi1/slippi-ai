@@ -173,11 +173,11 @@ class RolloutWorker:
     if self._use_fake_envs:
       raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
 
-    characters = tuple(dict.fromkeys(
+    characters = set(
         player.character
         for kwargs in self._dolphin_kwargs
         for player in kwargs['players'].values()
-    ))
+    )
     stages = [kwargs['stage'] for kwargs in self._dolphin_kwargs]
     if any(stage is melee.Stage.RANDOM_STAGE for stage in stages):
       stages = tuple(itertools.islice(
