@@ -18,8 +18,6 @@ from slippi_ai.types import (
 )
 
 
-Port = int
-
 _SIM_TO_MELEE_STAGE = {
     int(melee_sim.Stage.FOUNTAIN_OF_DREAMS): melee.Stage.FOUNTAIN_OF_DREAMS.value,
     int(melee_sim.Stage.POKEMON_STADIUM): melee.Stage.POKEMON_STADIUM.value,
@@ -36,15 +34,10 @@ class GameBatch(tp.NamedTuple):
   needs_reset: np.ndarray
 
 
-def make_game_batch_buffers(batch_size: int) -> '_GameBatchBuffers':
-  """Create reusable [port1 views, port2 views] policy-game buffers."""
-  return _GameBatchBuffers(batch_size)
-
-
 def game_for_port(
     frame: np.ndarray,
-    port: Port,
-    controllers: tp.Mapping[Port, Controller],
+    port: int,
+    controllers: tp.Mapping[int, Controller],
 ) -> Game:
   """Build the ordinary port-keyed Game view used by EnvOutput."""
   slots_by_source = _slots_by_source(frame['slots'])
@@ -52,15 +45,21 @@ def game_for_port(
   opponent_source = 1 - self_source
   opponent_port = 1 if port == 2 else 2
   batch_size = frame.shape[0]
+  stage = np.zeros(frame['stage_id'].shape, dtype=np.uint8)
+  for sim_stage, melee_stage in _SIM_TO_MELEE_STAGE.items():
+    stage[frame['stage_id'] == sim_stage] = melee_stage
   return Game(
       p0=player_from_slot(slots_by_source[self_source], controllers[port]),
       p1=player_from_slot(slots_by_source[opponent_source], controllers[opponent_port]),
-      stage=_stage_array(frame['stage_id']),
+      stage=stage,
       randall=Randall(
           x=frame['stage']['randall']['x'].astype(np.float32, copy=True),
           y=frame['stage']['randall']['y'].astype(np.float32, copy=True),
       ),
-      fod_platforms=_empty_fod_platforms(batch_size),
+      fod_platforms=FoDPlatforms(
+          left=np.zeros(batch_size, dtype=np.float32),
+          right=np.zeros(batch_size, dtype=np.float32),
+      ),
       items=items_from_frame(frame['items']),
   )
 
@@ -121,11 +120,6 @@ def _slots_by_source(slots: np.ndarray) -> dict[int, np.ndarray]:
   return result
 
 
-def _empty_fod_platforms(batch_size: int) -> FoDPlatforms:
-  zeros_f32 = np.zeros(int(batch_size), dtype=np.float32)
-  return FoDPlatforms(left=zeros_f32.copy(), right=zeros_f32.copy())
-
-
 def _empty_nana(batch_size: int) -> Nana:
   zeros_bool = np.zeros(batch_size, dtype=np.bool_)
   zeros_f32 = np.zeros(batch_size, dtype=np.float32)
@@ -166,14 +160,7 @@ def _canonical_items(items: np.ndarray) -> np.ndarray:
   return np.take_along_axis(items, order, axis=1)
 
 
-def _stage_array(stage_id: np.ndarray) -> np.ndarray:
-  out = np.zeros(stage_id.shape, dtype=np.uint8)
-  for sim_stage, melee_stage in _SIM_TO_MELEE_STAGE.items():
-    out[stage_id == sim_stage] = melee_stage
-  return out
-
-
-class _GameBatchBuffers:
+class GameBatchBuffers:
   """Reusable Game storage for batched policy calls.
 
   The policy sees each env twice: first from port 1's perspective, then from
@@ -189,7 +176,13 @@ class _GameBatchBuffers:
     self._p0_arrays = _player_arrays(self.num_players)
     self._p1_arrays = _player_arrays(self.num_players)
     self._item_arrays = [
-        _item_arrays(self.num_players)
+        {
+            'exists': np.zeros(self.num_players, dtype=np.bool_),
+            'type': np.zeros(self.num_players, dtype=np.uint16),
+            'state': np.zeros(self.num_players, dtype=np.uint8),
+            'x': np.zeros(self.num_players, dtype=np.float32),
+            'y': np.zeros(self.num_players, dtype=np.float32),
+        }
         for _ in Items._fields
     ]
     self._items = Items(**{
@@ -218,7 +211,7 @@ class _GameBatchBuffers:
       self,
       frame: np.ndarray,
       needs_reset: np.ndarray,
-      controllers: tp.Mapping[Port, Controller] | None = None,
+      controllers: tp.Mapping[int, Controller] | None = None,
   ):
     self.fill_slice(frame, needs_reset, slice(0, self.batch_size), controllers)
 
@@ -227,7 +220,7 @@ class _GameBatchBuffers:
       frame: np.ndarray,
       needs_reset: np.ndarray,
       env_slice: slice,
-      controllers: tp.Mapping[Port, Controller] | None = None,
+      controllers: tp.Mapping[int, Controller] | None = None,
       controller_slice: slice | None = None,
   ):
     # Each native env contributes two policy examples: port 1 perspective in the
@@ -336,13 +329,3 @@ def _controller_buffers(batch_size: int) -> Controller:
   controller.c_stick.x[:] = 0.5
   controller.c_stick.y[:] = 0.5
   return controller
-
-
-def _item_arrays(batch_size: int) -> dict[str, np.ndarray]:
-  return {
-      'exists': np.zeros(batch_size, dtype=np.bool_),
-      'type': np.zeros(batch_size, dtype=np.uint16),
-      'state': np.zeros(batch_size, dtype=np.uint8),
-      'x': np.zeros(batch_size, dtype=np.float32),
-      'y': np.zeros(batch_size, dtype=np.float32),
-  }

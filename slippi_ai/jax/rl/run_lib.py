@@ -224,6 +224,8 @@ class LearnerManager:
         trajectories.append(trajectory)
         actor_metrics.append(timings)
 
+      for metrics in actor_metrics:
+        metrics.pop('completed_games', None)
       actor_metrics = utils.map_nt(
           lambda *xs: np.mean(xs), *actor_metrics)
 

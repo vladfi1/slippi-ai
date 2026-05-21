@@ -181,7 +181,7 @@ class RolloutWorker:
     stages = [kwargs['stage'] for kwargs in self._dolphin_kwargs]
     if any(stage is melee.Stage.RANDOM_STAGE for stage in stages):
       stages = tuple(itertools.islice(
-          itertools.cycle(sim_env.supported_stages()), self._num_envs))
+          itertools.cycle(sim_env.SUPPORTED_STAGES), self._num_envs))
     max_frame_id = -1 if first_kwargs['infinite_time'] else 8 * 60 * 60 - 123
 
     return sim_env.SimBatchedEnvironment(

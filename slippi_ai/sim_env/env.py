@@ -27,8 +27,8 @@ import numpy as np
 from slippi_ai import dolphin
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
-    GameBatch, copy_controller_slice as _copy_controller_slice, game_for_port,
-    make_game_batch_buffers,
+    GameBatch, GameBatchBuffers,
+    copy_controller_slice as _copy_controller_slice, game_for_port,
 )
 from slippi_ai.types import Buttons, Controller, Stick
 
@@ -101,6 +101,11 @@ class SimBatchedEnvironment:
   ):
     self._num_envs = int(num_envs)
     self._length = int(length)
+    self._max_frame_id = int(max_frame_id)
+    self.num_steps = 1
+
+    # The sim adapter currently exposes the singles shape used by the policy:
+    # port 1 and port 2, no teams, one controlled character per port.
     if players is None:
       self._players = {
           1: dolphin.AI(melee.Character.FOX),
@@ -111,12 +116,64 @@ class SimBatchedEnvironment:
     self._ports = tuple(sorted(self._players))
     if self._ports != _SUPPORTED_PORTS:
       raise ValueError('SimBatchedEnvironment currently supports ports 1 and 2.')
-    self._stage_by_env = _normalize_stages(stage, self._num_envs)
-    self._character_assignments = _character_assignments(
-        character_pool, self._players, self._num_envs)
-    self._max_frame_id = int(max_frame_id)
-    self.num_steps = 1
 
+    # `stage` can be one value for every lane or an explicit per-env list.
+    if isinstance(stage, melee.Stage):
+      stages = [stage] * self._num_envs
+    else:
+      stages = list(stage)
+      if len(stages) != self._num_envs:
+        raise ValueError(f'stage sequence must have length num_envs={self._num_envs}')
+    for item in stages:
+      if item not in SUPPORTED_STAGES:
+        raise ValueError(f'SimBatchedEnvironment currently supports {SUPPORTED_STAGES}.')
+    self._stage_by_env = np.asarray(stages, dtype=object)
+
+    # Default to the explicit player matchup everywhere. If a pool is supplied,
+    # cycle lanes through the ordered singles matchup matrix. Resets keep each
+    # lane's initial matchup until we intentionally add randomized reset-time
+    # assignment later.
+    if character_pool is None:
+      character_assignments = (
+          (
+              _coerce_character(self._players[1].character),
+              _coerce_character(self._players[2].character),
+          ),
+      ) * self._num_envs
+    else:
+      if isinstance(character_pool, str):
+        characters = tuple(
+            _coerce_character(name.strip())
+            for name in character_pool.split(',')
+            if name.strip())
+      else:
+        characters = tuple(_coerce_character(character) for character in character_pool)
+      pool = tuple(dict.fromkeys(characters))
+      if not pool:
+        raise ValueError('character pool must not be empty')
+      unsupported = tuple(
+          character for character in pool if character not in SUPPORTED_CHARACTERS)
+      if unsupported:
+        raise ValueError(
+            f'unsupported sim character pool {pool!r}; '
+            f'supported characters are {SUPPORTED_CHARACTERS}')
+      matrix = tuple(itertools.product(pool, repeat=2))
+      character_assignments = tuple(
+          matrix[i % len(matrix)] for i in range(self._num_envs))
+
+    match_configs = [
+        melee_sim.MatchConfig(
+            stage=_MELEE_TO_SIM_STAGE[stage],
+            players=(
+                melee_sim.PlayerConfig(character=int(char_pair[0].value)),
+                melee_sim.PlayerConfig(character=int(char_pair[1].value)),
+            ),
+        )
+        for stage, char_pair in zip(self._stage_by_env, character_assignments)
+    ]
+
+    # Native buffers own the rollout ring. Python keeps views into them and only
+    # writes controller actions / reads observations at the current cursor.
     self._env = melee_sim.EnvBatch(
         batch_size=self._num_envs,
         length=self._length,
@@ -124,22 +181,27 @@ class SimBatchedEnvironment:
         data_dir=data_dir,
     )
     self._buffers = self._env.buffers(action_format='controller')
-    self._configure_all_matches()
+    self._env.configure_matches(self._buffers, match_configs)
     self._env.bind(self._buffers)
     self._env.reset_all()
 
+    # Previous-controller observations are policy-visible, so they live beside
+    # the native env and are reset for lanes as games finish.
     self._last_controllers = {
         port: neutral_controllers(self._num_envs) for port in self._ports
     }
-    # The policy observes previous controller state. Keep these buffers live so
-    # encoded-action rollout can update history without rebuilding Game trees.
+
     self._last_step_info = SimStepInfo(
         terminal=np.zeros(self._num_envs, dtype=_TERMINAL_DTYPE),
         step_t=-1,
     )
     self._episode_ids = np.zeros(self._num_envs, dtype=np.int64)
     self._completed_games: list[dict[str, tp.Any]] = []
-    self._game_batch = make_game_batch_buffers(self._num_envs)
+
+    # Reusable policy-facing observation tree for the high-throughput path.
+    self._game_batch = GameBatchBuffers(self._num_envs)
+
+    # Match the existing env push/pop contract by seeding an initial observation.
     self._output_queue = collections.deque([
         self.current_state(needs_reset=np.ones(self._num_envs, dtype=np.bool_))
     ])
@@ -158,7 +220,10 @@ class SimBatchedEnvironment:
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
     frame = self._buffers.gamestate_view[self._env.t]
     return EnvOutput(
-        gamestates={port: self._game_for_port(frame, port) for port in self._ports},
+        gamestates={
+            port: game_for_port(frame, port, self._last_controllers)
+            for port in self._ports
+        },
         needs_reset=np.asarray(needs_reset, dtype=np.bool_),
     )
 
@@ -185,7 +250,11 @@ class SimBatchedEnvironment:
     self._env.reset_masked()
     reset_mask[self._env.t, ids] = 0
     self._episode_ids[ids] += 1
-    self._reset_last_controllers(ids)
+    if ids.size:
+      neutral = neutral_controllers(ids.size)
+      for port in self._ports:
+        _copy_controller_slice(
+            self._last_controllers[port], neutral, ids, slice(None))
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
     needs_reset[ids] = True
     return self.current_state(needs_reset=needs_reset)
@@ -296,7 +365,14 @@ class SimBatchedEnvironment:
     action = self._buffers.controller_action_view[self._env.t]
     for player_index, port in enumerate(self._ports):
       controller = controllers[port]
-      _write_controller_action(action, controller, player_index)
+      player = action['p'][:, int(player_index)]
+      player['main_stick_x'][:] = controller.main_stick.x
+      player['main_stick_y'][:] = controller.main_stick.y
+      player['c_stick_x'][:] = controller.c_stick.x
+      player['c_stick_y'][:] = controller.c_stick.y
+      player['shoulder'][:] = controller.shoulder
+      for name in Buttons._fields:
+        player['buttons'][name][:] = getattr(controller.buttons, name)
       _copy_controller_slice(
           self._last_controllers[port],
           controller,
@@ -325,6 +401,12 @@ class SimBatchedEnvironment:
       env_slot1 = slot1[env_id]
       stocks = (int(env_slot0['stocks']), int(env_slot1['stocks']))
       percents = (float(env_slot0['percent']), float(env_slot1['percent']))
+      if stocks[0] != stocks[1]:
+        winner_port = 1 if stocks[0] > stocks[1] else 2
+      elif percents[0] != percents[1]:
+        winner_port = 1 if percents[0] < percents[1] else 2
+      else:
+        winner_port = None
       terminal_row = terminal[env_id]
       stage = self._stage_by_env[env_id]
       self._completed_games.append({
@@ -334,7 +416,7 @@ class SimBatchedEnvironment:
           'stage_id': int(stage.value),
           'frame_id': int(terminal_row['frame_id']),
           'frames': max(0, int(terminal_row['frame_id']) + 123),
-          'winner_port': _winner_port(stocks, percents),
+          'winner_port': winner_port,
           'stocks': stocks,
           'percents': percents,
           'match_ended': bool(terminal_row['match_ended']),
@@ -346,39 +428,9 @@ class SimBatchedEnvironment:
     if self._env.t >= self._length:
       self._env.reset_cursor()
 
-  def _reset_last_controllers(self, ids: np.ndarray):
-    if ids.size == 0:
-      return
-    neutral = neutral_controllers(ids.size)
-    for port in self._ports:
-      _copy_controller_slice(self._last_controllers[port], neutral, ids, slice(None))
-
   def _reset_finished_lanes_for_next_observation(self, needs_reset: np.ndarray):
     if np.any(needs_reset):
       self.reset(np.flatnonzero(needs_reset))
-
-  def _configure_all_matches(self):
-    self._env.configure_matches(
-        self._buffers,
-        [
-            melee_sim.MatchConfig(
-                stage=_MELEE_TO_SIM_STAGE[stage],
-                players=(
-                    melee_sim.PlayerConfig(character=int(char_pair[0].value)),
-                    melee_sim.PlayerConfig(character=int(char_pair[1].value)),
-                ),
-            )
-            for stage, char_pair in zip(self._stage_by_env, self._character_assignments)
-        ],
-    )
-
-  def _game_for_port(self, frame: np.ndarray, port: Port):
-    return game_for_port(
-        frame,
-        port,
-        self._last_controllers,
-    )
-
 
 def neutral_controllers(batch_size: int) -> Controller:
   shape = (int(batch_size),)
@@ -409,61 +461,6 @@ def terminal_view(buffers: melee_sim.Buffers) -> np.ndarray:
       .view(_TERMINAL_DTYPE)
       .reshape(raw.shape[0], raw.shape[1])
   )
-
-
-def supported_stages() -> tuple[melee.Stage, ...]:
-  return SUPPORTED_STAGES
-
-
-def _normalize_character_pool(character_pool: CharacterPool) -> tuple[melee.Character, ...]:
-  if isinstance(character_pool, str):
-    characters = tuple(
-        _coerce_character(name.strip())
-        for name in character_pool.split(',')
-        if name.strip())
-  else:
-    characters = tuple(_coerce_character(character) for character in character_pool)
-
-  deduped = tuple(dict.fromkeys(characters))
-  if not deduped:
-    raise ValueError('character pool must not be empty')
-  unsupported = tuple(
-      character for character in deduped if character not in SUPPORTED_CHARACTERS)
-  if unsupported:
-    raise ValueError(
-        f'unsupported sim character pool {deduped!r}; '
-        f'supported characters are {SUPPORTED_CHARACTERS}')
-  return deduped
-
-
-def _character_assignments(
-    character_pool: CharacterPool | None,
-    players: tp.Mapping[int, dolphin.Player],
-    num_envs: int,
-) -> tuple[tuple[melee.Character, melee.Character], ...]:
-  if character_pool is None:
-    matchup = (
-        _coerce_character(players[1].character),
-        _coerce_character(players[2].character),
-    )
-    return (matchup,) * int(num_envs)
-
-  pool = _normalize_character_pool(character_pool)
-  # For now, keep assignment deterministic and simple: cycle env lanes through
-  # the ordered singles matchup matrix. Reset keeps each lane's initial matchup.
-  matrix = tuple(itertools.product(pool, repeat=2))
-  return tuple(matrix[i % len(matrix)] for i in range(int(num_envs)))
-
-
-def _write_controller_action(action_frame: np.ndarray, controller: Controller, player_index: int):
-  player = action_frame['p'][:, int(player_index)]
-  player['main_stick_x'][:] = controller.main_stick.x
-  player['main_stick_y'][:] = controller.main_stick.y
-  player['c_stick_x'][:] = controller.c_stick.x
-  player['c_stick_y'][:] = controller.c_stick.y
-  player['shoulder'][:] = controller.shoulder
-  for name in Buttons._fields:
-    player['buttons'][name][:] = getattr(controller.buttons, name)
 
 
 def write_encoded_controller_action(
@@ -506,51 +503,6 @@ def copy_encoded_controller(
   dst.shoulder[:] = np.asarray(src.shoulder)[source_slice] * scale_shoulder
   for name in Buttons._fields:
     getattr(dst.buttons, name)[:] = np.asarray(getattr(src.buttons, name))[source_slice]
-
-
-def _normalize_stages(stage: melee.Stage | tp.Sequence[melee.Stage], num_envs: int) -> np.ndarray:
-  if isinstance(stage, melee.Stage):
-    stages = [stage] * num_envs
-  else:
-    stages = list(stage)
-    if len(stages) != num_envs:
-      raise ValueError(f'stage sequence must have length num_envs={num_envs}')
-  for item in stages:
-    if item not in SUPPORTED_STAGES:
-      raise ValueError(f'SimBatchedEnvironment currently supports {SUPPORTED_STAGES}.')
-  return np.asarray(stages, dtype=object)
-
-
-def _winner_port(
-    stocks: tuple[int, int],
-    percents: tuple[float, float],
-) -> int | None:
-  if stocks[0] != stocks[1]:
-    return 1 if stocks[0] > stocks[1] else 2
-  if percents[0] != percents[1]:
-    return 1 if percents[0] < percents[1] else 2
-  return None
-
-
-def _slot_for_source(slots: np.ndarray, source_player: int) -> np.ndarray:
-  for slot_index in range(slots.shape[1]):
-    slot = slots[:, slot_index]
-    present = slot['present'].astype(np.bool_)
-    source = slot['source_player']
-    if np.all((~present) | (source == int(source_player))) and np.any(present):
-      return slot
-  raise RuntimeError(f'melee_sim gamestate did not contain source player {source_player}')
-
-
-def _winner_port(
-    stocks: tuple[int, int],
-    percents: tuple[float, float],
-) -> int | None:
-  if stocks[0] != stocks[1]:
-    return 1 if stocks[0] > stocks[1] else 2
-  if percents[0] != percents[1]:
-    return 1 if percents[0] < percents[1] else 2
-  return None
 
 
 def _slot_for_source(slots: np.ndarray, source_player: int) -> np.ndarray:
