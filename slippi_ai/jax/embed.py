@@ -679,7 +679,7 @@ class EmbedConfig(tp.Generic[Action]):
     return make_item_embedding(xy_scale=self.player.xy_scale)
 
   def make_items_embedding(self):
-    if self.items.type is ItemsType.SKIP:
+    if ItemsType(self.items.type) is ItemsType.SKIP:
       return ordered_struct_embedding("items", [], Items)
 
     embed_item = self.make_item_embedding()
