@@ -27,6 +27,15 @@ _SIM_TO_MELEE_STAGE = {
     int(melee_sim.Stage.FINAL_DESTINATION): melee.Stage.FINAL_DESTINATION.value,
 }
 
+# melee_sim exposes native C buffers as NumPy structured-array views. Field
+# access like frame["slots"] or slot["percent"] selects dtype field views; these
+# are not dicts.
+FrameView = np.ndarray
+SlotsView = np.ndarray
+PlayerSlotView = np.ndarray
+ItemsView = np.ndarray
+PlayerArrays = dict[str, np.ndarray]
+
 
 class GameBatch(tp.NamedTuple):
   """Policy-facing batch laid out as [all port-1 views, all port-2 views]."""
@@ -35,7 +44,7 @@ class GameBatch(tp.NamedTuple):
 
 
 def game_for_port(
-    frame: np.ndarray,
+    frame: FrameView,
     port: int,
     controllers: tp.Mapping[int, Controller],
 ) -> Game:
@@ -74,7 +83,7 @@ def copy_controller_slice(dst: Controller, src: Controller, target: slice, sourc
     getattr(dst.buttons, name)[target] = getattr(src.buttons, name)[source]
 
 
-def player_from_slot(slot: np.ndarray, controller: Controller) -> Player:
+def player_from_slot(slot: PlayerSlotView, controller: Controller) -> Player:
   """Convert one melee_sim source-player slot into a policy-facing Player."""
   return Player(
       percent=slot['percent'].clip(0, np.iinfo(np.uint16).max).astype(np.uint16),
@@ -92,7 +101,7 @@ def player_from_slot(slot: np.ndarray, controller: Controller) -> Player:
   )
 
 
-def items_from_frame(items: np.ndarray) -> Items:
+def items_from_frame(items: ItemsView) -> Items:
   """Convert melee_sim item slots into the fixed policy-facing item nest."""
   items = _canonical_items(items)
   return Items(**{
@@ -107,7 +116,7 @@ def items_from_frame(items: np.ndarray) -> Items:
   })
 
 
-def _slots_by_source(slots: np.ndarray) -> dict[int, np.ndarray]:
+def _slots_by_source(slots: SlotsView) -> dict[int, PlayerSlotView]:
   result = {}
   for i in range(slots.shape[1]):
     if not np.any(slots[:, i]['present']):
@@ -140,14 +149,14 @@ def _empty_nana(batch_size: int) -> Nana:
   )
 
 
-def _libmelee_jumps_left(slot: np.ndarray) -> np.ndarray:
+def _libmelee_jumps_left(slot: PlayerSlotView) -> np.ndarray:
   raw = np.asarray(slot['jumps_left'], dtype=np.int16)
   airborne_with_ground_jump_available = (np.asarray(slot['on_ground']) == 0) & (raw > 1)
   values = np.where(airborne_with_ground_jump_available, raw - 1, raw)
   return np.maximum(values, 0).astype(np.uint8)
 
 
-def _canonical_items(items: np.ndarray) -> np.ndarray:
+def _canonical_items(items: ItemsView) -> ItemsView:
   # Native item slots are storage slots. Sort into a stable policy-facing order
   # so observations do not depend on item allocator history.
   exists_key = -items['exists'].astype(np.int16)
@@ -209,7 +218,7 @@ class GameBatchBuffers:
 
   def fill(
       self,
-      frame: np.ndarray,
+      frame: FrameView,
       needs_reset: np.ndarray,
       controllers: tp.Mapping[int, Controller] | None = None,
   ):
@@ -217,7 +226,7 @@ class GameBatchBuffers:
 
   def fill_slice(
       self,
-      frame: np.ndarray,
+      frame: FrameView,
       needs_reset: np.ndarray,
       env_slice: slice,
       controllers: tp.Mapping[int, Controller] | None = None,
@@ -258,7 +267,7 @@ class GameBatchBuffers:
     self._fill_items(frame['items'], first)
     self._fill_items(frame['items'], second)
 
-  def _fill_player(self, dst: dict[str, np.ndarray], target: slice, slot: np.ndarray):
+  def _fill_player(self, dst: PlayerArrays, target: slice, slot: PlayerSlotView):
     np.clip(slot['percent'], 0, np.iinfo(np.uint16).max, out=self._percent_tmp)
     dst['percent'][target] = self._percent_tmp
     dst['facing'][target] = slot['facing']
@@ -271,7 +280,7 @@ class GameBatchBuffers:
     dst['shield_strength'][target] = slot['shield_hp']
     dst['on_ground'][target] = slot['on_ground']
 
-  def _fill_stage_like(self, frame: np.ndarray, target: slice):
+  def _fill_stage_like(self, frame: FrameView, target: slice):
     stage = self.game.stage[target]
     stage[:] = 0
     for sim_stage, melee_stage in _SIM_TO_MELEE_STAGE.items():
@@ -281,7 +290,7 @@ class GameBatchBuffers:
     self.game.fod_platforms.left[target] = 0
     self.game.fod_platforms.right[target] = 0
 
-  def _fill_items(self, items: np.ndarray, target: slice):
+  def _fill_items(self, items: ItemsView, target: slice):
     items = _canonical_items(items)
     for i, arrays in enumerate(self._item_arrays):
       src = items[:, i]
@@ -292,7 +301,7 @@ class GameBatchBuffers:
       arrays['y'][target] = src['pos_y']
 
 
-def _player_arrays(batch_size: int) -> dict[str, np.ndarray]:
+def _player_arrays(batch_size: int) -> PlayerArrays:
   arrays = {
       'percent': np.zeros(batch_size, dtype=np.uint16),
       'facing': np.zeros(batch_size, dtype=np.bool_),
