@@ -261,6 +261,9 @@ class RolloutWorker:
     else:
       step_iter = range(num_steps)
 
+    if hasattr(self._env, 'pop_completed_games'):
+      self._env.pop_completed_games()
+
     for _ in step_iter:
       # Note that there will always be a first gamestate before any actions
       # are fed into the environment; either the initial state or the last
@@ -336,6 +339,8 @@ class RolloutWorker:
         timing=timings,
         unexpected_reset=is_resetting[1:],
     )
+    if hasattr(self._env, 'pop_completed_games'):
+      metrics['completed_games'] = self._env.pop_completed_games()
 
     # self._env_push_profiler.dump_stats('env_push.prof')
 
@@ -346,6 +351,11 @@ class RolloutWorker:
   ):
     for port, values in updates.items():
       self._agents[port].policy.set_state(values)
+
+  def active_sim_games(self) -> list[dict[str, int | str]]:
+    if not hasattr(self._env, 'active_games'):
+      raise ValueError('active_sim_games is only available with use_sim_envs.')
+    return self._env.active_games()
 
   @contextlib.contextmanager
   def run(self):

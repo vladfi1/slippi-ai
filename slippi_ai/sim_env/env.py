@@ -45,12 +45,7 @@ _MELEE_TO_SIM_STAGE = {
     melee.Stage.BATTLEFIELD: melee_sim.Stage.BATTLEFIELD,
     melee.Stage.FINAL_DESTINATION: melee_sim.Stage.FINAL_DESTINATION,
 }
-SUPPORTED_STAGES = tuple(
-    stage for stage in _MELEE_TO_SIM_STAGE
-    if stage is not melee.Stage.FOUNTAIN_OF_DREAMS
-)
-# FoD stays out of the default sim stage set until its MSL behavior is verified
-# enough for policy training.
+SUPPORTED_STAGES = tuple(_MELEE_TO_SIM_STAGE)
 SUPPORTED_CHARACTERS = (
     melee.Character.FOX,
     melee.Character.FALCO,
@@ -142,6 +137,8 @@ class SimBatchedEnvironment:
         terminal=np.zeros(self._num_envs, dtype=_TERMINAL_DTYPE),
         step_t=-1,
     )
+    self._episode_ids = np.zeros(self._num_envs, dtype=np.int64)
+    self._completed_games: list[dict[str, tp.Any]] = []
     self._game_batch = make_game_batch_buffers(self._num_envs)
     self._output_queue = collections.deque([
         self.current_state(needs_reset=np.ones(self._num_envs, dtype=np.bool_))
@@ -187,6 +184,7 @@ class SimBatchedEnvironment:
     reset_mask[self._env.t, ids] = 1
     self._env.reset_masked()
     reset_mask[self._env.t, ids] = 0
+    self._episode_ids[ids] += 1
     self._reset_last_controllers(ids)
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
     needs_reset[ids] = True
@@ -251,10 +249,9 @@ class SimBatchedEnvironment:
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
     needs_reset = self._buffers.done[step_t].astype(np.bool_, copy=True)
-    self._last_step_info = SimStepInfo(
-        terminal=terminal_view(self._buffers)[step_t].copy(),
-        step_t=step_t,
-    )
+    terminal = terminal_view(self._buffers)[step_t].copy()
+    self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
+    self._record_completed_games(terminal, self._buffers.gamestate_view[self._env.t])
     self._reset_finished_lanes_for_next_observation(needs_reset)
     return needs_reset
 
@@ -277,6 +274,22 @@ class SimBatchedEnvironment:
   def last_step_info(self) -> SimStepInfo:
     return self._last_step_info
 
+  def pop_completed_games(self) -> list[dict[str, tp.Any]]:
+    completed_games = self._completed_games
+    self._completed_games = []
+    return completed_games
+
+  def active_games(self) -> list[dict[str, int | str]]:
+    return [
+        {
+            'env_id': env_id,
+            'episode_id': int(self._episode_ids[env_id]),
+            'stage': self._stage_by_env[env_id].name,
+            'stage_id': int(self._stage_by_env[env_id].value),
+        }
+        for env_id in range(self._num_envs)
+    ]
+
   def _advance(self, controllers: Controllers) -> EnvOutput:
     self._ensure_cursor_room()
 
@@ -294,12 +307,40 @@ class SimBatchedEnvironment:
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
     needs_reset = self._buffers.done[step_t].astype(np.bool_, copy=True)
-    self._last_step_info = SimStepInfo(
-        terminal=terminal_view(self._buffers)[step_t].copy(),
-        step_t=step_t,
-    )
+    terminal = terminal_view(self._buffers)[step_t].copy()
+    self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
+    self._record_completed_games(terminal, self._buffers.gamestate_view[self._env.t])
     self._reset_finished_lanes_for_next_observation(needs_reset)
     return self.current_state(needs_reset=needs_reset)
+
+  def _record_completed_games(self, terminal: np.ndarray, frame: np.ndarray):
+    done_ids = np.flatnonzero(terminal['done'])
+    if done_ids.size == 0:
+      return
+    slot0 = _slot_for_source(frame['slots'], 0)
+    slot1 = _slot_for_source(frame['slots'], 1)
+    for env_id in done_ids:
+      env_id = int(env_id)
+      env_slot0 = slot0[env_id]
+      env_slot1 = slot1[env_id]
+      stocks = (int(env_slot0['stocks']), int(env_slot1['stocks']))
+      percents = (float(env_slot0['percent']), float(env_slot1['percent']))
+      terminal_row = terminal[env_id]
+      stage = self._stage_by_env[env_id]
+      self._completed_games.append({
+          'env_id': env_id,
+          'episode_id': int(self._episode_ids[env_id]),
+          'stage': stage.name,
+          'stage_id': int(stage.value),
+          'frame_id': int(terminal_row['frame_id']),
+          'frames': max(0, int(terminal_row['frame_id']) + 123),
+          'winner_port': _winner_port(stocks, percents),
+          'stocks': stocks,
+          'percents': percents,
+          'match_ended': bool(terminal_row['match_ended']),
+          'stockout': bool(terminal_row['stockout']),
+          'max_frame_reached': bool(terminal_row['max_frame_reached']),
+      })
 
   def _ensure_cursor_room(self):
     if self._env.t >= self._length:
@@ -478,6 +519,27 @@ def _normalize_stages(stage: melee.Stage | tp.Sequence[melee.Stage], num_envs: i
     if item not in SUPPORTED_STAGES:
       raise ValueError(f'SimBatchedEnvironment currently supports {SUPPORTED_STAGES}.')
   return np.asarray(stages, dtype=object)
+
+
+def _winner_port(
+    stocks: tuple[int, int],
+    percents: tuple[float, float],
+) -> int | None:
+  if stocks[0] != stocks[1]:
+    return 1 if stocks[0] > stocks[1] else 2
+  if percents[0] != percents[1]:
+    return 1 if percents[0] < percents[1] else 2
+  return None
+
+
+def _slot_for_source(slots: np.ndarray, source_player: int) -> np.ndarray:
+  for slot_index in range(slots.shape[1]):
+    slot = slots[:, slot_index]
+    present = slot['present'].astype(np.bool_)
+    source = slot['source_player']
+    if np.all((~present) | (source == int(source_player))) and np.any(present):
+      return slot
+  raise RuntimeError(f'melee_sim gamestate did not contain source player {source_player}')
 
 
 def _winner_port(
