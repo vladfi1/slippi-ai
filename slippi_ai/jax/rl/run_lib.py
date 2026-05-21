@@ -53,6 +53,7 @@ class ActorConfig:
   inner_batch_size: int = 1
   gpu_inference: bool = True
   use_fake_envs: bool = False
+  use_sim_envs: bool = False
 
 
 @dataclasses.dataclass
@@ -262,7 +263,8 @@ def concise_name(name: str) -> str:
 
 def reset_optimizer_steps(imitation_state: dict):
   for key in ['policy_optimizer', 'value_optimizer']:
-    imitation_state['state'][key]['step'] = 0
+    if key in imitation_state['state']:
+      imitation_state['state'][key]['step'] = 0
 
 
 def run(config: Config):
@@ -409,12 +411,12 @@ def run(config: Config):
         itertools.cycle(char_combinations), batch_size))
 
     main_agent_chars, opp_agent_chars = zip(*char_combination_batch)
-    for player, main_char, opp_char in zip(
-        opponent_players, main_agent_chars, opp_agent_chars):
+    for main_player, opp_player, main_char, opp_char in zip(
+        main_players, opponent_players, main_agent_chars, opp_agent_chars):
       if main_char is not None:
-        player.character = main_char
+        main_player.character = main_char
       if opp_char is not None:
-        player.character = opp_char
+        opp_player.character = opp_char
 
   dolphin_kwargs = [
       dict(
@@ -433,6 +435,14 @@ def run(config: Config):
         inner_batch_size=config.actor.inner_batch_size,
     )
 
+  if config.actor.use_sim_envs:
+    if config.actor.use_fake_envs:
+      raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
+    if config.actor.async_envs:
+      raise ValueError('Sim envs are single-process; async_envs is not supported.')
+    if config.opponent.type == OpponentType.CPU:
+      raise ValueError('Sim env only supports AI-vs-AI opponents.')
+
   build_actor = lambda: evaluators.RolloutWorker(
       agent_kwargs=agent_kwargs,
       dolphin_kwargs=dolphin_kwargs,
@@ -441,6 +451,7 @@ def run(config: Config):
       async_envs=config.actor.async_envs,
       use_gpu=config.actor.gpu_inference,
       use_fake_envs=config.actor.use_fake_envs,
+      use_sim_envs=config.actor.use_sim_envs,
   )
 
   learner_manager = LearnerManager(

@@ -2,8 +2,10 @@
 
 import collections
 import contextlib
+import itertools
 import typing as tp
 
+import melee
 import numpy as np
 
 from slippi_ai import envs as env_lib
@@ -65,6 +67,7 @@ class RolloutWorker:
       use_gpu: bool = True,
       damage_ratio: float = 0,  # For rewards.
       use_fake_envs: bool = False,
+      use_sim_envs: bool = False,
   ):
     if isinstance(dolphin_kwargs, dict):
       dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
@@ -108,6 +111,7 @@ class RolloutWorker:
 
     self._num_envs = num_envs
     self._use_fake_envs = use_fake_envs
+    self._use_sim_envs = use_sim_envs
     self._env_kwargs = env_kwargs
     self._async_envs = async_envs
     self._build_env()
@@ -147,7 +151,9 @@ class RolloutWorker:
       self._push_actions()
 
   def _build_env(self):
-    if self._use_fake_envs:
+    if self._use_sim_envs:
+      self._env = self._build_sim_env()
+    elif self._use_fake_envs:
       self._env = env_lib.ReplayBatchedEnvironment(
           self._num_envs, players=list(self._agents))
     else:
@@ -157,6 +163,34 @@ class RolloutWorker:
         env_class = env_lib.AsyncBatchedEnvironmentMP
       self._env = env_class(
           self._num_envs, self._dolphin_kwargs, **self._env_kwargs)
+
+  def _build_sim_env(self):
+    from slippi_ai import sim_env
+
+    first_kwargs = self._dolphin_kwargs[0]
+    if self._async_envs:
+      raise ValueError('Sim envs are single-process; async_envs is not supported.')
+    if self._use_fake_envs:
+      raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
+
+    characters = tuple(dict.fromkeys(
+        player.character
+        for kwargs in self._dolphin_kwargs
+        for player in kwargs['players'].values()
+    ))
+    stages = [kwargs['stage'] for kwargs in self._dolphin_kwargs]
+    if any(stage is melee.Stage.RANDOM_STAGE for stage in stages):
+      stages = tuple(itertools.islice(
+          itertools.cycle(sim_env.supported_stages()), self._num_envs))
+    max_frame_id = -1 if first_kwargs['infinite_time'] else 8 * 60 * 60 - 123
+
+    return sim_env.SimBatchedEnvironment(
+        num_envs=self._num_envs,
+        players=first_kwargs['players'],
+        stage=stages,
+        character_pool=characters,
+        max_frame_id=max_frame_id,
+    )
 
   def reset_env(self):
     self._env.stop()
