@@ -168,6 +168,8 @@ class RolloutWorker:
     from slippi_ai import sim_env
 
     first_kwargs = self._dolphin_kwargs[0]
+    # TODO: introduce an env/evaluator config so sim env setup does not have to
+    # reuse Dolphin-specific kwargs as the shared environment configuration.
     if self._async_envs:
       raise ValueError('Sim envs are single-process; async_envs is not supported.')
     if self._use_fake_envs:
@@ -182,6 +184,8 @@ class RolloutWorker:
     if any(stage is melee.Stage.RANDOM_STAGE for stage in stages):
       stages = tuple(itertools.islice(
           itertools.cycle(sim_env.SUPPORTED_STAGES), self._num_envs))
+    # melee_sim.MatchConfig defaults to 4 stocks here; DolphinConfig only maps
+    # timer behavior through this bridge.
     max_frame_id = -1 if first_kwargs['infinite_time'] else 8 * 60 * 60 - 123
 
     return sim_env.SimBatchedEnvironment(
