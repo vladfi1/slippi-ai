@@ -98,10 +98,12 @@ class SimBatchedEnvironment:
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
       data_dir: str | None = None,
+      fake: bool = False,
   ):
     self._num_envs = int(num_envs)
     self._frame_buffer_length = int(frame_buffer_length)
     self._max_frame_id = int(max_frame_id)
+    self._fake = fake
     self.num_steps = 1
 
     # The sim adapter currently exposes the singles shape used by the policy:
@@ -314,6 +316,8 @@ class SimBatchedEnvironment:
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )
+    if self._fake:
+      return np.zeros(self._num_envs, dtype=np.bool_)
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
@@ -379,6 +383,8 @@ class SimBatchedEnvironment:
           slice(None),
           slice(None),
       )
+    if self._fake:
+      return self.current_state(needs_reset=np.zeros(self._num_envs, dtype=np.bool_))
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)

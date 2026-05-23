@@ -3,8 +3,8 @@
 The generic evaluator path builds libmelee-shaped Python objects once per port
 per frame. This worker uses `SimBatchedEnvironment.current_game_batch()` and
 `step_encoded()` instead: one reusable observation tree is filled from native
-sim buffers, one JAX actor samples both port perspectives, and the resulting
-trajectory is split back into the two port entries expected by the learner.
+sim buffers, JAX samples both port perspectives, and the resulting trajectory is
+split back into the port entries expected by the learner.
 """
 
 import collections
@@ -13,6 +13,7 @@ import time
 import typing as tp
 
 import jax
+import jax.numpy as jnp
 import melee
 import numpy as np
 
@@ -28,7 +29,7 @@ from slippi_ai.types import Game
 
 
 class JaxSimRolloutWorker:
-  """RolloutWorker-compatible adapter for JAX self-play on one sim batch."""
+  """RolloutWorker-compatible adapter for JAX policies on one sim batch."""
 
   ports: tuple[Port, Port] = (1, 2)
 
@@ -40,8 +41,17 @@ class JaxSimRolloutWorker:
       dolphin_kwargs: tp.Union[dict, tp.Sequence[dict]],
       num_envs: int,
       batch_steps: int = 1,
+      opponent_policy: policies.Policy | None = None,
+      train_opponent: bool = True,
+      use_fake_envs: bool = False,
   ):
     self._num_envs = int(num_envs)
+    self._num_players = self._num_envs * len(self.ports)
+    self._batch_slice_by_port = {
+        port: slice(i * self._num_envs, (i + 1) * self._num_envs)
+        for i, port in enumerate(self.ports)
+    }
+    self._train_ports = self.ports if train_opponent else (1,)
     if isinstance(dolphin_kwargs, dict):
       dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(self._num_envs)]
     elif self._num_envs != len(dolphin_kwargs):
@@ -51,35 +61,49 @@ class JaxSimRolloutWorker:
     else:
       dolphin_kwargs = list(dolphin_kwargs)
 
-    if set(agent_kwargs) != set(self.ports):
-      raise ValueError(
-          f'JAX sim rollout requires agent kwargs for ports {self.ports}.')
     agent1_kwargs = agent_kwargs[1]
     agent2_kwargs = agent_kwargs[2]
 
-    # Build one batched actor for both player perspectives. The learner sends
-    # one policy state, and this actor samples port-1 lanes followed by port-2
-    # lanes from the same current policy.
     should_compile = agent1_kwargs.get('compile', True)
-    if agent2_kwargs.get('compile', True) != should_compile:
-      raise ValueError('JAX sim rollout requires matching agent compile config.')
     state = agent1_kwargs['state']
-    name_code = np.asarray([
-        code
-        for kwargs in (agent1_kwargs, agent2_kwargs)
-        for code in eval_lib.get_name_codes(
-            kwargs['state'],
-            kwargs['name'],
-            batch_size=self._num_envs,
+    name_code_by_port = {
+        port: np.asarray(
+            eval_lib.get_name_codes(
+                kwargs['state'],
+                kwargs['name'],
+                batch_size=self._num_envs,
+            ),
+            dtype=NAME_DTYPE,
         )
-    ], dtype=NAME_DTYPE)
+        for port, kwargs in ((1, agent1_kwargs), (2, agent2_kwargs))
+    }
+    self._name_code = np.concatenate(
+        [name_code_by_port[port] for port in self.ports], axis=0)
 
-    self.actor = policy.build_agent(
-        batch_size=self._num_envs * 2,
-        name_code=name_code,
-        compile=should_compile,
-        pack_args=True,
-    )
+    # Same-policy self-play gets one actor over [port1 views, port2 views].
+    # Fixed-opponent rollout keeps that same env/action layout, but samples the
+    # two halves with separate policy objects and concatenates the outputs.
+    if opponent_policy is None:
+      self.actor = policy.build_agent(
+          batch_size=self._num_players,
+          name_code=self._name_code,
+          compile=should_compile,
+          pack_args=True,
+      )
+      self._opponent_actor = None
+    else:
+      self.actor = policy.build_agent(
+          batch_size=self._num_envs,
+          name_code=name_code_by_port[1],
+          compile=should_compile,
+          pack_args=True,
+      )
+      self._opponent_actor = opponent_policy.build_agent(
+          batch_size=self._num_envs,
+          name_code=name_code_by_port[2],
+          compile=should_compile,
+          pack_args=True,
+      )
 
     # Translate the Dolphin-style environment config into the smaller sim env
     # config. The sim path still accepts the same high-level launch config as
@@ -102,7 +126,6 @@ class JaxSimRolloutWorker:
         int(controller_config['axis_spacing']),
         int(controller_config['shoulder_spacing']),
     )
-    self._name_code = name_code
     self._batch_steps = max(1, int(batch_steps))
     self._frame_buffer_length = 0
     self._env_kwargs = dict(
@@ -112,6 +135,7 @@ class JaxSimRolloutWorker:
         character_pool=None,
         max_frame_id=(
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
+        fake=use_fake_envs,
     )
 
     # The sim env is created lazily from rollout(num_steps), matching the
@@ -121,7 +145,7 @@ class JaxSimRolloutWorker:
     self._state_buffer = None
     self._reset_buffer = None
     self._dummy_outputs = self.actor._policy.controller_head.dummy_sample_outputs(
-        [self._num_envs * 2])
+        [self._num_players])
     self._reset_delay_queues()
 
   def _reset_delay_queues(self):
@@ -151,14 +175,13 @@ class JaxSimRolloutWorker:
     self._reset_delay_queues()
 
   def update_variables(self, updates):
-    if not updates:
-      raise ValueError('JAX sim rollout update_variables requires policy values.')
-    unknown_ports = set(updates) - set(self.ports)
-    if unknown_ports:
-      raise ValueError(f'Unexpected policy update ports: {unknown_ports}')
-    # This worker is for same-policy self-play: one actor controls both ports,
-    # so any provided port update is the same learner policy state.
-    self.actor._policy.set_state(updates.get(1, updates.get(2)))
+    if self._opponent_actor is None:
+      self.actor._policy.set_state(updates.get(1, updates.get(2)))
+      return
+    if 1 in updates:
+      self.actor._policy.set_state(updates[1])
+    if 2 in updates:
+      self._opponent_actor._policy.set_state(updates[2])
 
   def rollout(
       self,
@@ -174,11 +197,18 @@ class JaxSimRolloutWorker:
       self._state_buffer = _make_trajectory_state_buffer(
           game_batch.game, num_steps)
       self._reset_buffer = np.empty(
-          (num_steps + 1, self._num_envs * 2), dtype=np.bool_)
+          (num_steps + 1, self._num_players), dtype=np.bool_)
     state_buffer = self._state_buffer
     reset_buffer = self._reset_buffer
     trajectory_actions = []
     initial_state = self.actor.hidden_state()
+    if self._opponent_actor is None:
+      initial_state_by_port = {
+          port: utils.map_single_structure(lambda x: x[batch_slice], initial_state)
+          for port, batch_slice in self._batch_slice_by_port.items()
+      }
+    else:
+      initial_state_by_port = {1: initial_state}
 
     # Step the sim immediately with already-delayed controller inputs, while
     # collecting a chunk of observations for one fused JAX actor call.
@@ -195,11 +225,9 @@ class JaxSimRolloutWorker:
         reset_buffer[t] = game_batch.needs_reset
         timings['state_copy'] += time.perf_counter() - copy_start
 
-        reset_mask = game_batch.needs_reset
+        reset_mask = reset_buffer[t]
         chunk_inputs.append((state_buffer.slots[t], reset_mask))
-        # Keep the per-frame reset mask stable while later sim steps reuse the
-        # game_batch buffers and while the chunk replay rebuilds delayed inputs.
-        chunk_reset_masks.append(reset_mask.copy())
+        chunk_reset_masks.append(reset_mask)
         if np.any(reset_mask):
           _reset_delayed_controller_queue(
               self._delayed_controller_queue,
@@ -219,15 +247,52 @@ class JaxSimRolloutWorker:
         game_batch = self._env.current_game_batch(self._needs_reset)
         timings['env_step'] += time.perf_counter() - env_start
 
-      step_start = time.perf_counter()
-      if chunk_len == 1:
-        chunk_outputs = jax.tree.map(
-            lambda x: x[None],
-            self.actor.step_device(chunk_inputs[0][0], chunk_inputs[0][1]),
-        )
+      if self._opponent_actor is None:
+        step_start = time.perf_counter()
+        chunk_outputs = _sample_chunk(self.actor, chunk_inputs)
+        # Pull the whole stacked chunk to host once. Later delayed-controller
+        # replay and trajectory assembly slice these arrays many times, and
+        # doing that slicing on JAX device arrays creates thousands of tiny ops.
+        chunk_outputs = jax.tree.map(np.asarray, chunk_outputs)
+        elapsed = time.perf_counter() - step_start
+        elapsed_per_port = elapsed / len(self.ports)
+        for port in self.ports:
+          timings[f'agent_step_{port}'] += elapsed_per_port
       else:
-        chunk_outputs = self.actor.multi_step_stacked_device(chunk_inputs)
-      timings['agent_step'] += time.perf_counter() - step_start
+        main_inputs = [
+            (
+                utils.map_single_structure(
+                    lambda x: x[self._batch_slice_by_port[1]], game),
+                reset[self._batch_slice_by_port[1]],
+            )
+            for game, reset in chunk_inputs
+        ]
+        opponent_inputs = [
+            (
+                utils.map_single_structure(
+                    lambda x: x[self._batch_slice_by_port[2]], game),
+                reset[self._batch_slice_by_port[2]],
+            )
+            for game, reset in chunk_inputs
+        ]
+        main_start = time.perf_counter()
+        main_outputs = _sample_chunk(self.actor, main_inputs)
+        timings['agent_step_1'] += time.perf_counter() - main_start
+
+        opponent_start = time.perf_counter()
+        opponent_outputs = _sample_chunk(self._opponent_actor, opponent_inputs)
+        timings['agent_step_2'] += time.perf_counter() - opponent_start
+
+        chunk_outputs = jax.tree.map(
+            lambda a, b: jnp.concatenate([a, b], axis=1),
+            main_outputs,
+            opponent_outputs,
+        )
+        materialize_start = time.perf_counter()
+        chunk_outputs = jax.tree.map(np.asarray, chunk_outputs)
+        elapsed = time.perf_counter() - materialize_start
+        timings['agent_step_1'] += elapsed / 2.0
+        timings['agent_step_2'] += elapsed / 2.0
       _replay_delayed_controller_queue(
           self._delayed_controller_queue,
           controller_queue_start,
@@ -256,16 +321,15 @@ class JaxSimRolloutWorker:
     timings['trajectory_build'] = time.perf_counter() - build_start
 
     trajectories = {}
-    for port, batch_slice in (
-        (1, slice(0, self._num_envs)),
-        (2, slice(self._num_envs, self._num_envs * 2)),
-    ):
+    for port, batch_slice in self._batch_slice_by_port.items():
+      if port not in self._train_ports:
+        continue
       trajectories[port] = _trajectory_slice(
           states=encoded_states,
           actions=batched_actions,
           rewards=rewards,
           is_resetting=reset_buffer,
-          initial_state=initial_state,
+          initial_state=initial_state_by_port[port],
           delayed_actions=delayed_actions,
           name_code=self._name_code,
           batch_slice=batch_slice,
@@ -274,7 +338,7 @@ class JaxSimRolloutWorker:
         'state_copy': timings['state_copy'] / max(num_steps, 1),
         'env_step': timings['env_step'] / max(num_steps, 1),
         'agent_step': {
-            port: timings['agent_step'] / max(num_steps, 1)
+            port: timings[f'agent_step_{port}'] / max(num_steps, 1)
             for port in self.ports
         },
         'trajectory_build': timings['trajectory_build'],
@@ -373,8 +437,7 @@ def _trajectory_slice(
       actions=utils.map_single_structure(lambda x: x[:, batch_slice], actions),
       rewards=rewards[:, batch_slice],
       is_resetting=is_resetting[:, batch_slice].copy(),
-      initial_state=utils.map_single_structure(
-          lambda x: x[batch_slice], initial_state),
+      initial_state=initial_state,
       delayed_actions=[
           utils.map_single_structure(lambda x: x[batch_slice], action)
           for action in delayed_actions
@@ -384,6 +447,15 @@ def _trajectory_slice(
 
 def _batch_actions(actions: list[SampleOutputs]) -> SampleOutputs:
   return jax.tree.map(lambda *xs: np.stack(xs, axis=0), *actions)
+
+
+def _sample_chunk(actor, chunk_inputs):
+  if len(chunk_inputs) == 1:
+    return jax.tree.map(
+        lambda x: x[None],
+        actor.step_device(chunk_inputs[0][0], chunk_inputs[0][1]),
+    )
+  return actor.multi_step_stacked_device(chunk_inputs)
 
 
 def _replay_delayed_controller_queue(

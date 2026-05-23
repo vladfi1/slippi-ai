@@ -16,6 +16,24 @@ class SimEnvTest(unittest.TestCase):
   def _sim_env(self, *args, **kwargs):
     try:
       return sim_env.SimBatchedEnvironment(*args, **kwargs)
+    except FileNotFoundError:
+      self.skipTest(
+          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
+          'extracted melee-sim-light data directory before running sim env tests.')
+    except MemoryError as exc:
+      if 'msl_batch_create failed' not in str(exc):
+        raise
+      self.skipTest(
+          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
+          'extracted melee-sim-light data directory before running sim env tests.')
+
+  def _rollout_or_skip(self, worker, steps: int):
+    try:
+      return worker.rollout(steps)
+    except FileNotFoundError:
+      self.skipTest(
+          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
+          'extracted melee-sim-light data directory before running sim env tests.')
     except MemoryError as exc:
       if 'msl_batch_create failed' not in str(exc):
         raise
@@ -275,6 +293,24 @@ class SimEnvTest(unittest.TestCase):
     finally:
       env.stop()
 
+  def test_fake_env_keeps_valid_observations_without_stepping(self):
+    env = self._sim_env(num_envs=2, frame_buffer_length=8, fake=True)
+    try:
+      encoded = _neutral_encoded_controller(batch_size=4)
+      before = env.current_game_batch(np.ones(2, dtype=np.bool_)).game.p0.x.copy()
+      needs_reset = env.step_encoded(
+          encoded,
+          axis_spacing=32,
+          shoulder_spacing=4,
+      )
+      after = env.current_game_batch(needs_reset).game.p0.x.copy()
+
+      self.assertFalse(np.any(needs_reset))
+      self.assertEqual(env.cursor, 0)
+      np.testing.assert_array_equal(before, after)
+    finally:
+      env.stop()
+
   def test_game_batch_matches_port_state_observation_conventions(self):
     env = self._sim_env(
         num_envs=3,
@@ -394,42 +430,18 @@ class SimEnvTest(unittest.TestCase):
     self.assertFalse(out.item_3.exists[0])
 
   def test_jax_rollout_worker_returns_learner_trajectories(self):
+    worker = jax_rollout.JaxSimRolloutWorker(
+        policy=_DummyPolicy(),
+        agent_kwargs={
+            1: _dummy_agent_kwargs(['A', 'B']),
+            2: _dummy_agent_kwargs(['B', 'A']),
+        },
+        dolphin_kwargs=_worker_dolphin_kwargs(),
+        num_envs=2,
+        batch_steps=2,
+    )
     try:
-      worker = jax_rollout.JaxSimRolloutWorker(
-          policy=_DummyPolicy(),
-          agent_kwargs={
-              1: _dummy_agent_kwargs(['A', 'B']),
-              2: _dummy_agent_kwargs(['B', 'A']),
-          },
-          dolphin_kwargs=[
-              dict(
-                  players={
-                      1: dolphin.AI(melee.Character.FOX),
-                      2: dolphin.AI(melee.Character.FALCO),
-                  },
-                  stage=melee.Stage.FINAL_DESTINATION,
-                  infinite_time=True,
-              ),
-              dict(
-                  players={
-                      1: dolphin.AI(melee.Character.FOX),
-                      2: dolphin.AI(melee.Character.FALCO),
-                  },
-                  stage=melee.Stage.BATTLEFIELD,
-                  infinite_time=True,
-              ),
-          ],
-          num_envs=2,
-          batch_steps=2,
-      )
-    except MemoryError as exc:
-      if 'msl_batch_create failed' not in str(exc):
-        raise
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
-    try:
-      trajectories, metrics = worker.rollout(4)
+      trajectories, metrics = self._rollout_or_skip(worker, 4)
 
       self.assertEqual(set(trajectories), {1, 2})
       self.assertEqual(trajectories[1].states.p0.x.shape, (5, 2))
@@ -439,6 +451,29 @@ class SimEnvTest(unittest.TestCase):
       self.assertEqual(trajectories[1].is_resetting.shape, (5, 2))
       self.assertTrue(np.all(trajectories[1].is_resetting[0]))
       self.assertIn('timing', metrics)
+    finally:
+      worker.stop()
+
+  def test_jax_rollout_worker_supports_fixed_opponent(self):
+    worker = jax_rollout.JaxSimRolloutWorker(
+        policy=_DummyPolicy(),
+        opponent_policy=_DummyPolicy(),
+        train_opponent=False,
+        agent_kwargs={
+            1: _dummy_agent_kwargs(['A', 'B']),
+            2: _dummy_agent_kwargs(['B', 'A']),
+        },
+        dolphin_kwargs=_worker_dolphin_kwargs(),
+        num_envs=2,
+        batch_steps=2,
+    )
+    try:
+      trajectories, metrics = self._rollout_or_skip(worker, 4)
+
+      self.assertEqual(set(trajectories), {1})
+      self.assertEqual(trajectories[1].states.p0.x.shape, (5, 2))
+      self.assertEqual(trajectories[1].initial_state.shape, (2,))
+      self.assertIn('completed_games', metrics)
     finally:
       worker.stop()
 
@@ -459,6 +494,20 @@ def _neutral_encoded_controller(batch_size: int):
           for name in Buttons._fields
       }),
   )
+
+
+def _worker_dolphin_kwargs():
+  return [
+      dict(
+          players={
+              1: dolphin.AI(melee.Character.FOX),
+              2: dolphin.AI(melee.Character.FALCO),
+          },
+          stage=stage,
+          infinite_time=True,
+      )
+      for stage in (melee.Stage.FINAL_DESTINATION, melee.Stage.BATTLEFIELD)
+  ]
 
 
 class _DummyNetwork:

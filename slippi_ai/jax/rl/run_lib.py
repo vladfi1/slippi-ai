@@ -439,14 +439,10 @@ def run(config: Config):
     )
 
   if config.actor.use_sim_envs:
-    if config.actor.use_fake_envs:
-      raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
     if config.actor.async_envs:
       raise ValueError('Sim envs are single-process; async_envs is not supported.')
     if config.opponent.type == OpponentType.CPU:
       raise ValueError('Sim env only supports AI-vs-AI opponents.')
-    if not config.opponent.should_train():
-      raise ValueError('JAX sim RL currently requires self-play training.')
     if config.agent.batch_steps > policy.delay:
       raise ValueError(
           f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
@@ -455,12 +451,20 @@ def run(config: Config):
       raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
     def build_actor():
+      opponent_policy = None
+      train_opponent = config.opponent.should_train()
+      if not train_opponent:
+        opponent_policy = jax_saving.load_policy_from_state(
+            agent_kwargs[ENEMY_PORT]['state'])
       return jax_rollout.JaxSimRolloutWorker(
           policy=learner.policy,
+          opponent_policy=opponent_policy,
+          train_opponent=train_opponent,
           agent_kwargs=agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
           batch_steps=config.agent.batch_steps,
+          use_fake_envs=config.actor.use_fake_envs,
       )
   else:
     build_actor = lambda: evaluators.RolloutWorker(
