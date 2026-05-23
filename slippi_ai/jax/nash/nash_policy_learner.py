@@ -25,6 +25,7 @@ from slippi_ai.jax.nash import nash
 class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4  # only for q_function metrics
+  bf16: bool = False
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
@@ -153,10 +154,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
         extra_out_specs=(policy_samples,),
     )
 
+    unroll_sample_policy = self._unroll_sample_policy
+    if config.bf16:
+      unroll_sample_policy = jax_utils.with_bf16_compute(unroll_sample_policy)
+
     self.run_sample_policy = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.sample_policy,
         rngs=rngs,
-        loss_fn=self._unroll_sample_policy,
+        loss_fn=unroll_sample_policy,
         mesh=mesh,
         **sample_policy_specs,
     )
@@ -166,9 +171,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
         extra_out_specs=(vs, q_action_init, qs),
     )
 
+    # Keep q_function in fp32 so we can distinguish small differences in
+    # q-values that lead to different nash solutions.
+    unroll_q_function = self._unroll_q_function
+    # if config.bf16:
+    #   unroll_q_function = jax_utils.with_bf16_compute(unroll_q_function)
+
     self.run_q_function = jax_utils.shard_map_loss_fn(
         module=self.q_function,
-        loss_fn=self._unroll_q_function,
+        loss_fn=unroll_q_function,
         mesh=mesh,
         **q_function_specs,
     )
@@ -197,11 +208,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
         extra_out_specs=None,
     )
 
+    unroll_nash_policy = self._unroll_nash_policy
+    if config.bf16:
+      unroll_nash_policy = jax_utils.with_bf16_compute(unroll_nash_policy)
+
     self.train_nash_policy = jax_utils.data_parallel_train_with_rngs(
         module=self.nash_policy,
         optimizer=self.nash_policy_optimizer,
         rngs=rngs,
-        loss_fn=self._unroll_nash_policy,
+        loss_fn=unroll_nash_policy,
         **sharding_kwargs,
         **nash_policy_specs,
     )
@@ -209,17 +224,23 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.run_nash_policy = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.nash_policy,
         rngs=rngs,
-        loss_fn=self._unroll_nash_policy,
+        loss_fn=unroll_nash_policy,
         mesh=mesh,
         **nash_policy_specs,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    return {
-        Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
+    state = {
         NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
         SAMPLE_POLICY: self.sample_policy.initial_state((batch_size, 2), rngs),
     }
+    if self.config.bf16:
+      state = jax_utils.cast_floats_to_dtype(state, jnp.bfloat16)
+
+    # q_function is in fp32
+    state[Q_FUNCTION] = self.q_function.initial_state(batch_size, rngs)
+
+    return state
 
   def _get_delayed_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
     assert self.delay == 0
@@ -341,6 +362,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
         payoff_matrices = payoff_matrices.astype(jnp.float64)
         assert payoff_matrices.dtype == jnp.float64
+      else:
+        payoff_matrices = payoff_matrices.astype(jnp.float32)
 
       if self.config.nash_solver == 'qpax':
         solver = nash._solve_zero_sum_nash_qpax
@@ -451,6 +474,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
             inputs=nash_policy_outputs.outputs,
             prev_controller_state=prev_action)]
 
+    # Technically q_function should be an input to this method.
+    q_function = self.q_function  # stays in fp32 even if nash_policy is in bf16
+
     # TODO: this is fairly inefficient -- we should instead pre-compute the
     # q-function's "outputs" on both the nash policy and the sampled actions,
     # the latter which we already have from the q-function unroll, and then use
@@ -471,7 +497,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         merge, nash_policy_samples, opponent_actions)
 
       def q_fn(actions: list[Action]):
-        two_player_qs = self.q_function.q_values_from_action_state(
+        two_player_qs = q_function.q_values_from_action_state(
           values=values,
           action_init_state=q_action_init_state,
           actions=actions,
