@@ -35,7 +35,7 @@ class LearnerConfig:
   nash_weight: float = 1
   imitation_weight: float = 0
 
-  nash_solver: str = 'qpax_fast'
+  nash_solver: str = 'simplex'
 
 _SAMPLE_AXIS = 0
 
