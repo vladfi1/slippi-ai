@@ -121,7 +121,6 @@ if __name__ == '__main__':
   @launch.wrap
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
-    config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
     net_config = dict(NET.value)
     net = net_config.pop('name')
@@ -138,12 +137,20 @@ if __name__ == '__main__':
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
+      config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
+
       char = CHAR.value
 
       if config.tag is None:
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
-        config.tag = f"{char}_d{delay}_{net}_{n}x{h}"
+
+        if config.learner.bf16:
+          bf16 = '_bf16'
+        else:
+          bf16 = ''
+
+        config.tag = f"{char}_d{delay}_{net}_{n}x{h}{bf16}"
 
     config.dataset.allowed_characters = char
 

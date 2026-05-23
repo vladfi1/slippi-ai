@@ -23,6 +23,9 @@ def discounted_returns(
   Returns:
     The discounted returns, of shape [T, B].
   """
+  rewards = rewards.astype(bootstrap.dtype)
+  discounts = discounts.astype(bootstrap.dtype)
+
   def scan_fn(acc, inputs):
     reward, discount = inputs
     value = reward + discount * acc
@@ -39,6 +42,11 @@ def generalized_returns(
     bootstrap: Array,
     lambdas: Array,
 ) -> jax.Array:
+  assert values.dtype == bootstrap.dtype
+  rewards = rewards.astype(bootstrap.dtype)
+  discounts = discounts.astype(bootstrap.dtype)
+  lambdas = lambdas.astype(bootstrap.dtype)
+
   def scan_fn(future_value, inputs):
     reward, discount, current_value, lambda_ = inputs
     value = reward + discount * future_value
@@ -59,6 +67,12 @@ def generalized_returns_with_resetting(
 ) -> jax.Array:
   discounts = jnp.where(is_resetting, 0.0, discount)
   lambdas = jnp.where(is_resetting, 0.0, lambda_)
+
+  assert values.dtype == bootstrap.dtype
+  rewards = rewards.astype(bootstrap.dtype)
+  discounts = discounts.astype(bootstrap.dtype)
+  lambdas = lambdas.astype(bootstrap.dtype)
+
   return generalized_returns(
       rewards=rewards,
       discounts=discounts,
