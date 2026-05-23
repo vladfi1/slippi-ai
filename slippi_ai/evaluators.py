@@ -71,8 +71,12 @@ class RolloutWorker:
   ):
     if isinstance(dolphin_kwargs, dict):
       dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
+    elif num_envs != len(dolphin_kwargs):
+      raise ValueError(
+          f'num_envs={num_envs} does not match '
+          f'{len(dolphin_kwargs)} dolphin kwargs entries.')
     else:
-      assert num_envs == len(dolphin_kwargs)
+      dolphin_kwargs = list(dolphin_kwargs)
     self._dolphin_kwargs = dolphin_kwargs
 
     dolphin_kwargs_0 = dolphin_kwargs[0]
@@ -385,7 +389,6 @@ class RolloutMetrics(tp.NamedTuple):
   @classmethod
   def from_trajectory(cls, trajectory: Trajectory) -> tp.Self:
     return cls(reward=np.sum(trajectory.rewards))
-
 
 class Evaluator(RolloutWorker):
 

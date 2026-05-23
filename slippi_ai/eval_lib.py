@@ -337,6 +337,22 @@ def get_name_code(state: dict, name: str) -> int:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
   return name_map[name]
 
+
+def get_name_codes(
+    state: dict,
+    name: tp.Union[str, tp.Sequence[str]],
+    batch_size: tp.Optional[int] = None,
+) -> tp.Union[int, list[int]]:
+  if isinstance(name, str):
+    code = get_name_code(state, name)
+    if batch_size is None:
+      return code
+    return [code] * batch_size
+  if batch_size is not None and len(name) != batch_size:
+    raise ValueError(f'Nametag batch must have length batch_size={batch_size}')
+  return [get_name_code(state, n) for n in name]
+
+
 def get_agent_config(state: dict) -> tp.Optional[dict]:
   # TODO: unify self-train and train-two
   if 'rl_config' in state:  # self-train aka rl/run.py
@@ -395,10 +411,7 @@ def build_delayed_agent(
     # TODO: just pick from the name_map?
     raise ValueError('Must specify an agent name.')
 
-  if isinstance(name, str):
-    name_code = get_name_code(state, name)
-  else:
-    name_code = [get_name_code(state, n) for n in name]
+  name_code = get_name_codes(state, name)
 
   # Stick the observation_config into the agent for future use.
   observation_config = flag_utils.dataclass_from_dict(

@@ -107,11 +107,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       stacked_sample_outputs, (_, final_state) = scan_fn(
           rngs.fork(split=length), stacked_states_and_resets, (prev_action, initial_state))
 
-      sample_outputs = [
-          jax.tree.map(lambda t, i=i: t[i], stacked_sample_outputs)
-          for i in range(length)]
-
-      return sample_outputs, final_state
+      return stacked_sample_outputs, final_state
 
     self._multi_sample = jax_utils.cached_partial(multi_sample, policy, rngs)
 
@@ -158,6 +154,15 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       needs_reset: agents.BoolArray,
   ) -> SampleOutputs[ControllerType]:
     """Doesn't take into account delay."""
+    sample_outputs = self.step_device(game, needs_reset)
+    return jax.copy_to_host_async(sample_outputs)
+
+  def step_device(
+      self,
+      game: Game,
+      needs_reset: agents.BoolArray,
+  ) -> SampleOutputs[ControllerType]:
+    """Sample an action and leave the output tree on device."""
     game = self._policy.network.encode_game(game)
     # Keep hidden state and prev_controller on device.
     sample_fn = self._jitted_sample if self._compile else self._sample
@@ -167,23 +172,35 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     # Use donate_argnums?
     self._prev_controller = sample_outputs.controller_state
 
-    # Convert to numpy?
-    return jax.copy_to_host_async(sample_outputs)
+    return sample_outputs
 
   def multi_step(
       self,
       states: list[tuple[Game, agents.BoolArray]],
   ) -> list[SampleOutputs[ControllerType]]:
+    sample_outputs = self.multi_step_stacked_device(states)
+    sample_outputs = [
+        jax.tree.map(lambda t, i=i: t[i], sample_outputs)
+        for i in range(len(states))]
+    return jax.copy_to_host_async(sample_outputs)
+
+  def multi_step_stacked_device(
+      self,
+      states: list[tuple[Game, agents.BoolArray]],
+  ) -> SampleOutputs[ControllerType]:
+    # Fast rollout code consumes a whole time chunk at once. Returning the
+    # stacked device tree avoids per-frame Python objects and host copies; the
+    # compatibility `multi_step` wrapper above still provides the old list API.
     states_and_resets = [
         (self._policy.network.encode_game(game), needs_reset)
         for game, needs_reset in states
     ]
-
     # Keep hidden state and _prev_controller on device.
     multi_sample_fn = self._jitted_multi_sample if self._compile else self._multi_sample
     sample_outputs, self._hidden_state = multi_sample_fn(
         states_and_resets, self._name_code, self._prev_controller, self._hidden_state)
 
-    self._prev_controller = sample_outputs[-1].controller_state
+    self._prev_controller = jax.tree.map(
+        lambda t: t[-1], sample_outputs.controller_state)
 
-    return jax.copy_to_host_async(sample_outputs)
+    return sample_outputs

@@ -24,6 +24,7 @@ from slippi_ai import (
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as train_lib
 from slippi_ai.jax.rl import learner as learner_lib
+from slippi_ai.sim_env import jax_rollout
 from slippi_ai.types import Game
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -265,7 +266,8 @@ def concise_name(name: str) -> str:
 
 def reset_optimizer_steps(imitation_state: dict):
   for key in ['policy_optimizer', 'value_optimizer']:
-    imitation_state['state'][key]['step'] = 0
+    if key in imitation_state['state']:
+      imitation_state['state'][key]['step'] = 0
 
 
 def run(config: Config):
@@ -443,17 +445,33 @@ def run(config: Config):
       raise ValueError('Sim envs are single-process; async_envs is not supported.')
     if config.opponent.type == OpponentType.CPU:
       raise ValueError('Sim env only supports AI-vs-AI opponents.')
+    if not config.opponent.should_train():
+      raise ValueError('JAX sim RL currently requires self-play training.')
+    if config.agent.batch_steps > policy.delay:
+      raise ValueError(
+          f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
+          f'{policy.delay} for sim RL.')
+    if config.actor.rollout_length % max(1, config.agent.batch_steps):
+      raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
-  build_actor = lambda: evaluators.RolloutWorker(
-      agent_kwargs=agent_kwargs,
-      dolphin_kwargs=dolphin_kwargs,
-      env_kwargs=env_kwargs,
-      num_envs=config.actor.num_envs,
-      async_envs=config.actor.async_envs,
-      use_gpu=config.actor.gpu_inference,
-      use_fake_envs=config.actor.use_fake_envs,
-      use_sim_envs=config.actor.use_sim_envs,
-  )
+    def build_actor():
+      return jax_rollout.JaxSimRolloutWorker(
+          policy=learner.policy,
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=config.actor.num_envs,
+          batch_steps=config.agent.batch_steps,
+      )
+  else:
+    build_actor = lambda: evaluators.RolloutWorker(
+        agent_kwargs=agent_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
+        env_kwargs=env_kwargs,
+        num_envs=config.actor.num_envs,
+        async_envs=config.actor.async_envs,
+        use_gpu=config.actor.gpu_inference,
+        use_fake_envs=config.actor.use_fake_envs,
+    )
 
   learner_manager = LearnerManager(
       config=config,
@@ -519,7 +537,12 @@ def run(config: Config):
         mps=mps,
     )
     actor_timing = metrics['actor'].pop('timing')
-    for key in ['env_pop', 'env_push']:
+    env_timing_keys = (
+        ['state_copy', 'env_step']
+        if config.actor.use_sim_envs else
+        ['env_pop', 'env_push']
+    )
+    for key in env_timing_keys:
       timings[key] = actor_timing[key]
 
     agent_keys = ['agent_step']
