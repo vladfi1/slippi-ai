@@ -152,14 +152,14 @@ class AutoRegressiveComponent(nnx.Module):
       **kwargs,
   ) -> tp.Tuple[Array, SampleOutputs]:
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw)
+    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
     input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
     # Project down to the size desired by the component
     logits = self._encoder(input_)
     # Sample the component
     sample = self.embedder.sample(rng, logits, **kwargs)
     # Condition future components on the current sample
-    sample_embedding = self.embedder(sample)
+    sample_embedding = self.embedder(sample).astype(residual.dtype)
     residual = residual + self.decoder(sample_embedding)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
@@ -170,14 +170,14 @@ class AutoRegressiveComponent(nnx.Module):
       target_raw: Array,
   ) -> tp.Tuple[Array, DistanceOutputs]:
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw)
+    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
     input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
     # Project down to the size desired by the component
     logits = self._encoder(input_)
     # Compute the distance between prediction and target
     distance = self.embedder.distance(logits, target_raw)
     # Auto-regress using the target (aka teacher forcing)
-    target_embedding = self.embedder(target_raw)
+    target_embedding = self.embedder(target_raw).astype(residual.dtype)
     residual = residual + self.decoder(target_embedding)
     return residual, DistanceOutputs(distance=distance, logits=logits)
 

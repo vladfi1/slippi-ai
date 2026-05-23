@@ -84,10 +84,15 @@ class Learner(nnx.Module):
       # Train and run functions using shard_map. Empirically these have better
       # performance for the frame_tx network than the above "jit_step" methods,
       # which let XLA handle sharding automatically.
+      policy_loss_fn = (jax_utils.with_bf16_compute(_policy_loss_fn)
+                        if config.bf16 else _policy_loss_fn)
+
+      # TODO: value loss is unstable in bf16
+
       self.sharded_train_policy = jax_utils.data_parallel_train(
           module=self.policy,
           optimizer=self.policy_optimizer,
-          loss_fn=_policy_loss_fn,
+          loss_fn=policy_loss_fn,
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
@@ -96,7 +101,7 @@ class Learner(nnx.Module):
 
       self.sharded_run_policy = jax_utils.shard_map_loss_fn(
           module=self.policy,
-          loss_fn=_policy_loss_fn,
+          loss_fn=policy_loss_fn,
           mesh=mesh,
       )
 
@@ -117,8 +122,12 @@ class Learner(nnx.Module):
       )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+    policy_state = self.policy.initial_state(batch_size, rngs),
+    if self.config.bf16:
+      policy_state = jax_utils.cast_floats_to_dtype(policy_state, jnp.bfloat16)
+
     return (
-        self.policy.initial_state(batch_size, rngs),
+        policy_state,
         self.value_function.initial_state(batch_size, rngs),
     )
 
@@ -134,6 +143,8 @@ class Learner(nnx.Module):
 
     # Define loss function that takes policy as argument for gradient computation
     def loss_fn(policy: Policy):
+      if self.config.bf16:
+        policy = jax_utils.cast_params_to_dtype(policy, jnp.bfloat16)
       loss, metrics, final_states = policy.imitation_loss(
           tm_frames, initial_states)
       loss = jnp.mean(loss)  # Mean over time and batch
@@ -169,6 +180,8 @@ class Learner(nnx.Module):
 
     # Define loss function for value function
     def value_loss_fn(value_function: vf_lib.ValueFunction):
+      if self.config.bf16:
+        value_function = jax_utils.cast_params_to_dtype(value_function, jnp.bfloat16)
       delay = self.policy._delay
       # Value function sees non-delayed actions
       value_frames = jax.tree.map(
