@@ -103,6 +103,10 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     states = [self.core_net.initial_state(batch_size, rngs) for _ in range(2)]
     return jax.tree.map(lambda *xs: jnp.stack(xs, axis=1), *states)
 
+  def _embed_action(self, action: Action) -> jax.Array:
+    x = self.embed_action(action)
+    return x.astype(jax_utils.module_dtype(self))
+
   def _values_from_outputs(self, outputs: jax.Array) -> jax.Array:
     merged_outputs = to_merged_outputs(outputs)
     return jnp.squeeze(self.value_head(merged_outputs), -1)
@@ -135,7 +139,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       action_init_state: networks.RecurrentState,  # [..., 2, H]
       actions: list[Action],  # frame_skip x [..., 2]
   ) -> jax.Array:  # [..., 2]
-    embedded = [self.embed_action(a) for a in actions]
+    embedded = [self._embed_action(a) for a in actions]
     stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
     reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
     outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
@@ -157,7 +161,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       actions: list[Action],  # frame_skip x [S, T, B, 2]
       batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
   ) -> jax.Array:  # [S, S, T, B, 2]
-    embedded = [self.embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
+    embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
 
     def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
