@@ -155,6 +155,7 @@ class AutoRegressiveEncoder(nnx.Module):
   def __call__(self, inputs: Array) -> NetworkState:
     batch_shape = inputs.shape[:-1]
     state = self.network.initial_state(batch_shape, rngs=nnx.Rngs(0))
+    assert jax_utils.struct_dtype(state) == inputs.dtype
     return self.network.step(inputs, state)
 
 class AutoRegressiveComponent(nnx.Module):
@@ -181,14 +182,14 @@ class AutoRegressiveComponent(nnx.Module):
   ) -> tp.Tuple[NetworkState, SampleOutputs]:
     output, state = residual
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
+    prev_embedding = self.embedder(prev_raw).astype(output.dtype)
     input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
     logits = self.encoder(input_)
     # Sample the component
     sample = self.embedder.sample(rng, logits, **kwargs)
     # Condition future components on the current sample
-    sample_embedding = self.embedder(sample).astype(residual.dtype)
+    sample_embedding = self.embedder(sample).astype(output.dtype)
     residual = self.network.step(sample_embedding, state)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
@@ -200,14 +201,14 @@ class AutoRegressiveComponent(nnx.Module):
   ) -> tp.Tuple[NetworkState, DistanceOutputs]:
     output, state = residual
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
+    prev_embedding = self.embedder(prev_raw).astype(output.dtype)
     input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
     logits = self.encoder(input_)
     # Compute the distance between prediction and target
     distance = self.embedder.distance(logits, target_raw)
     # Auto-regress using the target (aka teacher forcing)
-    target_embedding = self.embedder(target_raw).astype(residual.dtype)
+    target_embedding = self.embedder(target_raw).astype(output.dtype)
     residual = self.network.step(target_embedding, state)
     return residual, DistanceOutputs(distance=distance, logits=logits)
 

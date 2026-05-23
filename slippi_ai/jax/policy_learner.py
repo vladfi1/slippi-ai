@@ -108,14 +108,16 @@ def check_compute_dtypes(policy: Policy[ControllerType]) -> dict[str, str]:
   from slippi_ai.jax import controller_heads
   ctrl_head = policy._controller_head
   if isinstance(ctrl_head, controller_heads.AutoRegressive):
-    residual = jax.eval_shape(ctrl_head.to_residual, net_out)
-    results['controller_head_residual'] = str(residual.dtype)
+    enc_out = jax.eval_shape(ctrl_head.encoder, net_out)
+    enc_leaves = jax.tree_util.tree_leaves(enc_out)
+    if enc_leaves:
+      results['controller_head_encoder_out'] = str(enc_leaves[0].dtype)
 
   # ControllerRNN (if present)
   embed_mod = policy.network._embed_module
-  if isinstance(embed_mod, networks.EnhancedEmbedModule) and embed_mod._use_controller_rnn:
-    crnn = embed_mod._controller_rnn
-    crnn_out = jax.eval_shape(crnn, dummy_sa.action)
+  if isinstance(embed_mod, networks.EnhancedEmbedModule):
+    crnn = embed_mod._controller_rnns[0]
+    crnn_out = jax.eval_shape(lambda c: crnn(c, None), dummy_sa.action[0])
     crnn_leaves = jax.tree_util.tree_leaves(crnn_out)
     if crnn_leaves:
       results['controller_rnn_out'] = str(crnn_leaves[0].dtype)

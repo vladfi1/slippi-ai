@@ -86,8 +86,8 @@ class Learner(nnx.Module):
       # which let XLA handle sharding automatically.
       policy_loss_fn = (jax_utils.with_bf16_compute(_policy_loss_fn)
                         if config.bf16 else _policy_loss_fn)
-
-      # TODO: value loss is unstable in bf16
+      vf_loss_fn = (jax_utils.with_bf16_compute(value_loss_fn)
+                    if config.bf16 else value_loss_fn)
 
       self.sharded_train_policy = jax_utils.data_parallel_train(
           module=self.policy,
@@ -108,7 +108,7 @@ class Learner(nnx.Module):
       self.sharded_train_value_function = jax_utils.data_parallel_train(
           module=self.value_function,
           optimizer=self.value_optimizer,
-          loss_fn=value_loss_fn,
+          loss_fn=vf_loss_fn,
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
@@ -117,19 +117,18 @@ class Learner(nnx.Module):
 
       self.sharded_run_value_function = jax_utils.shard_map_loss_fn(
           module=self.value_function,
-          loss_fn=value_loss_fn,
+          loss_fn=vf_loss_fn,
           mesh=mesh,
       )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    policy_state = self.policy.initial_state(batch_size, rngs),
-    if self.config.bf16:
-      policy_state = jax_utils.cast_floats_to_dtype(policy_state, jnp.bfloat16)
-
-    return (
-        policy_state,
+    state = (
+        self.policy.initial_state(batch_size, rngs),
         self.value_function.initial_state(batch_size, rngs),
     )
+    if self.config.bf16:
+      state = jax_utils.cast_floats_to_dtype(state, jnp.bfloat16)
+    return state
 
   def _step_policy(
       self,
