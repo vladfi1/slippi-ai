@@ -1,10 +1,11 @@
 """JAX rollout assembly for single-process melee-sim-light envs.
 
-The generic evaluator path builds libmelee-shaped Python objects once per port
-per frame. This worker uses `SimBatchedEnvironment.current_game_batch()` and
-`step_encoded()` instead: one reusable observation tree is filled from native
-sim buffers, JAX samples both port perspectives, and the resulting trajectory is
-split back into the port entries expected by the learner.
+The generic evaluator path builds slippi-ai Game/controller Python objects once
+per port per frame. This worker uses
+`SimBatchedEnvironment.current_game_batch()` and `step_encoded()` instead: one
+reusable observation tree is filled from native sim buffers, JAX samples both
+port perspectives, and the resulting trajectory is split back into the port
+entries expected by the learner.
 """
 
 import collections
@@ -13,7 +14,6 @@ import time
 import typing as tp
 
 import jax
-import jax.numpy as jnp
 import melee
 import numpy as np
 
@@ -277,22 +277,19 @@ class JaxSimRolloutWorker:
         ]
         main_start = time.perf_counter()
         main_outputs = _sample_chunk(self.actor, main_inputs)
+        main_outputs = jax.tree.map(np.asarray, main_outputs)
         timings['agent_step_1'] += time.perf_counter() - main_start
 
         opponent_start = time.perf_counter()
         opponent_outputs = _sample_chunk(self._opponent_actor, opponent_inputs)
+        opponent_outputs = jax.tree.map(np.asarray, opponent_outputs)
         timings['agent_step_2'] += time.perf_counter() - opponent_start
 
         chunk_outputs = jax.tree.map(
-            lambda a, b: jnp.concatenate([a, b], axis=1),
+            lambda a, b: np.concatenate([a, b], axis=1),
             main_outputs,
             opponent_outputs,
         )
-        materialize_start = time.perf_counter()
-        chunk_outputs = jax.tree.map(np.asarray, chunk_outputs)
-        elapsed = time.perf_counter() - materialize_start
-        timings['agent_step_1'] += elapsed / 2.0
-        timings['agent_step_2'] += elapsed / 2.0
       _replay_delayed_controller_queue(
           self._delayed_controller_queue,
           controller_queue_start,
@@ -429,7 +426,8 @@ def _trajectory_slice(
 ) -> Trajectory:
   batch_size = int(batch_slice.stop) - int(batch_slice.start)
   return Trajectory(
-      states=utils.map_single_structure(lambda x: x[:, batch_slice], states),
+      states=utils.map_single_structure(
+          lambda x: np.asarray(x[:, batch_slice]).copy(), states),
       name=np.broadcast_to(
           name_code[batch_slice],
           (is_resetting.shape[0], batch_size),

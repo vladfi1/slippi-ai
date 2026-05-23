@@ -85,7 +85,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         name_code: jax.Array,
         prev_action: ControllerType,  # only for first step
         initial_state: policies.RecurrentState,
-    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
+    ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
 
       stacked_states_and_resets = jax.tree.map(
           lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
@@ -179,10 +179,11 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       states: list[tuple[Game, agents.BoolArray]],
   ) -> list[SampleOutputs[ControllerType]]:
     sample_outputs = self.multi_step_stacked_device(states)
+    sample_outputs = jax.tree.map(np.asarray, sample_outputs)
     sample_outputs = [
         jax.tree.map(lambda t, i=i: t[i], sample_outputs)
         for i in range(len(states))]
-    return jax.copy_to_host_async(sample_outputs)
+    return sample_outputs
 
   def multi_step_stacked_device(
       self,
