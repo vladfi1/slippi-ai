@@ -441,34 +441,6 @@ class ResidualWrapper(Network[InputTree, InputTree]):
     outputs, final_state = self._net.scan(inputs, reset, initial_state)
     return self._combine(inputs, outputs), final_state
 
-class RematWrapper(Network[InputTree, OutputTree]):
-
-  def __init__(self, net: Network[InputTree, OutputTree]):
-    self._net = net
-
-  @property
-  def output_size(self) -> int:
-    return self._net.output_size
-
-  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
-    return self._net.initial_state(batch_size, rngs)
-
-  # Note: we can't directly use jax.remat on self._net.step as it raises issues
-  # with nnx stuff inside the method. We also have to use nnx.remat as a
-  # decorator on the _unbound_ function rather than the method.
-
-  @nnx.remat
-  def step(self, inputs, prev_state):
-    return self._net.step(inputs, prev_state)
-
-  @nnx.remat
-  def unroll(self, inputs, reset, initial_state):
-    return self._net.unroll(inputs, reset, initial_state)
-
-  @nnx.remat
-  def scan(self, inputs, reset, initial_state):
-    return self._net.scan(inputs, reset, initial_state)
-
 class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
 
   @classmethod
