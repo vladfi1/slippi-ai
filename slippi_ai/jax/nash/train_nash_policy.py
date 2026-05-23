@@ -265,6 +265,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   assert isinstance(name_map, dict)
 
   if config.remat:
+    logging.info('Enabling remat for nash policy')
     nash_policy.enable_remat()
 
   # Initialize q_function

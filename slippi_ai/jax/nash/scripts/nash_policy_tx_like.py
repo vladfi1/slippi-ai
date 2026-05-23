@@ -94,7 +94,11 @@ if __name__ == '__main__':
         chh = ch_config['component'][NET_NAME]['hidden_size']
         fs = imitation_config.policy.frame_skip
         ns = config.learner.num_samples
+
         config.tag = f"np_{char}_d{d}_{n}x{h}_ch{chn}x{chh}_rfs{fs}_ns{ns}"
+
+        if config.learner.bf16:
+          config.tag += '_bf16'
 
     config.dataset.allowed_characters = char
 
