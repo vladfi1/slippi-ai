@@ -1330,6 +1330,7 @@ def build_embed_network(
     network_config: dict,
     frame_skip: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
+    remat: bool = False,
 ) -> StateActionNetwork[Action]:
   """Build a SimpleEmbedNetwork from config.
 
@@ -1363,4 +1364,5 @@ def build_embed_network(
   return SimpleEmbedNetwork(
       embed_module=embed_module,
       network=network,
+      remat=remat,
   )

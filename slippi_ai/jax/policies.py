@@ -11,6 +11,7 @@ from slippi_ai.jax.controller_heads import (
     DistanceOutputs,
     SampleOutputs,
     ControllerType,
+    AutoRegressive,
 )
 from slippi_ai.jax import embed, networks, jax_utils
 from slippi_ai import data, types, utils, policies
@@ -70,6 +71,20 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
   @property
   def controller_head(self) -> ControllerHead[ControllerType]:
     return self._controller_head
+
+  def enable_remat(self):
+    """Save memory at the cost of extra compute."""
+
+    # TODO: do this in a less hacky way
+
+    if isinstance(self.controller_head, AutoRegressive):
+      self.controller_head.remat = True
+
+    if isinstance(self.network, networks.SimpleEmbedNetwork):
+      self.network._remat = True
+
+      if isinstance(self.network._network, networks.Sequential):
+        self.network._network.remat = True
 
   def encode_game(self, game: Game) -> Game:
     return self.network.encode_game(game)
