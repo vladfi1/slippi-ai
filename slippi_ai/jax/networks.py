@@ -927,6 +927,9 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
       controller: Action,
       prev_state: tp.Optional[RecurrentState] = None,
   ) -> tuple[Array, RecurrentState]:
+    params = jax.tree.leaves(nnx.state(self, nnx.Param))
+    dtype: jnp.dtype = params[0].dtype
+
     if prev_state is None:
       input_flat: list[Array] = list(self._embed_controller.flatten(controller))
       input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
