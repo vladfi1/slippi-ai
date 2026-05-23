@@ -314,8 +314,14 @@ def dynamic_rnn(
     final_state: Final recurrent state
   """
 
+  cell_fn = functionalize(cell_fn)
+
+  # Workaround for https://docs.jax.dev/en/latest/notebooks/shard_map.html#scan-vma
+  _, state = jax.eval_shape(cell_fn, inputs, initial_state)
+  initial_state = jax.tree.map(as_vma, initial_state, state)
+
   return nnx.scan(
-      functionalize(cell_fn),
+      cell_fn,
       in_axes=(0, nnx.Carry),
       out_axes=(0, nnx.Carry),
   )(inputs, initial_state)
@@ -658,12 +664,17 @@ def multi_vmap(
 
   return func
 
+def get_vma(x) -> set[str]:
+  if hasattr(x, 'vma'):
+    return x.vma
+  return set()
 
 def as_vma(x: T, ref) -> T:
-  if not hasattr(ref, 'vma'):
+  if not hasattr(ref, 'vma') or ref.vma is None:
     return x
 
-  return jax.lax.pcast(x, tuple(ref.vma), to='varying')
+  axes = tuple(ref.vma - get_vma(x))
+  return jax.lax.pcast(x, axes, to='varying')
 
 PackedArg = list[np.ndarray]
 
