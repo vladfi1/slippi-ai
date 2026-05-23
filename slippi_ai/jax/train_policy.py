@@ -202,7 +202,7 @@ class Config:
 def _get_loss(stats: dict):
   loss = stats['policy']['loss']
   if isinstance(loss, jax.Array):
-    loss = np.asarray(loss)
+    loss = np.asarray(loss, dtype=np.float32)
   if isinstance(loss, np.ndarray):
     return loss.mean().item()
   return loss
@@ -512,7 +512,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     def time_mean(x: jax.Array) -> np.ndarray:
       assert x.shape[0] == config.data.batch_size
-      return np.mean(np.asarray(x), axis=1)
+      return np.mean(np.asarray(x, np.float32), axis=1)
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch

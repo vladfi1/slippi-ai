@@ -73,8 +73,13 @@ class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
   ) -> Tuple[OutputTree, RecurrentState]:
     batch_size = reset.shape
     rngs = nnx.Rngs(0)  # TODO: pass rngs properly
-    initial_state = where_pytree(
-        reset, self.initial_state(batch_size, rngs), prev_state)
+    fresh_state = self.initial_state(batch_size, rngs)
+    assert jax_utils.struct_dtype(fresh_state) == jax_utils.struct_dtype(prev_state)
+    # Cast fresh_state to match prev_state dtype to avoid fp32 promotion in where
+    # fresh_state = jax.tree.map(
+    #     lambda f, p: f.astype(p.dtype) if hasattr(p, 'dtype') else f,
+    #     fresh_state, prev_state)
+    initial_state = where_pytree(reset, fresh_state, prev_state)
     return self.step(inputs, initial_state)
 
   def _step_with_reset(
@@ -224,7 +229,9 @@ class RecurrentWrapper(Network[Array, Array]):
     else:
       batch_shape = tuple(batch_size)
     input_shape = batch_shape + (self.input_size,)
-    return self._core.initialize_carry(input_shape, rngs)
+    state = self._core.initialize_carry(input_shape, rngs)
+    dtype = jax_utils.module_dtype(self._core)
+    return jax_utils.cast_floats_to_dtype(state, dtype)
 
   def step(self, inputs, prev_state):
     # flax's RNNCells have the arguments reversed
@@ -780,7 +787,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     return self._embed_module.dummy(shape)
 
   def initial_state(self, batch_size: Shape, rngs: nnx.Rngs) -> RecurrentState:
-    return self._network.initial_state(batch_size, rngs)
+    return self._check_state_dtype(self._network.initial_state(batch_size, rngs))
 
   def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
     return self._embed_module.encode(state_action)
@@ -790,8 +797,21 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
 
   def _embed(self, state_action: StateAction[S, Action]) -> Array:
     if self._remat:
-      return nnx.remat(apply)(self._embed_module, state_action)
-    return self._embed_module(state_action)
+      x = nnx.remat(apply)(self._embed_module, state_action)
+    else:
+      x = self._embed_module(state_action)
+    x = x.astype(jax_utils.module_dtype(self))
+    return x
+
+  def _check_state_dtype(self, state: RecurrentState) -> RecurrentState:
+    # Initial state might come from an fp32 version of the network,
+    # so we need to cast it to make sure it's in bf16.
+    # return jax_utils.cast_floats_to_dtype(
+    #     state, jax_utils.module_dtype(self._network))
+    dtype = jax_utils.module_dtype(self)
+    state_dtype = jax_utils.struct_dtype(state)
+    assert state_dtype == dtype, f"State dtype {state_dtype} does not match module dtype {dtype}"
+    return state
 
   def step(
       self,
@@ -799,7 +819,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
       prev_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed(state_action)
-    output, next_state = self._network.step(embedded, prev_state)
+    output, next_state = self._network.step(embedded, self._check_state_dtype(prev_state))
     assert isinstance(output, Array)
     return output, next_state
 
@@ -810,7 +830,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed(state_action)
-    output, final_state = self._network.unroll(embedded, reset, initial_state)
+    output, final_state = self._network.unroll(embedded, reset, self._check_state_dtype(initial_state))
     assert isinstance(output, Array)
     return output, final_state
 
@@ -821,7 +841,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
     embedded = self._embed(state_action)
-    output, final_state = self._network.scan(embedded, reset, initial_state)
+    output, final_state = self._network.scan(embedded, reset, self._check_state_dtype(initial_state))
     assert isinstance(output, Array)
     return output, final_state
 
@@ -864,19 +884,25 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
       controller: Action,
       prev_state: tp.Optional[RecurrentState] = None,
   ) -> tuple[Array, RecurrentState]:
+    params = jax.tree.leaves(nnx.state(self, nnx.Param))
+    dtype: jnp.dtype = params[0].dtype
+
     if prev_state is None:
       input_flat: list[Array] = list(self._embed_controller.flatten(controller))
       input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
 
       # TODO: pass rngs properly? maybe reuse from __init__?
       hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
+      # Cast to match input dtype so computation stays in e.g. bfloat16
+      hidden_state = jax.tree.map(lambda x: x.astype(dtype), hidden_state)
     else:
       hidden_state = prev_state
 
     for cell, embed, component in zip(
         self._cells, self._embed_flat,
         self._embed_controller.flatten(controller)):
-      hidden_state, output = cell(hidden_state, embed(component))
+
+      hidden_state, output = cell(hidden_state, embed(component).astype(dtype))
 
     return output, hidden_state  # type: ignore
 

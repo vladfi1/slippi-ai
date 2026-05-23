@@ -67,7 +67,50 @@ def num_devices() -> int:
   """Get the number of local devices."""
   return jax.local_device_count()
 
+def struct_dtype(struct) -> jnp.dtype:
+  leaves = jax.tree_util.tree_leaves(struct)
+  floating_dtypes = set[jnp.dtype]()
+  for leaf in leaves:
+    assert isinstance(leaf, jax.Array), f'Expected all leaves to be jax arrays, got {type(leaf)}.'
+    if jnp.issubdtype(leaf.dtype, jnp.floating):
+      floating_dtypes.add(leaf.dtype)
+  if not floating_dtypes:
+    raise ValueError('No floating point arrays found in struct.')
+  if len(floating_dtypes) > 1:
+    raise ValueError(f'Multiple floating point dtypes found in struct: {floating_dtypes}')
+  return floating_dtypes.pop()
+
+def module_dtype(module: nnx.Module) -> jnp.dtype:
+  state = nnx.state(module, nnx.Param)
+  return struct_dtype(state)
+
+def cast_floats_to_dtype(struct: T, dtype: jnp.dtype) -> T:
+  """Cast all floating point parameters in the module to the given dtype."""
+  return jax.tree.map(
+      lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x,
+      struct)
+
 ModT = tp.TypeVar('ModT', bound=nnx.Module)
+
+def cast_params_to_dtype(module: ModT, dtype) -> ModT:
+  """Cast nnx.Param variables to given dtype."""
+  graphdef, state = nnx.split(module, nnx.Param)
+  new_state = cast_floats_to_dtype(state, dtype)
+  return nnx.merge(graphdef, new_state)
+
+def with_bf16_compute(
+    loss_fn: tp.Callable[tp.Concatenate[ModT, P], T],
+) -> tp.Callable[tp.Concatenate[ModT, P], T]:
+  """Wraps loss_fn(module, ...) to cast params to bf16 before computing.
+
+  Gradients flow back as fp32 through JAX's VJP of the dtype cast, so
+  master weights and optimizer state remain fp32.
+  """
+  @functools.wraps(loss_fn)
+  def wrapped(module: ModT, *args: P.args, **kwargs: P.kwargs):
+    casted_module = cast_params_to_dtype(module, jnp.bfloat16)
+    return loss_fn(casted_module, *args, **kwargs)
+  return wrapped
 
 def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
   """Stack a list of modules by adding a leading axis to their parameters."""

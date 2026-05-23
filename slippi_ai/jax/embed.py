@@ -244,15 +244,18 @@ class OneHotEmbedding(Embedding[int, T]):
     return jnp.argmax(embedded, axis=-1).astype(self.dtype)
 
   def distance(self, distribution: Array, target: Array):
+    # Softmax needs fp32 for numerical stability.
+    distribution = distribution.astype(jnp.float32)
     return optax.softmax_cross_entropy_with_integer_labels(distribution, target)
 
   def sample(self, rng: jax.Array, distribution: Array, temperature=None, **_):
-    logits = distribution
+    logits = distribution.astype(jnp.float32)
     if temperature is not None:
       logits = logits / temperature
     return jax.random.categorical(rng, logits, axis=-1).astype(self.dtype)
 
   def distribution(self, distribution: Array) -> tfp.distributions.Categorical:
+    distribution = distribution.astype(jnp.float32)
     return tfp.distributions.Categorical(logits=distribution, dtype=self.dtype)
 
 NT = TypeVar("NT")
