@@ -335,8 +335,8 @@ class JaxSimRolloutWorker:
           batch_slice=batch_slice,
       )
     timing = {
-        'state_copy': timings['state_copy'] / max(num_steps, 1),
-        'env_step': timings['env_step'] / max(num_steps, 1),
+        'env_pop': timings['state_copy'] / max(num_steps, 1),
+        'env_push': timings['env_step'] / max(num_steps, 1),
         'agent_step': {
             port: timings[f'agent_step_{port}'] / max(num_steps, 1)
             for port in self.ports

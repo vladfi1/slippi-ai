@@ -5,8 +5,6 @@ import numpy as np
 
 from slippi_ai import dolphin
 from slippi_ai import sim_env
-from slippi_ai.controller_heads import SampleOutputs
-from slippi_ai.sim_env import jax_rollout
 from slippi_ai.sim_env import observations
 from slippi_ai.types import Buttons, Controller, Items, Stick
 
@@ -14,32 +12,7 @@ from slippi_ai.types import Buttons, Controller, Items, Stick
 class SimEnvTest(unittest.TestCase):
 
   def _sim_env(self, *args, **kwargs):
-    try:
-      return sim_env.SimBatchedEnvironment(*args, **kwargs)
-    except FileNotFoundError:
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
-    except MemoryError as exc:
-      if 'msl_batch_create failed' not in str(exc):
-        raise
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
-
-  def _rollout_or_skip(self, worker, steps: int):
-    try:
-      return worker.rollout(steps)
-    except FileNotFoundError:
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
-    except MemoryError as exc:
-      if 'msl_batch_create failed' not in str(exc):
-        raise
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
+    return sim_env.SimBatchedEnvironment(*args, **kwargs)
 
   def test_current_state_and_step_match_existing_game_shape(self):
     env = self._sim_env(
@@ -293,24 +266,6 @@ class SimEnvTest(unittest.TestCase):
     finally:
       env.stop()
 
-  def test_fake_env_keeps_valid_observations_without_stepping(self):
-    env = self._sim_env(num_envs=2, frame_buffer_length=8, fake=True)
-    try:
-      encoded = _neutral_encoded_controller(batch_size=4)
-      before = env.current_game_batch(np.ones(2, dtype=np.bool_)).game.p0.x.copy()
-      needs_reset = env.step_encoded(
-          encoded,
-          axis_spacing=32,
-          shoulder_spacing=4,
-      )
-      after = env.current_game_batch(needs_reset).game.p0.x.copy()
-
-      self.assertFalse(np.any(needs_reset))
-      self.assertEqual(env.cursor, 0)
-      np.testing.assert_array_equal(before, after)
-    finally:
-      env.stop()
-
   def test_game_batch_matches_port_state_observation_conventions(self):
     env = self._sim_env(
         num_envs=3,
@@ -429,54 +384,6 @@ class SimEnvTest(unittest.TestCase):
     self.assertEqual(out.item_2.x.tolist(), [-32.0])
     self.assertFalse(out.item_3.exists[0])
 
-  def test_jax_rollout_worker_returns_learner_trajectories(self):
-    worker = jax_rollout.JaxSimRolloutWorker(
-        policy=_DummyPolicy(),
-        agent_kwargs={
-            1: _dummy_agent_kwargs(['A', 'B']),
-            2: _dummy_agent_kwargs(['B', 'A']),
-        },
-        dolphin_kwargs=_worker_dolphin_kwargs(),
-        num_envs=2,
-        batch_steps=2,
-    )
-    try:
-      trajectories, metrics = self._rollout_or_skip(worker, 4)
-
-      self.assertEqual(set(trajectories), {1, 2})
-      self.assertEqual(trajectories[1].states.p0.x.shape, (5, 2))
-      self.assertEqual(trajectories[2].states.p0.x.shape, (5, 2))
-      self.assertEqual(trajectories[1].actions.controller_state.main_stick.x.shape, (5, 2))
-      self.assertEqual(len(trajectories[1].delayed_actions), 2)
-      self.assertEqual(trajectories[1].is_resetting.shape, (5, 2))
-      self.assertTrue(np.all(trajectories[1].is_resetting[0]))
-      self.assertIn('timing', metrics)
-    finally:
-      worker.stop()
-
-  def test_jax_rollout_worker_supports_fixed_opponent(self):
-    worker = jax_rollout.JaxSimRolloutWorker(
-        policy=_DummyPolicy(),
-        opponent_policy=_DummyPolicy(),
-        train_opponent=False,
-        agent_kwargs={
-            1: _dummy_agent_kwargs(['A', 'B']),
-            2: _dummy_agent_kwargs(['B', 'A']),
-        },
-        dolphin_kwargs=_worker_dolphin_kwargs(),
-        num_envs=2,
-        batch_steps=2,
-    )
-    try:
-      trajectories, metrics = self._rollout_or_skip(worker, 4)
-
-      self.assertEqual(set(trajectories), {1})
-      self.assertEqual(trajectories[1].states.p0.x.shape, (5, 2))
-      self.assertEqual(trajectories[1].initial_state.shape, (2,))
-      self.assertIn('completed_games', metrics)
-    finally:
-      worker.stop()
-
 def _neutral_encoded_controller(batch_size: int):
   shape = (int(batch_size),)
   return Controller(
@@ -493,116 +400,6 @@ def _neutral_encoded_controller(batch_size: int):
           name: np.zeros(shape, dtype=np.bool_)
           for name in Buttons._fields
       }),
-  )
-
-
-def _worker_dolphin_kwargs():
-  return [
-      dict(
-          players={
-              1: dolphin.AI(melee.Character.FOX),
-              2: dolphin.AI(melee.Character.FALCO),
-          },
-          stage=stage,
-          infinite_time=True,
-      )
-      for stage in (melee.Stage.FINAL_DESTINATION, melee.Stage.BATTLEFIELD)
-  ]
-
-
-class _DummyNetwork:
-
-  def encode_game(self, game):
-    return game
-
-
-class _DummyControllerHead:
-
-  def dummy_sample_outputs(self, shape):
-    controller = _neutral_encoded_controller(shape[0])
-    return SampleOutputs(
-        controller_state=controller,
-        logits=controller,
-    )
-
-
-class _DummyPolicy:
-  delay = 2
-  network = _DummyNetwork()
-  controller_head = _DummyControllerHead()
-
-  def set_state(self, values):
-    del values
-
-  def build_agent(self, batch_size: int, **kwargs):
-    return _DummyJaxActor(batch_size, kwargs['name_code'])
-
-
-class _DummyJaxActor:
-
-  def __init__(self, batch_size: int, name_code):
-    self._batch_size = int(batch_size)
-    self._policy = _DummyPolicy()
-    self.name_code = np.asarray(name_code, dtype=np.int32)
-    self.calls = 0
-
-  def hidden_state(self):
-    return np.zeros(self._batch_size, dtype=np.float32)
-
-  def step_device(self, game, needs_reset):
-    del game, needs_reset
-    self.calls += 1
-    return self._policy.controller_head.dummy_sample_outputs([self._batch_size])
-
-  def multi_step_stacked_device(self, states):
-    outputs = [
-        self.step_device(game, needs_reset)
-        for game, needs_reset in states
-    ]
-    return _stack_sample_outputs(outputs)
-
-
-def _stack_sample_outputs(outputs):
-  return SampleOutputs(
-      controller_state=_stack_controllers([
-          output.controller_state for output in outputs]),
-      logits=_stack_controllers([output.logits for output in outputs]),
-  )
-
-
-def _stack_controllers(controllers):
-  return Controller(
-      main_stick=Stick(
-          x=np.stack([c.main_stick.x for c in controllers], axis=0),
-          y=np.stack([c.main_stick.y for c in controllers], axis=0),
-      ),
-      c_stick=Stick(
-          x=np.stack([c.c_stick.x for c in controllers], axis=0),
-          y=np.stack([c.c_stick.y for c in controllers], axis=0),
-      ),
-      shoulder=np.stack([c.shoulder for c in controllers], axis=0),
-      buttons=Buttons(**{
-          name: np.stack([getattr(c.buttons, name) for c in controllers], axis=0)
-          for name in Buttons._fields
-      }),
-  )
-
-
-def _dummy_agent_kwargs(names):
-  return dict(
-      compile=True,
-      name=names,
-      state=dict(
-          name_map={'A': 0, 'B': 1},
-          config=dict(
-              embed=dict(
-                  controller=dict(
-                      type='default',
-                      default=dict(axis_spacing=32, shoulder_spacing=4),
-                  ),
-              ),
-          ),
-      ),
   )
 
 

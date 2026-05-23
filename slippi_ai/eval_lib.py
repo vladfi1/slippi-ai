@@ -340,17 +340,16 @@ def get_name_code(state: dict, name: str) -> int:
 
 def get_name_codes(
     state: dict,
-    name: tp.Union[str, tp.Sequence[str]],
-    batch_size: tp.Optional[int] = None,
-) -> tp.Union[int, list[int]]:
+    name: str | tp.Sequence[str],
+    batch_size: int | None = None,
+) -> int | list[int]:
   if isinstance(name, str):
     code = get_name_code(state, name)
-    if batch_size is None:
-      return code
-    return [code] * batch_size
-  if batch_size is not None and len(name) != batch_size:
+    return code if batch_size is None else [code] * batch_size
+  codes = [get_name_code(state, n) for n in name]
+  if batch_size is not None and len(codes) != batch_size:
     raise ValueError(f'Nametag batch must have length batch_size={batch_size}')
-  return [get_name_code(state, n) for n in name]
+  return codes
 
 
 def get_agent_config(state: dict) -> tp.Optional[dict]:

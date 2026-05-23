@@ -438,6 +438,16 @@ def run(config: Config):
         inner_batch_size=config.actor.inner_batch_size,
     )
 
+  build_actor = lambda: evaluators.RolloutWorker(
+      agent_kwargs=agent_kwargs,
+      dolphin_kwargs=dolphin_kwargs,
+      env_kwargs=env_kwargs,
+      num_envs=config.actor.num_envs,
+      async_envs=config.actor.async_envs,
+      use_gpu=config.actor.gpu_inference,
+      use_fake_envs=config.actor.use_fake_envs,
+  )
+
   if config.actor.use_sim_envs:
     if config.actor.async_envs:
       raise ValueError('Sim envs are single-process; async_envs is not supported.')
@@ -466,16 +476,6 @@ def run(config: Config):
           batch_steps=config.agent.batch_steps,
           use_fake_envs=config.actor.use_fake_envs,
       )
-  else:
-    build_actor = lambda: evaluators.RolloutWorker(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        env_kwargs=env_kwargs,
-        num_envs=config.actor.num_envs,
-        async_envs=config.actor.async_envs,
-        use_gpu=config.actor.gpu_inference,
-        use_fake_envs=config.actor.use_fake_envs,
-    )
 
   learner_manager = LearnerManager(
       config=config,
@@ -541,12 +541,7 @@ def run(config: Config):
         mps=mps,
     )
     actor_timing = metrics['actor'].pop('timing')
-    env_timing_keys = (
-        ['state_copy', 'env_step']
-        if config.actor.use_sim_envs else
-        ['env_pop', 'env_push']
-    )
-    for key in env_timing_keys:
+    for key in ['env_pop', 'env_push']:
       timings[key] = actor_timing[key]
 
     agent_keys = ['agent_step']
