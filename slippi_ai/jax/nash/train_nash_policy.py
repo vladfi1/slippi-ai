@@ -265,9 +265,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   assert isinstance(name_map, dict)
 
   if config.remat:
-    from slippi_ai.jax import controller_heads
-    assert isinstance(nash_policy.controller_head, controller_heads.AutoRegressive)
-    nash_policy.controller_head.remat = True  # save memory at the cost of extra compute
+    nash_policy.enable_remat()
 
   # Initialize q_function
   if config.initialize_q_function_from:
