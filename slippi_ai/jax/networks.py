@@ -894,24 +894,24 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
     self._initial_state_fn = cells[0].initialize_carry
     self._cells = nnx.List(cells)
 
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
+    if isinstance(batch_size, int):
+      batch_shape = (batch_size,)
+    else:
+      batch_shape = tuple(batch_size)
+    input_shape = batch_shape + (self._embed_flat[0].size,)
+    state = self._initial_state_fn(input_shape, rngs)
+    dtype = jax_utils.module_dtype(self)
+    return jax_utils.cast_floats_to_dtype(state, dtype)
+
   def __call__(
       self,
       controller: Action,
-      prev_state: tp.Optional[RecurrentState] = None,
+      prev_state: RecurrentState,
   ) -> tuple[Array, RecurrentState]:
-    params = jax.tree.leaves(nnx.state(self, nnx.Param))
-    dtype: jnp.dtype = params[0].dtype
+    dtype = jax_utils.module_dtype(self)
 
-    if prev_state is None:
-      input_flat: list[Array] = list(self._embed_controller.flatten(controller))
-      input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
-
-      # TODO: pass rngs properly? maybe reuse from __init__?
-      hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
-      dtype = jax_utils.module_dtype(self)
-      hidden_state = jax_utils.cast_floats_to_dtype(hidden_state, dtype)
-    else:
-      hidden_state = prev_state
+    hidden_state = prev_state
 
     for cell, embed, component in zip(
         self._cells, self._embed_flat,
@@ -920,6 +920,19 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
       hidden_state, output = cell(hidden_state, embed(component).astype(dtype))
 
     return output, hidden_state  # type: ignore
+
+  def unroll(
+      self,
+      controllers: list[Action],
+  ) -> Array:
+    batch_shape = next(self._embed_controller.flatten(controllers[0])).shape
+    initial_state = self.initial_state(batch_shape, nnx.Rngs(0))
+
+    inputs = self._embed_controller.map(
+        lambda _, *xs: jnp.stack(xs), *controllers)  # type: ignore
+
+    outputs, _ = jax_utils.dynamic_rnn(self, inputs, initial_state)
+    return outputs[-1]
 
 
 P = tp.ParamSpec('P')
@@ -1111,19 +1124,18 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 
     self._use_controller_rnn = use_controller_rnn
     if use_controller_rnn:
-      build_crnn = lambda: ControllerRNN(
+      if not share_crnn:
+        raise NotImplementedError('Separate CRNNs not supported anymore.')
+
+      controller_rnn = ControllerRNN(
           rngs=rngs,
           embed_controller=self._embed_controller,
           hidden_size=hidden_size,
           rnn_cell=rnn_cell,
       )
 
-      if share_crnn:
-        controller_rnns = [build_crnn()] * embeddings.frame_skip
-      else:
-        controller_rnns = [build_crnn() for _ in range(embeddings.frame_skip)]
-
-      self._controller_rnns = nnx.List(controller_rnns)
+      # Wrap in List for backwards compatibility with the old non-share_crnn path.
+      self._controller_rnns = nnx.List([controller_rnn])
 
     # Assumes that p0 and p1 have the same embedding structure
     embed_char = embed_lib.embed_char
@@ -1245,11 +1257,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     parts.append(tp.cast(Array, default_state_action_embed.name))
 
     if self._use_controller_rnn:
-      # TODO: use scan?
-      crnn_state = None
-      for action, crnn in zip(state_action.action, self._controller_rnns):
-        output, crnn_state = crnn(action, crnn_state)
-      parts.append(output)
+      parts.append(self._controller_rnns[0].unroll(state_action.action))
     else:
       parts.extend(map(self._embed_controller, state_action.action))
 
