@@ -64,7 +64,7 @@ class JaxSimRolloutWorker:
     agent1_kwargs = agent_kwargs[1]
     agent2_kwargs = agent_kwargs[2]
 
-    should_compile = agent1_kwargs.get('compile', True)
+    should_compile = agent1_kwargs['compile']
     state = agent1_kwargs['state']
     name_code_by_port = {
         port: np.asarray(
@@ -101,7 +101,7 @@ class JaxSimRolloutWorker:
       self._opponent_actor = opponent_policy.build_agent(
           batch_size=self._num_envs,
           name_code=name_code_by_port[2],
-          compile=should_compile,
+          compile=agent2_kwargs['compile'],
           pack_args=True,
       )
 
@@ -115,13 +115,21 @@ class JaxSimRolloutWorker:
           itertools.cycle(sim_env.SUPPORTED_STAGES),
           self._num_envs,
       ))
+    character_pairs = [
+        tuple(kwargs['players'][port].character for port in self.ports)
+        for kwargs in dolphin_kwargs
+    ]
+    if any(pair != character_pairs[0] for pair in character_pairs):
+      raise ValueError(
+          'JAX sim rollout currently requires one character matchup per batch.')
+
     controller_config = state['config']['embed']['controller']
     other_config = agent2_kwargs['state']['config']['embed']['controller']
     if other_config != controller_config:
       raise ValueError('JAX sim rollout requires matching controller configs.')
-    if controller_config.get('type', 'default') != 'default':
+    if controller_config['type'] != 'default':
       raise ValueError('sim env only supports the default controller embedding')
-    controller_config = controller_config.get('default', controller_config)
+    controller_config = controller_config['default']
     self._controller_spacing = (
         int(controller_config['axis_spacing']),
         int(controller_config['shoulder_spacing']),
@@ -213,6 +221,8 @@ class JaxSimRolloutWorker:
     # Step the sim immediately with already-delayed controller inputs, while
     # collecting a chunk of observations for one fused JAX actor call.
     for chunk_start in range(0, num_steps, self._batch_steps):
+      # `chunk_len` is normally `_batch_steps`; it is shorter only for a final
+      # partial chunk when num_steps is not divisible by batch_steps.
       chunk_len = min(self._batch_steps, num_steps - chunk_start)
       chunk_inputs = []
       chunk_reset_masks = []
@@ -347,7 +357,7 @@ class JaxSimRolloutWorker:
     }
 
   def _build_env_if_needed(self, num_steps: int):
-    frame_buffer_length = int(num_steps) + self.actor._policy.delay + 2
+    frame_buffer_length = num_steps + self.actor._policy.delay + 2
     if self._env is not None:
       if self._frame_buffer_length >= frame_buffer_length:
         return
@@ -371,9 +381,9 @@ class _TrajectoryStateBuffer(tp.NamedTuple):
   """Time-major storage for T+1 policy observations.
 
   `current_game_batch()` reuses one mutable Game tree, while the learner needs
-  the whole rollout after the sim has advanced. This buffer copies each frame's
-  leaves into pre-sliced time slots without rebuilding a new Game object per
-  frame.
+  the whole rollout after the sim has advanced. `slots` are NumPy views into the
+  time-major `states` tree, so copying into a slot writes directly into the
+  corresponding frame of the final trajectory buffer.
   """
 
   states: Game
@@ -388,14 +398,14 @@ def _make_trajectory_state_buffer(
 ) -> _TrajectoryStateBuffer:
   states = utils.map_single_structure(
       lambda leaf: np.empty(
-          (int(rollout_length) + 1,) + np.asarray(leaf).shape,
+          (rollout_length + 1,) + np.asarray(leaf).shape,
           dtype=np.asarray(leaf).dtype,
       ),
       source_game,
   )
   slots = [
       utils.map_single_structure(lambda leaf, i=i: leaf[i], states)
-      for i in range(int(rollout_length) + 1)
+      for i in range(rollout_length + 1)
   ]
   return _TrajectoryStateBuffer(
       states=states,
@@ -407,7 +417,7 @@ def _make_trajectory_state_buffer(
 
 def _copy_state_slot(state_buffer: _TrajectoryStateBuffer, index: int):
   for dst, src in zip(
-      state_buffer.slot_leaves[int(index)],
+      state_buffer.slot_leaves[index],
       state_buffer.source_leaves,
   ):
     dst[...] = src
@@ -424,7 +434,7 @@ def _trajectory_slice(
     name_code: np.ndarray,
     batch_slice: slice,
 ) -> Trajectory:
-  batch_size = int(batch_slice.stop) - int(batch_slice.start)
+  batch_size = batch_slice.stop - batch_slice.start
   return Trajectory(
       states=utils.map_single_structure(
           lambda x: np.asarray(x[:, batch_slice]).copy(), states),
@@ -447,7 +457,10 @@ def _batch_actions(actions: list[SampleOutputs]) -> SampleOutputs:
   return jax.tree.map(lambda *xs: np.stack(xs, axis=0), *actions)
 
 
-def _sample_chunk(actor, chunk_inputs):
+def _sample_chunk(
+    actor: tp.Any,
+    chunk_inputs: list[tuple[Game, np.ndarray]],
+) -> SampleOutputs:
   if len(chunk_inputs) == 1:
     return jax.tree.map(
         lambda x: x[None],

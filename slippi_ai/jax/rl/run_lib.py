@@ -268,6 +268,10 @@ def reset_optimizer_steps(imitation_state: dict):
   for key in ['policy_optimizer', 'value_optimizer']:
     if key in imitation_state['state']:
       imitation_state['state'][key]['step'] = 0
+    else:
+      logging.warning(
+          'Imitation checkpoint is missing %s state; using a fresh optimizer.',
+          key)
 
 
 def run(config: Config):
