@@ -135,7 +135,6 @@ class JaxSimRolloutWorker:
         num_envs=self._num_envs,
         players=[kwargs['players'] for kwargs in dolphin_kwargs],
         stage=stages,
-        character_pool=None,
         max_frame_id=(
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
         fake=use_fake_envs,
