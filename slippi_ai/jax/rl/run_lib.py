@@ -477,6 +477,7 @@ def run(config: Config):
           agent_kwargs=agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
+          rollout_length=config.actor.rollout_length,
           batch_steps=config.agent.batch_steps,
           use_fake_envs=config.actor.use_fake_envs,
       )

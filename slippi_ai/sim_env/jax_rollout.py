@@ -40,6 +40,7 @@ class JaxSimRolloutWorker:
       agent_kwargs: tp.Mapping[int, dict],
       dolphin_kwargs: tp.Union[dict, tp.Sequence[dict]],
       num_envs: int,
+      rollout_length: int,
       batch_steps: int = 1,
       opponent_policy: policies.Policy | None = None,
       train_opponent: bool = True,
@@ -47,6 +48,7 @@ class JaxSimRolloutWorker:
   ):
     self._num_envs = int(num_envs)
     self._num_players = self._num_envs * len(self.ports)
+    self._rollout_length = int(rollout_length)
     self._batch_slice_by_port = {
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
         for i, port in enumerate(self.ports)
@@ -135,7 +137,6 @@ class JaxSimRolloutWorker:
         int(controller_config['shoulder_spacing']),
     )
     self._batch_steps = max(1, int(batch_steps))
-    self._frame_buffer_length = 0
     self._env_kwargs = dict(
         num_envs=self._num_envs,
         players=dolphin_kwargs_0['players'],
@@ -144,16 +145,18 @@ class JaxSimRolloutWorker:
         max_frame_id=(
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
         fake=use_fake_envs,
+        frame_buffer_length=self._rollout_length + self.actor._policy.delay + 2,
     )
 
-    # The sim env is created lazily from rollout(num_steps), matching the
-    # generic RolloutWorker API where rollout length is not constructor state.
-    self._env = None
-    self._needs_reset = None
-    self._state_buffer = None
-    self._reset_buffer = None
+    self._env = self._build_env()
+    self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
     self._dummy_outputs = self.actor._policy.controller_head.dummy_sample_outputs(
         [self._num_players])
+    game_batch = self._env.current_game_batch(self._needs_reset)
+    self._state_buffer = _make_trajectory_state_buffer(
+        game_batch.game, self._rollout_length)
+    self._reset_buffer = np.empty(
+        (self._rollout_length + 1, self._num_players), dtype=np.bool_)
     self._reset_delay_queues()
 
   def _reset_delay_queues(self):
@@ -170,16 +173,15 @@ class JaxSimRolloutWorker:
     pass
 
   def stop(self):
-    if self._env is not None:
-      self._env.stop()
-    self._env = None
-    self._needs_reset = None
-    self._state_buffer = None
-    self._reset_buffer = None
-    self._frame_buffer_length = 0
+    self._env.stop()
 
   def reset_env(self):
     self.stop()
+    self._env = self._build_env()
+    self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
+    game_batch = self._env.current_game_batch(self._needs_reset)
+    self._state_buffer = _make_trajectory_state_buffer(
+        game_batch.game, self._rollout_length)
     self._reset_delay_queues()
 
   def update_variables(self, updates):
@@ -199,13 +201,11 @@ class JaxSimRolloutWorker:
     del verbose
     timings: dict[str, float] = collections.defaultdict(float)
     num_steps = int(num_steps)
-    self._build_env_if_needed(num_steps)
+    if num_steps != self._rollout_length:
+      raise ValueError(
+          f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '
+          f'got rollout({num_steps}).')
     game_batch = self._env.current_game_batch(self._needs_reset)
-    if self._state_buffer is None:
-      self._state_buffer = _make_trajectory_state_buffer(
-          game_batch.game, num_steps)
-      self._reset_buffer = np.empty(
-          (num_steps + 1, self._num_players), dtype=np.bool_)
     state_buffer = self._state_buffer
     reset_buffer = self._reset_buffer
     trajectory_actions = []
@@ -356,25 +356,8 @@ class JaxSimRolloutWorker:
         'completed_games': self._env.pop_completed_games(),
     }
 
-  def _build_env_if_needed(self, num_steps: int):
-    frame_buffer_length = num_steps + self.actor._policy.delay + 2
-    if self._env is not None:
-      if self._frame_buffer_length >= frame_buffer_length:
-        return
-      self._env.stop()
-      self._env = None
-      self._needs_reset = None
-      self._state_buffer = None
-      self._reset_buffer = None
-      self._frame_buffer_length = 0
-
-    self._env = sim_env.SimBatchedEnvironment(
-        **self._env_kwargs,
-        frame_buffer_length=frame_buffer_length,
-    )
-    self._frame_buffer_length = frame_buffer_length
-    self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
-    self._reset_delay_queues()
+  def _build_env(self):
+    return sim_env.SimBatchedEnvironment(**self._env_kwargs)
 
 
 class _TrajectoryStateBuffer(tp.NamedTuple):
