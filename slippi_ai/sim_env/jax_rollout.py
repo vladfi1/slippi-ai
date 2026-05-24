@@ -138,7 +138,7 @@ class JaxSimRolloutWorker:
         max_frame_id=(
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
         fake=use_fake_envs,
-        frame_buffer_length=self._rollout_length + self.actor._policy.delay + 2,
+        frame_buffer_length=self._rollout_length + 1,
     )
 
     self._env = self._build_env()
@@ -448,11 +448,6 @@ def _sample_chunk(
     actor: tp.Any,
     chunk_inputs: list[tuple[Game, np.ndarray]],
 ) -> SampleOutputs:
-  if len(chunk_inputs) == 1:
-    return jax.tree.map(
-        lambda x: x[None],
-        actor.step_device(chunk_inputs[0][0], chunk_inputs[0][1]),
-    )
   return actor.multi_step_stacked_device(chunk_inputs)
 
 
