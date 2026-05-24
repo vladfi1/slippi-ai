@@ -181,6 +181,32 @@ class SimEnvTest(unittest.TestCase):
     finally:
       env.stop()
 
+  def test_per_env_players_set_matchups(self):
+    env = self._sim_env(
+        num_envs=2,
+        frame_buffer_length=8,
+        players=[
+            {
+                1: dolphin.AI(melee.Character.FOX),
+                2: dolphin.AI(melee.Character.FALCO),
+            },
+            {
+                1: dolphin.AI(melee.Character.FALCO),
+                2: dolphin.AI(melee.Character.FOX),
+            },
+        ],
+    )
+    try:
+      state = env.current_game_batch(np.ones(2, dtype=np.bool_))
+      self.assertEqual(state.game.p0.character.tolist(), [
+          melee.Character.FOX.value,
+          melee.Character.FALCO.value,
+          melee.Character.FALCO.value,
+          melee.Character.FOX.value,
+      ])
+    finally:
+      env.stop()
+
   def test_character_pool_assignment_stays_fixed_on_reset(self):
     env = self._sim_env(
         num_envs=1,

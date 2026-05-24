@@ -117,13 +117,6 @@ class JaxSimRolloutWorker:
           itertools.cycle(sim_env.SUPPORTED_STAGES),
           self._num_envs,
       ))
-    character_pairs = [
-        tuple(kwargs['players'][port].character for port in self.ports)
-        for kwargs in dolphin_kwargs
-    ]
-    if any(pair != character_pairs[0] for pair in character_pairs):
-      raise ValueError(
-          'JAX sim rollout currently requires one character matchup per batch.')
 
     controller_config = state['config']['embed']['controller']
     other_config = agent2_kwargs['state']['config']['embed']['controller']
@@ -139,7 +132,7 @@ class JaxSimRolloutWorker:
     self._batch_steps = max(1, int(batch_steps))
     self._env_kwargs = dict(
         num_envs=self._num_envs,
-        players=dolphin_kwargs_0['players'],
+        players=[kwargs['players'] for kwargs in dolphin_kwargs],
         stage=stages,
         character_pool=None,
         max_frame_id=(
