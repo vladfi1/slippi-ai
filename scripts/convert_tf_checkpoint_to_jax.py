@@ -20,7 +20,7 @@ from slippi_ai.flag_utils import dataclass_from_dict
 from slippi_ai.jax import controller_heads, embed, jax_utils, networks, policies, saving
 
 
-ArrayTree = dict[str, tp.Any]
+ArrayTree = dict[str | int, tp.Any]
 _VERIFY_MAX_GAMES = 5
 _VERIFY_SUBSAMPLE = 100
 
@@ -112,7 +112,7 @@ def _jax_config_from_tf_config(config: dict) -> dict:
     config['embed'].update(
         with_randall=False,
         with_fod=False,
-        items={'type': embed.ItemsType.SKIP.value},
+        items={'type': embed.ItemsType.SKIP},
     )
     config['embed']['player'].update(
         with_nana=False,
@@ -124,11 +124,10 @@ def _jax_config_from_tf_config(config: dict) -> dict:
     raise ValueError(f"Unsupported legacy TF checkpoint version: {config.get('version')}")
 
   controller = config['embed']['controller']
-  if 'type' not in controller:
-    config['embed']['controller'] = {
-        'type': 'default',
-        'default': controller,
-    }
+  config['embed']['controller'] = {
+      'type': 'default',
+      'default': controller,
+  }
 
   _upgrade_network_config(config['network'])
   _upgrade_network_config(config['value_function']['network'])
@@ -289,6 +288,7 @@ def convert_state(source_state: dict) -> dict:
   _skip_legacy_policy_value_readout(reader, config['network'])
   reader.finish()
 
+  # TODO: Convert optimizer/value-function state.
   return {
       'state': {'policy': params},
       'config': config,
@@ -392,7 +392,7 @@ def main():
   parser.add_argument(
       '--verify-data-dir',
       default=str(paths.TOY_DATA_DIR),
-      help='run post-conversion TF/JAX parity on parsed game tables')
+      help='run post-conversion TF/JAX parity on parsed game tables (defaults to toy data)')
   args = parser.parse_args()
 
   convert_file(args.source, args.output)
