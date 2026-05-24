@@ -10,7 +10,8 @@ if __name__ == '__main__':
   from absl import app, flags
   import fancyflags as ff
 
-  from slippi_ai import eval_lib, dolphin, utils, evaluators, flag_utils, saving
+  from slippi_ai import (
+      eval_lib, dolphin, utils, evaluators, flag_utils, policies, saving)
 
   default_dolphin_config = dolphin.DolphinConfig(
       infinite_time=False,
@@ -138,12 +139,40 @@ if __name__ == '__main__':
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
 
-    evaluator = evaluators.Evaluator(**evaluator_kwargs)
+    use_jax_sim_worker = (
+        SIM_ENVS.value and
+        len(agent_kwargs) == 2 and
+        all(
+            saving.get_platform(kwargs['state']['config']) is policies.Platform.JAX
+            for kwargs in agent_kwargs.values()
+        )
+    )
+    if use_jax_sim_worker:
+      from slippi_ai.sim_env import jax_rollout
+
+      train_opponent = SELF_PLAY.value
+      evaluator = jax_rollout.JaxSimRolloutWorker(
+          policy=saving.load_policy_from_state(agent_kwargs[1]['state']),
+          opponent_policy=(
+              None if train_opponent else
+              saving.load_policy_from_state(agent_kwargs[2]['state'])),
+          train_opponent=train_opponent,
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=NUM_ENVS.value,
+          rollout_length=ROLLOUT_LENGTH.value,
+          batch_steps=NUM_AGENT_STEPS.value,
+          use_fake_envs=FAKE_ENVS.value,
+      )
+    else:
+      evaluator = evaluators.Evaluator(**evaluator_kwargs)
 
     with evaluator.run():
       # burnin
       batch_steps = NUM_AGENT_STEPS.value or 1
       burnin_steps = math.ceil(32 / batch_steps) * batch_steps
+      if use_jax_sim_worker:
+        burnin_steps = ROLLOUT_LENGTH.value
       evaluator.rollout(burnin_steps)
 
       if TF_PROFILE.value:
@@ -176,6 +205,11 @@ if __name__ == '__main__':
       with timer:
         while True:
           stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=True)
+          if use_jax_sim_worker:
+            stats = {
+                port: evaluators.RolloutMetrics.from_trajectory(trajectory)
+                for port, trajectory in stats.items()
+            }
           total_steps += ROLLOUT_LENGTH.value
           for port, stat in stats.items():
             rewards[port] = rewards.get(port, 0) + stat.reward

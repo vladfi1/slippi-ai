@@ -9,6 +9,7 @@ entries expected by the learner.
 """
 
 import collections
+import contextlib
 import itertools
 import time
 import typing as tp
@@ -165,8 +166,19 @@ class JaxSimRolloutWorker:
   def start(self):
     pass
 
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      self.start()
+      yield
+    finally:
+      self.stop()
+
   def stop(self):
     self._env.stop()
+
+  def active_sim_games(self) -> list[dict[str, int | str]]:
+    return self._env.active_games()
 
   def reset_env(self):
     self.stop()
