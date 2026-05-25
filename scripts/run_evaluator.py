@@ -138,8 +138,6 @@ if __name__ == '__main__':
     )
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
-    if SIM_ENVS.value and ASYNC_ENVS.value and NUM_ENV_STEPS.value:
-      raise ValueError('--num_env_steps is not used by sim async envs.')
 
     use_jax_sim_worker = (
         SIM_ENVS.value and

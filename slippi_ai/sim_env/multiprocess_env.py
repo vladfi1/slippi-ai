@@ -120,6 +120,9 @@ class MultiprocessSimEnvironment:
     self._closed = False
     self._stage_by_env = np.asarray(stage, dtype=object)
 
+    # Shared buffers are allocated once by the parent. Workers attach to the
+    # same blocks and fill only their shard, so rollout can read one global
+    # GameBatch without gathering per-worker Python objects every frame.
     self._obs_owner = SharedArrayOwner()
     self._action_owner = SharedArrayOwner()
     self._misc_owner = SharedArrayOwner()
@@ -131,6 +134,8 @@ class MultiprocessSimEnvironment:
     self._episode_ids = self._misc_owner.array((self._num_envs,), np.int64)
     self._controller_spacing = self._misc_owner.array((2,), np.int32)
 
+    # Two barriers define one synchronous sim frame: parent publishes actions,
+    # workers step their shards, then parent reads the completed observations.
     self._context = mp.get_context('spawn')
     self._actions_ready = self._context.Barrier(self._num_workers + 1)
     self._observations_ready = self._context.Barrier(self._num_workers + 1)
@@ -139,6 +144,8 @@ class MultiprocessSimEnvironment:
     self._error_queue = self._context.Queue()
     self._processes = []
 
+    # Each worker gets a contiguous env range. The policy-facing action buffer
+    # remains global: [all port-1 perspectives, all port-2 perspectives].
     for worker_id in range(self._num_workers):
       start = worker_id * self._inner_batch_size
       stop = start + self._inner_batch_size
@@ -169,6 +176,7 @@ class MultiprocessSimEnvironment:
       process.start()
       self._processes.append(process)
 
+    # Workers publish their initial observations before the first policy call.
     self._wait_for_observations('initial observations')
 
   def stop(self):
@@ -207,6 +215,8 @@ class MultiprocessSimEnvironment:
       axis_spacing: int,
       shoulder_spacing: int,
   ) -> np.ndarray:
+    # Copy JAX outputs into shared host buffers, release all workers for one sim
+    # frame, then wait until every shard has filled its observation slice.
     self._controller_spacing[:] = (axis_spacing, shoulder_spacing)
     copy_action_to_shared_buffer(self._shared_action, controller_state)
     self._wait_for_actions()
@@ -278,6 +288,8 @@ def _worker_main(
     completed_queue,
     error_queue,
 ):
+  # Recreate NumPy views over the parent's shared-memory blocks in the exact
+  # allocation order used during parent setup.
   obs_attacher = SharedArrayAttacher(obs_specs)
   action_attacher = SharedArrayAttacher(action_specs)
   misc_attacher = SharedArrayAttacher(misc_specs)
@@ -301,6 +313,8 @@ def _worker_main(
     p1_slice = env_slice
     p2_slice = slice(total_envs + offset, total_envs + offset + batch_size)
 
+    # Seed the parent-visible GameBatch with the shard's starting state so the
+    # first policy inference sees valid observations.
     local_reset = np.ones(batch_size, dtype=np.bool_)
     needs_reset[env_slice] = local_reset
     episode_ids[env_slice] = 0
@@ -314,6 +328,9 @@ def _worker_main(
     _barrier_wait(observations_ready, f'worker {worker_id} initial observations')
 
     while not stop_event.is_set():
+      # The parent has already copied actions into shared_action. This worker
+      # consumes only its port-1 and port-2 slices, steps its local EnvBatch, and
+      # writes results back into the same global GameBatch buffers.
       _barrier_wait(actions_ready, f'worker {worker_id} action wait')
       if stop_event.is_set():
         break
@@ -354,6 +371,8 @@ def shared_action_buffer(
     total_players: int,
     allocate_array: ArrayAllocator,
 ) -> Controller:
+  # Encoded controller buckets are compact uint8/bool values produced by the
+  # JAX controller head, not libmelee float stick coordinates.
   shape = (total_players,)
   return Controller(
       main_stick=Stick(

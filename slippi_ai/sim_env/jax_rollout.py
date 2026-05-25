@@ -356,7 +356,7 @@ class JaxSimRolloutWorker:
             port: timings[f'agent_step_{port}'] / max(num_steps, 1)
             for port in self.ports
         },
-        'trajectory_build': timings['trajectory_build'],
+        'trajectory_build': timings['trajectory_build'] / max(num_steps, 1),
     }
     return trajectories, {
         'timing': timing,

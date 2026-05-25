@@ -282,6 +282,10 @@ class SimBatchedEnvironment:
         shoulder_spacing=shoulder_spacing,
     )
 
+  # The JAX rollout worker stores both port perspectives in one controller
+  # batch. Multiprocess workers own contiguous env shards, so they pass the
+  # source slices for port 1 and port 2 explicitly instead of assuming the
+  # default [all p1 views, all p2 views] layout.
   def step_encoded_slices(
       self,
       controller_state: Controller,
@@ -296,36 +300,22 @@ class SimBatchedEnvironment:
     action = self._env.current_action_frame
     # Decode policy buckets straight into the native action ring, and mirror the
     # same decoded values into previous-controller state for the next Game view.
-    write_encoded_controller_action(
-        action,
-        controller_state,
-        player_index=0,
-        source_slice=player_slices[0],
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    write_encoded_controller_action(
-        action,
-        controller_state,
-        player_index=1,
-        source_slice=player_slices[1],
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    copy_encoded_controller(
-        self._last_controllers[1],
-        controller_state,
-        source_slice=player_slices[0],
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    copy_encoded_controller(
-        self._last_controllers[2],
-        controller_state,
-        source_slice=player_slices[1],
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
+    for player_index, port in enumerate(self._ports):
+      write_encoded_controller_action(
+          action,
+          controller_state,
+          player_index=player_index,
+          source_slice=player_slices[player_index],
+          axis_spacing=axis_spacing,
+          shoulder_spacing=shoulder_spacing,
+      )
+      copy_encoded_controller(
+          self._last_controllers[port],
+          controller_state,
+          source_slice=player_slices[player_index],
+          axis_spacing=axis_spacing,
+          shoulder_spacing=shoulder_spacing,
+      )
     if self._fake:
       return np.zeros(self._num_envs, dtype=np.bool_)
 
