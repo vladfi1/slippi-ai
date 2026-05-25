@@ -51,7 +51,7 @@ if __name__ == '__main__':
       'wandb',
       project=ff.String('slippi-ai'),
       mode=ff.Enum('online', ['online', 'offline', 'disabled']),
-      group=ff.String('q_learning'),
+      group=ff.String('nash'),
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
