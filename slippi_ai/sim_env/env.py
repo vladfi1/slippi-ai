@@ -54,23 +54,6 @@ _CHARACTER_BY_NAME = {
     character.name.lower(): character for character in SUPPORTED_CHARACTERS
 }
 
-_TERMINAL_DTYPE = np.dtype(
-    [
-        ('frame_id', '<i4'),
-        ('stage_id', '<u4'),
-        ('done', 'u1'),
-        ('match_ended', 'u1'),
-        ('stockout', 'u1'),
-        ('max_frame_reached', 'u1'),
-        ('alive_count', 'u1'),
-        ('alive_team_count', 'u1'),
-        ('team_alive_mask', 'u1'),
-        ('_pad0', 'u1'),
-    ],
-    align=False,
-)
-
-
 class SimStepInfo(tp.NamedTuple):
   terminal: np.ndarray
   step_t: int
@@ -183,17 +166,16 @@ class SimBatchedEnvironment:
         for stage, char_pair in zip(self._stage_by_env, character_assignments)
     ]
 
-    # Native buffers own the rollout ring. Python keeps views into them and only
-    # writes controller actions / reads observations at the current cursor.
+    # EnvBatch owns and binds its native rollout ring. Python keeps views into
+    # that storage and only writes controller actions / reads observations at
+    # the current cursor.
     self._env = melee_sim.EnvBatch(
         batch_size=self._num_envs,
         length=self._frame_buffer_length,
         num_players=2,
         data_dir=data_dir,
     )
-    self._buffers = self._env.buffers(action_format='controller')
-    self._env.configure_matches(self._buffers, match_configs)
-    self._env.bind(self._buffers)
+    self._env.configure_matches(match_configs)
     self._env.reset_all()
 
     # Previous-controller observations are policy-visible, so they live beside
@@ -203,7 +185,7 @@ class SimBatchedEnvironment:
     }
 
     self._last_step_info = SimStepInfo(
-        terminal=np.zeros(self._num_envs, dtype=_TERMINAL_DTYPE),
+        terminal=np.zeros(self._num_envs, dtype=melee_sim.terminal_dtype()),
         step_t=-1,
     )
     self._episode_ids = np.zeros(self._num_envs, dtype=np.int64)
@@ -229,10 +211,10 @@ class SimBatchedEnvironment:
 
   def current_state(self, needs_reset: np.ndarray | None = None) -> EnvOutput:
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
-    frame = self._buffers.gamestate_view[self._env.t]
     return EnvOutput(
         gamestates={
-            port: game_for_port(frame, port, self._last_controllers)
+            port: game_for_port(
+                self._env.current_frame, port, self._last_controllers)
             for port in self._ports
         },
         needs_reset=np.asarray(needs_reset, dtype=np.bool_),
@@ -241,10 +223,10 @@ class SimBatchedEnvironment:
   def current_game_batch(self, needs_reset: np.ndarray | None = None) -> GameBatch:
     """Return a [port1 views, port2 views] game batch for policy calls."""
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
-    frame = self._buffers.gamestate_view[self._env.t]
     # Reuse one Game nest and mutate its leaves. This is the high-throughput
     # adapter path from melee_sim's native buffers to the JAX policy input.
-    self._game_batch.fill(frame, needs_reset, self._last_controllers)
+    self._game_batch.fill(
+        self._env.current_frame, needs_reset, self._last_controllers)
     return GameBatch(
         game=self._game_batch.game,
         needs_reset=self._game_batch.needs_reset,
@@ -255,11 +237,11 @@ class SimBatchedEnvironment:
     if np.any(ids < 0) or np.any(ids >= self._num_envs):
       raise ValueError('env_ids contains an out-of-range env index')
     self._ensure_cursor_room()
-    reset_mask = self._buffers.reset_mask
-    reset_mask[self._env.t, :] = 0
-    reset_mask[self._env.t, ids] = 1
+    reset_mask = self._env.current_reset_mask
+    reset_mask[:] = 0
+    reset_mask[ids] = 1
     self._env.reset_masked()
-    reset_mask[self._env.t, ids] = 0
+    reset_mask[ids] = 0
     self._episode_ids[ids] += 1
     if ids.size:
       neutral = neutral_controllers(ids.size)
@@ -292,7 +274,7 @@ class SimBatchedEnvironment:
     """Step from encoded default-controller buckets shaped by port perspective."""
     self._ensure_cursor_room()
 
-    action = self._buffers.controller_action_view[self._env.t]
+    action = self._env.current_action_frame
     # Decode policy buckets straight into the native action ring, and mirror the
     # same decoded values into previous-controller state for the next Game view.
     write_encoded_controller_action(
@@ -330,10 +312,10 @@ class SimBatchedEnvironment:
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
-    needs_reset = self._buffers.done[step_t].astype(np.bool_, copy=True)
-    terminal = terminal_view(self._buffers)[step_t].copy()
+    needs_reset = self._env.done_at(step_t).astype(np.bool_, copy=True)
+    terminal = self._env.terminal_at(step_t).copy()
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
-    self._record_completed_games(terminal, self._buffers.gamestate_view[self._env.t])
+    self._record_completed_games(terminal, self._env.current_frame)
     self._reset_finished_lanes_for_next_observation(needs_reset)
     return needs_reset
 
@@ -342,7 +324,7 @@ class SimBatchedEnvironment:
 
   @property
   def buffers(self):
-    return self._buffers
+    return self._env.buffers
 
   @property
   def cursor(self) -> int:
@@ -375,7 +357,7 @@ class SimBatchedEnvironment:
   def _advance(self, controllers: Controllers) -> EnvOutput:
     self._ensure_cursor_room()
 
-    action = self._buffers.controller_action_view[self._env.t]
+    action = self._env.current_action_frame
     for player_index, port in enumerate(self._ports):
       controller = controllers[port]
       player = action['p'][:, int(player_index)]
@@ -397,10 +379,10 @@ class SimBatchedEnvironment:
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
-    needs_reset = self._buffers.done[step_t].astype(np.bool_, copy=True)
-    terminal = terminal_view(self._buffers)[step_t].copy()
+    needs_reset = self._env.done_at(step_t).astype(np.bool_, copy=True)
+    terminal = self._env.terminal_at(step_t).copy()
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
-    self._record_completed_games(terminal, self._buffers.gamestate_view[self._env.t])
+    self._record_completed_games(terminal, self._env.current_frame)
     self._reset_finished_lanes_for_next_observation(needs_reset)
     return self.current_state(needs_reset=needs_reset)
 
@@ -464,18 +446,6 @@ def neutral_controllers(batch_size: int) -> Controller:
           name: np.zeros(shape, dtype=np.bool_)
           for name in Buttons._fields
       }),
-  )
-
-
-def terminal_view(buffers: melee_sim.Buffers) -> np.ndarray:
-  """View the native terminal side-channel as a structured NumPy array."""
-  raw = buffers.terminal
-  if raw.shape[2] < _TERMINAL_DTYPE.itemsize:
-    raise ValueError('terminal buffer row is smaller than MslTerminal')
-  return (
-      raw[:, :, :_TERMINAL_DTYPE.itemsize]
-      .view(_TERMINAL_DTYPE)
-      .reshape(raw.shape[0], raw.shape[1])
   )
 
 
