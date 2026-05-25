@@ -71,8 +71,12 @@ class RolloutWorker:
   ):
     if isinstance(dolphin_kwargs, dict):
       dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(num_envs)]
+    elif num_envs != len(dolphin_kwargs):
+      raise ValueError(
+          f'num_envs={num_envs} does not match '
+          f'{len(dolphin_kwargs)} dolphin kwargs entries.')
     else:
-      assert num_envs == len(dolphin_kwargs)
+      dolphin_kwargs = list(dolphin_kwargs)
     self._dolphin_kwargs = dolphin_kwargs
 
     dolphin_kwargs_0 = dolphin_kwargs[0]
@@ -175,11 +179,6 @@ class RolloutWorker:
     if self._use_fake_envs:
       raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
 
-    characters = set(
-        player.character
-        for kwargs in self._dolphin_kwargs
-        for player in kwargs['players'].values()
-    )
     stages = [kwargs['stage'] for kwargs in self._dolphin_kwargs]
     if any(stage is melee.Stage.RANDOM_STAGE for stage in stages):
       stages = tuple(itertools.islice(
@@ -190,9 +189,8 @@ class RolloutWorker:
 
     return sim_env.SimBatchedEnvironment(
         num_envs=self._num_envs,
-        players=first_kwargs['players'],
+        players=[kwargs['players'] for kwargs in self._dolphin_kwargs],
         stage=stages,
-        character_pool=characters,
         max_frame_id=max_frame_id,
     )
 
@@ -385,7 +383,6 @@ class RolloutMetrics(tp.NamedTuple):
   @classmethod
   def from_trajectory(cls, trajectory: Trajectory) -> tp.Self:
     return cls(reward=np.sum(trajectory.rewards))
-
 
 class Evaluator(RolloutWorker):
 

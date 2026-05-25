@@ -147,9 +147,7 @@ def compute_rewards(
   def player_reward(player: Player, opponent: Player):
     reward = compute_base_reward(player)
 
-    if nana_ratio != 0:
-      if player.nana == ():
-        raise ValueError("Nana data is required for nana_ratio != 0")
+    if nana_ratio != 0 and player.nana != ():
       nana_reward = nana_ratio * compute_base_reward(player.nana)
       nana_reward = np.where(player.nana.exists[1:], nana_reward, 0)
       reward += nana_reward

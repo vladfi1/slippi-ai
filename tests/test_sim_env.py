@@ -12,14 +12,7 @@ from slippi_ai.types import Buttons, Controller, Items, Stick
 class SimEnvTest(unittest.TestCase):
 
   def _sim_env(self, *args, **kwargs):
-    try:
-      return sim_env.SimBatchedEnvironment(*args, **kwargs)
-    except MemoryError as exc:
-      if 'msl_batch_create failed' not in str(exc):
-        raise
-      self.skipTest(
-          'melee_sim EnvBatch could not initialize; set MELEE_SIM_DATA to an '
-          'extracted melee-sim-light data directory before running sim env tests.')
+    return sim_env.SimBatchedEnvironment(*args, **kwargs)
 
   def test_current_state_and_step_match_existing_game_shape(self):
     env = self._sim_env(
@@ -185,6 +178,32 @@ class SimEnvTest(unittest.TestCase):
               melee.Character.FALCO.value,
           ],
       )
+    finally:
+      env.stop()
+
+  def test_per_env_players_set_matchups(self):
+    env = self._sim_env(
+        num_envs=2,
+        frame_buffer_length=8,
+        players=[
+            {
+                1: dolphin.AI(melee.Character.FOX),
+                2: dolphin.AI(melee.Character.FALCO),
+            },
+            {
+                1: dolphin.AI(melee.Character.FALCO),
+                2: dolphin.AI(melee.Character.FOX),
+            },
+        ],
+    )
+    try:
+      state = env.current_game_batch(np.ones(2, dtype=np.bool_))
+      self.assertEqual(state.game.p0.character.tolist(), [
+          melee.Character.FOX.value,
+          melee.Character.FALCO.value,
+          melee.Character.FALCO.value,
+          melee.Character.FOX.value,
+      ])
     finally:
       env.stop()
 

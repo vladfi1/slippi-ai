@@ -76,6 +76,7 @@ class SimStepInfo(tp.NamedTuple):
   step_t: int
 
 
+PlayerConfigs = tp.Mapping[int, dolphin.Player]
 CharacterPool = str | tp.Sequence[melee.Character | str | int]
 
 
@@ -91,31 +92,40 @@ class SimBatchedEnvironment:
   def __init__(
       self,
       num_envs: int,
-      players: tp.Mapping[int, dolphin.Player] | None = None,
+      players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
       *,
       frame_buffer_length: int = 128,
       stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
       data_dir: str | None = None,
+      fake: bool = False,
   ):
     self._num_envs = int(num_envs)
     self._frame_buffer_length = int(frame_buffer_length)
     self._max_frame_id = int(max_frame_id)
+    self._fake = fake
     self.num_steps = 1
 
     # The sim adapter currently exposes the singles shape used by the policy:
     # port 1 and port 2, no teams, one controlled character per port.
     if players is None:
-      self._players = {
+      default_players = {
           1: dolphin.AI(melee.Character.FOX),
           2: dolphin.AI(melee.Character.FOX),
       }
+      self._players_by_env = (default_players,) * self._num_envs
+    elif isinstance(players, collections.abc.Mapping):
+      self._players_by_env = (players,) * self._num_envs
     else:
-      self._players = players
+      self._players_by_env = tuple(players)
+      if len(self._players_by_env) != self._num_envs:
+        raise ValueError(f'players sequence must have length num_envs={self._num_envs}')
+    self._players = self._players_by_env[0]
     self._ports = tuple(sorted(self._players))
-    if self._ports != _SUPPORTED_PORTS:
-      raise ValueError('SimBatchedEnvironment currently supports ports 1 and 2.')
+    for player_map in self._players_by_env:
+      if tuple(sorted(player_map)) != _SUPPORTED_PORTS:
+        raise ValueError('SimBatchedEnvironment currently supports ports 1 and 2.')
 
     # `stage` can be one value for every lane or an explicit per-env list.
     if isinstance(stage, melee.Stage):
@@ -129,17 +139,18 @@ class SimBatchedEnvironment:
         raise ValueError(f'SimBatchedEnvironment currently supports {SUPPORTED_STAGES}.')
     self._stage_by_env = np.asarray(stages, dtype=object)
 
-    # Default to the explicit player matchup everywhere. If a pool is supplied,
-    # cycle lanes through the ordered singles matchup matrix. Resets keep each
-    # lane's initial matchup until we intentionally add randomized reset-time
-    # assignment later.
+    # Default to the explicit player matchup for each lane. If a pool is
+    # supplied, cycle lanes through the ordered singles matchup matrix. Resets
+    # keep each lane's initial matchup until we intentionally add randomized
+    # reset-time assignment later.
     if character_pool is None:
-      character_assignments = (
+      character_assignments = tuple(
           (
-              _coerce_character(self._players[1].character),
-              _coerce_character(self._players[2].character),
-          ),
-      ) * self._num_envs
+              _coerce_character(player_map[1].character),
+              _coerce_character(player_map[2].character),
+          )
+          for player_map in self._players_by_env
+      )
     else:
       if isinstance(character_pool, str):
         characters = tuple(
@@ -314,6 +325,8 @@ class SimBatchedEnvironment:
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )
+    if self._fake:
+      return np.zeros(self._num_envs, dtype=np.bool_)
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
@@ -379,6 +392,8 @@ class SimBatchedEnvironment:
           slice(None),
           slice(None),
       )
+    if self._fake:
+      return self.current_state(needs_reset=np.zeros(self._num_envs, dtype=np.bool_))
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
