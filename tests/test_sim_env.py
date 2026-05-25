@@ -292,6 +292,62 @@ class SimEnvTest(unittest.TestCase):
     finally:
       env.stop()
 
+  def test_multiprocess_env_matches_single_process_encoded_steps(self):
+    players = [
+        {
+            1: dolphin.AI(melee.Character.FOX),
+            2: dolphin.AI(melee.Character.FALCO),
+        },
+        {
+            1: dolphin.AI(melee.Character.FALCO),
+            2: dolphin.AI(melee.Character.FOX),
+        },
+        {
+            1: dolphin.AI(melee.Character.FOX),
+            2: dolphin.AI(melee.Character.FOX),
+        },
+        {
+            1: dolphin.AI(melee.Character.FALCO),
+            2: dolphin.AI(melee.Character.FALCO),
+        },
+    ]
+    stages = [
+        melee.Stage.FINAL_DESTINATION,
+        melee.Stage.BATTLEFIELD,
+        melee.Stage.YOSHIS_STORY,
+        melee.Stage.POKEMON_STADIUM,
+    ]
+    single = self._sim_env(
+        num_envs=4,
+        players=players,
+        stage=stages,
+        frame_buffer_length=16,
+    )
+    multi = sim_env.MultiprocessSimEnvironment(
+        num_envs=4,
+        inner_batch_size=2,
+        players=players,
+        stage=stages,
+        frame_buffer_length=16,
+    )
+    try:
+      encoded = _neutral_encoded_controller(batch_size=8)
+      encoded.main_stick.x[:] = [16, 20, 12, 16, 16, 12, 20, 16]
+      encoded.buttons.A[:] = [False, True, False, True, True, False, True, False]
+      for _ in range(4):
+        single_reset = single.step_encoded(
+            encoded, axis_spacing=32, shoulder_spacing=4)
+        multi_reset = multi.step_encoded(
+            encoded, axis_spacing=32, shoulder_spacing=4)
+        np.testing.assert_array_equal(multi_reset, single_reset)
+        _assert_game_batch_equal(
+            multi.current_game_batch(multi_reset),
+            single.current_game_batch(single_reset),
+        )
+    finally:
+      single.stop()
+      multi.stop()
+
   def test_game_batch_matches_port_state_observation_conventions(self):
     env = self._sim_env(
         num_envs=3,
@@ -411,7 +467,7 @@ class SimEnvTest(unittest.TestCase):
     self.assertFalse(out.item_3.exists[0])
 
 def _neutral_encoded_controller(batch_size: int):
-  shape = (int(batch_size),)
+  shape = (batch_size,)
   return Controller(
       main_stick=Stick(
           x=np.full(shape, 16, dtype=np.uint8),
@@ -427,6 +483,35 @@ def _neutral_encoded_controller(batch_size: int):
           for name in Buttons._fields
       }),
   )
+
+
+def _assert_game_batch_equal(actual, expected):
+  for actual_leaf, expected_leaf in zip(
+      _game_batch_leaves(actual),
+      _game_batch_leaves(expected),
+  ):
+    np.testing.assert_array_equal(actual_leaf, expected_leaf)
+
+
+def _game_batch_leaves(game_batch):
+  return [
+      game_batch.needs_reset,
+      game_batch.game.p0.percent,
+      game_batch.game.p0.character,
+      game_batch.game.p0.action,
+      game_batch.game.p0.x,
+      game_batch.game.p0.y,
+      game_batch.game.p0.controller.main_stick.x,
+      game_batch.game.p0.controller.buttons.A,
+      game_batch.game.p1.percent,
+      game_batch.game.p1.character,
+      game_batch.game.p1.action,
+      game_batch.game.p1.x,
+      game_batch.game.p1.y,
+      game_batch.game.p1.controller.main_stick.x,
+      game_batch.game.p1.controller.buttons.A,
+      game_batch.game.stage,
+  ]
 
 
 if __name__ == '__main__':

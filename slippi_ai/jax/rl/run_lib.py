@@ -453,10 +453,15 @@ def run(config: Config):
   )
 
   if config.actor.use_sim_envs:
-    if config.actor.async_envs:
-      raise ValueError('Sim envs are single-process; async_envs is not supported.')
     if config.opponent.type == OpponentType.CPU:
       raise ValueError('Sim env only supports AI-vs-AI opponents.')
+    if config.actor.async_envs:
+      if config.actor.num_envs % config.actor.inner_batch_size:
+        raise ValueError(
+            f'num_envs={config.actor.num_envs} must be divisible by '
+            f'inner_batch_size={config.actor.inner_batch_size} for sim RL.')
+      if config.actor.num_env_steps:
+        raise ValueError('actor.num_env_steps is not used by sim async envs.')
     if config.agent.batch_steps > policy.delay:
       raise ValueError(
           f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
@@ -480,6 +485,8 @@ def run(config: Config):
           rollout_length=config.actor.rollout_length,
           batch_steps=config.agent.batch_steps,
           use_fake_envs=config.actor.use_fake_envs,
+          async_envs=config.actor.async_envs,
+          inner_batch_size=config.actor.inner_batch_size,
       )
 
   learner_manager = LearnerManager(

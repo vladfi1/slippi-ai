@@ -272,6 +272,25 @@ class SimBatchedEnvironment:
       shoulder_spacing: int,
   ) -> np.ndarray:
     """Step from encoded default-controller buckets shaped by port perspective."""
+    return self.step_encoded_slices(
+        controller_state,
+        player_slices=(
+            slice(0, self._num_envs),
+            slice(self._num_envs, 2 * self._num_envs),
+        ),
+        axis_spacing=axis_spacing,
+        shoulder_spacing=shoulder_spacing,
+    )
+
+  def step_encoded_slices(
+      self,
+      controller_state: Controller,
+      *,
+      player_slices: tuple[slice, slice],
+      axis_spacing: int,
+      shoulder_spacing: int,
+  ) -> np.ndarray:
+    """Step from encoded controller buckets with explicit source slices."""
     self._ensure_cursor_room()
 
     action = self._env.current_action_frame
@@ -281,7 +300,7 @@ class SimBatchedEnvironment:
         action,
         controller_state,
         player_index=0,
-        source_slice=slice(0, self._num_envs),
+        source_slice=player_slices[0],
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )
@@ -289,21 +308,21 @@ class SimBatchedEnvironment:
         action,
         controller_state,
         player_index=1,
-        source_slice=slice(self._num_envs, 2 * self._num_envs),
+        source_slice=player_slices[1],
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )
     copy_encoded_controller(
         self._last_controllers[1],
         controller_state,
-        source_slice=slice(0, self._num_envs),
+        source_slice=player_slices[0],
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )
     copy_encoded_controller(
         self._last_controllers[2],
         controller_state,
-        source_slice=slice(self._num_envs, 2 * self._num_envs),
+        source_slice=player_slices[1],
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
     )

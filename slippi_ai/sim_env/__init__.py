@@ -8,6 +8,7 @@ from slippi_ai.sim_env.env import (
     SimStepInfo,
     neutral_controllers,
 )
+from slippi_ai.sim_env.multiprocess_env import MultiprocessSimEnvironment
 from slippi_ai.sim_env.observations import GameBatch
 
 __all__ = (
@@ -16,6 +17,7 @@ __all__ = (
     'CharacterPool',
     'Controllers',
     'GameBatch',
+    'MultiprocessSimEnvironment',
     'Port',
     'SimBatchedEnvironment',
     'SimStepInfo',

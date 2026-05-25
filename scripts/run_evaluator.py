@@ -138,6 +138,8 @@ if __name__ == '__main__':
     )
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
+    if SIM_ENVS.value and ASYNC_ENVS.value and NUM_ENV_STEPS.value:
+      raise ValueError('--num_env_steps is not used by sim async envs.')
 
     use_jax_sim_worker = (
         SIM_ENVS.value and
@@ -163,6 +165,8 @@ if __name__ == '__main__':
           rollout_length=ROLLOUT_LENGTH.value,
           batch_steps=NUM_AGENT_STEPS.value,
           use_fake_envs=FAKE_ENVS.value,
+          async_envs=ASYNC_ENVS.value,
+          inner_batch_size=INNER_BATCH_SIZE.value,
       )
     else:
       evaluator = evaluators.Evaluator(**evaluator_kwargs)

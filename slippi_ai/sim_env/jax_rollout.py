@@ -46,6 +46,8 @@ class JaxSimRolloutWorker:
       opponent_policy: policies.Policy | None = None,
       train_opponent: bool = True,
       use_fake_envs: bool = False,
+      async_envs: bool = False,
+      inner_batch_size: int = 1,
   ):
     self._num_envs = int(num_envs)
     self._num_players = self._num_envs * len(self.ports)
@@ -131,6 +133,8 @@ class JaxSimRolloutWorker:
         int(controller_config['shoulder_spacing']),
     )
     self._batch_steps = max(1, int(batch_steps))
+    self._async_envs = bool(async_envs)
+    self._inner_batch_size = int(inner_batch_size)
     self._env_kwargs = dict(
         num_envs=self._num_envs,
         players=[kwargs['players'] for kwargs in dolphin_kwargs],
@@ -361,6 +365,11 @@ class JaxSimRolloutWorker:
     }
 
   def _build_env(self):
+    if self._async_envs:
+      return sim_env.MultiprocessSimEnvironment(
+          **self._env_kwargs,
+          inner_batch_size=self._inner_batch_size,
+      )
     return sim_env.SimBatchedEnvironment(**self._env_kwargs)
 
 
@@ -468,7 +477,7 @@ def _replay_delayed_controller_queue(
     if np.any(reset_mask):
       _reset_delayed_controller_queue(queue, neutral_controller, reset_mask)
     controller = jax.tree.map(
-        lambda x: np.asarray(x[int(index)]).copy(),
+        lambda x: np.asarray(x[index]).copy(),
         sample_outputs.controller_state,
     )
     queue.append(controller)
