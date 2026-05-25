@@ -491,6 +491,38 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
         remat=remat)
 
 
+# This deliberately does not use `nnx.LayerNorm`.
+#
+# Legacy TensorFlow policies used a last-axis layer norm equivalent to:
+#
+#   centered = x - mean(x)
+#   normalized = centered / sqrt(mean(centered ** 2))
+#   y = normalized * scale + bias
+#
+# Flax/NNX LayerNorm includes its own epsilon/stabilization behavior in the
+# denominator. That is the default for JAX-native `tx_like` models, but it is
+# not algebraically identical to the TensorFlow checkpoint computation.
+# Converted recurrent policies are sensitive to this: small activation/logit
+# differences can compound over many frames and noticeably change gameplay.
+#
+# Use this only when checkpoint config explicitly sets `layer_norm =
+# "tensorflow"` for legacy checkpoint parity. Converted checkpoints also set
+# `gelu_approximate = False` for the same reason: TensorFlow used the exact GELU
+# formula, while JAX-native configs default to the faster approximate GELU.
+class TensorFlowLayerNorm(nnx.Module):
+  """TensorFlow-policy-compatible last-axis layer norm."""
+
+  def __init__(self, residual_size: int, rngs: nnx.Rngs):
+    del rngs
+    self.scale = nnx.Param(jnp.ones((residual_size,), dtype=jnp.float32))
+    self.bias = nnx.Param(jnp.zeros((residual_size,), dtype=jnp.float32))
+
+  def __call__(self, inputs: Array) -> Array:
+    centered = inputs - jnp.mean(inputs, axis=-1, keepdims=True)
+    stddev = jnp.sqrt(jnp.mean(jnp.square(centered), axis=-1, keepdims=True))
+    return centered / stddev * self.scale + self.bias
+
+
 class ResBlock(nnx.Module):
 
   def __init__(
@@ -499,8 +531,14 @@ class ResBlock(nnx.Module):
       residual_size: int,
       hidden_size: Optional[int] = None,
       activation: Callable[[Array], Array] = nnx.relu,
+      layer_norm: str = 'nnx',
   ):
-    self.layernorm = nnx.LayerNorm(residual_size, rngs=rngs)
+    if layer_norm == 'nnx':
+      self.layernorm = nnx.LayerNorm(residual_size, rngs=rngs)
+    elif layer_norm == 'tensorflow':
+      self.layernorm = TensorFlowLayerNorm(residual_size, rngs=rngs)
+    else:
+      raise ValueError(f'Unknown layer norm type: {layer_norm}')
     self.linear1 = nnx.Linear(residual_size, hidden_size or residual_size, rngs=rngs)
     self.activation = activation
     # Initialize the output projection to zero so resnet starts as identity
@@ -532,6 +570,8 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
         ffw_multiplier=4,
         recurrent_layer='lstm',
         activation='gelu',
+        gelu_approximate=True,
+        layer_norm='nnx',
     )
 
   def __init__(
@@ -543,6 +583,8 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
       ffw_multiplier: int,
       recurrent_layer: str,
       activation: str,
+      gelu_approximate: bool = True,
+      layer_norm: str = 'nnx',
       remat: bool = False,
   ):
     self._hidden_size = hidden_size
@@ -556,7 +598,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
     activation_fn = dict(
         relu=nnx.relu,
-        gelu=nnx.gelu,
+        gelu=lambda x: nnx.gelu(x, approximate=gelu_approximate),
         tanh=nnx.tanh,
     )[activation]
 
@@ -573,7 +615,8 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
       ffw_layer = ResBlock(
           rngs, hidden_size, hidden_size * ffw_multiplier,
-          activation=activation_fn)
+          activation=activation_fn,
+          layer_norm=layer_norm)
       layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
 
     if remat:
