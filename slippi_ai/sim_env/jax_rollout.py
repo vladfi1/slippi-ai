@@ -49,9 +49,9 @@ class JaxSimRolloutWorker:
       async_envs: bool = False,
       inner_batch_size: int = 1,
   ):
-    self._num_envs = int(num_envs)
+    self._num_envs = num_envs
     self._num_players = self._num_envs * len(self.ports)
-    self._rollout_length = int(rollout_length)
+    self._rollout_length = rollout_length
     self._batch_slice_by_port = {
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
         for i, port in enumerate(self.ports)
@@ -129,12 +129,12 @@ class JaxSimRolloutWorker:
       raise ValueError('sim env only supports the default controller embedding')
     controller_config = controller_config['default']
     self._controller_spacing = (
-        int(controller_config['axis_spacing']),
-        int(controller_config['shoulder_spacing']),
+        controller_config['axis_spacing'],
+        controller_config['shoulder_spacing'],
     )
-    self._batch_steps = max(1, int(batch_steps))
-    self._async_envs = bool(async_envs)
-    self._inner_batch_size = int(inner_batch_size)
+    self._batch_steps = max(1, batch_steps)
+    self._async_envs = async_envs
+    self._inner_batch_size = inner_batch_size
     self._env_kwargs = dict(
         num_envs=self._num_envs,
         players=[kwargs['players'] for kwargs in dolphin_kwargs],
@@ -208,7 +208,6 @@ class JaxSimRolloutWorker:
   ) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
     del verbose
     timings: dict[str, float] = collections.defaultdict(float)
-    num_steps = int(num_steps)
     if num_steps != self._rollout_length:
       raise ValueError(
           f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '

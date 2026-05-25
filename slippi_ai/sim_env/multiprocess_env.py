@@ -3,9 +3,7 @@
 The main JAX process owns policy inference plus the shared observation/action
 buffers. Each worker owns a normal `SimBatchedEnvironment` shard, waits for the
 main process to publish encoded actions, steps its shard, and fills its slice of
-the shared `GameBatchBuffers`. The interface mirrors the methods used by
-`JaxSimRolloutWorker`, so rollout assembly stays the same as the single-process
-path.
+the shared `GameBatchBuffers`.
 """
 
 import dataclasses

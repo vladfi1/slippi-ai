@@ -1,5 +1,6 @@
 import unittest
 
+import jax
 import melee
 import numpy as np
 
@@ -486,32 +487,7 @@ def _neutral_encoded_controller(batch_size: int):
 
 
 def _assert_game_batch_equal(actual, expected):
-  for actual_leaf, expected_leaf in zip(
-      _game_batch_leaves(actual),
-      _game_batch_leaves(expected),
-  ):
-    np.testing.assert_array_equal(actual_leaf, expected_leaf)
-
-
-def _game_batch_leaves(game_batch):
-  return [
-      game_batch.needs_reset,
-      game_batch.game.p0.percent,
-      game_batch.game.p0.character,
-      game_batch.game.p0.action,
-      game_batch.game.p0.x,
-      game_batch.game.p0.y,
-      game_batch.game.p0.controller.main_stick.x,
-      game_batch.game.p0.controller.buttons.A,
-      game_batch.game.p1.percent,
-      game_batch.game.p1.character,
-      game_batch.game.p1.action,
-      game_batch.game.p1.x,
-      game_batch.game.p1.y,
-      game_batch.game.p1.controller.main_stick.x,
-      game_batch.game.p1.controller.buttons.A,
-      game_batch.game.stage,
-  ]
+  jax.tree.map(np.testing.assert_array_equal, actual, expected)
 
 
 if __name__ == '__main__':
