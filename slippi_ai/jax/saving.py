@@ -3,6 +3,7 @@ import typing as tp
 
 import numpy as np
 import jax
+import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai.flag_utils import dataclass_from_dict
@@ -117,13 +118,8 @@ def load_policy_from_state(state: dict) -> policies.Policy:
   # assign using saved params
   params = state['state']['policy']
   upgrade_policy(params)
+  params = jax.tree.map(jnp.copy, params)
   jax_utils.set_module_state(policy, params)
-
-  def check_array(x):
-    if not isinstance(x, np.ndarray):
-      raise ValueError(f"Expected all policy parameters to be numpy arrays, but got {type(x)}")
-
-  jax.tree.map(check_array, params)
 
   return policy
 
