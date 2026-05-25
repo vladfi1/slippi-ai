@@ -8,7 +8,7 @@ the libmelee-shaped observation nest.
 
 There are two use modes. `current_state`/`step` preserve the familiar
 port-keyed Dolphin env interface for tests and small tools. The high-throughput
-path uses `current_game_batch` and `step_encoded`: one reusable `GameBatch`
+path uses `write_current_game` and `step_encoded`: one reusable `GameBatch`
 stores all port-1 perspectives followed by all port-2 perspectives, and policy
 action buckets are decoded straight into the native action ring. That path avoids
 rebuilding Python game objects during rollout and is what the JAX sim pipeline
@@ -27,8 +27,8 @@ import numpy as np
 from slippi_ai import dolphin
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
-    GameBatch, GameBatchBuffers,
-    copy_controller_slice as _copy_controller_slice, game_for_port,
+    GameBatchBuffers, copy_controller_slice as _copy_controller_slice,
+    game_for_port,
 )
 from slippi_ai.types import Buttons, Controller, Stick
 
@@ -68,7 +68,7 @@ class SimBatchedEnvironment:
 
   The public env shape mirrors the Dolphin-backed envs: callers pass controller
   actions and receive `EnvOutput` objects. High-throughput paths should use
-  `current_game_batch` and `step_encoded` to avoid rebuilding per-port Python
+  `write_current_game` and `step_encoded` to avoid rebuilding per-port Python
   objects while still feeding the same policy-facing fields.
   """
 
@@ -220,17 +220,19 @@ class SimBatchedEnvironment:
         needs_reset=np.asarray(needs_reset, dtype=np.bool_),
     )
 
-  def current_game_batch(self, needs_reset: np.ndarray | None = None) -> GameBatch:
-    """Return a [port1 views, port2 views] game batch for policy calls."""
+  @property
+  def game_batch_buffers(self) -> GameBatchBuffers:
+    return self._game_batch
+
+  def write_current_game(
+      self,
+      game_batch: GameBatchBuffers,
+      needs_reset: np.ndarray | None = None,
+  ):
+    """Write the current sim observation into reusable policy input buffers."""
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
-    # Reuse one Game nest and mutate its leaves. This is the high-throughput
-    # adapter path from melee_sim's native buffers to the JAX policy input.
-    self._game_batch.fill(
+    game_batch.fill(
         self._env.current_frame, needs_reset, self._last_controllers)
-    return GameBatch(
-        game=self._game_batch.game,
-        needs_reset=self._game_batch.needs_reset,
-    )
 
   def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
     ids = np.arange(self._num_envs, dtype=np.int64) if env_ids is None else np.asarray(env_ids, dtype=np.int64)

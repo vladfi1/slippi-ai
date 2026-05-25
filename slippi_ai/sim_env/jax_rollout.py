@@ -2,7 +2,7 @@
 
 The generic evaluator path builds slippi-ai Game/controller Python objects once
 per port per frame. This worker uses
-`SimBatchedEnvironment.current_game_batch()` and `step_encoded()` instead: one
+`SimBatchedEnvironment.write_current_game()` and `step_encoded()` instead: one
 reusable observation tree is filled from native sim buffers, JAX samples both
 port perspectives, and the resulting trajectory is split back into the port
 entries expected by the learner.
@@ -149,9 +149,10 @@ class JaxSimRolloutWorker:
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
     self._dummy_outputs = self.actor._policy.controller_head.dummy_sample_outputs(
         [self._num_players])
-    game_batch = self._env.current_game_batch(self._needs_reset)
+    self._game_batch = self._env.game_batch_buffers
+    self._env.write_current_game(self._game_batch, self._needs_reset)
     self._state_buffer = _make_trajectory_state_buffer(
-        game_batch.game, self._rollout_length)
+        self._game_batch.game, self._rollout_length)
     self._reset_buffer = np.empty(
         (self._rollout_length + 1, self._num_players), dtype=np.bool_)
     self._reset_delay_queues()
@@ -187,9 +188,10 @@ class JaxSimRolloutWorker:
     self.stop()
     self._env = self._build_env()
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
-    game_batch = self._env.current_game_batch(self._needs_reset)
+    self._game_batch = self._env.game_batch_buffers
+    self._env.write_current_game(self._game_batch, self._needs_reset)
     self._state_buffer = _make_trajectory_state_buffer(
-        game_batch.game, self._rollout_length)
+        self._game_batch.game, self._rollout_length)
     self._reset_delay_queues()
 
   def update_variables(self, updates):
@@ -212,7 +214,7 @@ class JaxSimRolloutWorker:
       raise ValueError(
           f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '
           f'got rollout({num_steps}).')
-    game_batch = self._env.current_game_batch(self._needs_reset)
+    self._env.write_current_game(self._game_batch, self._needs_reset)
     state_buffer = self._state_buffer
     reset_buffer = self._reset_buffer
     trajectory_actions = []
@@ -239,7 +241,7 @@ class JaxSimRolloutWorker:
         t = chunk_start + local_t
         copy_start = time.perf_counter()
         _copy_state_slot(state_buffer, t)
-        reset_buffer[t] = game_batch.needs_reset
+        reset_buffer[t] = self._game_batch.needs_reset
         timings['state_copy'] += time.perf_counter() - copy_start
 
         reset_mask = reset_buffer[t]
@@ -261,7 +263,7 @@ class JaxSimRolloutWorker:
             axis_spacing=self._controller_spacing[0],
             shoulder_spacing=self._controller_spacing[1],
         )
-        game_batch = self._env.current_game_batch(self._needs_reset)
+        self._env.write_current_game(self._game_batch, self._needs_reset)
         timings['env_step'] += time.perf_counter() - env_start
 
       if self._opponent_actor is None:
@@ -322,7 +324,7 @@ class JaxSimRolloutWorker:
     # trees expected by the existing PPO path.
     copy_start = time.perf_counter()
     _copy_state_slot(state_buffer, num_steps)
-    reset_buffer[num_steps] = game_batch.needs_reset
+    reset_buffer[num_steps] = self._game_batch.needs_reset
     trajectory_actions.append(self._delayed_outputs_queue[0])
     timings['state_copy'] += time.perf_counter() - copy_start
 
@@ -375,7 +377,7 @@ class JaxSimRolloutWorker:
 class _TrajectoryStateBuffer(tp.NamedTuple):
   """Time-major storage for T+1 policy observations.
 
-  `current_game_batch()` reuses one mutable Game tree, while the learner needs
+  `write_current_game()` reuses one mutable Game tree, while the learner needs
   the whole rollout after the sim has advanced. `slots` are NumPy views into the
   time-major `states` tree, so copying into a slot writes directly into the
   corresponding frame of the final trajectory buffer.

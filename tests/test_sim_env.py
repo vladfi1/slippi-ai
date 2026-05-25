@@ -111,8 +111,7 @@ class SimEnvTest(unittest.TestCase):
       env.step(controllers)
 
       env.reset([1])
-      state = env.current_game_batch(
-          needs_reset=np.array([False, True], dtype=np.bool_))
+      state = _game_batch(env, np.array([False, True], dtype=np.bool_))
 
       self.assertTrue(np.allclose(state.game.p0.controller.main_stick.x, [
           0.0,
@@ -159,8 +158,7 @@ class SimEnvTest(unittest.TestCase):
         character_pool='fox,falco',
     )
     try:
-      state = env.current_game_batch(
-          needs_reset=np.ones(4, dtype=np.bool_))
+      state = _game_batch(env, np.ones(4, dtype=np.bool_))
       self.assertEqual(
           state.game.p0.character[:4].tolist(),
           [
@@ -198,7 +196,7 @@ class SimEnvTest(unittest.TestCase):
         ],
     )
     try:
-      state = env.current_game_batch(np.ones(2, dtype=np.bool_))
+      state = _game_batch(env, np.ones(2, dtype=np.bool_))
       self.assertEqual(state.game.p0.character.tolist(), [
           melee.Character.FOX.value,
           melee.Character.FALCO.value,
@@ -215,7 +213,7 @@ class SimEnvTest(unittest.TestCase):
         character_pool='fox,falco',
     )
     try:
-      state = env.current_game_batch(np.ones(1, dtype=np.bool_))
+      state = _game_batch(env, np.ones(1, dtype=np.bool_))
       self.assertEqual(state.game.p0.character.tolist(), [
           melee.Character.FOX.value,
           melee.Character.FOX.value,
@@ -260,8 +258,7 @@ class SimEnvTest(unittest.TestCase):
         frame_buffer_length=8,
     )
     try:
-      state = env.current_game_batch(
-          needs_reset=np.ones(2, dtype=np.bool_))
+      state = _game_batch(env, np.ones(2, dtype=np.bool_))
       self.assertEqual(state.needs_reset.shape, (4,))
       self.assertEqual(state.game.p0.x.shape, (4,))
       self.assertEqual(state.game.p0.character[:2].tolist(), [
@@ -288,7 +285,7 @@ class SimEnvTest(unittest.TestCase):
           shoulder_spacing=4,
       )
       self.assertEqual(needs_reset.shape, (2,))
-      next_state = env.current_game_batch(needs_reset=needs_reset)
+      next_state = _game_batch(env, needs_reset)
       self.assertEqual(next_state.game.p0.x.shape, (4,))
     finally:
       env.stop()
@@ -342,8 +339,8 @@ class SimEnvTest(unittest.TestCase):
             encoded, axis_spacing=32, shoulder_spacing=4)
         np.testing.assert_array_equal(multi_reset, single_reset)
         _assert_game_batch_equal(
-            multi.current_game_batch(multi_reset),
-            single.current_game_batch(single_reset),
+            _game_batch(multi, multi_reset),
+            _game_batch(single, single_reset),
         )
     finally:
       single.stop()
@@ -375,8 +372,7 @@ class SimEnvTest(unittest.TestCase):
       env.step(controllers)
 
       port_state = env.current_state()
-      game_batch = env.current_game_batch(
-          needs_reset=np.array([False, True, False], dtype=np.bool_))
+      game_batch = _game_batch(env, np.array([False, True, False], dtype=np.bool_))
 
       port1 = port_state.gamestates[1]
       port2 = port_state.gamestates[2]
@@ -488,6 +484,14 @@ def _neutral_encoded_controller(batch_size: int):
 
 def _assert_game_batch_equal(actual, expected):
   jax.tree.map(np.testing.assert_array_equal, actual, expected)
+
+
+def _game_batch(env, needs_reset):
+  env.write_current_game(env.game_batch_buffers, needs_reset)
+  return observations.GameBatch(
+      game=env.game_batch_buffers.game,
+      needs_reset=env.game_batch_buffers.needs_reset,
+  )
 
 
 if __name__ == '__main__':

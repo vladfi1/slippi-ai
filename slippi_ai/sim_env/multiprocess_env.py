@@ -20,7 +20,6 @@ import numpy as np
 from slippi_ai.sim_env import env as sim_env
 from slippi_ai.sim_env.observations import (
     ArrayAllocator,
-    GameBatch,
     GameBatchBuffers,
 )
 from slippi_ai.types import Buttons, Controller, Stick
@@ -199,12 +198,18 @@ class MultiprocessSimEnvironment:
     self._action_owner.unlink()
     self._misc_owner.unlink()
 
-  def current_game_batch(self, needs_reset: np.ndarray | None = None) -> GameBatch:
+  @property
+  def game_batch_buffers(self) -> GameBatchBuffers:
+    return self._game_batch
+
+  def write_current_game(
+      self,
+      game_batch: GameBatchBuffers,
+      needs_reset: np.ndarray | None = None,
+  ):
     del needs_reset
-    return GameBatch(
-        game=self._game_batch.game,
-        needs_reset=self._game_batch.needs_reset,
-    )
+    if game_batch is not self._game_batch:
+      raise ValueError('multiprocess sim writes into its shared game batch')
 
   def step_encoded(
       self,

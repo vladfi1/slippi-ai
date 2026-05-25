@@ -208,10 +208,17 @@ class GameBatchBuffers:
     })
     self._p0_controller = _controller_buffers(self.num_players, _allocate_array)
     self._p1_controller = _controller_buffers(self.num_players, _allocate_array)
-    empty_nana = _empty_nana(self.num_players)
     self.game = Game(
-        p0=Player(**self._p0_arrays, controller=self._p0_controller, nana=empty_nana),
-        p1=Player(**self._p1_arrays, controller=self._p1_controller, nana=empty_nana),
+        p0=Player(
+            **self._p0_arrays,
+            controller=self._p0_controller,
+            nana=_empty_nana(self.num_players),
+        ),
+        p1=Player(
+            **self._p1_arrays,
+            controller=self._p1_controller,
+            nana=_empty_nana(self.num_players),
+        ),
         stage=_allocate_array((self.num_players,), np.uint8),
         randall=Randall(
             x=_allocate_array((self.num_players,), np.float32),
