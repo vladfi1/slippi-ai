@@ -24,6 +24,7 @@ from slippi_ai import (
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as train_lib
 from slippi_ai.jax.rl import learner as learner_lib
+from slippi_ai.sim_env import jax_rollout
 from slippi_ai.types import Game
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -265,7 +266,12 @@ def concise_name(name: str) -> str:
 
 def reset_optimizer_steps(imitation_state: dict):
   for key in ['policy_optimizer', 'value_optimizer']:
-    imitation_state['state'][key]['step'] = 0
+    if key in imitation_state['state']:
+      imitation_state['state'][key]['step'] = 0
+    else:
+      logging.warning(
+          'Imitation checkpoint is missing %s state; using a fresh optimizer.',
+          key)
 
 
 def run(config: Config):
@@ -436,14 +442,6 @@ def run(config: Config):
         inner_batch_size=config.actor.inner_batch_size,
     )
 
-  if config.actor.use_sim_envs:
-    if config.actor.use_fake_envs:
-      raise ValueError('use_sim_envs and use_fake_envs are mutually exclusive.')
-    if config.actor.async_envs:
-      raise ValueError('Sim envs are single-process; async_envs is not supported.')
-    if config.opponent.type == OpponentType.CPU:
-      raise ValueError('Sim env only supports AI-vs-AI opponents.')
-
   build_actor = lambda: evaluators.RolloutWorker(
       agent_kwargs=agent_kwargs,
       dolphin_kwargs=dolphin_kwargs,
@@ -452,8 +450,37 @@ def run(config: Config):
       async_envs=config.actor.async_envs,
       use_gpu=config.actor.gpu_inference,
       use_fake_envs=config.actor.use_fake_envs,
-      use_sim_envs=config.actor.use_sim_envs,
   )
+
+  if config.actor.use_sim_envs:
+    if config.actor.async_envs:
+      raise ValueError('Sim envs are single-process; async_envs is not supported.')
+    if config.opponent.type == OpponentType.CPU:
+      raise ValueError('Sim env only supports AI-vs-AI opponents.')
+    if config.agent.batch_steps > policy.delay:
+      raise ValueError(
+          f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
+          f'{policy.delay} for sim RL.')
+    if config.actor.rollout_length % max(1, config.agent.batch_steps):
+      raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
+
+    def build_actor():
+      opponent_policy = None
+      train_opponent = config.opponent.should_train()
+      if not train_opponent:
+        opponent_policy = jax_saving.load_policy_from_state(
+            agent_kwargs[ENEMY_PORT]['state'])
+      return jax_rollout.JaxSimRolloutWorker(
+          policy=learner.policy,
+          opponent_policy=opponent_policy,
+          train_opponent=train_opponent,
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=config.actor.num_envs,
+          rollout_length=config.actor.rollout_length,
+          batch_steps=config.agent.batch_steps,
+          use_fake_envs=config.actor.use_fake_envs,
+      )
 
   learner_manager = LearnerManager(
       config=config,
