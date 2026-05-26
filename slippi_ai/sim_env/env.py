@@ -228,11 +228,21 @@ class SimBatchedEnvironment:
       self,
       game_batch: GameBatchBuffers,
       needs_reset: np.ndarray | None = None,
+      *,
+      env_slice: slice | None = None,
+      controller_slice: slice | None = None,
   ):
     """Write the current sim observation into reusable policy input buffers."""
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
-    game_batch.fill(
-        self._env.current_frame, needs_reset, self._last_controllers)
+    if env_slice is None:
+      env_slice = slice(0, self._num_envs)
+    game_batch.fill_slice(
+        self._env.current_frame,
+        needs_reset,
+        env_slice,
+        self._last_controllers,
+        controller_slice=controller_slice,
+    )
 
   def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
     ids = np.arange(self._num_envs, dtype=np.int64) if env_ids is None else np.asarray(env_ids, dtype=np.int64)
@@ -348,6 +358,10 @@ class SimBatchedEnvironment:
   @property
   def last_step_info(self) -> SimStepInfo:
     return self._last_step_info
+
+  @property
+  def episode_ids(self) -> np.ndarray:
+    return self._episode_ids
 
   def pop_completed_games(self) -> list[dict[str, tp.Any]]:
     completed_games = self._completed_games

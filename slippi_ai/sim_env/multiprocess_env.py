@@ -321,11 +321,10 @@ def _worker_main(
     local_reset = np.ones(batch_size, dtype=np.bool_)
     needs_reset[env_slice] = local_reset
     episode_ids[env_slice] = 0
-    game_batch.fill_slice(
-        env.buffers.gamestate_view[env.cursor],
+    env.write_current_game(
+        game_batch,
         local_reset,
-        env_slice,
-        env._last_controllers,
+        env_slice=env_slice,
         controller_slice=slice(None),
     )
     _barrier_wait(observations_ready, f'worker {worker_id} initial observations')
@@ -344,12 +343,11 @@ def _worker_main(
           shoulder_spacing=controller_spacing[1],
       )
       needs_reset[env_slice] = local_reset
-      episode_ids[env_slice] = env._episode_ids
-      game_batch.fill_slice(
-          env.buffers.gamestate_view[env.cursor],
+      episode_ids[env_slice] = env.episode_ids
+      env.write_current_game(
+          game_batch,
           local_reset,
-          env_slice,
-          env._last_controllers,
+          env_slice=env_slice,
           controller_slice=slice(None),
       )
       completed_games = env.pop_completed_games()
