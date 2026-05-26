@@ -18,7 +18,7 @@ import tree
 from slippi_ai import data, observations, paths, reward, utils
 from slippi_ai.flag_utils import dataclass_from_dict
 from slippi_ai.jax import controller_heads, embed, jax_utils, networks, policies, saving
-
+from slippi_ai.tf import embed as tf_embed
 
 ArrayTree = dict[str | int, tp.Any]
 _VERIFY_MAX_GAMES = 5
@@ -96,8 +96,22 @@ class LeafReader:
           f'converted {self._index} TensorFlow leaves but checkpoint has '
           f'{len(self._leaves)} leaves')
 
+def _convert_items_type(config: dict):
+  items_type = config['embed']['items']['type']
+
+  tf_to_jax_items_types = {
+      tf_embed.ItemsType.FLAT: embed.ItemsType.FLAT,
+      tf_embed.ItemsType.SKIP: embed.ItemsType.SKIP,
+  }
+
+  if items_type not in tf_to_jax_items_types:
+    raise ValueError(f'unsupported legacy TF items type: {items_type}')
+
+  config['embed']['items']['type'] = tf_to_jax_items_types[items_type]
 
 def _jax_config_from_tf_config(config: dict) -> dict:
+  # TODO: call tf.saving.upgrade_config instead of re-implementing some of the logic here
+
   config = copy.deepcopy(config)
 
   # Old TF checkpoints predate the current JAX observation/embed config shape.
@@ -112,7 +126,7 @@ def _jax_config_from_tf_config(config: dict) -> dict:
     config['embed'].update(
         with_randall=False,
         with_fod=False,
-        items={'type': embed.ItemsType.SKIP},
+        items={'type': tf_embed.ItemsType.SKIP},
     )
     config['embed']['player'].update(
         with_nana=False,
@@ -123,9 +137,11 @@ def _jax_config_from_tf_config(config: dict) -> dict:
   if config.get('version') != 5:
     raise ValueError(f"Unsupported legacy TF checkpoint version: {config.get('version')}")
 
+  _convert_items_type(config)
+
   controller = config['embed']['controller']
   config['embed']['controller'] = {
-      'type': 'default',
+      'type': embed.ControllerType.DEFAULT.value,
       'default': controller,
   }
 
