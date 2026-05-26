@@ -277,8 +277,8 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     return self._batch_steps or 1
 
   @property
-  def hidden_state(self):
-    return self._agent.hidden_state
+  def hidden_state(self) -> RecurrentState:
+    return self._agent.hidden_state()
 
   @property
   def name_code(self):

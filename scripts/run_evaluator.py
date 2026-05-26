@@ -2,6 +2,7 @@
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
 import math
+import typing as tp
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
@@ -101,8 +102,8 @@ if __name__ == '__main__':
         1: PLAYER.value,
         2: PLAYER.value if SELF_PLAY.value else OPPONENT.value,
     }
-    agent_kwargs = {}
-    players = {}
+    agent_kwargs: dict[int, dict[str, tp.Any]] = {}
+    players: dict[int, dolphin.Player] = {}
     for port, pkwargs in player_kwargs.items():
       player = eval_lib.get_player(**pkwargs)
       players[port] = player
@@ -155,10 +156,10 @@ if __name__ == '__main__':
 
       train_opponent = SELF_PLAY.value
       evaluator = jax_rollout.JaxSimRolloutWorker(
-          policy=saving.load_policy_from_state(agent_kwargs[1]['state']),
-          opponent_policy=(
-              None if train_opponent else
-              saving.load_policy_from_state(agent_kwargs[2]['state'])),
+          # policy=saving.load_policy_from_state(agent_kwargs[1]['state']),
+          # opponent_policy=(
+          #     None if train_opponent else
+          #     saving.load_policy_from_state(agent_kwargs[2]['state'])),
           train_opponent=train_opponent,
           agent_kwargs=agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
