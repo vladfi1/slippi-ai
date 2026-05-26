@@ -253,7 +253,7 @@ class SimBatchedEnvironment:
     return self.current_state(needs_reset=needs_reset)
 
   def push(self, controllers: Controllers):
-    self._output_queue.append(self._advance(controllers))
+    self._output_queue.append(self.step(controllers))
 
   def pop(self) -> EnvOutput:
     return self._output_queue.popleft()
@@ -262,7 +262,8 @@ class SimBatchedEnvironment:
     return self._output_queue[0]
 
   def step(self, controllers: Controllers) -> EnvOutput:
-    return self._advance(controllers)
+    needs_reset = self.advance(controllers)
+    return self.current_state(needs_reset=needs_reset)
 
   def step_encoded(
       self,
@@ -354,7 +355,7 @@ class SimBatchedEnvironment:
         for env_id in range(self._num_envs)
     ]
 
-  def _advance(self, controllers: Controllers) -> EnvOutput:
+  def advance(self, controllers: Controllers):
     self._ensure_cursor_room()
 
     action = self._env.current_action_frame
@@ -375,7 +376,8 @@ class SimBatchedEnvironment:
           slice(None),
       )
     if self._fake:
-      return self.current_state(needs_reset=np.zeros(self._num_envs, dtype=np.bool_))
+      needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
+      return needs_reset
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
@@ -384,7 +386,7 @@ class SimBatchedEnvironment:
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
     self._record_completed_games(terminal, self._env.current_frame)
     self._reset_finished_lanes_for_next_observation(needs_reset)
-    return self.current_state(needs_reset=needs_reset)
+    return needs_reset
 
   def _record_completed_games(self, terminal: np.ndarray, frame: np.ndarray):
     done_ids = np.flatnonzero(terminal['done'])
