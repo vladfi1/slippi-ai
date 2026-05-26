@@ -282,6 +282,7 @@ class SimBatchedEnvironment:
       *,
       axis_spacing: int,
       shoulder_spacing: int,
+      output_game_batch: GameBatchBuffers | None = None,
   ) -> np.ndarray:
     """Step from encoded default-controller buckets shaped by port perspective."""
     return self.step_encoded_slices(
@@ -292,6 +293,7 @@ class SimBatchedEnvironment:
         ),
         axis_spacing=axis_spacing,
         shoulder_spacing=shoulder_spacing,
+        output_game_batch=output_game_batch,
     )
 
   # The JAX rollout worker stores both port perspectives in one controller
@@ -305,6 +307,7 @@ class SimBatchedEnvironment:
       player_slices: tuple[slice, slice],
       axis_spacing: int,
       shoulder_spacing: int,
+      output_game_batch: GameBatchBuffers | None = None,
   ) -> np.ndarray:
     """Step from encoded controller buckets with explicit source slices."""
     self._ensure_cursor_room()
@@ -338,6 +341,8 @@ class SimBatchedEnvironment:
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
     self._record_completed_games(terminal, self._env.current_frame)
     self._reset_finished_lanes_for_next_observation(needs_reset)
+    if output_game_batch is not None:
+      self.write_current_game(output_game_batch, needs_reset)
     return needs_reset
 
   def multi_step(self, controllers: list[Controllers]) -> list[EnvOutput]:

@@ -123,13 +123,18 @@ class MultiprocessSimEnvironment:
     self._obs_owner = SharedArrayOwner()
     self._action_owner = SharedArrayOwner()
     self._misc_owner = SharedArrayOwner()
-    self._game_batch = GameBatchBuffers.with_allocator(
-        self._num_envs, self._obs_owner.array)
+    self._trajectory_buffers = GameBatchBuffers.time_major(
+        self._num_envs, frame_buffer_length, self._obs_owner.array)
+    self._slot_by_id = {
+        id(frame): i for i, frame in enumerate(self._trajectory_buffers.frames)
+    }
     self._shared_action = shared_action_buffer(
         self._num_envs * 2, self._action_owner.array)
     self._needs_reset = self._misc_owner.array((self._num_envs,), np.bool_)
     self._episode_ids = self._misc_owner.array((self._num_envs,), np.int64)
     self._controller_spacing = self._misc_owner.array((2,), np.int32)
+    self._write_index = self._misc_owner.array((1,), np.int32)
+    self._current_index = 0
 
     # Two barriers define one synchronous sim frame: parent publishes actions,
     # workers step their shards, then parent reads the completed observations.
@@ -200,7 +205,11 @@ class MultiprocessSimEnvironment:
 
   @property
   def game_batch_buffers(self) -> GameBatchBuffers:
-    return self._game_batch
+    return self._trajectory_buffers.frames[self._current_index]
+
+  @property
+  def trajectory_buffers(self) -> GameBatchBuffers:
+    return self._trajectory_buffers
 
   def write_current_game(
       self,
@@ -208,8 +217,11 @@ class MultiprocessSimEnvironment:
       needs_reset: np.ndarray | None = None,
   ):
     del needs_reset
-    if game_batch is not self._game_batch:
-      raise ValueError('multiprocess sim writes into its shared game batch')
+    index = self._slot_by_id[id(game_batch)]
+    if index == self._current_index:
+      return
+    self._trajectory_buffers.copy_frame(index, self._current_index)
+    self._current_index = index
 
   def step_encoded(
       self,
@@ -217,13 +229,20 @@ class MultiprocessSimEnvironment:
       *,
       axis_spacing: int,
       shoulder_spacing: int,
+      output_game_batch: GameBatchBuffers | None = None,
   ) -> np.ndarray:
     # Copy JAX outputs into shared host buffers, release all workers for one sim
     # frame, then wait until every shard has filled its observation slice.
     self._controller_spacing[:] = (axis_spacing, shoulder_spacing)
+    if output_game_batch is None:
+      output_index = self._current_index
+    else:
+      output_index = self._slot_by_id[id(output_game_batch)]
+    self._write_index[0] = output_index
     copy_action_to_shared_buffer(self._shared_action, controller_state)
     self._wait_for_actions()
     self._wait_for_observations('step observations')
+    self._current_index = output_index
     return self._needs_reset
 
   def active_games(self) -> list[dict[str, int | str]]:
@@ -298,11 +317,17 @@ def _worker_main(
   misc_attacher = SharedArrayAttacher(misc_specs)
   env = None
   try:
-    game_batch = GameBatchBuffers.with_allocator(total_envs, obs_attacher.array)
+    game_batches = GameBatchBuffers.time_major(
+        total_envs,
+        frame_buffer_length,
+        obs_attacher.array,
+        fill_batch_size=batch_size,
+    )
     shared_action = shared_action_buffer(total_envs * 2, action_attacher.array)
     needs_reset = misc_attacher.array((total_envs,), np.bool_)
     episode_ids = misc_attacher.array((total_envs,), np.int64)
     controller_spacing = misc_attacher.array((2,), np.int32)
+    write_index = misc_attacher.array((1,), np.int32)
     env = sim_env.SimBatchedEnvironment(
         num_envs=batch_size,
         players=players,
@@ -322,7 +347,7 @@ def _worker_main(
     needs_reset[env_slice] = local_reset
     episode_ids[env_slice] = 0
     env.write_current_game(
-        game_batch,
+        game_batches.frames[0],
         local_reset,
         env_slice=env_slice,
         controller_slice=slice(None),
@@ -345,7 +370,7 @@ def _worker_main(
       needs_reset[env_slice] = local_reset
       episode_ids[env_slice] = env.episode_ids
       env.write_current_game(
-          game_batch,
+          game_batches.frames[int(write_index[0])],
           local_reset,
           env_slice=env_slice,
           controller_slice=slice(None),

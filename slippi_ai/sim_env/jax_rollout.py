@@ -26,6 +26,7 @@ from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.data import NAME_DTYPE
 from slippi_ai.evaluators import Port, Timings, Trajectory
 from slippi_ai.jax import policies
+from slippi_ai.sim_env import observations
 from slippi_ai.types import Game
 
 
@@ -149,12 +150,7 @@ class JaxSimRolloutWorker:
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
     self._dummy_outputs = self.actor._policy.controller_head.dummy_sample_outputs(
         [self._num_players])
-    self._game_batch = self._env.game_batch_buffers
-    self._env.write_current_game(self._game_batch, self._needs_reset)
-    self._state_buffer = _make_trajectory_state_buffer(
-        self._game_batch.game, self._rollout_length)
-    self._reset_buffer = np.empty(
-        (self._rollout_length + 1, self._num_players), dtype=np.bool_)
+    self._make_trajectory_buffers()
     self._reset_delay_queues()
 
   def _reset_delay_queues(self):
@@ -188,10 +184,7 @@ class JaxSimRolloutWorker:
     self.stop()
     self._env = self._build_env()
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
-    self._game_batch = self._env.game_batch_buffers
-    self._env.write_current_game(self._game_batch, self._needs_reset)
-    self._state_buffer = _make_trajectory_state_buffer(
-        self._game_batch.game, self._rollout_length)
+    self._make_trajectory_buffers()
     self._reset_delay_queues()
 
   def update_variables(self, updates):
@@ -214,9 +207,9 @@ class JaxSimRolloutWorker:
       raise ValueError(
           f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '
           f'got rollout({num_steps}).')
-    self._env.write_current_game(self._game_batch, self._needs_reset)
-    state_buffer = self._state_buffer
-    reset_buffer = self._reset_buffer
+    trajectory_buffers = self._trajectory_buffers
+    reset_buffer = trajectory_buffers.needs_reset
+    self._env.write_current_game(trajectory_buffers.frames[0], self._needs_reset)
     trajectory_actions = []
     initial_state = self.actor.hidden_state()
     if self._opponent_actor is None:
@@ -239,13 +232,8 @@ class JaxSimRolloutWorker:
 
       for local_t in range(chunk_len):
         t = chunk_start + local_t
-        copy_start = time.perf_counter()
-        _copy_state_slot(state_buffer, t)
-        reset_buffer[t] = self._game_batch.needs_reset
-        timings['state_copy'] += time.perf_counter() - copy_start
-
         reset_mask = reset_buffer[t]
-        chunk_inputs.append((state_buffer.slots[t], reset_mask))
+        chunk_inputs.append((trajectory_buffers.frames[t].game, reset_mask))
         chunk_reset_masks.append(reset_mask)
         if np.any(reset_mask):
           _reset_delayed_controller_queue(
@@ -262,8 +250,8 @@ class JaxSimRolloutWorker:
             delayed_controller,
             axis_spacing=self._controller_spacing[0],
             shoulder_spacing=self._controller_spacing[1],
+            output_game_batch=trajectory_buffers.frames[t + 1],
         )
-        self._env.write_current_game(self._game_batch, self._needs_reset)
         timings['env_step'] += time.perf_counter() - env_start
 
       if self._opponent_actor is None:
@@ -322,14 +310,10 @@ class JaxSimRolloutWorker:
 
     # Capture the T+1 terminal observation and assemble the learner trajectory
     # trees expected by the existing PPO path.
-    copy_start = time.perf_counter()
-    _copy_state_slot(state_buffer, num_steps)
-    reset_buffer[num_steps] = self._game_batch.needs_reset
     trajectory_actions.append(self._delayed_outputs_queue[0])
-    timings['state_copy'] += time.perf_counter() - copy_start
 
     build_start = time.perf_counter()
-    time_major_states = state_buffer.states
+    time_major_states = trajectory_buffers.game
     encoded_states = self.actor._policy.network.encode_game(time_major_states)
     rewards = reward.compute_rewards(time_major_states)
     batched_actions = _batch_actions(trajectory_actions)
@@ -351,7 +335,7 @@ class JaxSimRolloutWorker:
           batch_slice=batch_slice,
       )
     timing = {
-        'env_pop': timings['state_copy'] / max(num_steps, 1),
+        'env_pop': 0.0,
         'env_push': timings['env_step'] / max(num_steps, 1),
         'agent_step': {
             port: timings[f'agent_step_{port}'] / max(num_steps, 1)
@@ -373,51 +357,12 @@ class JaxSimRolloutWorker:
       )
     return sim_env.SimBatchedEnvironment(**self._env_kwargs)
 
-
-class _TrajectoryStateBuffer(tp.NamedTuple):
-  """Time-major storage for T+1 policy observations.
-
-  `write_current_game()` reuses one mutable Game tree, while the learner needs
-  the whole rollout after the sim has advanced. `slots` are NumPy views into the
-  time-major `states` tree, so copying into a slot writes directly into the
-  corresponding frame of the final trajectory buffer.
-  """
-
-  states: Game
-  slots: list[Game]
-  slot_leaves: list[tuple]
-  source_leaves: tuple
-
-
-def _make_trajectory_state_buffer(
-    source_game: Game,
-    rollout_length: int,
-) -> _TrajectoryStateBuffer:
-  states = utils.map_single_structure(
-      lambda leaf: np.empty(
-          (rollout_length + 1,) + np.asarray(leaf).shape,
-          dtype=np.asarray(leaf).dtype,
-      ),
-      source_game,
-  )
-  slots = [
-      utils.map_single_structure(lambda leaf, i=i: leaf[i], states)
-      for i in range(rollout_length + 1)
-  ]
-  return _TrajectoryStateBuffer(
-      states=states,
-      slots=slots,
-      slot_leaves=[tuple(jax.tree.leaves(slot)) for slot in slots],
-      source_leaves=tuple(jax.tree.leaves(source_game)),
-  )
-
-
-def _copy_state_slot(state_buffer: _TrajectoryStateBuffer, index: int):
-  for dst, src in zip(
-      state_buffer.slot_leaves[index],
-      state_buffer.source_leaves,
-  ):
-    dst[...] = src
+  def _make_trajectory_buffers(self):
+    if isinstance(self._env, sim_env.MultiprocessSimEnvironment):
+      self._trajectory_buffers = self._env.trajectory_buffers
+    else:
+      self._trajectory_buffers = observations.GameBatchBuffers.time_major(
+          self._num_envs, self._rollout_length + 1)
 
 
 def _trajectory_slice(
