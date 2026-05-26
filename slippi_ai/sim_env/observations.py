@@ -249,6 +249,13 @@ class GameBatchBuffers:
       allocate_array: ArrayAllocator | None = None,
       fill_batch_size: int | None = None,
   ) -> 'GameBatchBuffers':
+    """Allocate one [time, batch] Game tree plus per-frame writable views.
+
+    Rollout needs a full T+1 observation tree for the learner, while env code
+    wants to fill one current GameBatchBuffers at a time. The returned storage
+    owns the time-major arrays in `game`; `frames[t]` is a normal
+    GameBatchBuffers view into timestep t of those same arrays.
+    """
     arrays = []
     if allocate_array is None:
       allocate_array = lambda shape, dtype: np.empty(shape, dtype=dtype)

@@ -284,7 +284,7 @@ class SimBatchedEnvironment:
       shoulder_spacing: int,
       output_game_batch: GameBatchBuffers | None = None,
   ) -> np.ndarray:
-    """Step from encoded default-controller buckets shaped by port perspective."""
+    """Step encoded actions and optionally write the post-step observation."""
     return self.step_encoded_slices(
         controller_state,
         player_slices=(
@@ -332,7 +332,10 @@ class SimBatchedEnvironment:
           shoulder_spacing=shoulder_spacing,
       )
     if self._fake:
-      return np.zeros(self._num_envs, dtype=np.bool_)
+      needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
+      if output_game_batch is not None:
+        self.write_current_game(output_game_batch, needs_reset)
+      return needs_reset
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)

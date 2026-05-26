@@ -1,4 +1,4 @@
-"""JAX rollout assembly for single-process melee-sim-light envs.
+"""JAX rollout assembly for melee-sim-light envs.
 
 The generic evaluator path builds slippi-ai Game/controller Python objects once
 per port per frame. This worker uses
@@ -209,6 +209,8 @@ class JaxSimRolloutWorker:
           f'got rollout({num_steps}).')
     trajectory_buffers = self._trajectory_buffers
     reset_buffer = trajectory_buffers.needs_reset
+    # Rollout frame 0 starts from the env's current observation. In MP this is
+    # copied from the last written shared frame; in-process envs read MSL state.
     self._env.write_current_game(trajectory_buffers.frames[0], self._needs_reset)
     trajectory_actions = []
     initial_state = self.actor.hidden_state()

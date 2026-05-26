@@ -460,8 +460,6 @@ def run(config: Config):
         raise ValueError(
             f'num_envs={config.actor.num_envs} must be divisible by '
             f'inner_batch_size={config.actor.inner_batch_size} for sim RL.')
-      if config.actor.num_env_steps:
-        raise ValueError('actor.num_env_steps is not used by sim async envs.')
     if config.agent.batch_steps > policy.delay:
       raise ValueError(
           f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '

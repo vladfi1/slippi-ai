@@ -133,6 +133,9 @@ class MultiprocessSimEnvironment:
     self._needs_reset = self._misc_owner.array((self._num_envs,), np.bool_)
     self._episode_ids = self._misc_owner.array((self._num_envs,), np.int64)
     self._controller_spacing = self._misc_owner.array((2,), np.int32)
+    # Parent sets the target trajectory frame before releasing workers. Workers
+    # fill their shard of that frame, then parent marks it current after the
+    # observation barrier completes.
     self._write_index = self._misc_owner.array((1,), np.int32)
     self._current_index = 0
 
@@ -216,6 +219,9 @@ class MultiprocessSimEnvironment:
       game_batch: GameBatchBuffers,
       needs_reset: np.ndarray | None = None,
   ):
+    # Workers have already written the latest observation into shared memory.
+    # This only moves that current frame to another trajectory slot, usually
+    # frame 0 when a new rollout starts.
     del needs_reset
     index = self._slot_by_id[id(game_batch)]
     if index == self._current_index:
