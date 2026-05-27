@@ -51,6 +51,8 @@ if __name__ == '__main__':
   NUM_GAMES = flags.DEFINE_integer(
       'num_games', 0, 'Stop after this many initially active sim games finish.')
 
+  QUIET = flags.DEFINE_boolean('quiet', False, 'Whether to suppress non-timing prints.')
+
   def print_game_summary(games: list[dict]):
     # Sim envs expose completed-game records directly, so this summary reports
     # game-level outcomes instead of inferring strength from rollout reward.
@@ -204,7 +206,7 @@ if __name__ == '__main__':
       total_steps = 0
       with timer:
         while True:
-          stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=True)
+          stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
           if use_jax_sim_worker:
             stats = {
                 port: evaluators.RolloutMetrics.from_trajectory(trajectory)
