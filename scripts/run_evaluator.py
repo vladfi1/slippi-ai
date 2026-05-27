@@ -143,15 +143,10 @@ if __name__ == '__main__':
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
 
-    use_jax_sim_worker = (
-        SIM_ENVS.value and
-        len(agent_kwargs) == 2 and
-        all(
-            saving.get_platform(kwargs['state']['config']) is policies.Platform.JAX
-            for kwargs in agent_kwargs.values()
-        )
-    )
-    if use_jax_sim_worker:
+    if SIM_ENVS.value:
+      if len(agent_kwargs) != 2:
+        raise NotImplementedError('JaxSimRolloutWorker currently only supports 2 agents.')
+
       from slippi_ai.sim_env import jax_rollout
 
       sim_agent_kwargs: dict[int | tuple[int, ...], dict] = {}
@@ -177,7 +172,7 @@ if __name__ == '__main__':
       # burnin
       batch_steps = NUM_AGENT_STEPS.value or 1
       burnin_steps = math.ceil(32 / batch_steps) * batch_steps
-      if use_jax_sim_worker:
+      if SIM_ENVS.value:
         burnin_steps = ROLLOUT_LENGTH.value
       evaluator.rollout(burnin_steps)
 
@@ -211,7 +206,7 @@ if __name__ == '__main__':
       with timer:
         while True:
           stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
-          if use_jax_sim_worker:
+          if SIM_ENVS.value:
             stats = {
                 port: evaluators.RolloutMetrics.from_trajectory(trajectory)
                 for port, trajectory in stats.items()
