@@ -65,12 +65,14 @@ class JaxSimRolloutWorker:
       num_envs: int,
       rollout_length: int,
       batch_steps: int = 1,
+      per_agent_outputs: bool = True,
       use_fake_envs: bool = False,
   ):
     self._num_envs = num_envs
     self._num_players = self._num_envs * len(self.ports)
     self._rollout_length = rollout_length
     del batch_steps  # Not used yet.
+    self._per_agent_outputs = per_agent_outputs
 
     self._batch_slice_by_port = {
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
@@ -87,11 +89,10 @@ class JaxSimRolloutWorker:
 
 
     self._agents: list[AgentInfo] = []
-    self._ports_to_agent: dict[Port | tuple[Port, ...], Agent] = {}
+    self._port_to_agent: dict[Port, Agent] = {}
     given_ports = set[Port]()
 
     for ports, kwargs in agent_kwargs.items():
-      original_ports = ports
       if isinstance(ports, int):
         ports = (ports,)
 
@@ -112,7 +113,7 @@ class JaxSimRolloutWorker:
           console_delay=0,
           batch_size=len(ports) * self._num_envs,
           **kwargs)
-      self._ports_to_agent[original_ports] = agent
+      self._port_to_agent[ports[0]] = agent
 
       start_index = (ports[0] - 1)  # ports are 1-indexed
       end_index = start_index + len(ports)
@@ -174,7 +175,7 @@ class JaxSimRolloutWorker:
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
     game_batch = self._env.current_game_batch(self._needs_reset)
     self._state_buffer = _make_trajectory_state_buffer(
-        game_batch.game, self._rollout_length + 1)
+        game_batch.game, self._rollout_length)
     self._reset_buffer = np.empty(
         (self._rollout_length + 1, self._num_players), dtype=np.bool_)
 
@@ -198,14 +199,11 @@ class JaxSimRolloutWorker:
   def reset_env(self):
     self.stop()
     self._env = self._build_env()
-    self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
-    game_batch = self._env.current_game_batch(self._needs_reset)
-    self._state_buffer = _make_trajectory_state_buffer(
-        game_batch.game, self._rollout_length)
+    self._needs_reset[:] = True
 
-  def update_variables(self, updates: tp.Mapping[Port | tuple[Port, ...], tp.Any]):
+  def update_variables(self, updates: tp.Mapping[Port, tp.Any]):
     for ports, update in updates.items():
-      self._ports_to_agent[ports].policy.set_state(update)
+      self._port_to_agent[ports].policy.set_state(update)
 
   def rollout(
       self,
@@ -236,6 +234,7 @@ class JaxSimRolloutWorker:
       step_iter = range(num_steps)
 
     def record_state(
+        t: int,
         prev_agent_outputs: list[SampleOutputs],
     ):
       game_batch = self._env.current_game_batch(self._needs_reset)
@@ -254,7 +253,7 @@ class JaxSimRolloutWorker:
     # Step the sim immediately with already-delayed controller inputs, while
     # collecting a chunk of observations for one fused JAX actor call.
     for t in step_iter:
-      game_batch = record_state(self._prev_agent_outputs.popleft())
+      game_batch = record_state(t, self._prev_agent_outputs.popleft())
 
       agent_outputs: list[SampleOutputs] = []
       controllers: sim_env.Controllers = {}
@@ -288,37 +287,54 @@ class JaxSimRolloutWorker:
 
     # Capture the T+1 terminal observation and assemble the learner trajectory
     # trees expected by the existing PPO path.
-    record_state(self._prev_agent_outputs[0])
+    record_state(num_steps, self._prev_agent_outputs[0])
 
     build_start = time.perf_counter()
     time_major_states = state_buffer.states
-    rewards = reward.compute_rewards(time_major_states)
+    rewards = reward.compute_rewards(
+        time_major_states, damage_ratio=0, nana_ratio=0)
 
-    # TODO: maybe just return per-agent trajectories
     trajectories: dict[Port, Trajectory] = {}
     for agent_info, action_buffer, initial_state in zip(
         self._agents, action_buffers, initial_states):
       agent = agent_info.agent
+      env_slice = agent_info.env_slice
       actions = fast_map(utils.stack, *action_buffer)
 
-      for port, env_to_port_slice, agent_to_port_slice in zip(
-          agent_info.ports, agent_info.env_to_port_slices, agent_info.agent_to_port_slices):
+      if self._per_agent_outputs:
         states = fast_map(
-            lambda x: np.asarray(x[:, env_to_port_slice]).copy(),
+            lambda x: np.asarray(x[:, env_slice]).copy(),
             state_buffer.states)
-        batch_size = agent_to_port_slice.stop - agent_to_port_slice.start
-
-        trajectories[port] = Trajectory(
+        trajectories[agent_info.ports[0]] = Trajectory(
             states=agent.policy.encode_game(states),
             name=np.broadcast_to(
-                agent.name_code[agent_to_port_slice],
-                [num_steps + 1, batch_size]),
-            actions=slice_map((slice(None), agent_to_port_slice), actions),
-            rewards=rewards[:, env_to_port_slice],
-            is_resetting=reset_buffer[:, env_to_port_slice].copy(),
-            initial_state=slice_map(agent_to_port_slice, initial_state),
-            delayed_actions=slice_map(agent_to_port_slice, agent.peek_n(agent.delay)),
+                agent.name_code,
+                [num_steps + 1, env_slice.stop - env_slice.start]),
+            actions=actions,
+            rewards=rewards[:, env_slice],
+            is_resetting=reset_buffer[:, env_slice].copy(),
+            initial_state=initial_state,
+            delayed_actions=agent.peek_n(agent.delay),
         )
+      else:
+        for port, env_to_port_slice, agent_to_port_slice in zip(
+            agent_info.ports, agent_info.env_to_port_slices, agent_info.agent_to_port_slices):
+          states = fast_map(
+              lambda x: np.asarray(x[:, env_to_port_slice]).copy(),
+              state_buffer.states)
+          batch_size = agent_to_port_slice.stop - agent_to_port_slice.start
+
+          trajectories[port] = Trajectory(
+              states=agent.policy.encode_game(states),
+              name=np.broadcast_to(
+                  agent.name_code[agent_to_port_slice],
+                  [num_steps + 1, batch_size]),
+              actions=slice_map((slice(None), agent_to_port_slice), actions),
+              rewards=rewards[:, env_to_port_slice],
+              is_resetting=reset_buffer[:, env_to_port_slice].copy(),
+              initial_state=slice_map(agent_to_port_slice, initial_state),
+              delayed_actions=slice_map(agent_to_port_slice, agent.peek_n(agent.delay)),
+          )
 
     timings['trajectory_build'] = time.perf_counter() - build_start
 
