@@ -31,12 +31,25 @@ from slippi_ai.types import Game
 T = tp.TypeVar('T')
 
 class MultiMap(tp.Protocol):
-
   def __call__(self, f: tp.Callable, *args: T) -> T:
     ...
 
 fast_map: MultiMap = tp.cast(MultiMap, jax.tree.map)
 
+class SliceMap(tp.Protocol):
+  def __call__(self, s: slice | tuple[slice, ...], struct: T) -> T:
+    ...
+
+slice_map: SliceMap = lambda s, struct: jax.tree.map(lambda x: x[s], struct)
+
+Agent = eval_lib.DelayedAgent | eval_lib.AsyncDelayedAgent
+
+class AgentInfo(tp.NamedTuple):
+  agent: Agent
+  ports: tuple[Port, ...]
+  env_slice: slice
+  port_slices: tuple[slice, ...]
+  trajectory_slices: tuple[tuple[tuple[slice, ...], ...], ...]
 
 class JaxSimRolloutWorker:
   """RolloutWorker-compatible adapter for JAX policies on one sim batch."""
@@ -46,14 +59,11 @@ class JaxSimRolloutWorker:
   def __init__(
       self,
       *,
-      # policy: policies.Policy,
-      agent_kwargs: tp.Mapping[int, dict],
+      agent_kwargs: tp.Mapping[int | tuple[int, ...], dict],
       dolphin_kwargs: tp.Union[dict, tp.Sequence[dict]],
       num_envs: int,
       rollout_length: int,
       batch_steps: int = 1,
-      # opponent_policy: policies.Policy | None = None,
-      train_opponent: bool = True,
       use_fake_envs: bool = False,
   ):
     self._num_envs = num_envs
@@ -65,7 +75,6 @@ class JaxSimRolloutWorker:
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
         for i, port in enumerate(self.ports)
     }
-    self._train_ports = self.ports if train_opponent else (1,)
     if isinstance(dolphin_kwargs, dict):
       dolphin_kwargs = [dolphin_kwargs.copy() for _ in range(self._num_envs)]
     elif self._num_envs != len(dolphin_kwargs):
@@ -75,40 +84,75 @@ class JaxSimRolloutWorker:
     else:
       dolphin_kwargs = list(dolphin_kwargs)
 
-    agent1_kwargs = agent_kwargs[1]
-    agent2_kwargs = agent_kwargs[2]
 
-    should_compile = agent1_kwargs['compile']
-    state = agent1_kwargs['state']
-    name_code_by_port = {
-        port: np.asarray(
-            eval_lib.get_name_codes(
-                kwargs['state'],
-                kwargs['name'],
-                batch_size=self._num_envs,
-            ),
-            dtype=NAME_DTYPE,
-        )
-        for port, kwargs in ((1, agent1_kwargs), (2, agent2_kwargs))
-    }
-    self._name_code = np.concatenate(
-        [name_code_by_port[port] for port in self.ports], axis=0)
+    self._agents: list[AgentInfo] = []
+    self._ports_to_agent: dict[Port | tuple[Port, ...], Agent] = {}
+    given_ports = set[Port]()
 
-    # TODO: use agent's observation_config
-    # TODO: check that agent's character matches the env
-    self._agents = {
-        port: eval_lib.build_delayed_agent(
-            console_delay=0,
-            batch_size=self._num_envs,
-            **kwargs)
-        for port, kwargs in agent_kwargs.items()
-    }
+    for ports, kwargs in agent_kwargs.items():
+      original_ports = ports
+      if isinstance(ports, int):
+        ports = (ports,)
 
-    self._prev_agent_outputs = collections.deque[dict[Port, SampleOutputs]]()
-    self._prev_agent_outputs.append({
-        port: agent.dummy_sample_outputs
-        for port, agent in self._agents.items()
-    })
+      for port in ports:
+        if port not in self.ports:
+          raise ValueError(f'Invalid port {port} in agent_kwargs, expected one of {self.ports}')
+        if port in given_ports:
+          raise ValueError(f'Multiple entries for port {port} in agent_kwargs')
+        given_ports.add(port)
+
+      for p1, p2 in zip(ports, ports[1:]):
+        if p2 != p1 + 1:
+          raise ValueError(f'Agent ports must be consecutive, got {ports}')
+
+      # TODO: use agent's observation_config
+      # TODO: check that agent's character matches the env
+      agent = eval_lib.build_delayed_agent(
+          console_delay=0,
+          batch_size=len(ports) * self._num_envs,
+          **kwargs)
+      self._ports_to_agent[original_ports] = agent
+
+      start_index = (ports[0] - 1)  # ports are 1-indexed
+      end_index = start_index + len(ports)
+      env_slice = slice(
+          start_index * self._num_envs,
+          end_index * self._num_envs,
+      )
+
+      port_slices = tuple(
+          slice(i * self._num_envs, (i + 1) * self._num_envs)
+          for i in range(len(ports))
+      )
+
+      # Prepare slices for splitting the agent's trajectory back into per-port data.
+      # This is complicated by the fact that the Trajectory components don't all have
+      # the same batch axis; some are time-major and some have no time axis.
+      trajectory_slices: list[tuple[tuple[slice, ...], ...]] = []
+      for port_slice in port_slices:
+        component_slices: list[tuple[slice, ...]] = []
+        for batch_dim in Trajectory.batch_dims():
+          assert isinstance(batch_dim, int)
+          component_slices.append((slice(None),) * batch_dim + (port_slice,))
+        trajectory_slices.append(tuple(component_slices))
+
+      self._agents.append(AgentInfo(
+          agent=agent,
+          ports=ports,
+          env_slice=env_slice,
+          port_slices=port_slices,
+          trajectory_slices=tuple(trajectory_slices),
+      ))
+
+    if given_ports != set(self.ports):
+      raise ValueError(f'Got agent kwargs for ports {given_ports}, expected {self.ports}')
+
+    # Initialize prev_agent_outputs queues with a single dummy action
+    self._prev_agent_outputs = collections.deque[list[SampleOutputs]]()
+    self._prev_agent_outputs.append([
+        agent_info.agent.dummy_sample_outputs
+        for agent_info in self._agents
+    ])
 
     # Translate the Dolphin-style environment config into the smaller sim env
     # config. The sim path still accepts the same high-level launch config as
@@ -164,9 +208,9 @@ class JaxSimRolloutWorker:
     self._state_buffer = _make_trajectory_state_buffer(
         game_batch.game, self._rollout_length)
 
-  def update_variables(self, updates: tp.Mapping[int, tp.Any]):
-    for port, update in updates.items():
-      self._agents[port].policy.set_state(update)
+  def update_variables(self, updates: tp.Mapping[Port | tuple[Port, ...], tp.Any]):
+    for ports, update in updates.items():
+      self._ports_to_agent[ports].policy.set_state(update)
 
   def rollout(
       self,
@@ -180,14 +224,15 @@ class JaxSimRolloutWorker:
           f'got rollout({num_steps}).')
     state_buffer = self._state_buffer
     reset_buffer = self._reset_buffer
-    action_buffers: dict[Port, list[SampleOutputs]] = {
-        port: [] for port in self._agents
-    }
 
-    initial_states = {
-        port: agent.hidden_state
-        for port, agent in self._agents.items()
-    }
+    action_buffers: list[list[SampleOutputs]] = [
+        [] for _ in self._agents
+    ]
+
+    initial_states = [
+        agent_info.agent.hidden_state
+        for agent_info in self._agents
+    ]
 
     if verbose:
       import tqdm
@@ -196,7 +241,7 @@ class JaxSimRolloutWorker:
       step_iter = range(num_steps)
 
     def record_state(
-        prev_agent_outputs: dict[Port, SampleOutputs],
+        prev_agent_outputs: list[SampleOutputs],
     ):
       game_batch = self._env.current_game_batch(self._needs_reset)
 
@@ -204,8 +249,8 @@ class JaxSimRolloutWorker:
       _copy_state_slot(state_buffer, t)
       reset_buffer[t] = game_batch.needs_reset
 
-      for port, output in prev_agent_outputs.items():
-        action_buffers[port].append(output)
+      for buffer, output in zip(action_buffers, prev_agent_outputs):
+        buffer.append(output)
 
       timings['state_copy'] += time.perf_counter() - copy_start
 
@@ -216,23 +261,28 @@ class JaxSimRolloutWorker:
     for t in step_iter:
       game_batch = record_state(self._prev_agent_outputs.popleft())
 
-      agent_outputs: dict[Port, SampleOutputs] = {}
+      agent_outputs: list[SampleOutputs] = []
       controllers: sim_env.Controllers = {}
-      for port, agent in self._agents.items():
-        batch_slice = self._batch_slice_by_port[port]
 
-        agent_inputs = utils.map_single_structure(
-            lambda x: x[batch_slice],
+      for agent_info in self._agents:
+        agent = agent_info.agent
+
+        agent_inputs = slice_map(
+            agent_info.env_slice,
             (game_batch.game, game_batch.needs_reset))
 
         step_start = time.perf_counter()
-        agent_outputs[port] = agent.step(*agent_inputs)
-        controllers[port] = agent.decode_controller(
-            agent_outputs[port].controller_state)
+        output = agent.step(*agent_inputs)
+        agent_outputs.append(output)
+
+        decoded_controllers = agent.decode_controller(output.controller_state)
+        # TODO: send actions to the environment without slicing by port
+        for port, port_slice in zip(agent_info.ports, agent_info.port_slices):
+          controllers[port] = slice_map(port_slice, decoded_controllers)
 
         elapsed = time.perf_counter() - step_start
-        elapsed_per_port = elapsed / len(self.ports)
-        for port in self.ports:
+        elapsed_per_port = elapsed / len(agent_info.ports)
+        for port in agent_info.ports:
           timings[f'agent_step_{port}'] += elapsed_per_port
 
       self._prev_agent_outputs.append(agent_outputs)
@@ -248,33 +298,41 @@ class JaxSimRolloutWorker:
     build_start = time.perf_counter()
     time_major_states = state_buffer.states
     rewards = reward.compute_rewards(time_major_states)
-    timings['trajectory_build'] = time.perf_counter() - build_start
 
-    trajectories = {}
-    for port, batch_slice in self._batch_slice_by_port.items():
-      if port not in self._train_ports:
-        continue
-
-      agent = self._agents[port]
+    # TODO: maybe just return per-agent trajectories
+    trajectories: dict[Port, Trajectory] = {}
+    for agent_info, action_buffer, initial_state in zip(
+        self._agents, action_buffers, initial_states):
+      agent = agent_info.agent
+      env_slice = agent_info.env_slice
 
       states = fast_map(
-          lambda x: np.asarray(x[:, batch_slice]).copy(),
+          lambda x: np.asarray(x[:, env_slice]).copy(),
           state_buffer.states)
       encoded_states = agent.policy.encode_game(states)
 
-      batch_size = batch_slice.stop - batch_slice.start
-      trajectories[port] = Trajectory(
+      batch_size = env_slice.stop - env_slice.start
+      agent_trajectory = Trajectory(
           states=encoded_states,
           name=np.full(
               [num_steps + 1, batch_size],
               agent.name_code,
               dtype=NAME_DTYPE),
-          actions=utils.batch_nest_nt(action_buffers[port]),
-          rewards=rewards[:, batch_slice],
-          is_resetting=reset_buffer[:, batch_slice].copy(),
-          initial_state=initial_states[port],
+          actions=fast_map(utils.stack, *action_buffer),
+          rewards=rewards[:, env_slice],
+          is_resetting=reset_buffer[:, env_slice].copy(),
+          initial_state=initial_state,
           delayed_actions=agent.peek_n(agent.delay),
       )
+
+      # TODO: we should just return the per-agent trajectories directly instead of slicing them back up by port
+      for port, trajectory_slices in zip(agent_info.ports, agent_info.trajectory_slices):
+        trajectories[port] = Trajectory(*(  # type: ignore
+            slice_map(trajectory_slice, component)
+            for component, trajectory_slice in zip(agent_trajectory, trajectory_slices)
+        ))
+
+    timings['trajectory_build'] = time.perf_counter() - build_start
 
     timing = {
         'env_pop': timings['state_copy'] / max(num_steps, 1),

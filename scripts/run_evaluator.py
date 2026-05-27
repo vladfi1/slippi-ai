@@ -154,14 +154,16 @@ if __name__ == '__main__':
     if use_jax_sim_worker:
       from slippi_ai.sim_env import jax_rollout
 
-      train_opponent = SELF_PLAY.value
+      sim_agent_kwargs: dict[int | tuple[int, ...], dict] = {}
+
+      if SELF_PLAY.value:
+        sim_agent_kwargs[(1, 2)] = agent_kwargs[1]
+      else:
+        for port, kwargs in agent_kwargs.items():
+          sim_agent_kwargs[port] = kwargs
+
       evaluator = jax_rollout.JaxSimRolloutWorker(
-          # policy=saving.load_policy_from_state(agent_kwargs[1]['state']),
-          # opponent_policy=(
-          #     None if train_opponent else
-          #     saving.load_policy_from_state(agent_kwargs[2]['state'])),
-          train_opponent=train_opponent,
-          agent_kwargs=agent_kwargs,
+          agent_kwargs=sim_agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
           num_envs=NUM_ENVS.value,
           rollout_length=ROLLOUT_LENGTH.value,
