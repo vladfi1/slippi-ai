@@ -2,6 +2,7 @@
 
 import collections
 import contextlib
+import functools
 import itertools
 import typing as tp
 
@@ -41,7 +42,14 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
   @classmethod
   def batch(cls, trajectories: list[tp.Self]) -> tp.Self:
     # TODO: test?
-    batch_dims = Trajectory(
+    return utils.map_nt(
+        lambda axis, *ts: utils.concat_nest_nt(ts, axis),
+        cls.batch_dims(), *trajectories)
+
+  @classmethod
+  @functools.cache
+  def batch_dims(cls) -> tp.Self:
+    return cls(
         states=1,
         name=1,
         actions=1,
@@ -50,9 +58,6 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
         initial_state=0,
         delayed_actions=0,
     )
-    return utils.map_nt(
-        lambda axis, *ts: utils.concat_nest_nt(ts, axis),
-        batch_dims, *trajectories)
 
 
 class RolloutWorker:
