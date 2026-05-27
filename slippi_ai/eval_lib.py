@@ -106,6 +106,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
         **agent_kwargs)
     self.warmup = self._agent.warmup
     self.policy = policy
+    self._batch_size = batch_size
 
     if console_delay > policy.delay - (self.batch_steps - 1):
       raise ValueError(
@@ -128,6 +129,10 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
+
+  @property
+  def batch_size(self) -> int:
+    return self._batch_size
 
   @property
   def hidden_state(self) -> RecurrentState:
