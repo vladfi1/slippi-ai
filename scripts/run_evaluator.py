@@ -39,6 +39,7 @@ if __name__ == '__main__':
 
   agent_flags = utils.deep_copy(eval_lib.BATCH_AGENT_FLAGS)
   agent_flags['tf']['jit_compile'] = ff.Boolean(True)
+  agent_flags['jax']['pack_args'] = ff.Boolean(True)
 
   player_flags = dict(eval_lib.PLAYER_FLAGS, ai=agent_flags)
   PLAYER = ff.DEFINE_dict('player', **player_flags)
