@@ -205,11 +205,13 @@ if __name__ == '__main__':
       total_steps = 0
       with timer:
         while True:
-          stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
-          if SIM_ENVS.value:
+          if isinstance(evaluator, evaluators.Evaluator):
+            stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
+          else:
+            trajectories, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
             stats = {
                 port: evaluators.RolloutMetrics.from_trajectory(trajectory)
-                for port, trajectory in stats.items()
+                for port, trajectory in trajectories.items()
             }
           total_steps += ROLLOUT_LENGTH.value
           for port, stat in stats.items():
