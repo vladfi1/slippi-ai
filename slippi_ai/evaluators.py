@@ -1,5 +1,6 @@
 """Evaluates a policy."""
 
+import abc
 import collections
 import contextlib
 import functools
@@ -59,8 +60,29 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
         delayed_actions=0,
     )
 
+class AbstractRolloutWorker(abc.ABC):
 
-class RolloutWorker:
+  @abc.abstractmethod
+  def rollout(self, num_steps: int, verbose: bool = False) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+    """Rolls out the policy for a given number of steps and returns the trajectories and timings."""
+
+  @abc.abstractmethod
+  def update_variables(self, updates: tp.Mapping[Port, policies.PolicyState]):
+    """Updates the policy variables for the given ports."""
+
+  def start(self):
+    """Starts the rollout worker, e.g. by starting any necessary threads or processes."""
+    pass
+
+  def stop(self):
+    """Stops the rollout worker, e.g. by stopping any threads or processes."""
+    pass
+
+  @abc.abstractmethod
+  def reset_env(self):
+    """Resets the environment, e.g. by restarting the Dolphin process or resetting the sim env."""
+
+class RolloutWorker(AbstractRolloutWorker):
 
   def __init__(
       self,
@@ -360,7 +382,8 @@ class RolloutWorker:
       self._agents[port].policy.set_state(values)
 
   def active_sim_games(self) -> list[dict[str, int | str]]:
-    if not hasattr(self._env, 'active_games'):
+    from slippi_ai import sim_env
+    if not isinstance(self._env, sim_env.SimBatchedEnvironment):
       raise ValueError('active_sim_games is only available with use_sim_envs.')
     return self._env.active_games()
 

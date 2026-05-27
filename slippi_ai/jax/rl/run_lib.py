@@ -65,6 +65,7 @@ class AgentConfig:
   char: tp.Optional[list[melee.Character]] = None
   batch_steps: int = 0
   async_inference: bool = False
+  pack_args: bool = True
 
   def __post_init__(self):
     if self.char is not None and len(self.char) != len(self.name):
@@ -77,6 +78,7 @@ class AgentConfig:
         compile=self.compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
+        jax=dict(pack_args=self.pack_args),
     )
     if self.path:
       state = generic_saving.load_state_from_disk(self.path)
@@ -153,7 +155,7 @@ class LearnerManager:
       self,
       learner: learner_lib.Learner,
       config: Config,
-      build_actor: tp.Callable[[], evaluators.RolloutWorker],
+      build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
       port: int,
       enemy_port: int,
   ):
@@ -192,7 +194,8 @@ class LearnerManager:
   def _rollout(self) -> tuple[evaluators.Trajectory, dict]:
     trajectories, timings = self.actor.rollout(self._unroll_length)
 
-    if self._config.opponent.should_train():
+    # The sim-env rollout worker directly returns batched trajectories.
+    if self._config.opponent.should_train() and len(trajectories) == 2:
       ports = [self._port, self._enemy_port]
       trajectory = evaluators.Trajectory.batch(
           [trajectories[p] for p in ports])
@@ -457,24 +460,18 @@ def run(config: Config):
       raise ValueError('Sim envs are single-process; async_envs is not supported.')
     if config.opponent.type == OpponentType.CPU:
       raise ValueError('Sim env only supports AI-vs-AI opponents.')
-    if config.agent.batch_steps > policy.delay:
-      raise ValueError(
-          f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
-          f'{policy.delay} for sim RL.')
     if config.actor.rollout_length % max(1, config.agent.batch_steps):
       raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
-    def build_actor():
-      opponent_policy = None
-      train_opponent = config.opponent.should_train()
-      if not train_opponent:
-        opponent_policy = jax_saving.load_policy_from_state(
-            agent_kwargs[ENEMY_PORT]['state'])
+    def build_actor() -> evaluators.AbstractRolloutWorker:
+      rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
+      if config.opponent.should_train():
+        rollout_agent_kwargs = {(1, 2): agent_kwargs[PORT]}
+      else:
+        rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
+
       return jax_rollout.JaxSimRolloutWorker(
-          policy=learner.policy,
-          opponent_policy=opponent_policy,
-          train_opponent=train_opponent,
-          agent_kwargs=agent_kwargs,
+          agent_kwargs=rollout_agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
           rollout_length=config.actor.rollout_length,
@@ -635,6 +632,9 @@ def run(config: Config):
 
   if not config.dolphin.infinite_time:
     logging.info('Finite time mode, disabling env resets')
+    reset_interval = None
+  elif config.actor.use_sim_envs:
+    logging.info('Sim envs, disabling env resets')
     reset_interval = None
 
   try:
