@@ -23,9 +23,7 @@ if __name__ == '__main__':
   DP="Diamond Player"
   MP="Master Player"
 
-  CHAR = melee.Character.MARTH
   NAME = MP
-  char = CHAR.name.lower()
 
   PGW=3
 
@@ -60,7 +58,6 @@ if __name__ == '__main__':
   CONFIG.actor.async_envs=True
   CONFIG.actor.num_env_steps=4
   CONFIG.actor.gpu_inference=True
-  CONFIG.agent.char=[CHAR]
   CONFIG.agent.name=[NAME]
   CONFIG.agent.batch_steps=4
   CONFIG.runtime.burnin_steps_after_reset=5
@@ -102,6 +99,10 @@ if __name__ == '__main__':
       if config.agent.char is None:
         assert chars is not None
         config.agent.char = chars
+      elif chars is not None:
+        for char in config.agent.char:
+          if char not in chars:
+            raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
 
       if config.agent.name is None:
         config.agent.name = [MP] * len(config.agent.char)
@@ -110,9 +111,18 @@ if __name__ == '__main__':
 
       if config.runtime.tag is None:
         if config.opponent.type is run_lib.OpponentType.SELF:
-          opp = 'ditto'
+          if config.opponent.train:
+            opp = 'ditto'
+          elif config.opponent.update_interval is not None:
+            opp = f'ditto-{config.opponent.update_interval}'
+          else:
+            opp = 'ditto-fixed'
         elif config.opponent.type is run_lib.OpponentType.CPU:
           opp = 'vs_cpu'
+        elif config.opponent.type is run_lib.OpponentType.OTHER:
+          # assert config.opponent.other.path is not None
+          # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
+          opp = 'vs-fixed'
         else:
           raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
 
