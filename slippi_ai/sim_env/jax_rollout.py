@@ -24,7 +24,7 @@ from slippi_ai import sim_env
 from slippi_ai import utils
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.data import NAME_DTYPE
-from slippi_ai.evaluators import Port, Timings, Trajectory
+from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
 from slippi_ai.jax import policies
 from slippi_ai.types import Game
 
@@ -52,7 +52,7 @@ class AgentInfo(tp.NamedTuple):
   agent_to_port_slices: tuple[slice, ...]
 
 
-class JaxSimRolloutWorker:
+class JaxSimRolloutWorker(AbstractRolloutWorker):
   """RolloutWorker-compatible adapter for JAX policies on one sim batch."""
 
   ports: tuple[Port, Port] = (1, 2)
