@@ -23,18 +23,11 @@ from slippi_ai import reward
 from slippi_ai import sim_env
 from slippi_ai import utils
 from slippi_ai.controller_heads import SampleOutputs
-from slippi_ai.data import NAME_DTYPE
 from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
-from slippi_ai.jax import policies
+from slippi_ai.jax.jax_utils import fast_map
 from slippi_ai.types import Game
 
 T = tp.TypeVar('T')
-
-class MultiMap(tp.Protocol):
-  def __call__(self, f: tp.Callable, *args: T) -> T:
-    ...
-
-fast_map: MultiMap = tp.cast(MultiMap, jax.tree.map)
 
 class SliceMap(tp.Protocol):
   def __call__(self, s: slice | tuple[slice, ...], struct: T) -> T:
