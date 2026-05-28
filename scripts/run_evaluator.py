@@ -164,6 +164,8 @@ if __name__ == '__main__':
           rollout_length=ROLLOUT_LENGTH.value,
           batch_steps=NUM_AGENT_STEPS.value,
           use_fake_envs=FAKE_ENVS.value,
+          async_envs=ASYNC_ENVS.value,
+          inner_batch_size=INNER_BATCH_SIZE.value,
       )
     else:
       evaluator = evaluators.Evaluator(**evaluator_kwargs)
