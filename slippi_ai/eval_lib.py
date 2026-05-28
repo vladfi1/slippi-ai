@@ -16,7 +16,7 @@ from slippi_ai import (
   observations, flag_utils, policies,
 )
 from slippi_ai.policies import RecurrentState
-from slippi_ai.types import Game, Controller
+from slippi_ai.types import Game, Controller, reify_tuple_type
 from slippi_ai.agents import BasicAgent, BoolArray
 
 import slippi_ai.mirror as mirror_lib
@@ -84,6 +84,8 @@ def build_basic_agent(
 
   return policy.build_agent(batch_size, **kwargs, **framework_kwargs)
 
+Rank1 = tuple[int]
+
 class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   """Wraps a BasicAgent with delay."""
 
@@ -98,7 +100,15 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   ):
     self.observation_config = observation_config
     self._batch_steps = batch_steps
-    self._input_queue = []
+    input_type = (reify_tuple_type(Game), bool)
+    input_buffers = [
+        utils.map_nt(lambda dtype: np.empty([batch_size], dtype=dtype), input_type)
+        for _ in range(batch_steps)
+    ]
+    self._input_buffers = tp.cast(
+        list[tuple[Game[Rank1], np.ndarray[Rank1, np.dtype[np.bool]]]],
+        input_buffers)
+    self._input_index = 0
 
     self._agent = build_basic_agent(
         policy=policy,
@@ -171,13 +181,21 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       self._output_queue.put(sampled_controller)
       return
 
-    self._input_queue.append((game, needs_reset))
-    if len(self._input_queue) == self._batch_steps:
+    input_buffer = self._input_buffers[self._input_index]
+
+    # utils.cached_map_nt(Game)(np.copyto, input_buffer[0], game)
+    # input_buffer[1][:] = needs_reset
+    import jax
+    jax.tree.map(np.copyto, input_buffer, (game, needs_reset))
+
+    self._input_index += 1
+
+    if self._input_index == self._batch_steps:
       with self.step_profiler:
-        sample_outputs = self._agent.multi_step(self._input_queue)
+        sample_outputs = self._agent.multi_step(self._input_buffers)
       for output in sample_outputs:
         self._output_queue.put(output)
-      self._input_queue = []
+      self._input_index = 0
 
   @contextlib.contextmanager
   def run(self):
