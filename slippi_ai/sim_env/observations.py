@@ -35,6 +35,7 @@ SlotsView = np.ndarray
 PlayerSlotView = np.ndarray
 ItemsView = np.ndarray
 PlayerArrays = dict[str, np.ndarray]
+ArrayAllocator = tp.Callable[[tuple[int, ...], tp.Any], np.ndarray]
 
 
 class GameBatch(tp.NamedTuple):
@@ -129,23 +130,31 @@ def _slots_by_source(slots: SlotsView) -> dict[int, PlayerSlotView]:
   return result
 
 
-def _empty_nana(batch_size: int) -> Nana:
-  zeros_bool = np.zeros(batch_size, dtype=np.bool_)
-  zeros_f32 = np.zeros(batch_size, dtype=np.float32)
-  zeros_u16 = np.zeros(batch_size, dtype=np.uint16)
-  zeros_u8 = np.zeros(batch_size, dtype=np.uint8)
+def _empty_nana(
+    batch_size: int,
+    allocate_array: ArrayAllocator | None = None,
+) -> Nana:
+  if allocate_array is None:
+    allocate_array = lambda shape, dtype: np.zeros(shape, dtype=dtype)
+  shape = (batch_size,)
+
+  def zeros(dtype):
+    array = allocate_array(shape, dtype)
+    array[...] = 0
+    return array
+
   return Nana(
-      exists=zeros_bool.copy(),
-      percent=zeros_u16.copy(),
-      facing=zeros_bool.copy(),
-      x=zeros_f32.copy(),
-      y=zeros_f32.copy(),
-      action=zeros_u16.copy(),
-      invulnerable=zeros_bool.copy(),
-      character=zeros_u8.copy(),
-      jumps_left=zeros_u8.copy(),
-      shield_strength=zeros_f32.copy(),
-      on_ground=zeros_bool.copy(),
+      exists=zeros(np.bool_),
+      percent=zeros(np.uint16),
+      facing=zeros(np.bool_),
+      x=zeros(np.float32),
+      y=zeros(np.float32),
+      action=zeros(np.uint16),
+      invulnerable=zeros(np.bool_),
+      character=zeros(np.uint8),
+      jumps_left=zeros(np.uint8),
+      shield_strength=zeros(np.float32),
+      on_ground=zeros(np.bool_),
   )
 
 
@@ -177,20 +186,30 @@ class GameBatchBuffers:
   in place instead of allocating a fresh Game nest for every frame.
   """
 
-  def __init__(self, batch_size: int):
+  def __init__(
+      self,
+      batch_size: int,
+      *,
+      _allocate_array: ArrayAllocator | None = None,
+      _percent_tmp: np.ndarray | None = None,
+  ):
+    if _allocate_array is None:
+      _allocate_array = lambda shape, dtype: np.zeros(shape, dtype=dtype)
     self.batch_size = int(batch_size)
     self.num_players = self.batch_size * 2
-    self.needs_reset = np.zeros(self.num_players, dtype=np.bool_)
-    self._percent_tmp = np.zeros(self.batch_size, dtype=np.float32)
-    self._p0_arrays = _player_arrays(self.num_players)
-    self._p1_arrays = _player_arrays(self.num_players)
+    self.needs_reset = _allocate_array((self.num_players,), np.bool_)
+    if _percent_tmp is None:
+      _percent_tmp = np.zeros(self.batch_size, dtype=np.float32)
+    self._percent_tmp = _percent_tmp
+    self._p0_arrays = _player_arrays(self.num_players, _allocate_array)
+    self._p1_arrays = _player_arrays(self.num_players, _allocate_array)
     self._item_arrays = [
         {
-            'exists': np.zeros(self.num_players, dtype=np.bool_),
-            'type': np.zeros(self.num_players, dtype=np.uint16),
-            'state': np.zeros(self.num_players, dtype=np.uint8),
-            'x': np.zeros(self.num_players, dtype=np.float32),
-            'y': np.zeros(self.num_players, dtype=np.float32),
+            'exists': _allocate_array((self.num_players,), np.bool_),
+            'type': _allocate_array((self.num_players,), np.uint16),
+            'state': _allocate_array((self.num_players,), np.uint8),
+            'x': _allocate_array((self.num_players,), np.float32),
+            'y': _allocate_array((self.num_players,), np.float32),
         }
         for _ in Items._fields
     ]
@@ -198,23 +217,79 @@ class GameBatchBuffers:
         f'item_{i}': Item(**arrays)
         for i, arrays in enumerate(self._item_arrays)
     })
-    self._p0_controller = _controller_buffers(self.num_players)
-    self._p1_controller = _controller_buffers(self.num_players)
-    empty_nana = _empty_nana(self.num_players)
+    self._p0_controller = _controller_buffers(self.num_players, _allocate_array)
+    self._p1_controller = _controller_buffers(self.num_players, _allocate_array)
     self.game = Game(
-        p0=Player(**self._p0_arrays, controller=self._p0_controller, nana=empty_nana),
-        p1=Player(**self._p1_arrays, controller=self._p1_controller, nana=empty_nana),
-        stage=np.zeros(self.num_players, dtype=np.uint8),
+        p0=Player(
+            **self._p0_arrays,
+            controller=self._p0_controller,
+            nana=_empty_nana(self.num_players, _allocate_array),
+        ),
+        p1=Player(
+            **self._p1_arrays,
+            controller=self._p1_controller,
+            nana=_empty_nana(self.num_players, _allocate_array),
+        ),
+        stage=_allocate_array((self.num_players,), np.uint8),
         randall=Randall(
-            x=np.zeros(self.num_players, dtype=np.float32),
-            y=np.zeros(self.num_players, dtype=np.float32),
+            x=_allocate_array((self.num_players,), np.float32),
+            y=_allocate_array((self.num_players,), np.float32),
         ),
         fod_platforms=FoDPlatforms(
-            left=np.zeros(self.num_players, dtype=np.float32),
-            right=np.zeros(self.num_players, dtype=np.float32),
+            left=_allocate_array((self.num_players,), np.float32),
+            right=_allocate_array((self.num_players,), np.float32),
         ),
         items=self._items,
     )
+
+  @staticmethod
+  def time_major(
+      batch_size: int,
+      length: int,
+      allocate_array: ArrayAllocator | None = None,
+      fill_batch_size: int | None = None,
+  ) -> 'GameBatchBuffers':
+    """Allocate one [time, batch] Game tree plus per-frame writable views.
+
+    Rollout needs a full T+1 observation tree for the learner, while env code
+    wants to fill one current GameBatchBuffers at a time. The returned storage
+    owns the time-major arrays in `game`; `frames[t]` is a normal
+    GameBatchBuffers view into timestep t of those same arrays.
+    """
+    arrays = []
+    if allocate_array is None:
+      allocate_array = lambda shape, dtype: np.empty(shape, dtype=dtype)
+
+    def time_major_array(shape, dtype):
+      array = allocate_array((length,) + tuple(shape), dtype)
+      arrays.append(array)
+      return array
+
+    # Frame views may fill only a shard of the full batch, as in MP workers.
+    scratch = np.zeros(
+        batch_size if fill_batch_size is None else fill_batch_size,
+        dtype=np.float32)
+    storage = GameBatchBuffers(
+        batch_size, _allocate_array=time_major_array, _percent_tmp=scratch)
+    storage.frames = []
+    storage._frame_leaves = []
+    for i in range(length):
+      slot_arrays = iter(arrays)
+      storage.frames.append(GameBatchBuffers(
+          batch_size,
+          _percent_tmp=storage._percent_tmp,
+          _allocate_array=(
+              lambda shape, dtype, slot_arrays=slot_arrays: next(slot_arrays)[i]),
+      ))
+      storage._frame_leaves.append(tuple(array[i] for array in arrays))
+    return storage
+
+  def copy_frame(self, dst_index: int, src_index: int):
+    for dst, src in zip(
+        self._frame_leaves[dst_index],
+        self._frame_leaves[src_index],
+    ):
+      dst[...] = src
 
   def fill(
       self,
@@ -236,13 +311,9 @@ class GameBatchBuffers:
     # first half and port 2 perspective in the second. p0 is the controlled
     # player and p1 is the opponent in both halves.
     first = env_slice
-    second = slice(
-        self.batch_size + int(env_slice.start or 0),
-        self.batch_size + int(env_slice.stop),
-    )
-    local_batch = int(env_slice.stop) - int(env_slice.start or 0)
-    if self._percent_tmp.shape[0] != local_batch:
-      self._percent_tmp = np.zeros(local_batch, dtype=np.float32)
+    start = env_slice.start or 0
+    stop = env_slice.stop
+    second = slice(self.batch_size + start, self.batch_size + stop)
     self.needs_reset[first] = needs_reset
     self.needs_reset[second] = needs_reset
 
@@ -268,8 +339,9 @@ class GameBatchBuffers:
     self._fill_items(frame['items'], second)
 
   def _fill_player(self, dst: PlayerArrays, target: slice, slot: PlayerSlotView):
-    np.clip(slot['percent'], 0, np.iinfo(np.uint16).max, out=self._percent_tmp)
-    dst['percent'][target] = self._percent_tmp
+    percent_tmp = self._percent_tmp[:slot.shape[0]]
+    np.clip(slot['percent'], 0, np.iinfo(np.uint16).max, out=percent_tmp)
+    dst['percent'][target] = percent_tmp
     dst['facing'][target] = slot['facing']
     dst['x'][target] = slot['pos_x']
     dst['y'][target] = slot['pos_y']
@@ -301,35 +373,35 @@ class GameBatchBuffers:
       arrays['y'][target] = src['pos_y']
 
 
-def _player_arrays(batch_size: int) -> PlayerArrays:
+def _player_arrays(batch_size: int, allocate_array: ArrayAllocator) -> PlayerArrays:
   arrays = {
-      'percent': np.zeros(batch_size, dtype=np.uint16),
-      'facing': np.zeros(batch_size, dtype=np.bool_),
-      'x': np.zeros(batch_size, dtype=np.float32),
-      'y': np.zeros(batch_size, dtype=np.float32),
-      'action': np.zeros(batch_size, dtype=np.uint16),
-      'invulnerable': np.zeros(batch_size, dtype=np.bool_),
-      'character': np.zeros(batch_size, dtype=np.uint8),
-      'jumps_left': np.zeros(batch_size, dtype=np.uint8),
-      'shield_strength': np.zeros(batch_size, dtype=np.float32),
-      'on_ground': np.zeros(batch_size, dtype=np.bool_),
+      'percent': allocate_array((batch_size,), np.uint16),
+      'facing': allocate_array((batch_size,), np.bool_),
+      'x': allocate_array((batch_size,), np.float32),
+      'y': allocate_array((batch_size,), np.float32),
+      'action': allocate_array((batch_size,), np.uint16),
+      'invulnerable': allocate_array((batch_size,), np.bool_),
+      'character': allocate_array((batch_size,), np.uint8),
+      'jumps_left': allocate_array((batch_size,), np.uint8),
+      'shield_strength': allocate_array((batch_size,), np.float32),
+      'on_ground': allocate_array((batch_size,), np.bool_),
   }
   return arrays
 
 
-def _controller_buffers(batch_size: int) -> Controller:
+def _controller_buffers(batch_size: int, allocate_array: ArrayAllocator) -> Controller:
   controller = Controller(
       main_stick=Stick(
-          x=np.zeros(batch_size, dtype=np.float32),
-          y=np.zeros(batch_size, dtype=np.float32),
+          x=allocate_array((batch_size,), np.float32),
+          y=allocate_array((batch_size,), np.float32),
       ),
       c_stick=Stick(
-          x=np.zeros(batch_size, dtype=np.float32),
-          y=np.zeros(batch_size, dtype=np.float32),
+          x=allocate_array((batch_size,), np.float32),
+          y=allocate_array((batch_size,), np.float32),
       ),
-      shoulder=np.zeros(batch_size, dtype=np.float32),
+      shoulder=allocate_array((batch_size,), np.float32),
       buttons=Buttons(**{
-          name: np.zeros(batch_size, dtype=np.bool_)
+          name: allocate_array((batch_size,), np.bool_)
           for name in Buttons._fields
       }),
   )

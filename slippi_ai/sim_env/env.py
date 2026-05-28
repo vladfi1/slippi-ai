@@ -8,7 +8,7 @@ the libmelee-shaped observation nest.
 
 There are two use modes. `current_state`/`step` preserve the familiar
 port-keyed Dolphin env interface for tests and small tools. The high-throughput
-path uses `current_game_batch` and `step_encoded`: one reusable `GameBatch`
+path uses `write_current_game` and `step_encoded`: one reusable `GameBatch`
 stores all port-1 perspectives followed by all port-2 perspectives, and policy
 action buckets are decoded straight into the native action ring. That path avoids
 rebuilding Python game objects during rollout and is what the JAX sim pipeline
@@ -27,8 +27,8 @@ import numpy as np
 from slippi_ai import dolphin
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
-    GameBatch, GameBatchBuffers,
-    copy_controller_slice as _copy_controller_slice, game_for_port,
+    GameBatchBuffers, copy_controller_slice as _copy_controller_slice,
+    game_for_port,
 )
 from slippi_ai.types import Buttons, Controller, Stick
 
@@ -68,7 +68,7 @@ class SimBatchedEnvironment:
 
   The public env shape mirrors the Dolphin-backed envs: callers pass controller
   actions and receive `EnvOutput` objects. High-throughput paths should use
-  `current_game_batch` and `step_encoded` to avoid rebuilding per-port Python
+  `write_current_game` and `step_encoded` to avoid rebuilding per-port Python
   objects while still feeding the same policy-facing fields.
   """
 
@@ -220,16 +220,28 @@ class SimBatchedEnvironment:
         needs_reset=np.asarray(needs_reset, dtype=np.bool_),
     )
 
-  def current_game_batch(self, needs_reset: np.ndarray | None = None) -> GameBatch:
-    """Return a [port1 views, port2 views] game batch for policy calls."""
+  @property
+  def game_batch_buffers(self) -> GameBatchBuffers:
+    return self._game_batch
+
+  def write_current_game(
+      self,
+      game_batch: GameBatchBuffers,
+      needs_reset: np.ndarray | None = None,
+      *,
+      env_slice: slice | None = None,
+      controller_slice: slice | None = None,
+  ):
+    """Write the current sim observation into reusable policy input buffers."""
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
-    # Reuse one Game nest and mutate its leaves. This is the high-throughput
-    # adapter path from melee_sim's native buffers to the JAX policy input.
-    self._game_batch.fill(
-        self._env.current_frame, needs_reset, self._last_controllers)
-    return GameBatch(
-        game=self._game_batch.game,
-        needs_reset=self._game_batch.needs_reset,
+    if env_slice is None:
+      env_slice = slice(0, self._num_envs)
+    game_batch.fill_slice(
+        self._env.current_frame,
+        needs_reset,
+        env_slice,
+        self._last_controllers,
+        controller_slice=controller_slice,
     )
 
   def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
@@ -271,45 +283,60 @@ class SimBatchedEnvironment:
       *,
       axis_spacing: int,
       shoulder_spacing: int,
+      output_game_batch: GameBatchBuffers | None = None,
   ) -> np.ndarray:
-    """Step from encoded default-controller buckets shaped by port perspective."""
+    """Step encoded actions and optionally write the post-step observation."""
+    return self.step_encoded_slices(
+        controller_state,
+        player_slices=(
+            slice(0, self._num_envs),
+            slice(self._num_envs, 2 * self._num_envs),
+        ),
+        axis_spacing=axis_spacing,
+        shoulder_spacing=shoulder_spacing,
+        output_game_batch=output_game_batch,
+    )
+
+  # The JAX rollout worker stores both port perspectives in one controller
+  # batch. Multiprocess workers own contiguous env shards, so they pass the
+  # source slices for port 1 and port 2 explicitly instead of assuming the
+  # default [all p1 views, all p2 views] layout.
+  def step_encoded_slices(
+      self,
+      controller_state: Controller,
+      *,
+      player_slices: tuple[slice, slice],
+      axis_spacing: int,
+      shoulder_spacing: int,
+      output_game_batch: GameBatchBuffers | None = None,
+  ) -> np.ndarray:
+    """Step from encoded controller buckets with explicit source slices."""
     self._ensure_cursor_room()
 
     action = self._env.current_action_frame
     # Decode policy buckets straight into the native action ring, and mirror the
     # same decoded values into previous-controller state for the next Game view.
-    write_encoded_controller_action(
-        action,
-        controller_state,
-        player_index=0,
-        source_slice=slice(0, self._num_envs),
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    write_encoded_controller_action(
-        action,
-        controller_state,
-        player_index=1,
-        source_slice=slice(self._num_envs, 2 * self._num_envs),
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    copy_encoded_controller(
-        self._last_controllers[1],
-        controller_state,
-        source_slice=slice(0, self._num_envs),
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
-    copy_encoded_controller(
-        self._last_controllers[2],
-        controller_state,
-        source_slice=slice(self._num_envs, 2 * self._num_envs),
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-    )
+    for player_index, port in enumerate(self._ports):
+      write_encoded_controller_action(
+          action,
+          controller_state,
+          player_index=player_index,
+          source_slice=player_slices[player_index],
+          axis_spacing=axis_spacing,
+          shoulder_spacing=shoulder_spacing,
+      )
+      copy_encoded_controller(
+          self._last_controllers[port],
+          controller_state,
+          source_slice=player_slices[player_index],
+          axis_spacing=axis_spacing,
+          shoulder_spacing=shoulder_spacing,
+      )
     if self._fake:
-      return np.zeros(self._num_envs, dtype=np.bool_)
+      needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
+      if output_game_batch is not None:
+        self.write_current_game(output_game_batch, needs_reset)
+      return needs_reset
 
     step_t = self._env.t
     self._env.step(max_frame_id=self._max_frame_id)
@@ -318,6 +345,8 @@ class SimBatchedEnvironment:
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
     self._record_completed_games(terminal, self._env.current_frame)
     self._reset_finished_lanes_for_next_observation(needs_reset)
+    if output_game_batch is not None:
+      self.write_current_game(output_game_batch, needs_reset)
     return needs_reset
 
   def multi_step(self, controllers: list[Controllers]) -> list[EnvOutput]:
@@ -338,6 +367,10 @@ class SimBatchedEnvironment:
   @property
   def last_step_info(self) -> SimStepInfo:
     return self._last_step_info
+
+  @property
+  def episode_ids(self) -> np.ndarray:
+    return self._episode_ids
 
   def pop_completed_games(self) -> list[dict[str, tp.Any]]:
     completed_games = self._completed_games
