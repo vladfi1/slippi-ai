@@ -136,6 +136,12 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     # TODO: put this in the BasicAgent?
     self.step_profiler = utils.Profiler(burnin=1)
 
+    if policy.platform is policies.Platform.JAX:
+      from slippi_ai.jax import jax_utils
+      self._map_fn = jax_utils.fast_map
+    else:
+      self._map_fn = utils.map_nt
+
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
@@ -183,11 +189,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 
     input_buffer = self._input_buffers[self._input_index]
 
-    # utils.cached_map_nt(Game)(np.copyto, input_buffer[0], game)
-    # input_buffer[1][:] = needs_reset
-    import jax
-    jax.tree.map(np.copyto, input_buffer, (game, needs_reset))
-
+    self._map_fn(np.copyto, input_buffer, (game, needs_reset))
     self._input_index += 1
 
     if self._input_index == self._batch_steps:

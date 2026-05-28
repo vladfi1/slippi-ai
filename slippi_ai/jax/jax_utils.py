@@ -124,6 +124,13 @@ def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
 
 # Other utilities
 
+class MultiMap(tp.Protocol):
+  def __call__(self, f: tp.Callable, *args: T) -> T:
+    ...
+
+fast_map: MultiMap = tp.cast(MultiMap, jax.tree.map)
+
+
 def mean_and_variance(xs: Array) -> tuple[Array, Array]:
   mean = jnp.mean(xs)
   variance = jnp.mean(jnp.square(xs - mean))
