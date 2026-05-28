@@ -261,10 +261,15 @@ class JaxSimRolloutWorker:
       for agent_info in self._agents:
         agent = agent_info.agent
 
-        agent_inputs = slice_map(
-            agent_info.env_slice,
-            (game_batch.game, game_batch.needs_reset))
+        if len(self._agents) == 1:
+          # If there's only one agent, we can skip the slicing.
+          agent_inputs = game_batch
+        else:
+          agent_inputs = slice_map(agent_info.env_slice, game_batch)
 
+        # Note: game_batch contains mutable views: the agent should write these
+        # into its own internal state if it needs to reference them later, e.g.
+        # if it batches steps across time.
         step_start = time.perf_counter()
         output = agent.step(*agent_inputs)
         agent_outputs.append(output)
