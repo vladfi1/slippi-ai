@@ -5,7 +5,7 @@ import dataclasses
 import numpy as np
 
 import melee
-from slippi_ai.types import Game, Player
+from slippi_ai.types import Game, Player, S
 
 def is_dying(player_action: np.ndarray) -> np.ndarray:
   # See https://docs.google.com/spreadsheets/d/1JX2w-r2fuvWuNgGb6D3Cs4wHQKLFegZe2jhbBuIhCG8/edit#gid=13
@@ -115,7 +115,7 @@ class RewardConfig:
   stalling_threshold: float = DEFAULT_STALLING_THRESHOLD
   nana_ratio: float = 0.5
 
-def ko_diff(game: Game) -> np.ndarray:
+def ko_diff(game: Game[S]) -> np.ndarray[S, np.dtype[np.int32]]:
   """Compute the KO difference (p0 KOs - p1 KOs) per frame."""
   p0_deaths = process_deaths(game.p0.action).astype(np.int32)
   p1_deaths = process_deaths(game.p1.action).astype(np.int32)

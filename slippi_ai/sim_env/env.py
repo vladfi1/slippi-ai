@@ -24,13 +24,13 @@ import melee
 import melee_sim
 import numpy as np
 
-from slippi_ai import dolphin
+from slippi_ai import dolphin, utils
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
-    GameBatchBuffers, copy_controller_slice as _copy_controller_slice,
-    game_for_port,
+    GameBatchBuffer, copy_controller_slice as _copy_controller_slice,
+    game_for_port, GameBatch
 )
-from slippi_ai.types import Buttons, Controller, Stick
+from slippi_ai.types import Buttons, Controller, Stick, reify_tuple_type
 
 
 Port = int
@@ -98,7 +98,7 @@ class SimBatchedEnvironment:
           2: dolphin.AI(melee.Character.FOX),
       }
       self._players_by_env = (default_players,) * self._num_envs
-    elif isinstance(players, collections.abc.Mapping):
+    elif isinstance(players, tp.Mapping):
       self._players_by_env = (players,) * self._num_envs
     else:
       self._players_by_env = tuple(players)
@@ -192,7 +192,12 @@ class SimBatchedEnvironment:
     self._completed_games: list[dict[str, tp.Any]] = []
 
     # Reusable policy-facing observation tree for the high-throughput path.
-    self._game_batch = GameBatchBuffers(self._num_envs)
+    # TODO: this is only used in test_sim_env.py and should be removed
+    game_batch = utils.map_single_structure(
+        lambda dtype: np.empty([self._num_envs * 2], dtype=dtype),
+        reify_tuple_type(GameBatch),
+    )
+    self._game_batch_buffer = GameBatchBuffer(game_batch)
 
     # Match the existing env push/pop contract by seeding an initial observation.
     self._output_queue = collections.deque([
@@ -221,16 +226,15 @@ class SimBatchedEnvironment:
     )
 
   @property
-  def game_batch_buffers(self) -> GameBatchBuffers:
-    return self._game_batch
+  def game_batch_buffers(self) -> GameBatchBuffer:
+    return self._game_batch_buffer
 
   def write_current_game(
       self,
-      game_batch: GameBatchBuffers,
+      game_batch: GameBatchBuffer,
       needs_reset: np.ndarray | None = None,
       *,
-      env_slice: slice | None = None,
-      controller_slice: slice | None = None,
+      env_slice: slice | None = None,  # overridden when inside an MP env
   ):
     """Write the current sim observation into reusable policy input buffers."""
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
@@ -241,7 +245,6 @@ class SimBatchedEnvironment:
         needs_reset,
         env_slice,
         self._last_controllers,
-        controller_slice=controller_slice,
     )
 
   def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
@@ -259,7 +262,7 @@ class SimBatchedEnvironment:
       neutral = neutral_controllers(ids.size)
       for port in self._ports:
         _copy_controller_slice(
-            self._last_controllers[port], neutral, ids, slice(None))
+            self._last_controllers[port], neutral, ids)
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
     needs_reset[ids] = True
     return self.current_state(needs_reset=needs_reset)
@@ -276,78 +279,6 @@ class SimBatchedEnvironment:
   def step(self, controllers: Controllers) -> EnvOutput:
     needs_reset = self.advance(controllers)
     return self.current_state(needs_reset=needs_reset)
-
-  def step_encoded(
-      self,
-      controller_state: Controller,
-      *,
-      axis_spacing: int,
-      shoulder_spacing: int,
-      output_game_batch: GameBatchBuffers | None = None,
-  ) -> np.ndarray:
-    """Step encoded actions and optionally write the post-step observation."""
-    return self.step_encoded_slices(
-        controller_state,
-        player_slices=(
-            slice(0, self._num_envs),
-            slice(self._num_envs, 2 * self._num_envs),
-        ),
-        axis_spacing=axis_spacing,
-        shoulder_spacing=shoulder_spacing,
-        output_game_batch=output_game_batch,
-    )
-
-  # The JAX rollout worker stores both port perspectives in one controller
-  # batch. Multiprocess workers own contiguous env shards, so they pass the
-  # source slices for port 1 and port 2 explicitly instead of assuming the
-  # default [all p1 views, all p2 views] layout.
-  def step_encoded_slices(
-      self,
-      controller_state: Controller,
-      *,
-      player_slices: tuple[slice, slice],
-      axis_spacing: int,
-      shoulder_spacing: int,
-      output_game_batch: GameBatchBuffers | None = None,
-  ) -> np.ndarray:
-    """Step from encoded controller buckets with explicit source slices."""
-    self._ensure_cursor_room()
-
-    action = self._env.current_action_frame
-    # Decode policy buckets straight into the native action ring, and mirror the
-    # same decoded values into previous-controller state for the next Game view.
-    for player_index, port in enumerate(self._ports):
-      write_encoded_controller_action(
-          action,
-          controller_state,
-          player_index=player_index,
-          source_slice=player_slices[player_index],
-          axis_spacing=axis_spacing,
-          shoulder_spacing=shoulder_spacing,
-      )
-      copy_encoded_controller(
-          self._last_controllers[port],
-          controller_state,
-          source_slice=player_slices[player_index],
-          axis_spacing=axis_spacing,
-          shoulder_spacing=shoulder_spacing,
-      )
-    if self._fake:
-      needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
-      if output_game_batch is not None:
-        self.write_current_game(output_game_batch, needs_reset)
-      return needs_reset
-
-    step_t = self._env.t
-    self._env.step(max_frame_id=self._max_frame_id)
-    needs_reset = self._env.done_at(step_t).astype(np.bool_, copy=True)
-    terminal = self._env.terminal_at(step_t).copy()
-    self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
-    self._record_completed_games(terminal, self._env.current_frame)
-    self._reset_finished_lanes_for_next_observation(needs_reset)
-    if output_game_batch is not None:
-      self.write_current_game(output_game_batch, needs_reset)
-    return needs_reset
 
   def multi_step(self, controllers: list[Controllers]) -> list[EnvOutput]:
     return [self.step(c) for c in controllers]
@@ -405,7 +336,6 @@ class SimBatchedEnvironment:
       _copy_controller_slice(
           self._last_controllers[port],
           controller,
-          slice(None),
           slice(None),
       )
     if self._fake:

@@ -8,13 +8,17 @@ observation objects every step.
 
 import typing as tp
 
+import jax
+
 import melee
 import melee_sim
 import numpy as np
 
+from slippi_ai import utils
+
 from slippi_ai.types import (
     Buttons, Controller, FoDPlatforms, Game, Item, Items, Nana, Player, Randall,
-    Stick,
+    reify_tuple_type
 )
 
 
@@ -30,18 +34,33 @@ _SIM_TO_MELEE_STAGE = {
 # melee_sim exposes native C buffers as NumPy structured-array views. Field
 # access like frame["slots"] or slot["percent"] selects dtype field views; these
 # are not dicts.
+# TODO: add TypedDict signatures for these
 FrameView = np.ndarray
 SlotsView = np.ndarray
 PlayerSlotView = np.ndarray
 ItemsView = np.ndarray
-PlayerArrays = dict[str, np.ndarray]
 ArrayAllocator = tp.Callable[[tuple[int, ...], tp.Any], np.ndarray]
 
+S = tp.TypeVar('S', bound=tuple[int, ...])
+Rank1 = tuple[int]
 
-class GameBatch(tp.NamedTuple):
+class PlayerArrays(tp.TypedDict, tp.Generic[S]):
+  percent: np.ndarray[S, np.dtype[np.uint16]]
+  facing: np.ndarray[S, np.dtype[np.bool_]]
+  x: np.ndarray[S, np.dtype[np.float32]]
+  y: np.ndarray[S, np.dtype[np.float32]]
+  action: np.ndarray[S, np.dtype[np.uint16]]
+  invulnerable: np.ndarray[S, np.dtype[np.bool_]]
+  character: np.ndarray[S, np.dtype[np.uint8]]
+  jumps_left: np.ndarray[S, np.dtype[np.uint8]]
+  shield_strength: np.ndarray[S, np.dtype[np.float32]]
+  on_ground: np.ndarray[S, np.dtype[np.bool_]]
+
+
+class GameBatch(tp.NamedTuple, tp.Generic[S]):
   """Policy-facing batch laid out as [all port-1 views, all port-2 views]."""
-  game: Game
-  needs_reset: np.ndarray
+  game: Game[S]
+  needs_reset: np.ndarray[S, np.dtype[np.bool_]]
 
 
 def game_for_port(
@@ -74,14 +93,14 @@ def game_for_port(
   )
 
 
-def copy_controller_slice(dst: Controller, src: Controller, target: slice, source: slice):
-  dst.main_stick.x[target] = src.main_stick.x[source]
-  dst.main_stick.y[target] = src.main_stick.y[source]
-  dst.c_stick.x[target] = src.c_stick.x[source]
-  dst.c_stick.y[target] = src.c_stick.y[source]
-  dst.shoulder[target] = src.shoulder[source]
+def copy_controller_slice(dst: Controller, src: Controller, target: slice):
+  dst.main_stick.x[target] = src.main_stick.x
+  dst.main_stick.y[target] = src.main_stick.y
+  dst.c_stick.x[target] = src.c_stick.x
+  dst.c_stick.y[target] = src.c_stick.y
+  dst.shoulder[target] = src.shoulder
   for name in Buttons._fields:
-    getattr(dst.buttons, name)[target] = getattr(src.buttons, name)[source]
+    getattr(dst.buttons, name)[target] = getattr(src.buttons, name)
 
 
 def player_from_slot(slot: PlayerSlotView, controller: Controller) -> Player:
@@ -178,7 +197,7 @@ def _canonical_items(items: ItemsView) -> ItemsView:
   return np.take_along_axis(items, order, axis=1)
 
 
-class GameBatchBuffers:
+class GameBatchBuffer:
   """Reusable Game storage for batched policy calls.
 
   The policy sees each env twice: first from port 1's perspective, then from
@@ -188,108 +207,22 @@ class GameBatchBuffers:
 
   def __init__(
       self,
-      batch_size: int,
-      *,
-      _allocate_array: ArrayAllocator | None = None,
-      _percent_tmp: np.ndarray | None = None,
+      game_batch: GameBatch[Rank1],
   ):
-    if _allocate_array is None:
-      _allocate_array = lambda shape, dtype: np.zeros(shape, dtype=dtype)
-    self.batch_size = int(batch_size)
-    self.num_players = self.batch_size * 2
-    self.needs_reset = _allocate_array((self.num_players,), np.bool_)
-    if _percent_tmp is None:
-      _percent_tmp = np.zeros(self.batch_size, dtype=np.float32)
-    self._percent_tmp = _percent_tmp
-    self._p0_arrays = _player_arrays(self.num_players, _allocate_array)
-    self._p1_arrays = _player_arrays(self.num_players, _allocate_array)
-    self._item_arrays = [
-        {
-            'exists': _allocate_array((self.num_players,), np.bool_),
-            'type': _allocate_array((self.num_players,), np.uint16),
-            'state': _allocate_array((self.num_players,), np.uint8),
-            'x': _allocate_array((self.num_players,), np.float32),
-            'y': _allocate_array((self.num_players,), np.float32),
-        }
-        for _ in Items._fields
-    ]
-    self._items = Items(**{
-        f'item_{i}': Item(**arrays)
-        for i, arrays in enumerate(self._item_arrays)
-    })
-    self._p0_controller = _controller_buffers(self.num_players, _allocate_array)
-    self._p1_controller = _controller_buffers(self.num_players, _allocate_array)
-    self.game = Game(
-        p0=Player(
-            **self._p0_arrays,
-            controller=self._p0_controller,
-            nana=_empty_nana(self.num_players, _allocate_array),
-        ),
-        p1=Player(
-            **self._p1_arrays,
-            controller=self._p1_controller,
-            nana=_empty_nana(self.num_players, _allocate_array),
-        ),
-        stage=_allocate_array((self.num_players,), np.uint8),
-        randall=Randall(
-            x=_allocate_array((self.num_players,), np.float32),
-            y=_allocate_array((self.num_players,), np.float32),
-        ),
-        fod_platforms=FoDPlatforms(
-            left=_allocate_array((self.num_players,), np.float32),
-            right=_allocate_array((self.num_players,), np.float32),
-        ),
-        items=self._items,
-    )
+    leaves: list[np.ndarray] = jax.tree.leaves(game_batch)
+    (num_players,) = leaves[0].shape
+    for leaf in leaves:
+      if leaf.shape != leaves[0].shape:
+        raise ValueError('game_batch must have uniform shape')
 
-  @staticmethod
-  def time_major(
-      batch_size: int,
-      length: int,
-      allocate_array: ArrayAllocator | None = None,
-      fill_batch_size: int | None = None,
-  ) -> 'GameBatchBuffers':
-    """Allocate one [time, batch] Game tree plus per-frame writable views.
+    self.game_batch = game_batch
+    self.game = game_batch.game
+    self.needs_reset = game_batch.needs_reset
+    self._item_arrays = self.game.items
 
-    Rollout needs a full T+1 observation tree for the learner, while env code
-    wants to fill one current GameBatchBuffers at a time. The returned storage
-    owns the time-major arrays in `game`; `frames[t]` is a normal
-    GameBatchBuffers view into timestep t of those same arrays.
-    """
-    arrays = []
-    if allocate_array is None:
-      allocate_array = lambda shape, dtype: np.empty(shape, dtype=dtype)
-
-    def time_major_array(shape, dtype):
-      array = allocate_array((length,) + tuple(shape), dtype)
-      arrays.append(array)
-      return array
-
-    # Frame views may fill only a shard of the full batch, as in MP workers.
-    scratch = np.zeros(
-        batch_size if fill_batch_size is None else fill_batch_size,
-        dtype=np.float32)
-    storage = GameBatchBuffers(
-        batch_size, _allocate_array=time_major_array, _percent_tmp=scratch)
-    storage.frames = []
-    storage._frame_leaves = []
-    for i in range(length):
-      slot_arrays = iter(arrays)
-      storage.frames.append(GameBatchBuffers(
-          batch_size,
-          _percent_tmp=storage._percent_tmp,
-          _allocate_array=(
-              lambda shape, dtype, slot_arrays=slot_arrays: next(slot_arrays)[i]),
-      ))
-      storage._frame_leaves.append(tuple(array[i] for array in arrays))
-    return storage
-
-  def copy_frame(self, dst_index: int, src_index: int):
-    for dst, src in zip(
-        self._frame_leaves[dst_index],
-        self._frame_leaves[src_index],
-    ):
-      dst[...] = src
+    self.num_players = num_players
+    self.num_envs, r = divmod(num_players, 2)
+    assert r == 0
 
   def fill(
       self,
@@ -297,7 +230,7 @@ class GameBatchBuffers:
       needs_reset: np.ndarray,
       controllers: tp.Mapping[int, Controller] | None = None,
   ):
-    self.fill_slice(frame, needs_reset, slice(0, self.batch_size), controllers)
+    self.fill_slice(frame, needs_reset, slice(0, self.num_envs), controllers)
 
   def fill_slice(
       self,
@@ -305,52 +238,54 @@ class GameBatchBuffers:
       needs_reset: np.ndarray,
       env_slice: slice,
       controllers: tp.Mapping[int, Controller] | None = None,
-      controller_slice: slice | None = None,
   ):
+    # TODO: we should try to reuse the the native env's own time-major buffers
+
     # Each native env contributes two policy examples: port 1 perspective in the
     # first half and port 2 perspective in the second. p0 is the controlled
     # player and p1 is the opponent in both halves.
     first = env_slice
-    start = env_slice.start or 0
+    start = env_slice.start
+    assert isinstance(start, int)
     stop = env_slice.stop
-    second = slice(self.batch_size + start, self.batch_size + stop)
+    assert isinstance(stop, int)
+    second = slice(self.num_envs + start, self.num_envs + stop)
     self.needs_reset[first] = needs_reset
     self.needs_reset[second] = needs_reset
 
     slots_by_source = _slots_by_source(frame['slots'])
     src0 = slots_by_source[0]
     src1 = slots_by_source[1]
-    self._fill_player(self._p0_arrays, first, src0)
-    self._fill_player(self._p0_arrays, second, src1)
-    self._fill_player(self._p1_arrays, first, src1)
-    self._fill_player(self._p1_arrays, second, src0)
+    self._fill_player(self.game.p0, first, src0)
+    self._fill_player(self.game.p0, second, src1)
+    self._fill_player(self.game.p1, first, src1)
+    self._fill_player(self.game.p1, second, src0)
     if controllers is not None:
       # Controller history is perspective-local: p0 sees its own previous
       # controller and p1 sees the opponent's previous controller.
-      source = env_slice if controller_slice is None else controller_slice
-      copy_controller_slice(self._p0_controller, controllers[1], first, source)
-      copy_controller_slice(self._p0_controller, controllers[2], second, source)
-      copy_controller_slice(self._p1_controller, controllers[2], first, source)
-      copy_controller_slice(self._p1_controller, controllers[1], second, source)
+      copy_controller_slice(self.game.p0.controller, controllers[1], first)
+      copy_controller_slice(self.game.p0.controller, controllers[2], second)
+      copy_controller_slice(self.game.p1.controller, controllers[2], first)
+      copy_controller_slice(self.game.p1.controller, controllers[1], second)
 
     self._fill_stage_like(frame, first)
     self._fill_stage_like(frame, second)
     self._fill_items(frame['items'], first)
     self._fill_items(frame['items'], second)
 
-  def _fill_player(self, dst: PlayerArrays, target: slice, slot: PlayerSlotView):
-    percent_tmp = self._percent_tmp[:slot.shape[0]]
-    np.clip(slot['percent'], 0, np.iinfo(np.uint16).max, out=percent_tmp)
-    dst['percent'][target] = percent_tmp
-    dst['facing'][target] = slot['facing']
-    dst['x'][target] = slot['pos_x']
-    dst['y'][target] = slot['pos_y']
-    dst['action'][target] = slot['action_id']
-    dst['invulnerable'][target] = slot['invulnerable']
-    dst['character'][target] = slot['char_id']
-    dst['jumps_left'][target] = _libmelee_jumps_left(slot)
-    dst['shield_strength'][target] = slot['shield_hp']
-    dst['on_ground'][target] = slot['on_ground']
+  def _fill_player(self, dst: Player, target: slice, slot: PlayerSlotView):
+    # percent_tmp = self._percent_tmp[:slot.shape[0]]
+    np.clip(slot['percent'], 0, np.iinfo(np.uint16).max, out=dst.percent[target], casting='unsafe')
+    # dst['percent'][target] = percent_tmp
+    dst.facing[target] = slot['facing']
+    dst.x[target] = slot['pos_x']
+    dst.y[target] = slot['pos_y']
+    dst.action[target] = slot['action_id']
+    dst.invulnerable[target] = slot['invulnerable']
+    dst.character[target] = slot['char_id']
+    dst.jumps_left[target] = _libmelee_jumps_left(slot)
+    dst.shield_strength[target] = slot['shield_hp']
+    dst.on_ground[target] = slot['on_ground']
 
   def _fill_stage_like(self, frame: FrameView, target: slice):
     stage = self.game.stage[target]
@@ -366,47 +301,51 @@ class GameBatchBuffers:
     items = _canonical_items(items)
     for i, arrays in enumerate(self._item_arrays):
       src = items[:, i]
-      arrays['exists'][target] = src['exists']
-      arrays['type'][target] = src['type']
-      arrays['state'][target] = src['state']
-      arrays['x'][target] = src['pos_x']
-      arrays['y'][target] = src['pos_y']
+      arrays.exists[target] = src['exists']
+      arrays.type[target] = src['type']
+      arrays.state[target] = src['state']
+      arrays.x[target] = src['pos_x']
+      arrays.y[target] = src['pos_y']
 
 
-def _player_arrays(batch_size: int, allocate_array: ArrayAllocator) -> PlayerArrays:
-  arrays = {
-      'percent': allocate_array((batch_size,), np.uint16),
-      'facing': allocate_array((batch_size,), np.bool_),
-      'x': allocate_array((batch_size,), np.float32),
-      'y': allocate_array((batch_size,), np.float32),
-      'action': allocate_array((batch_size,), np.uint16),
-      'invulnerable': allocate_array((batch_size,), np.bool_),
-      'character': allocate_array((batch_size,), np.uint8),
-      'jumps_left': allocate_array((batch_size,), np.uint8),
-      'shield_strength': allocate_array((batch_size,), np.float32),
-      'on_ground': allocate_array((batch_size,), np.bool_),
-  }
-  return arrays
+Rank2 = tuple[int, int]
 
+class TrajectoryStateBuffer(tp.NamedTuple):
+  """Time-major storage for T+1 policy observations.
 
-def _controller_buffers(batch_size: int, allocate_array: ArrayAllocator) -> Controller:
-  controller = Controller(
-      main_stick=Stick(
-          x=allocate_array((batch_size,), np.float32),
-          y=allocate_array((batch_size,), np.float32),
-      ),
-      c_stick=Stick(
-          x=allocate_array((batch_size,), np.float32),
-          y=allocate_array((batch_size,), np.float32),
-      ),
-      shoulder=allocate_array((batch_size,), np.float32),
-      buttons=Buttons(**{
-          name: allocate_array((batch_size,), np.bool_)
-          for name in Buttons._fields
-      }),
-  )
-  controller.main_stick.x[:] = 0.5
-  controller.main_stick.y[:] = 0.5
-  controller.c_stick.x[:] = 0.5
-  controller.c_stick.y[:] = 0.5
-  return controller
+  `current_game_batch()` reuses one mutable Game tree, while the learner needs
+  the whole rollout after the sim has advanced. `slots` are NumPy views into the
+  time-major `states` tree, so copying into a slot writes directly into the
+  corresponding frame of the final trajectory buffer.
+  """
+
+  states: GameBatch[Rank2]
+  slots: list[GameBatchBuffer]  # T+1 views into states
+
+  def __len__(self):
+    return len(self.slots)
+
+  @classmethod
+  def build(
+      cls,
+      batch_size: int,
+      rollout_length: int,
+  ) -> tp.Self:
+    shape = (rollout_length, batch_size)
+    states = utils.map_single_structure(
+        lambda dtype: np.empty(shape, dtype=dtype),
+        reify_tuple_type(GameBatch),
+    )
+    return cls.from_game_batch(states)
+
+  @classmethod
+  def from_game_batch(cls, game_batch: GameBatch[Rank2]) -> tp.Self:
+    rollout_length = game_batch.needs_reset.shape[0]
+    slots = [
+        GameBatchBuffer(utils.map_nt(lambda leaf, i=i: leaf[i], game_batch))  # type: ignore
+        for i in range(rollout_length)
+    ]
+    return cls(
+        states=game_batch,
+        slots=slots,
+    )

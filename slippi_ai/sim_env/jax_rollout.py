@@ -22,18 +22,12 @@ from slippi_ai import eval_lib
 from slippi_ai import reward
 from slippi_ai import sim_env
 from slippi_ai import utils
+from slippi_ai.sim_env.observations import TrajectoryStateBuffer
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
-from slippi_ai.jax.jax_utils import fast_map
-from slippi_ai.types import Game
+from slippi_ai.jax.jax_utils import fast_map, slice_map
 
 T = tp.TypeVar('T')
-
-class SliceMap(tp.Protocol):
-  def __call__(self, s: slice | tuple[slice, ...], struct: T) -> T:
-    ...
-
-slice_map: SliceMap = lambda s, struct: jax.tree.map(lambda x: x[s], struct)
 
 Agent = eval_lib.DelayedAgent | eval_lib.AsyncDelayedAgent
 
@@ -43,6 +37,7 @@ class AgentInfo(tp.NamedTuple):
   env_slice: slice
   env_to_port_slices: tuple[slice, ...]
   agent_to_port_slices: tuple[slice, ...]
+  # buffer: _TrajectoryStateBuffer
 
 
 class JaxSimRolloutWorker(AbstractRolloutWorker):
@@ -60,6 +55,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       batch_steps: int = 1,
       per_agent_outputs: bool = True,
       use_fake_envs: bool = False,
+      async_envs: bool = False,
+      inner_batch_size: tp.Optional[int] = None,
   ):
     self._num_envs = num_envs
     self._num_players = self._num_envs * len(self.ports)
@@ -154,6 +151,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
           self._num_envs,
       ))
 
+    self._async_envs = async_envs
+    self._inner_batch_size = inner_batch_size
     self._env_kwargs = dict(
         num_envs=self._num_envs,
         players=[kwargs['players'] for kwargs in dolphin_kwargs],
@@ -166,11 +165,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
     self._env = self._build_env()
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
-    game_batch = self._env.current_game_batch(self._needs_reset)
-    self._state_buffer = _make_trajectory_state_buffer(
-        game_batch.game, self._rollout_length)
-    self._reset_buffer = np.empty(
-        (self._rollout_length + 1, self._num_players), dtype=np.bool_)
+    self._state_buffer = TrajectoryStateBuffer.build(
+        self._num_players, self._rollout_length + 1)
+    # TODO: consider per-agent buffers to avoid some extra slicing
 
   def start(self):
     pass
@@ -208,8 +205,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       raise ValueError(
           f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '
           f'got rollout({num_steps}).')
+
     state_buffer = self._state_buffer
-    reset_buffer = self._reset_buffer
 
     action_buffers: list[list[SampleOutputs]] = [
         [] for _ in self._agents
@@ -230,18 +227,17 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         t: int,
         prev_agent_outputs: list[SampleOutputs],
     ):
-      game_batch = self._env.current_game_batch(self._needs_reset)
-
       copy_start = time.perf_counter()
-      _copy_state_slot(state_buffer, t)
-      reset_buffer[t] = game_batch.needs_reset
+
+      slot = state_buffer.slots[t]
+      self._env.write_current_game(slot, self._needs_reset)
 
       for buffer, output in zip(action_buffers, prev_agent_outputs):
         buffer.append(output)
 
       timings['state_copy'] += time.perf_counter() - copy_start
 
-      return game_batch
+      return slot.game_batch
 
     # Step the sim immediately with already-delayed controller inputs, while
     # collecting a chunk of observations for one fused JAX actor call.
@@ -264,7 +260,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         # into its own internal state if it needs to reference them later, e.g.
         # if it batches steps across time.
         step_start = time.perf_counter()
-        output = agent.step(*agent_inputs)
+        output = agent.step(agent_inputs.game, agent_inputs.needs_reset)
         agent_outputs.append(output)
 
         decoded_controllers = agent.decode_controller(output.controller_state)
@@ -289,7 +285,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
     build_start = time.perf_counter()
     time_major_states = state_buffer.states
-    rewards = reward.ko_diff(time_major_states)
+    rewards = reward.ko_diff(time_major_states.game)
 
     trajectories: dict[Port, Trajectory] = {}
     for agent_info, action_buffer, initial_state in zip(
@@ -303,13 +299,13 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
             lambda x: np.asarray(x[:, env_slice]).copy(),
             state_buffer.states)
         trajectories[agent_info.ports[0]] = Trajectory(
-            states=agent.policy.encode_game(states),
+            states=agent.policy.encode_game(states.game),
             name=np.broadcast_to(
                 agent.name_code,
                 [num_steps + 1, env_slice.stop - env_slice.start]),
             actions=actions,
-            rewards=rewards[:, env_slice],
-            is_resetting=reset_buffer[:, env_slice].copy(),
+            rewards=rewards[:, env_slice].astype(np.float32),
+            is_resetting=states.needs_reset[:, env_slice].copy(),
             initial_state=initial_state,
             delayed_actions=agent.peek_n(agent.delay),
         )
@@ -322,13 +318,13 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
           batch_size = agent_to_port_slice.stop - agent_to_port_slice.start
 
           trajectories[port] = Trajectory(
-              states=agent.policy.encode_game(states),
+              states=agent.policy.encode_game(states.game),
               name=np.broadcast_to(
                   agent.name_code[agent_to_port_slice],
                   [num_steps + 1, batch_size]),
               actions=slice_map((slice(None), agent_to_port_slice), actions),
-              rewards=rewards[:, env_to_port_slice],
-              is_resetting=reset_buffer[:, env_to_port_slice].copy(),
+              rewards=rewards[:, env_to_port_slice].astype(np.float32),
+              is_resetting=states.needs_reset[:, env_to_port_slice].copy(),
               initial_state=slice_map(agent_to_port_slice, initial_state),
               delayed_actions=slice_map(agent_to_port_slice, agent.peek_n(agent.delay)),
           )
@@ -346,55 +342,16 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     }
     return trajectories, {
         'timing': timing,
-        'unexpected_reset': reset_buffer[1:, :self._num_envs].copy(),
+        'unexpected_reset': state_buffer.states.needs_reset[1:, :self._num_envs].copy(),
         'completed_games': self._env.pop_completed_games(),
     }
 
   def _build_env(self):
+    if self._async_envs:
+      assert self._inner_batch_size is not None
+      return sim_env.MultiprocessSimEnvironment(
+          **self._env_kwargs,
+          inner_batch_size=self._inner_batch_size,
+      )
+
     return sim_env.SimBatchedEnvironment(**self._env_kwargs)
-
-
-class _TrajectoryStateBuffer(tp.NamedTuple):
-  """Time-major storage for T+1 policy observations.
-
-  `current_game_batch()` reuses one mutable Game tree, while the learner needs
-  the whole rollout after the sim has advanced. `slots` are NumPy views into the
-  time-major `states` tree, so copying into a slot writes directly into the
-  corresponding frame of the final trajectory buffer.
-  """
-
-  states: Game
-  slots: list[Game]  # T+1 views into states
-  slot_leaves: list[tuple]
-  source_leaves: tuple
-
-
-def _make_trajectory_state_buffer(
-    source_game: Game,
-    rollout_length: int,
-) -> _TrajectoryStateBuffer:
-  states = utils.map_single_structure(
-      lambda leaf: np.empty(
-          (rollout_length + 1,) + np.asarray(leaf).shape,
-          dtype=np.asarray(leaf).dtype,
-      ),
-      source_game,
-  )
-  slots = [
-      utils.map_single_structure(lambda leaf, i=i: leaf[i], states)
-      for i in range(rollout_length + 1)
-  ]
-  return _TrajectoryStateBuffer(
-      states=states,
-      slots=slots,
-      slot_leaves=[tuple(jax.tree.leaves(slot)) for slot in slots],
-      source_leaves=tuple(jax.tree.leaves(source_game)),
-  )
-
-
-def _copy_state_slot(state_buffer: _TrajectoryStateBuffer, index: int):
-  for dst, src in zip(
-      state_buffer.slot_leaves[index],
-      state_buffer.source_leaves,
-  ):
-    dst[...] = src

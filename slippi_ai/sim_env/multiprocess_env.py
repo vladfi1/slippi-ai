@@ -9,6 +9,7 @@ the shared `GameBatchBuffers`.
 import dataclasses
 import math
 import multiprocessing as mp
+from multiprocessing.synchronize import Barrier, Event
 from multiprocessing import shared_memory
 import queue
 import traceback
@@ -17,13 +18,17 @@ import typing as tp
 import melee
 import numpy as np
 
+from slippi_ai import utils
 from slippi_ai.sim_env import env as sim_env
 from slippi_ai.sim_env.observations import (
-    ArrayAllocator,
-    GameBatchBuffers,
+    GameBatchBuffer,
+    GameBatch,
+    TrajectoryStateBuffer,
 )
-from slippi_ai.types import Buttons, Controller, Stick
+from slippi_ai.types import Controller, reify_tuple_type
+from slippi_ai.jax.jax_utils import slice_map, fast_map
 
+T = tp.TypeVar('T')
 
 _BARRIER_TIMEOUT_S = 900.0
 
@@ -91,6 +96,69 @@ class SharedArrayAttacher:
     for block in self._blocks:
       block.close()
 
+class Allocation(tp.NamedTuple, tp.Generic[T]):
+  arrays: T
+  specs: T
+  blocks: list[shared_memory.SharedMemory]
+
+  def close(self):
+    for block in self.blocks:
+      block.close()
+
+  def unlink(self):
+    for block in self.blocks:
+      try:
+        block.unlink()
+      except FileNotFoundError:
+        pass
+
+def allocate(
+    struct_t: type[T],
+    shape: tuple[int, ...],
+) -> Allocation[T]:
+  reified = reify_tuple_type(struct_t)
+  blocks: list[shared_memory.SharedMemory] = []
+
+  def _shared_memory(dtype):
+    dtype = np.dtype(dtype)
+    size = math.prod(shape) * dtype.itemsize
+    block = shared_memory.SharedMemory(create=True, size=size)
+    blocks.append(block)
+    return block
+
+  block_struct = utils.map_nt(_shared_memory, reified)
+
+  def _array(dtype, block: shared_memory.SharedMemory):
+    array = np.ndarray(shape, dtype=dtype, buffer=block.buf)
+    array.fill(0)
+    return array
+
+  arrays = utils.map_nt(_array, reified, block_struct)
+
+  def _spec(dtype, block: shared_memory.SharedMemory):
+    return SharedArraySpec(block.name, shape, dtype)
+
+  specs = utils.map_nt(_spec, reified, block_struct)
+
+  return Allocation(
+      arrays=arrays,
+      specs=specs,
+      blocks=blocks,
+  )
+
+def alloc_from_specs(specs: T) -> Allocation[T]:
+  blocks: list[shared_memory.SharedMemory] = []
+
+  def _array(spec: SharedArraySpec):
+    block = shared_memory.SharedMemory(name=spec.name)
+    blocks.append(block)
+    return np.ndarray(spec.shape, dtype=spec.dtype, buffer=block.buf)
+
+  arrays = utils.map_nt(_array, specs)
+  return Allocation(arrays, specs, blocks)
+
+def _copy_into_slice(src: np.ndarray, dst: np.ndarray, dst_slice: slice):
+  dst[dst_slice] = src
 
 class MultiprocessSimEnvironment:
   """Process-sharded `SimBatchedEnvironment` wrapper for JAX rollout."""
@@ -107,8 +175,8 @@ class MultiprocessSimEnvironment:
       data_dir: str | None = None,
       fake: bool = False,
   ):
-    self._num_envs = int(num_envs)
-    self._inner_batch_size = int(inner_batch_size)
+    self._num_envs = num_envs
+    self._inner_batch_size = inner_batch_size
     if self._num_envs % self._inner_batch_size:
       raise ValueError(
           f'num_envs={self._num_envs} must be divisible by '
@@ -120,28 +188,35 @@ class MultiprocessSimEnvironment:
     # Shared buffers are allocated once by the parent. Workers attach to the
     # same blocks and fill only their shard, so rollout can read one global
     # GameBatch without gathering per-worker Python objects every frame.
-    self._obs_owner = SharedArrayOwner()
-    self._action_owner = SharedArrayOwner()
-    self._misc_owner = SharedArrayOwner()
-    self._trajectory_buffers = GameBatchBuffers.time_major(
-        self._num_envs, frame_buffer_length, self._obs_owner.array)
-    self._slot_by_id = {
-        id(frame): i for i, frame in enumerate(self._trajectory_buffers.frames)
+
+    self._frame_buffer_length = frame_buffer_length
+    num_players = self._num_envs * 2
+    self._player_slices = {
+        1: slice(0, num_envs),
+        2: slice(num_envs, 2 * num_envs),
     }
-    self._shared_action = shared_action_buffer(
-        self._num_envs * 2, self._action_owner.array)
-    self._needs_reset = self._misc_owner.array((self._num_envs,), np.bool_)
+
+    self._obs_alloc = allocate(
+        GameBatch, (frame_buffer_length, num_players))
+    self._trajectory_buffers = TrajectoryStateBuffer.from_game_batch(
+        self._obs_alloc.arrays
+    )
+
+    self._action_alloc = allocate(Controller, (num_players,))
+
+    self._misc_owner = SharedArrayOwner()
     self._episode_ids = self._misc_owner.array((self._num_envs,), np.int64)
-    self._controller_spacing = self._misc_owner.array((2,), np.int32)
+
     # Parent sets the target trajectory frame before releasing workers. Workers
     # fill their shard of that frame, then parent marks it current after the
     # observation barrier completes.
-    self._write_index = self._misc_owner.array((1,), np.int32)
     self._current_index = 0
 
     # Two barriers define one synchronous sim frame: parent publishes actions,
     # workers step their shards, then parent reads the completed observations.
     self._context = mp.get_context('spawn')
+    # TODO: try using events or semaphores instead of barriers?
+    # self._actions_ready = self._context.Event()
     self._actions_ready = self._context.Barrier(self._num_workers + 1)
     self._observations_ready = self._context.Barrier(self._num_workers + 1)
     self._stop_event = self._context.Event()
@@ -168,8 +243,8 @@ class MultiprocessSimEnvironment:
               max_frame_id=max_frame_id,
               data_dir=data_dir,
               fake=fake,
-              obs_specs=self._obs_owner.specs,
-              action_specs=self._action_owner.specs,
+              obs_specs=self._obs_alloc.specs,
+              action_specs=self._action_alloc.specs,
               misc_specs=self._misc_owner.specs,
               actions_ready=self._actions_ready,
               observations_ready=self._observations_ready,
@@ -199,57 +274,40 @@ class MultiprocessSimEnvironment:
         process.terminate()
         process.join(timeout=5.0)
       process.close()
-    self._obs_owner.close()
-    self._action_owner.close()
+    self._obs_alloc.close()
+    self._action_alloc.close()
     self._misc_owner.close()
-    self._obs_owner.unlink()
-    self._action_owner.unlink()
+    self._obs_alloc.unlink()
+    self._action_alloc.unlink()
     self._misc_owner.unlink()
 
   @property
-  def game_batch_buffers(self) -> GameBatchBuffers:
-    return self._trajectory_buffers.frames[self._current_index]
-
-  @property
-  def trajectory_buffers(self) -> GameBatchBuffers:
-    return self._trajectory_buffers
+  def game_batch_buffer(self) -> GameBatchBuffer:
+    return self._trajectory_buffers.slots[self._current_index]
 
   def write_current_game(
       self,
-      game_batch: GameBatchBuffers,
+      game_batch: GameBatchBuffer,
       needs_reset: np.ndarray | None = None,
   ):
     # Workers have already written the latest observation into shared memory.
     # This only moves that current frame to another trajectory slot, usually
     # frame 0 when a new rollout starts.
     del needs_reset
-    index = self._slot_by_id[id(game_batch)]
-    if index == self._current_index:
-      return
-    self._trajectory_buffers.copy_frame(index, self._current_index)
-    self._current_index = index
+    # TODO: eliminate the copy by having the user directly reference the env's
+    # internal game batches.
+    fast_map(np.copyto, game_batch.game_batch, self.game_batch_buffer.game_batch)
 
-  def step_encoded(
-      self,
-      controller_state: Controller,
-      *,
-      axis_spacing: int,
-      shoulder_spacing: int,
-      output_game_batch: GameBatchBuffers | None = None,
-  ) -> np.ndarray:
-    # Copy JAX outputs into shared host buffers, release all workers for one sim
-    # frame, then wait until every shard has filled its observation slice.
-    self._controller_spacing[:] = (axis_spacing, shoulder_spacing)
-    if output_game_batch is None:
-      output_index = self._current_index
-    else:
-      output_index = self._slot_by_id[id(output_game_batch)]
-    self._write_index[0] = output_index
-    copy_action_to_shared_buffer(self._shared_action, controller_state)
-    self._wait_for_actions()
-    self._wait_for_observations('step observations')
-    self._current_index = output_index
-    return self._needs_reset
+  def advance(self, controllers: sim_env.Controllers):
+    for port, controller in controllers.items():
+      player_slice = self._player_slices[port]
+      fast_map(
+          lambda src, dst: _copy_into_slice(src, dst, player_slice),
+          controller, self._action_alloc.arrays)
+    self._signal_actions_ready()
+    self._wait_for_observations('advance')
+    self._current_index = (self._current_index + 1) % self._frame_buffer_length
+    return self.game_batch_buffer.needs_reset[:self._num_envs]
 
   def active_games(self) -> list[dict[str, int | str]]:
     return [
@@ -270,7 +328,7 @@ class MultiprocessSimEnvironment:
       except queue.Empty:
         return games
 
-  def _wait_for_actions(self):
+  def _signal_actions_ready(self):
     self._check_worker_errors()
     try:
       _barrier_wait(self._actions_ready, 'action release')
@@ -307,33 +365,24 @@ def _worker_main(
     max_frame_id: int,
     data_dir: str | None,
     fake: bool,
-    obs_specs: tp.Sequence[SharedArraySpec],
-    action_specs: tp.Sequence[SharedArraySpec],
+    obs_specs: GameBatch,
+    action_specs: Controller,
     misc_specs: tp.Sequence[SharedArraySpec],
-    actions_ready,
-    observations_ready,
-    stop_event,
-    completed_queue,
-    error_queue,
+    actions_ready: Barrier,
+    observations_ready: Barrier,
+    stop_event: Event,
+    completed_queue: mp.Queue,
+    error_queue: mp.Queue,
 ):
-  # Recreate NumPy views over the parent's shared-memory blocks in the exact
-  # allocation order used during parent setup.
-  obs_attacher = SharedArrayAttacher(obs_specs)
-  action_attacher = SharedArrayAttacher(action_specs)
+  obs_alloc = alloc_from_specs(obs_specs)
+  action_alloc = alloc_from_specs(action_specs)
   misc_attacher = SharedArrayAttacher(misc_specs)
   env = None
   try:
-    game_batches = GameBatchBuffers.time_major(
-        total_envs,
-        frame_buffer_length,
-        obs_attacher.array,
-        fill_batch_size=batch_size,
-    )
-    shared_action = shared_action_buffer(total_envs * 2, action_attacher.array)
-    needs_reset = misc_attacher.array((total_envs,), np.bool_)
+    trajectory_buffer = TrajectoryStateBuffer.from_game_batch(obs_alloc.arrays)
+    assert len(trajectory_buffer) == frame_buffer_length
+
     episode_ids = misc_attacher.array((total_envs,), np.int64)
-    controller_spacing = misc_attacher.array((2,), np.int32)
-    write_index = misc_attacher.array((1,), np.int32)
     env = sim_env.SimBatchedEnvironment(
         num_envs=batch_size,
         players=players,
@@ -347,46 +396,48 @@ def _worker_main(
     p1_slice = env_slice
     p2_slice = slice(total_envs + offset, total_envs + offset + batch_size)
 
+    port_slices = {1: p1_slice, 2: p2_slice}
+
     # Seed the parent-visible GameBatch with the shard's starting state so the
     # first policy inference sees valid observations.
     local_reset = np.ones(batch_size, dtype=np.bool_)
-    needs_reset[env_slice] = local_reset
     episode_ids[env_slice] = 0
-    env.write_current_game(
-        game_batches.frames[0],
-        local_reset,
-        env_slice=env_slice,
-        controller_slice=slice(None),
-    )
-    _barrier_wait(observations_ready, f'worker {worker_id} initial observations')
+
+    index = 0
 
     while not stop_event.is_set():
+      # The trajectory buffer knows the full batch size, and so can figure out
+      # where to write p2's data just from p1's slice.
+      env.write_current_game(
+          trajectory_buffer.slots[index],
+          local_reset,
+          env_slice=env_slice,
+      )
+      # Notify the parent env that obs have been written
+      _barrier_wait(observations_ready, f'worker {worker_id} observations')
+
       # The parent has already copied actions into shared_action. This worker
       # consumes only its port-1 and port-2 slices, steps its local EnvBatch, and
       # writes results back into the same global GameBatch buffers.
+      # TODO: this doesn't actually need to be a barrier
       _barrier_wait(actions_ready, f'worker {worker_id} action wait')
       if stop_event.is_set():
         break
-      local_reset = env.step_encoded_slices(
-          shared_action,
-          player_slices=(p1_slice, p2_slice),
-          axis_spacing=controller_spacing[0],
-          shoulder_spacing=controller_spacing[1],
-      )
-      needs_reset[env_slice] = local_reset
+
+      controllers = {
+          port: slice_map(s, action_alloc.arrays)
+          for port, s in port_slices.items()
+      }
+      local_reset = env.advance(controllers)
+
       episode_ids[env_slice] = env.episode_ids
-      env.write_current_game(
-          game_batches.frames[int(write_index[0])],
-          local_reset,
-          env_slice=env_slice,
-          controller_slice=slice(None),
-      )
       completed_games = env.pop_completed_games()
       if completed_games:
         for game in completed_games:
           game['env_id'] += offset
         completed_queue.put(completed_games)
-      _barrier_wait(observations_ready, f'worker {worker_id} observations')
+
+      index = (index + 1) % frame_buffer_length
   except BaseException:
     error_queue.put(traceback.format_exc())
     _abort_barrier(actions_ready)
@@ -394,52 +445,19 @@ def _worker_main(
   finally:
     if env is not None:
       env.stop()
-    obs_attacher.close()
-    action_attacher.close()
+    obs_alloc.close()
+    action_alloc.close()
     misc_attacher.close()
 
 
-def shared_action_buffer(
-    total_players: int,
-    allocate_array: ArrayAllocator,
-) -> Controller:
-  # Encoded controller buckets are compact uint8/bool values produced by the
-  # JAX controller head, not libmelee float stick coordinates.
-  shape = (total_players,)
-  return Controller(
-      main_stick=Stick(
-          x=allocate_array(shape, np.uint8),
-          y=allocate_array(shape, np.uint8),
-      ),
-      c_stick=Stick(
-          x=allocate_array(shape, np.uint8),
-          y=allocate_array(shape, np.uint8),
-      ),
-      shoulder=allocate_array(shape, np.uint8),
-      buttons=Buttons(**{
-          name: allocate_array(shape, np.bool_)
-          for name in Buttons._fields
-      }),
-  )
-
-
-def copy_action_to_shared_buffer(dst: Controller, src: Controller):
-  np.copyto(dst.main_stick.x, np.asarray(src.main_stick.x), casting='unsafe')
-  np.copyto(dst.main_stick.y, np.asarray(src.main_stick.y), casting='unsafe')
-  np.copyto(dst.c_stick.x, np.asarray(src.c_stick.x), casting='unsafe')
-  np.copyto(dst.c_stick.y, np.asarray(src.c_stick.y), casting='unsafe')
-  np.copyto(dst.shoulder, np.asarray(src.shoulder), casting='unsafe')
-  for name in Buttons._fields:
-    np.copyto(getattr(dst.buttons, name), np.asarray(getattr(src.buttons, name)))
-
-def _barrier_wait(barrier, label: str):
+def _barrier_wait(barrier: Barrier, label: str, timeout: float = _BARRIER_TIMEOUT_S):
   try:
-    barrier.wait(timeout=_BARRIER_TIMEOUT_S)
+    barrier.wait(timeout=timeout)
   except Exception as exc:
     raise RuntimeError(f'timed out or broke barrier during {label}') from exc
 
 
-def _abort_barrier(barrier):
+def _abort_barrier(barrier: Barrier):
   try:
     barrier.abort()
   except Exception:
