@@ -296,8 +296,7 @@ class JaxSimRolloutWorker:
 
     build_start = time.perf_counter()
     time_major_states = state_buffer.states
-    rewards = reward.compute_rewards(
-        time_major_states, damage_ratio=0, nana_ratio=0)
+    rewards = reward.ko_diff(time_major_states)
 
     trajectories: dict[Port, Trajectory] = {}
     for agent_info, action_buffer, initial_state in zip(
