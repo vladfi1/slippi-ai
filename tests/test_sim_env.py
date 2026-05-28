@@ -481,12 +481,14 @@ def _neutral_encoded_controller(batch_size: int):
       }),
   )
 
+def _check_arrays(path, x, y):
+  np.testing.assert_array_equal(x, y, err_msg=str(path))
 
 def _assert_game_batch_equal(actual, expected):
-  jax.tree.map(np.testing.assert_array_equal, actual, expected)
+  jax.tree.map_with_path(_check_arrays, actual, expected)
 
 
-def _game_batch(env, needs_reset):
+def _game_batch(env: sim_env.SimBatchedEnvironment, needs_reset):
   env.write_current_game(env.game_batch_buffers, needs_reset)
   return observations.GameBatch(
       game=env.game_batch_buffers.game,

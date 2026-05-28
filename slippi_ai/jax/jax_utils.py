@@ -125,10 +125,29 @@ def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
 # Other utilities
 
 class MultiMap(tp.Protocol):
+
+  @tp.overload
+  def __call__(self, f: tp.Callable[[tp.Any], tp.Any], x: T, /) -> T:
+    ...
+
+  @tp.overload
+  def __call__(self, f: tp.Callable[[tp.Any, tp.Any], tp.Any], x: T, y: T, /) -> T:
+    ...
+
+  @tp.overload
+  def __call__(self, f: tp.Callable[[tp.Any, tp.Any, tp.Any], tp.Any], x: T, y: T, z: T, /) -> T:
+    ...
+
   def __call__(self, f: tp.Callable, *args: T) -> T:
     ...
 
 fast_map: MultiMap = tp.cast(MultiMap, jax.tree.map)
+
+class SliceMap(tp.Protocol):
+  def __call__(self, s: slice | tuple[slice, ...], struct: T) -> T:
+    ...
+
+slice_map: SliceMap = lambda s, struct: jax.tree.map(lambda x: x[s], struct)
 
 
 def mean_and_variance(xs: Array) -> tuple[Array, Array]:
