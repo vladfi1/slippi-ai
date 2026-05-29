@@ -27,6 +27,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       run_on_cpu: bool = False,
       pack_args: bool = False,
       functionalize: bool = False,
+      bf16: bool = False,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -47,6 +48,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     def sample(
         policy: policies.Policy[ControllerType],
+        /,
         rngs: nnx.Rngs,
         state_and_reset: tuple[Game, jax.Array],
         name_code: jax.Array,
@@ -62,6 +64,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       )
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
+
+    if bf16:
+      sample = jax_utils.with_bf16_compute(sample)
 
     self._sample = jax_utils.cached_partial(sample, policy, rngs)
 
@@ -80,6 +85,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     def multi_sample(
         policy: policies.Policy[ControllerType],
+        /,
         rngs: nnx.Rngs,
         states_and_resets: list[tuple[Game[S], jax.Array]],  # time-indexed
         name_code: jax.Array,
@@ -109,6 +115,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
       return stacked_sample_outputs, final_state
 
+    if bf16:
+      multi_sample = jax_utils.with_bf16_compute(multi_sample)
+
     self._multi_sample = jax_utils.cached_partial(multi_sample, policy, rngs)
 
     if functionalize:
@@ -125,6 +134,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
           jitted_multi_sample, policy, rngs)
 
     self._hidden_state = self._policy.initial_state(batch_size, rngs)
+    if bf16:
+      self._hidden_state = jax_utils.cast_floats_to_dtype(
+          self._hidden_state, jnp.bfloat16)
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
