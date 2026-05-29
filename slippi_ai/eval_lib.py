@@ -1,3 +1,4 @@
+import collections
 import contextlib
 import enum
 import dataclasses
@@ -124,14 +125,11 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
           f' policy delay ({policy.delay}) - batch_steps ({self.batch_steps}) + 1')
 
     self.delay = policy.delay - console_delay
-    self._output_queue: utils.PeekableQueue[SampleOutputs[ControllerType]] \
-      = utils.PeekableQueue()
+    self._output_queue = collections.deque[SampleOutputs[ControllerType]]()
 
     self.dummy_sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
     for _ in range(self.delay):
-      self._output_queue.put(self.dummy_sample_outputs)
-
-    self.peek_n = self._output_queue.peek_n
+      self._output_queue.append(self.dummy_sample_outputs)
 
     # TODO: put this in the BasicAgent?
     self.step_profiler = utils.Profiler(burnin=1)
@@ -154,8 +152,11 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def hidden_state(self) -> RecurrentState:
     return self._agent.hidden_state()
 
+  def peek_n(self, n: int):
+    return utils.peek_deque(self._output_queue, n)
+
   def pop(self) -> SampleOutputs[ControllerType]:
-    outputs = self._output_queue.get()
+    outputs = self._output_queue.popleft()
     if self.policy.platform == policies.Platform.JAX:
       import jax
       outputs = jax.tree.map(np.asarray, outputs)
@@ -184,7 +185,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     if self._batch_steps == 0:
       with self.step_profiler:
         sampled_controller = self._agent.step(game, needs_reset)
-      self._output_queue.put(sampled_controller)
+      self._output_queue.append(sampled_controller)
       return
 
     input_buffer = self._input_buffers[self._input_index]
@@ -196,7 +197,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       with self.step_profiler:
         sample_outputs = self._agent.multi_step(self._input_buffers)
       for output in sample_outputs:
-        self._output_queue.put(output)
+        self._output_queue.append(output)
       self._input_index = 0
 
   @contextlib.contextmanager
