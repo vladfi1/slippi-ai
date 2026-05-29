@@ -214,7 +214,7 @@ class RolloutWorker(AbstractRolloutWorker):
     # timer behavior through this bridge.
     max_frame_id = -1 if first_kwargs['infinite_time'] else 8 * 60 * 60 - 123
 
-    return sim_env.SimBatchedEnvironment(
+    return sim_env.CompatSimBatchedEnvironment(
         num_envs=self._num_envs,
         players=[kwargs['players'] for kwargs in self._dolphin_kwargs],
         stage=stages,
