@@ -9,7 +9,7 @@ the shared `GameBatchBuffers`.
 import dataclasses
 import math
 import multiprocessing as mp
-from multiprocessing.synchronize import Barrier, Event
+from multiprocessing.synchronize import Event
 from multiprocessing import shared_memory
 import queue
 import traceback
@@ -23,7 +23,7 @@ from slippi_ai.sim_env import env as sim_env
 from slippi_ai.sim_env.observations import (
     GameBatchBuffer,
     GameBatch,
-    TrajectoryStateBuffer,
+    trajectory_buffer_from_struct,
 )
 from slippi_ai.types import Controller, reify_tuple_type
 from slippi_ai.jax.jax_utils import slice_map, fast_map
@@ -170,7 +170,8 @@ class MultiprocessSimEnvironment:
       inner_batch_size: int,
       players: tp.Sequence[sim_env.PlayerConfigs],
       stage: tp.Sequence[melee.Stage],
-      frame_buffer_length: int,
+      frame_buffer_length: int = 128,
+      runahead: int = 0,  # number of extra actions that can be pushed
       max_frame_id: int = -1,
       data_dir: str | None = None,
       fake: bool = False,
@@ -189,20 +190,18 @@ class MultiprocessSimEnvironment:
     # same blocks and fill only their shard, so rollout can read one global
     # GameBatch without gathering per-worker Python objects every frame.
 
-    self._frame_buffer_length = frame_buffer_length
+    self._env_runahead = runahead + 1
     num_players = self._num_envs * 2
     self._player_slices = {
         1: slice(0, num_envs),
         2: slice(num_envs, 2 * num_envs),
     }
 
-    self._obs_alloc = allocate(
-        GameBatch, (frame_buffer_length, num_players))
-    self._trajectory_buffers = TrajectoryStateBuffer.from_game_batch(
-        self._obs_alloc.arrays
-    )
+    self._obs_alloc = allocate(GameBatch, (self._env_runahead, num_players))
+    self._obs_buffer = trajectory_buffer_from_struct(self._obs_alloc.arrays)
 
-    self._action_alloc = allocate(Controller, (num_players,))
+    self._action_alloc = allocate(Controller, (self._env_runahead, num_players))
+    self._action_buffer = trajectory_buffer_from_struct(self._action_alloc.arrays)
 
     self._misc_owner = SharedArrayOwner()
     self._episode_ids = self._misc_owner.array((self._num_envs,), np.int64)
@@ -210,15 +209,22 @@ class MultiprocessSimEnvironment:
     # Parent sets the target trajectory frame before releasing workers. Workers
     # fill their shard of that frame, then parent marks it current after the
     # observation barrier completes.
-    self._current_index = 0
+    self._obs_index = 0
+    self._action_index = 0
+    self._pushed_minus_popped = 1
 
     # Two barriers define one synchronous sim frame: parent publishes actions,
     # workers step their shards, then parent reads the completed observations.
     self._context = mp.get_context('spawn')
+    self._obs_written_events = [
+        [self._context.Event() for _ in range(self._num_workers)]
+        for _ in range(self._env_runahead)
+    ]
+    self._action_written_events = [
+        [self._context.Event() for _ in range(self._num_workers)]
+        for _ in range(self._env_runahead)
+    ]
     # TODO: try using events or semaphores instead of barriers?
-    # self._actions_ready = self._context.Event()
-    self._actions_ready = self._context.Barrier(self._num_workers + 1)
-    self._observations_ready = self._context.Barrier(self._num_workers + 1)
     self._stop_event = self._context.Event()
     self._completed_queue = self._context.Queue()
     self._error_queue = self._context.Queue()
@@ -229,6 +235,10 @@ class MultiprocessSimEnvironment:
     for worker_id in range(self._num_workers):
       start = worker_id * self._inner_batch_size
       stop = start + self._inner_batch_size
+
+      obs_events = [event[worker_id] for event in self._obs_written_events]
+      action_events = [event[worker_id] for event in self._action_written_events]
+
       process = self._context.Process(
           target=_worker_main,
           name=f'sim-env-worker-{worker_id}',
@@ -240,14 +250,15 @@ class MultiprocessSimEnvironment:
               players=players[start:stop],
               stages=stage[start:stop],
               frame_buffer_length=frame_buffer_length,
+              env_runahead=self._env_runahead,
               max_frame_id=max_frame_id,
               data_dir=data_dir,
               fake=fake,
               obs_specs=self._obs_alloc.specs,
               action_specs=self._action_alloc.specs,
               misc_specs=self._misc_owner.specs,
-              actions_ready=self._actions_ready,
-              observations_ready=self._observations_ready,
+              obs_written_events=obs_events,
+              action_written_events=action_events,
               stop_event=self._stop_event,
               completed_queue=self._completed_queue,
               error_queue=self._error_queue,
@@ -256,18 +267,15 @@ class MultiprocessSimEnvironment:
       process.start()
       self._processes.append(process)
 
-    # Workers publish their initial observations before the first policy call.
-    self._wait_for_observations('initial observations')
-
   def stop(self):
     if self._closed:
       return
     self._closed = True
     self._stop_event.set()
-    try:
-      self._actions_ready.wait(timeout=1.0)
-    except Exception:
-      pass
+    # free the workers from blocking on actions
+    for events in self._action_written_events:
+      for event in events:
+        event.set()
     for process in self._processes:
       process.join(timeout=5.0)
       if process.is_alive():
@@ -281,33 +289,48 @@ class MultiprocessSimEnvironment:
     self._action_alloc.unlink()
     self._misc_owner.unlink()
 
-  @property
-  def game_batch_buffer(self) -> GameBatchBuffer:
-    return self._trajectory_buffers.slots[self._current_index]
+  # @property
+  # def game_batch_buffer(self) -> GameBatchBuffer:
+  #   return self._trajectory_buffers.slots[self._current_index]
 
-  def write_current_game(
-      self,
-      game_batch: GameBatchBuffer,
-      needs_reset: np.ndarray | None = None,
-  ):
-    # Workers have already written the latest observation into shared memory.
-    # This only moves that current frame to another trajectory slot, usually
-    # frame 0 when a new rollout starts.
-    del needs_reset
-    # TODO: eliminate the copy by having the user directly reference the env's
-    # internal game batches.
-    fast_map(np.copyto, game_batch.game_batch, self.game_batch_buffer.game_batch)
+  def pop(self) -> GameBatch:
+    self._check_worker_errors()
 
-  def advance(self, controllers: sim_env.Controllers):
+    self._pushed_minus_popped -= 1
+    if self._pushed_minus_popped < 0:
+      raise RuntimeError('not enough actions pushed')
+
+    # Wait until all workers have written their observations
+    # TODO: is there a more efficient way to do this? A semaphore could work
+    # but it doesn't allow you to acquire N at once.
+    for event in self._obs_written_events[self._obs_index]:
+      event.wait(timeout=_BARRIER_TIMEOUT_S)
+      event.clear()
+
+    game_batch = self._obs_buffer.slots[self._obs_index]
+    self._obs_index = (self._obs_index + 1) % self._env_runahead
+    return game_batch
+
+  def push(self, controllers: sim_env.Controllers):
+    self._check_worker_errors()
+
+    self._pushed_minus_popped += 1
+    if self._pushed_minus_popped > self._env_runahead:
+      raise RuntimeError('too many actions pushed')
+
     for port, controller in controllers.items():
       player_slice = self._player_slices[port]
       fast_map(
           lambda src, dst: _copy_into_slice(src, dst, player_slice),
-          controller, self._action_alloc.arrays)
-    self._signal_actions_ready()
-    self._wait_for_observations('advance')
-    self._current_index = (self._current_index + 1) % self._frame_buffer_length
-    return self.game_batch_buffer.needs_reset[:self._num_envs]
+          controller, self._action_buffer.slots[self._action_index])
+
+    for event in self._action_written_events[self._action_index]:
+      event.set()
+
+    self._action_index = (self._action_index + 1) % self._env_runahead
+
+  def peek(self) -> GameBatch:
+    return self._obs_buffer.slots[self._obs_index]
 
   def active_games(self) -> list[dict[str, int | str]]:
     return [
@@ -328,23 +351,6 @@ class MultiprocessSimEnvironment:
       except queue.Empty:
         return games
 
-  def _signal_actions_ready(self):
-    self._check_worker_errors()
-    try:
-      _barrier_wait(self._actions_ready, 'action release')
-    except RuntimeError:
-      self._check_worker_errors()
-      raise
-
-  def _wait_for_observations(self, label: str):
-    self._check_worker_errors()
-    try:
-      _barrier_wait(self._observations_ready, label)
-    except RuntimeError:
-      self._check_worker_errors()
-      raise
-    self._check_worker_errors()
-
   def _check_worker_errors(self):
     try:
       error = self._error_queue.get_nowait()
@@ -362,14 +368,15 @@ def _worker_main(
     players: tp.Sequence[sim_env.PlayerConfigs],
     stages: tp.Sequence[melee.Stage],
     frame_buffer_length: int,
+    env_runahead: int,
     max_frame_id: int,
     data_dir: str | None,
     fake: bool,
     obs_specs: GameBatch,
     action_specs: Controller,
     misc_specs: tp.Sequence[SharedArraySpec],
-    actions_ready: Barrier,
-    observations_ready: Barrier,
+    obs_written_events: list[Event],
+    action_written_events: list[Event],
     stop_event: Event,
     completed_queue: mp.Queue,
     error_queue: mp.Queue,
@@ -379,8 +386,16 @@ def _worker_main(
   misc_attacher = SharedArrayAttacher(misc_specs)
   env = None
   try:
-    trajectory_buffer = TrajectoryStateBuffer.from_game_batch(obs_alloc.arrays)
-    assert len(trajectory_buffer) == frame_buffer_length
+    obs_buffer = trajectory_buffer_from_struct(obs_alloc.arrays)
+    assert len(obs_buffer) == env_runahead
+    assert len(obs_written_events) == env_runahead
+
+    game_batch_buffers = [
+        GameBatchBuffer(game_batch) for game_batch in obs_buffer.slots]
+
+    action_buffer = trajectory_buffer_from_struct(action_alloc.arrays)
+    assert len(action_buffer) == env_runahead
+    assert len(action_written_events) == env_runahead
 
     episode_ids = misc_attacher.array((total_envs,), np.int64)
     env = sim_env.SimBatchedEnvironment(
@@ -392,6 +407,7 @@ def _worker_main(
         data_dir=data_dir,
         fake=fake,
     )
+    del frame_buffer_length  # don't confuse with env runahead
     env_slice = slice(offset, offset + batch_size)
     p1_slice = env_slice
     p2_slice = slice(total_envs + offset, total_envs + offset + batch_size)
@@ -409,23 +425,25 @@ def _worker_main(
       # The trajectory buffer knows the full batch size, and so can figure out
       # where to write p2's data just from p1's slice.
       env.write_current_game(
-          trajectory_buffer.slots[index],
+          game_batch_buffers[index],
           local_reset,
           env_slice=env_slice,
       )
       # Notify the parent env that obs have been written
-      _barrier_wait(observations_ready, f'worker {worker_id} observations')
+      obs_written_events[index].set()
 
       # The parent has already copied actions into shared_action. This worker
       # consumes only its port-1 and port-2 slices, steps its local EnvBatch, and
       # writes results back into the same global GameBatch buffers.
-      # TODO: this doesn't actually need to be a barrier
-      _barrier_wait(actions_ready, f'worker {worker_id} action wait')
+
+      action_written_events[index].wait()
+      action_written_events[index].clear()
+
       if stop_event.is_set():
         break
 
       controllers = {
-          port: slice_map(s, action_alloc.arrays)
+          port: slice_map(s, action_buffer.slots[index])
           for port, s in port_slices.items()
       }
       local_reset = env.advance(controllers)
@@ -437,28 +455,12 @@ def _worker_main(
           game['env_id'] += offset
         completed_queue.put(completed_games)
 
-      index = (index + 1) % frame_buffer_length
+      index = (index + 1) % env_runahead
   except BaseException:
     error_queue.put(traceback.format_exc())
-    _abort_barrier(actions_ready)
-    _abort_barrier(observations_ready)
   finally:
     if env is not None:
       env.stop()
     obs_alloc.close()
     action_alloc.close()
     misc_attacher.close()
-
-
-def _barrier_wait(barrier: Barrier, label: str, timeout: float = _BARRIER_TIMEOUT_S):
-  try:
-    barrier.wait(timeout=timeout)
-  except Exception as exc:
-    raise RuntimeError(f'timed out or broke barrier during {label}') from exc
-
-
-def _abort_barrier(barrier: Barrier):
-  try:
-    barrier.abort()
-  except Exception:
-    pass
