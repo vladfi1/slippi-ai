@@ -116,11 +116,13 @@ class BoolEmbedding(Embedding[np.bool, np.bool]):
 
   def distance(self, distribution: Array, target: Array):
     logits = jnp.squeeze(distribution, axis=-1)
+    logits = logits.astype(jnp.float32)
     return optax.sigmoid_binary_cross_entropy(
         logits, target)
 
   def sample(self, rng: jax.Array, distribution: Array, temperature=None, **_):
     logits = jnp.squeeze(distribution, axis=-1)
+    logits = logits.astype(jnp.float32)
     if temperature is not None:
       logits = logits / temperature
     probs = jax.nn.sigmoid(logits)
