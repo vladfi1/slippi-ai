@@ -28,7 +28,7 @@ from slippi_ai import dolphin, utils
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
     GameBatchBuffer, copy_controller_slice as _copy_controller_slice,
-    game_for_port, GameBatch
+    game_for_port, GameBatch, TrajectoryStateBuffer
 )
 from slippi_ai.types import Buttons, Controller, Stick, reify_tuple_type
 
@@ -84,9 +84,9 @@ class SimBatchedEnvironment:
       data_dir: str | None = None,
       fake: bool = False,
   ):
-    self._num_envs = int(num_envs)
-    self._frame_buffer_length = int(frame_buffer_length)
-    self._max_frame_id = int(max_frame_id)
+    self._num_envs = num_envs
+    self._frame_buffer_length = frame_buffer_length
+    self._max_frame_id = max_frame_id
     self._fake = fake
     self.num_steps = 1
 
@@ -199,20 +199,8 @@ class SimBatchedEnvironment:
     )
     self._game_batch_buffer = GameBatchBuffer(game_batch)
 
-    # Match the existing env push/pop contract by seeding an initial observation.
-    self._output_queue = collections.deque([
-        self.current_state(needs_reset=np.ones(self._num_envs, dtype=np.bool_))
-    ])
-
   def stop(self):
     self._env.close()
-
-  @contextlib.contextmanager
-  def run(self):
-    try:
-      yield self
-    finally:
-      self.stop()
 
   def current_state(self, needs_reset: np.ndarray | None = None) -> EnvOutput:
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_) if needs_reset is None else needs_reset
@@ -247,7 +235,7 @@ class SimBatchedEnvironment:
         self._last_controllers,
     )
 
-  def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
+  def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> np.ndarray:
     ids = np.arange(self._num_envs, dtype=np.int64) if env_ids is None else np.asarray(env_ids, dtype=np.int64)
     if np.any(ids < 0) or np.any(ids >= self._num_envs):
       raise ValueError('env_ids contains an out-of-range env index')
@@ -265,23 +253,7 @@ class SimBatchedEnvironment:
             self._last_controllers[port], neutral, ids)
     needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
     needs_reset[ids] = True
-    return self.current_state(needs_reset=needs_reset)
-
-  def push(self, controllers: Controllers):
-    self._output_queue.append(self.step(controllers))
-
-  def pop(self) -> EnvOutput:
-    return self._output_queue.popleft()
-
-  def peek(self) -> EnvOutput:
-    return self._output_queue[0]
-
-  def step(self, controllers: Controllers) -> EnvOutput:
-    needs_reset = self.advance(controllers)
-    return self.current_state(needs_reset=needs_reset)
-
-  def multi_step(self, controllers: list[Controllers]) -> list[EnvOutput]:
-    return [self.step(c) for c in controllers]
+    return needs_reset
 
   @property
   def buffers(self):
@@ -395,6 +367,127 @@ class SimBatchedEnvironment:
     if np.any(needs_reset):
       self.reset(np.flatnonzero(needs_reset))
 
+class CompatSimBatchedEnvironment(SimBatchedEnvironment):
+  """Presents an interface compatible with slippi_ai.envs.BatchedEnvironment"""
+
+  def __init__(
+      self,
+      num_envs: int,
+      players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
+      *,
+      frame_buffer_length: int = 128,
+      stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
+      character_pool: CharacterPool | None = None,
+      max_frame_id: int = -1,
+      data_dir: str | None = None,
+      fake: bool = False,
+  ):
+    super().__init__(
+        num_envs=num_envs,
+        players=players,
+        frame_buffer_length=frame_buffer_length,
+        stage=stage,
+        character_pool=character_pool,
+        max_frame_id=max_frame_id,
+        data_dir=data_dir,
+        fake=fake,
+    )
+
+    # Old (slower) async interface.
+    # Match the existing env push/pop contract by seeding an initial observation.
+    self._output_queue = collections.deque([
+        self.current_state(needs_reset=np.ones(self._num_envs, dtype=np.bool_))
+    ])
+
+  @contextlib.contextmanager
+  def run(self):
+    try:
+      yield self
+    finally:
+      self.stop()
+
+  def reset(self, env_ids: tp.Sequence[int] | np.ndarray | None = None) -> EnvOutput:
+    needs_reset = super().reset(env_ids)
+    return self.current_state(needs_reset=needs_reset)
+
+  def push(self, controllers: Controllers):
+    self._output_queue.append(self.step(controllers))
+
+  def pop(self) -> EnvOutput:
+    return self._output_queue.popleft()
+
+  def peek(self) -> EnvOutput:
+    return self._output_queue[0]
+
+  def step(self, controllers: Controllers) -> EnvOutput:
+    needs_reset = self.advance(controllers)
+    return self.current_state(needs_reset=needs_reset)
+
+  def multi_step(self, controllers: list[Controllers]) -> list[EnvOutput]:
+    return [self.step(c) for c in controllers]
+
+
+# We use two different subclasses to avoid type signature clash on push/pop
+class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
+  """Synchronously implements new async interface."""
+
+  def __init__(
+      self,
+      num_envs: int,
+      players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
+      *,
+      frame_buffer_length: int = 128,
+      stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
+      character_pool: CharacterPool | None = None,
+      max_frame_id: int = -1,
+      data_dir: str | None = None,
+      fake: bool = False,
+      runahead: int = 0,  # number of extra actions that can be pushed
+  ):
+    super().__init__(
+        num_envs=num_envs,
+        players=players,
+        frame_buffer_length=frame_buffer_length,
+        stage=stage,
+        character_pool=character_pool,
+        max_frame_id=max_frame_id,
+        data_dir=data_dir,
+        fake=fake,
+    )
+
+    self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
+
+    # New async interface
+    self._capacity = runahead + 1
+    self._async_index = 0
+    self._pushed_minus_popped = 1
+    self._trajectory_buffer = TrajectoryStateBuffer.build(
+        batch_size=num_envs * 2,
+        rollout_length=self._capacity,
+    )
+    self.write_current_game(self._trajectory_buffer.slots[0], self._needs_reset)
+
+  def pop(self) -> GameBatch:
+    self._pushed_minus_popped -= 1
+    if self._pushed_minus_popped < 0:
+      raise RuntimeError('not enough actions pushed')
+
+    return self._trajectory_buffer.slots[self._async_index].game_batch
+
+  def push(self, controllers: Controllers):
+    self._pushed_minus_popped += 1
+    if self._pushed_minus_popped > self._capacity:
+      raise RuntimeError('too many actions pushed')
+
+    self._needs_reset = self.advance(controllers)
+    self._async_index = (self._async_index + 1) % self._capacity
+    self.write_current_game(
+        self._trajectory_buffer.slots[self._async_index], self._needs_reset)
+
+  def peek(self) -> GameBatch:
+    return self._trajectory_buffer.slots[self._async_index].game_batch
+
+
 def neutral_controllers(batch_size: int) -> Controller:
   shape = (int(batch_size),)
   return Controller(
@@ -412,48 +505,6 @@ def neutral_controllers(batch_size: int) -> Controller:
           for name in Buttons._fields
       }),
   )
-
-
-def write_encoded_controller_action(
-    action_frame: np.ndarray,
-    controller: Controller,
-    *,
-    player_index: int,
-    source_slice: slice,
-    axis_spacing: int,
-    shoulder_spacing: int,
-):
-  """Decode discretized policy controller buckets into melee_sim actions."""
-  player = action_frame['p'][:, int(player_index)]
-  scale_axis = np.float32(1.0 / float(axis_spacing))
-  scale_shoulder = np.float32(1.0 / float(shoulder_spacing))
-  player['main_stick_x'][:] = np.asarray(controller.main_stick.x)[source_slice] * scale_axis
-  player['main_stick_y'][:] = np.asarray(controller.main_stick.y)[source_slice] * scale_axis
-  player['c_stick_x'][:] = np.asarray(controller.c_stick.x)[source_slice] * scale_axis
-  player['c_stick_y'][:] = np.asarray(controller.c_stick.y)[source_slice] * scale_axis
-  player['shoulder'][:] = np.asarray(controller.shoulder)[source_slice] * scale_shoulder
-  for name in Buttons._fields:
-    player['buttons'][name][:] = np.asarray(getattr(controller.buttons, name))[source_slice]
-
-
-def copy_encoded_controller(
-    dst: Controller,
-    src: Controller,
-    *,
-    source_slice: slice,
-    axis_spacing: int,
-    shoulder_spacing: int,
-):
-  """Decode discretized policy controller buckets into policy-observation state."""
-  scale_axis = np.float32(1.0 / float(axis_spacing))
-  scale_shoulder = np.float32(1.0 / float(shoulder_spacing))
-  dst.main_stick.x[:] = np.asarray(src.main_stick.x)[source_slice] * scale_axis
-  dst.main_stick.y[:] = np.asarray(src.main_stick.y)[source_slice] * scale_axis
-  dst.c_stick.x[:] = np.asarray(src.c_stick.x)[source_slice] * scale_axis
-  dst.c_stick.y[:] = np.asarray(src.c_stick.y)[source_slice] * scale_axis
-  dst.shoulder[:] = np.asarray(src.shoulder)[source_slice] * scale_shoulder
-  for name in Buttons._fields:
-    getattr(dst.buttons, name)[:] = np.asarray(getattr(src.buttons, name))[source_slice]
 
 
 def _slot_for_source(slots: np.ndarray, source_player: int) -> np.ndarray:

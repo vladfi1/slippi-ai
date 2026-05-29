@@ -151,6 +151,15 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
           self._num_envs,
       ))
 
+    # Get the environment to run ahead as much as possible.
+    # Because we push env states to the agents once per main loop iteration,
+    # we need to leave each agent with at least batch_steps - 1 actions in its
+    # buffer. This ensures that the agent will have enough env states pushed to
+    # take a multi_step just as its output queue runs out.
+    self._env_runahead = min(
+        info.agent.delay - (info.agent.batch_steps - 1)
+        for info in self._agents)
+
     self._async_envs = async_envs
     self._inner_batch_size = inner_batch_size
     self._env_kwargs = dict(
@@ -161,13 +170,18 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
         fake=use_fake_envs,
         frame_buffer_length=self._rollout_length + 1,
+        runahead=self._env_runahead,
     )
 
-    self._env = self._build_env()
+    self._build_env()
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
+    # TODO: consider per-agent buffers to avoid some extra slicing
     self._state_buffer = TrajectoryStateBuffer.build(
         self._num_players, self._rollout_length + 1)
-    # TODO: consider per-agent buffers to avoid some extra slicing
+
+    # Start env runahead
+    for _ in range(self._env_runahead):
+      self._push_actions()
 
   def start(self):
     pass
@@ -188,12 +202,59 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
   def reset_env(self):
     self.stop()
-    self._env = self._build_env()
+    self._build_env()
     self._needs_reset[:] = True
+
+    # Start env runahead
+    # TODO: properly reset the agents with dummy actions instead of reusing
+    # delayed actions from the previous rollout.
+    raise NotImplementedError  # not difficult, just lazy
+    # Code below is copied from evaluators.py
+    assert len(self._prev_agent_outputs) == 1 + self._env_runahead
+    for agent_outputs in list(self._prev_agent_outputs)[1:]:
+      decoded_actions = {
+          port: self._agents[port].decode_controller(output.controller_state)
+          for port, output in agent_outputs.items()
+      }
+      with self._env_push_profiler:
+        self._env.push(decoded_actions)
 
   def update_variables(self, updates: tp.Mapping[Port, tp.Any]):
     for ports, update in updates.items():
       self._port_to_agent[ports].policy.set_state(update)
+
+  def _push_actions(self, timings: tp.Optional[dict] = None):
+    """Pop actions from the agents and push them to the environment."""
+    agent_outputs: list[SampleOutputs] = []
+    controllers: sim_env.Controllers = {}
+
+    for agent_info in self._agents:
+      agent = agent_info.agent
+
+      # Note: game_batch contains mutable views: the agent should write these
+      # into its own internal state if it needs to reference them later, e.g.
+      # if it batches steps across time.
+      pop_start = time.perf_counter()
+      output = agent.pop()
+      agent_outputs.append(output)
+
+      decoded_controllers = agent.decode_controller(output.controller_state)
+      # TODO: send actions to the environment without slicing by port
+      for port, port_slice in zip(agent_info.ports, agent_info.agent_to_port_slices):
+        controllers[port] = slice_map(port_slice, decoded_controllers)
+
+      if timings:
+        elapsed = time.perf_counter() - pop_start
+        elapsed_per_port = elapsed / len(agent_info.ports)
+        for port in agent_info.ports:
+          timings[f'agent_pop_{port}'] += elapsed_per_port
+
+    self._prev_agent_outputs.append(agent_outputs)
+
+    push_start = time.perf_counter()
+    self._env.push(controllers)
+    if timings:
+      timings['env_push'] += time.perf_counter() - push_start
 
   def rollout(
       self,
@@ -224,28 +285,26 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       step_iter = range(num_steps)
 
     def record_state(
-        t: int,
+        game_batch: sim_env.GameBatch,
         prev_agent_outputs: list[SampleOutputs],
+        t: int,
     ):
       copy_start = time.perf_counter()
 
       slot = state_buffer.slots[t]
-      self._env.write_current_game(slot, self._needs_reset)
+      fast_map(np.copyto, slot.game_batch, game_batch)
 
       for buffer, output in zip(action_buffers, prev_agent_outputs):
         buffer.append(output)
 
       timings['state_copy'] += time.perf_counter() - copy_start
 
-      return slot.game_batch
-
-    # Step the sim immediately with already-delayed controller inputs, while
-    # collecting a chunk of observations for one fused JAX actor call.
     for t in step_iter:
-      game_batch = record_state(t, self._prev_agent_outputs.popleft())
+      env_pop_start = time.perf_counter()
+      game_batch = self._env.pop()
+      timings['env_pop'] += time.perf_counter() - env_pop_start
 
-      agent_outputs: list[SampleOutputs] = []
-      controllers: sim_env.Controllers = {}
+      record_state(game_batch, self._prev_agent_outputs.popleft(), t)
 
       for agent_info in self._agents:
         agent = agent_info.agent
@@ -259,40 +318,39 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         # Note: game_batch contains mutable views: the agent should write these
         # into its own internal state if it needs to reference them later, e.g.
         # if it batches steps across time.
-        step_start = time.perf_counter()
-        output = agent.step(agent_inputs.game, agent_inputs.needs_reset)
-        agent_outputs.append(output)
+        push_start = time.perf_counter()
+        agent.push(agent_inputs.game, agent_inputs.needs_reset)
 
-        decoded_controllers = agent.decode_controller(output.controller_state)
-        # TODO: send actions to the environment without slicing by port
-        for port, port_slice in zip(agent_info.ports, agent_info.agent_to_port_slices):
-          controllers[port] = slice_map(port_slice, decoded_controllers)
-
-        elapsed = time.perf_counter() - step_start
+        elapsed = time.perf_counter() - push_start
         elapsed_per_port = elapsed / len(agent_info.ports)
         for port in agent_info.ports:
-          timings[f'agent_step_{port}'] += elapsed_per_port
+          timings[f'agent_push_{port}'] += elapsed_per_port
 
-      self._prev_agent_outputs.append(agent_outputs)
-
-      env_start = time.perf_counter()
-      self._needs_reset = self._env.advance(controllers)
-      timings['env_step'] += time.perf_counter() - env_start
+      # Feed the actions from the agents into the environment.
+      self._push_actions(timings)
 
     # Capture the T+1 terminal observation and assemble the learner trajectory
     # trees expected by the existing PPO path.
-    record_state(num_steps, self._prev_agent_outputs[0])
+    record_state(self._env.peek(), self._prev_agent_outputs[0], num_steps)
 
     build_start = time.perf_counter()
     time_major_states = state_buffer.states
     rewards = reward.ko_diff(time_major_states.game)
 
+    # Record the delayed actions.
+    assert len(self._prev_agent_outputs) == 1 + self._env_runahead
+    remaining_actions = list(self._prev_agent_outputs)[1:]
+
     trajectories: dict[Port, Trajectory] = {}
-    for agent_info, action_buffer, initial_state in zip(
-        self._agents, action_buffers, initial_states):
+    for i, agent_info in enumerate(self._agents):
+      initial_state = initial_states[i]
       agent = agent_info.agent
       env_slice = agent_info.env_slice
-      actions = fast_map(utils.stack, *action_buffer)
+      actions = fast_map(utils.stack, *action_buffers[i])
+
+      delayed_actions = [actions[i] for actions in remaining_actions]
+      num_left = agent_info.agent.delay - self._env_runahead
+      delayed_actions.extend(agent_info.agent.peek_n(num_left))
 
       if self._per_agent_outputs:
         states = fast_map(
@@ -307,7 +365,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
             rewards=rewards[:, env_slice].astype(np.float32),
             is_resetting=states.needs_reset[:, env_slice].copy(),
             initial_state=initial_state,
-            delayed_actions=agent.peek_n(agent.delay),
+            delayed_actions=delayed_actions,
         )
       else:
         for port, env_to_port_slice, agent_to_port_slice in zip(
@@ -326,7 +384,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
               rewards=rewards[:, env_to_port_slice].astype(np.float32),
               is_resetting=states.needs_reset[:, env_to_port_slice].copy(),
               initial_state=slice_map(agent_to_port_slice, initial_state),
-              delayed_actions=slice_map(agent_to_port_slice, agent.peek_n(agent.delay)),
+              delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
 
     timings['trajectory_build'] = time.perf_counter() - build_start
@@ -347,11 +405,11 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     }
 
   def _build_env(self):
-    if self._async_envs:
-      assert self._inner_batch_size is not None
-      return sim_env.MultiprocessSimEnvironment(
-          **self._env_kwargs,
-          inner_batch_size=self._inner_batch_size,
-      )
+    # if self._async_envs:
+    #   assert self._inner_batch_size is not None
+    #   self._env = sim_env.MultiprocessSimEnvironment(
+    #       **self._env_kwargs,
+    #       inner_batch_size=self._inner_batch_size,
+    #   )
 
-    return sim_env.SimBatchedEnvironment(**self._env_kwargs)
+    self._env = sim_env.AsyncSimBatchedEnvironment(**self._env_kwargs)
