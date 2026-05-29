@@ -9,6 +9,8 @@ import typing as tp
 
 import melee
 import numpy as np
+import jax
+import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai import (
@@ -21,6 +23,7 @@ from slippi_ai import (
     saving as generic_saving,
     utils,
 )
+from slippi_ai.jax import jax_utils
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as train_lib
 from slippi_ai.jax.rl import learner as learner_lib
@@ -56,6 +59,10 @@ class ActorConfig:
   use_fake_envs: bool = False
   use_sim_envs: bool = False
 
+@dataclasses.dataclass
+class JaxAgentConfig:
+  pack_args: bool = True
+  bf16: bool = False
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -65,7 +72,7 @@ class AgentConfig:
   char: tp.Optional[list[melee.Character]] = None
   batch_steps: int = 0
   async_inference: bool = False
-  pack_args: bool = True
+  jax: JaxAgentConfig = field(JaxAgentConfig)
 
   def __post_init__(self):
     if self.char is not None and len(self.char) != len(self.name):
@@ -78,7 +85,7 @@ class AgentConfig:
         compile=self.compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
-        jax=dict(pack_args=self.pack_args),
+        jax=dataclasses.asdict(self.jax),
     )
     if self.path:
       state = generic_saving.load_state_from_disk(self.path)
@@ -148,6 +155,9 @@ class Config:
 DEFAULT_CONFIG = Config()
 DEFAULT_CONFIG.dolphin.console_timeout = 30
 
+cast_floats = jax_utils.jit(
+  jax_utils.cast_floats_to_dtype,
+  static_argnames='dtype')
 
 class LearnerManager:
 
@@ -167,6 +177,9 @@ class LearnerManager:
     self._enemy_port = enemy_port
     self._num_ppo_batches = config.learner.ppo.num_batches
     self._burnin_steps_after_reset = config.runtime.burnin_steps_after_reset
+
+    self._agent_dtype = jnp.bfloat16 if config.agent.jax.bf16 else jnp.float32
+    self._learner_dtype = jnp.float32
 
     batch_size = config.actor.num_envs
     if config.opponent.should_train():
@@ -201,6 +214,11 @@ class LearnerManager:
           [trajectories[p] for p in ports])
     else:
       trajectory = trajectories[self._port]
+
+    if self._learner_dtype != self._agent_dtype:
+      trajectory = trajectory._replace(
+        initial_state=cast_floats(
+          trajectory.initial_state, dtype=self._learner_dtype))
 
     return trajectory, timings
 
@@ -365,7 +383,8 @@ def run(config: Config):
       value_function=value_function,
   )
 
-  learner.restore_from_imitation(rl_state['state'])
+  params = jax.tree.map(jnp.asarray, rl_state['state'])
+  learner.restore_from_imitation(params)
 
   PORT = 1
   ENEMY_PORT = 2
