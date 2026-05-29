@@ -104,6 +104,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
           batch_size=len(ports) * self._num_envs,
           **kwargs)
       self._port_to_agent[ports[0]] = agent
+      if rollout_length % agent.batch_steps != 0:
+        raise ValueError(f'agent batch steps ({agent.batch_steps}) must divide rollout length ({rollout_length})')
 
       start_index = (ports[0] - 1)  # ports are 1-indexed
       end_index = start_index + len(ports)
@@ -390,10 +392,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
               delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
 
-    trajectory_build = time.perf_counter() - build_start
-
+    timings['trajectory_build'] = time.perf_counter() - build_start
     timing = jax.tree.map(lambda x: x / num_steps, timings)
-    timing['trajectory_build'] = trajectory_build
+
     return trajectories, {
         'timing': timing,
         'unexpected_reset': state_buffer.time_major.needs_reset[1:, :self._num_envs].copy(),
