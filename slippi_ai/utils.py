@@ -277,9 +277,13 @@ def replace_nt(nt: T, path: list[str], value: tp.Any) -> T:
 
   return nt._replace(**{path[0]: replace_nt(getattr(nt, path[0]), path[1:], value)})
 
-def peek_deque(d: collections.deque, n: int) -> list:
-  """Peek at the last n elements of a deque."""
-  assert len(d) >= n
+def peek_deque(d: collections.deque[T], n: int) -> list[T]:
+  """Peek at the last n elements of a deque.
+
+  The deque pushes at the end and pops from the beginning.
+  """
+  if len(d) < n:
+    raise ValueError(f'deque has insufficient elements, wanted {n} but only have {d}')
   items = [d.pop() for _ in range(n)]
   d.extend(reversed(items))
   return items

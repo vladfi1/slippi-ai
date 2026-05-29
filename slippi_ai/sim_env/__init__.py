@@ -5,6 +5,8 @@ from slippi_ai.sim_env.env import (
     Controllers,
     Port,
     SimBatchedEnvironment,
+    CompatSimBatchedEnvironment,
+    AsyncSimBatchedEnvironment,
     SimStepInfo,
     neutral_controllers,
 )

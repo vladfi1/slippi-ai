@@ -13,7 +13,7 @@ from slippi_ai.types import Buttons, Controller, Items, Stick
 class SimEnvTest(unittest.TestCase):
 
   def _sim_env(self, *args, **kwargs):
-    return sim_env.SimBatchedEnvironment(*args, **kwargs)
+    return sim_env.CompatSimBatchedEnvironment(*args, **kwargs)
 
   def test_current_state_and_step_match_existing_game_shape(self):
     env = self._sim_env(
