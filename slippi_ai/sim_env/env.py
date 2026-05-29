@@ -28,7 +28,7 @@ from slippi_ai import dolphin, utils
 from slippi_ai.envs import EnvOutput
 from slippi_ai.sim_env.observations import (
     GameBatchBuffer, copy_controller_slice as _copy_controller_slice,
-    game_for_port, GameBatch, TrajectoryStateBuffer
+    game_for_port, GameBatch, build_trajectory_buffer
 )
 from slippi_ai.types import Buttons, Controller, Stick, reify_tuple_type
 
@@ -461,18 +461,23 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
     self._capacity = runahead + 1
     self._async_index = 0
     self._pushed_minus_popped = 1
-    self._trajectory_buffer = TrajectoryStateBuffer.build(
+    self._trajectory_buffer = build_trajectory_buffer(
+        GameBatch,
         batch_size=num_envs * 2,
         rollout_length=self._capacity,
     )
-    self.write_current_game(self._trajectory_buffer.slots[0], self._needs_reset)
+    self._game_batch_buffers = [
+        GameBatchBuffer(game_batch)
+        for game_batch in self._trajectory_buffer.slots
+    ]
+    self.write_current_game(self._game_batch_buffers[0], self._needs_reset)
 
   def pop(self) -> GameBatch:
     self._pushed_minus_popped -= 1
     if self._pushed_minus_popped < 0:
       raise RuntimeError('not enough actions pushed')
 
-    return self._trajectory_buffer.slots[self._async_index].game_batch
+    return self._trajectory_buffer.slots[self._async_index]
 
   def push(self, controllers: Controllers):
     self._pushed_minus_popped += 1
@@ -482,10 +487,10 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
     self._needs_reset = self.advance(controllers)
     self._async_index = (self._async_index + 1) % self._capacity
     self.write_current_game(
-        self._trajectory_buffer.slots[self._async_index], self._needs_reset)
+        self._game_batch_buffers[self._async_index], self._needs_reset)
 
   def peek(self) -> GameBatch:
-    return self._trajectory_buffer.slots[self._async_index].game_batch
+    return self._trajectory_buffer.slots[self._async_index]
 
 
 def neutral_controllers(batch_size: int) -> Controller:

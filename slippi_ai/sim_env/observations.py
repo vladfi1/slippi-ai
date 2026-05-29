@@ -308,44 +308,45 @@ class GameBatchBuffer:
       arrays.y[target] = src['pos_y']
 
 
-Rank2 = tuple[int, int]
+T = tp.TypeVar('T')
 
-class TrajectoryStateBuffer(tp.NamedTuple):
-  """Time-major storage for T+1 policy observations.
+class TrajectoryBuffer(tp.NamedTuple, tp.Generic[T]):
+  """Time-major storage for a structure.
 
-  `current_game_batch()` reuses one mutable Game tree, while the learner needs
-  the whole rollout after the sim has advanced. `slots` are NumPy views into the
-  time-major `states` tree, so copying into a slot writes directly into the
-  corresponding frame of the final trajectory buffer.
+  Slots are numpy views into the contiguous memory region.
   """
 
-  states: GameBatch[Rank2]
-  slots: list[GameBatchBuffer]  # T+1 views into states
+  time_major: T
+  slots: list[T]  # T+1 views into states
 
   def __len__(self):
     return len(self.slots)
 
-  @classmethod
-  def build(
-      cls,
-      batch_size: int,
-      rollout_length: int,
-  ) -> tp.Self:
-    shape = (rollout_length, batch_size)
-    states = utils.map_single_structure(
-        lambda dtype: np.empty(shape, dtype=dtype),
-        reify_tuple_type(GameBatch),
-    )
-    return cls.from_game_batch(states)
+def trajectory_buffer_from_struct(struct: T) -> TrajectoryBuffer[T]:
+  """Initialize from an existing time-major struct."""
 
-  @classmethod
-  def from_game_batch(cls, game_batch: GameBatch[Rank2]) -> tp.Self:
-    rollout_length = game_batch.needs_reset.shape[0]
-    slots = [
-        GameBatchBuffer(utils.map_nt(lambda leaf, i=i: leaf[i], game_batch))  # type: ignore
-        for i in range(rollout_length)
-    ]
-    return cls(
-        states=game_batch,
-        slots=slots,
-    )
+  leaves = jax.tree.leaves(struct)
+  first = leaves[0]
+  assert isinstance(first, np.ndarray)
+
+  for leaf in leaves:
+    assert isinstance(leaf, np.ndarray)
+    assert leaf.shape == first.shape
+
+  slots = [
+      utils.map_nt(lambda leaf, i=i: leaf[i], struct)
+      for i in range(first.shape[0])
+  ]
+
+  return TrajectoryBuffer(struct, slots)
+
+def build_trajectory_buffer(
+    type_: type[T],
+    batch_size: int,
+    rollout_length: int,
+) -> TrajectoryBuffer[T]:
+  struct = utils.map_single_structure(
+      lambda dtype: np.empty((rollout_length, batch_size), dtype=dtype),
+      reify_tuple_type(type_),
+  )
+  return trajectory_buffer_from_struct(struct)
