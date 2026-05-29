@@ -459,7 +459,8 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
 
     # New async interface
     self._capacity = runahead + 1
-    self._async_index = 0
+    self._read_index = 0
+    self._write_index = 0
     self._pushed_minus_popped = 1
     self._trajectory_buffer = build_trajectory_buffer(
         GameBatch,
@@ -470,14 +471,17 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
         GameBatchBuffer(game_batch)
         for game_batch in self._trajectory_buffer.slots
     ]
-    self.write_current_game(self._game_batch_buffers[0], self._needs_reset)
+    self.write_current_game(
+        self._game_batch_buffers[self._write_index], self._needs_reset)
 
   def pop(self) -> GameBatch:
     self._pushed_minus_popped -= 1
     if self._pushed_minus_popped < 0:
       raise RuntimeError('not enough actions pushed')
 
-    return self._trajectory_buffer.slots[self._async_index]
+    obs = self._trajectory_buffer.slots[self._read_index]
+    self._read_index = (self._read_index + 1) % self._capacity
+    return obs
 
   def push(self, controllers: Controllers):
     self._pushed_minus_popped += 1
@@ -485,12 +489,14 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
       raise RuntimeError('too many actions pushed')
 
     self._needs_reset = self.advance(controllers)
-    self._async_index = (self._async_index + 1) % self._capacity
+    self._write_index = (self._write_index + 1) % self._capacity
     self.write_current_game(
-        self._game_batch_buffers[self._async_index], self._needs_reset)
+        self._game_batch_buffers[self._write_index], self._needs_reset)
 
   def peek(self) -> GameBatch:
-    return self._trajectory_buffer.slots[self._async_index]
+    if not (self._pushed_minus_popped > 0):
+      raise RuntimeError('no observations available')
+    return self._trajectory_buffer.slots[self._read_index]
 
 
 def neutral_controllers(batch_size: int) -> Controller:
