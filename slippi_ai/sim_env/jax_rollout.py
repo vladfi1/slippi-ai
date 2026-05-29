@@ -249,7 +249,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         elapsed = time.perf_counter() - pop_start
         elapsed_per_port = elapsed / len(agent_info.ports)
         for port in agent_info.ports:
-          timings[f'agent_pop_{port}'] += elapsed_per_port
+          timings[f'agent_pop'][port] += elapsed_per_port
 
     self._prev_agent_outputs.append(agent_outputs)
 
@@ -263,7 +263,10 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       num_steps: int,
       verbose: bool = False,
   ) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
-    timings: dict[str, float] = collections.defaultdict(float)
+    timings: dict = collections.defaultdict(float)
+    for key in ['agent_step', 'agent_pop']:
+      timings[key] = collections.defaultdict(float)
+
     if num_steps != self._rollout_length:
       raise ValueError(
           f'JaxSimRolloutWorker was built for rollout_length={self._rollout_length}, '
@@ -303,9 +306,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     for t in step_iter:
       env_pop_start = time.perf_counter()
       game_batch = self._env.pop()
-      timings['env_pop'] += time.perf_counter() - env_pop_start
 
       record_state(game_batch, self._prev_agent_outputs.popleft(), t)
+      timings['env_pop'] += time.perf_counter() - env_pop_start
 
       for agent_info in self._agents:
         agent = agent_info.agent
@@ -325,7 +328,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         elapsed = time.perf_counter() - push_start
         elapsed_per_port = elapsed / len(agent_info.ports)
         for port in agent_info.ports:
-          timings[f'agent_push_{port}'] += elapsed_per_port
+          timings['agent_step'][port] += elapsed_per_port
 
       # Feed the actions from the agents into the environment.
       self._push_actions(timings)
@@ -387,17 +390,10 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
               delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
 
-    timings['trajectory_build'] = time.perf_counter() - build_start
+    trajectory_build = time.perf_counter() - build_start
 
-    timing = {
-        'env_pop': timings['state_copy'] / max(num_steps, 1),
-        'env_push': timings['env_step'] / max(num_steps, 1),
-        'agent_step': {
-            port: timings[f'agent_step_{port}'] / max(num_steps, 1)
-            for port in self.ports
-        },
-        'trajectory_build': timings['trajectory_build'],
-    }
+    timing = jax.tree.map(lambda x: x / num_steps, timings)
+    timing['trajectory_build'] = trajectory_build
     return trajectories, {
         'timing': timing,
         'unexpected_reset': state_buffer.time_major.needs_reset[1:, :self._num_envs].copy(),

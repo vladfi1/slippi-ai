@@ -330,6 +330,8 @@ class MultiprocessSimEnvironment:
     self._action_index = (self._action_index + 1) % self._env_runahead
 
   def peek(self) -> GameBatch:
+    if not (self._pushed_minus_popped > 0):
+      raise RuntimeError('no observations available')
     return self._obs_buffer.slots[self._obs_index]
 
   def active_games(self) -> list[dict[str, int | str]]:
