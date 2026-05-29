@@ -22,7 +22,7 @@ from slippi_ai import eval_lib
 from slippi_ai import reward
 from slippi_ai import sim_env
 from slippi_ai import utils
-from slippi_ai.sim_env.observations import TrajectoryStateBuffer
+from slippi_ai.sim_env.observations import build_trajectory_buffer
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
 from slippi_ai.jax.jax_utils import fast_map, slice_map
@@ -176,8 +176,10 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     self._build_env()
     self._needs_reset = np.ones(self._num_envs, dtype=np.bool_)
     # TODO: consider per-agent buffers to avoid some extra slicing
-    self._state_buffer = TrajectoryStateBuffer.build(
-        self._num_players, self._rollout_length + 1)
+    self._state_buffer = build_trajectory_buffer(
+        sim_env.GameBatch,
+        batch_size=self._num_players,
+        rollout_length=self._rollout_length + 1)
 
     # Start env runahead
     for _ in range(self._env_runahead):
@@ -291,8 +293,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     ):
       copy_start = time.perf_counter()
 
-      slot = state_buffer.slots[t]
-      fast_map(np.copyto, slot.game_batch, game_batch)
+      fast_map(np.copyto, state_buffer.slots[t], game_batch)
 
       for buffer, output in zip(action_buffers, prev_agent_outputs):
         buffer.append(output)
@@ -334,8 +335,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     record_state(self._env.peek(), self._prev_agent_outputs[0], num_steps)
 
     build_start = time.perf_counter()
-    time_major_states = state_buffer.states
-    rewards = reward.ko_diff(time_major_states.game)
+    rewards = reward.ko_diff(state_buffer.time_major.game)
 
     # Record the delayed actions.
     assert len(self._prev_agent_outputs) == 1 + self._env_runahead
@@ -355,7 +355,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       if self._per_agent_outputs:
         states = fast_map(
             lambda x: np.asarray(x[:, env_slice]).copy(),
-            state_buffer.states)
+            state_buffer.time_major)
         trajectories[agent_info.ports[0]] = Trajectory(
             states=agent.policy.encode_game(states.game),
             name=np.broadcast_to(
@@ -372,7 +372,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
             agent_info.ports, agent_info.env_to_port_slices, agent_info.agent_to_port_slices):
           states = fast_map(
               lambda x: np.asarray(x[:, env_to_port_slice]).copy(),
-              state_buffer.states)
+              state_buffer.time_major)
           batch_size = agent_to_port_slice.stop - agent_to_port_slice.start
 
           trajectories[port] = Trajectory(
@@ -400,16 +400,16 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     }
     return trajectories, {
         'timing': timing,
-        'unexpected_reset': state_buffer.states.needs_reset[1:, :self._num_envs].copy(),
+        'unexpected_reset': state_buffer.time_major.needs_reset[1:, :self._num_envs].copy(),
         'completed_games': self._env.pop_completed_games(),
     }
 
   def _build_env(self):
-    # if self._async_envs:
-    #   assert self._inner_batch_size is not None
-    #   self._env = sim_env.MultiprocessSimEnvironment(
-    #       **self._env_kwargs,
-    #       inner_batch_size=self._inner_batch_size,
-    #   )
-
-    self._env = sim_env.AsyncSimBatchedEnvironment(**self._env_kwargs)
+    if self._async_envs:
+      assert self._inner_batch_size is not None
+      self._env = sim_env.MultiprocessSimEnvironment(
+          **self._env_kwargs,
+          inner_batch_size=self._inner_batch_size,
+      )
+    else:
+      self._env = sim_env.AsyncSimBatchedEnvironment(**self._env_kwargs)
