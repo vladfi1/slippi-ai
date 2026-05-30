@@ -91,9 +91,12 @@ class Embedding(Generic[In, Out], abc.ABC):
         f'{type(self).__name__} does not support distribution')
 
   def kl_divergence(self, logits_p: Array, logits_q: Array) -> Array:
+    logits_p = logits_p.astype(jnp.float32)
+    logits_q = logits_q.astype(jnp.float32)
     return self.distribution(logits_p).kl_divergence(self.distribution(logits_q))
 
   def entropy(self, logits: Array) -> Array:
+    logits = logits.astype(jnp.float32)
     return self.distribution(logits).entropy()
 
 class BoolEmbedding(Embedding[np.bool, np.bool]):
