@@ -39,7 +39,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       run_on_cpu: bool = False,
       pack_args: bool = False,
       functionalize: bool = False,
-      dtype: DType = DType.FP32,
+      dtype: str | DType = DType.FP32,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -76,6 +76,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       )
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
+
+    if isinstance(dtype, str):
+      dtype = DType(dtype)
 
     if dtype is not DType.FP32:
       sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
