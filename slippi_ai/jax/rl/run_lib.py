@@ -23,6 +23,7 @@ from slippi_ai import (
     saving as generic_saving,
     utils,
 )
+from slippi_ai.jax.agents import DType
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as train_lib
@@ -62,7 +63,7 @@ class ActorConfig:
 @dataclasses.dataclass
 class JaxAgentConfig:
   pack_args: bool = True
-  bf16: bool = False
+  dtype: DType = DType.FP32
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -178,7 +179,7 @@ class LearnerManager:
     self._num_ppo_batches = config.learner.ppo.num_batches
     self._burnin_steps_after_reset = config.runtime.burnin_steps_after_reset
 
-    self._agent_dtype = jnp.bfloat16 if config.agent.jax.bf16 else jnp.float32
+    self._agent_dtype = config.agent.jax.dtype.dtype
     self._learner_dtype = jnp.float32
 
     batch_size = config.actor.num_envs

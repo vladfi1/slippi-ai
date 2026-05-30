@@ -1,3 +1,4 @@
+import enum
 import typing as tp
 
 import jax
@@ -11,6 +12,17 @@ from slippi_ai.data import StateAction
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 from slippi_ai.jax import policies, jax_utils
 
+class DType(enum.Enum):
+  FP32 = 'float32'
+  FP16 = 'float16'
+  BF16 = 'bfloat16'
+
+  @property
+  def dtype(self) -> jnp.dtype:
+    return getattr(jnp, self.value)
+
+  def is_default(self):
+    return self is DType.FP32
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   """Wraps a Policy to track hidden state."""
@@ -27,7 +39,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       run_on_cpu: bool = False,
       pack_args: bool = False,
       functionalize: bool = False,
-      bf16: bool = False,
+      dtype: DType = DType.FP32,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -65,8 +77,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)
 
-    if bf16:
-      sample = jax_utils.with_bf16_compute(sample)
+    if dtype is not DType.FP32:
+      sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
 
     self._sample = jax_utils.cached_partial(sample, policy, rngs)
 
@@ -115,8 +127,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
       return stacked_sample_outputs, final_state
 
-    if bf16:
-      multi_sample = jax_utils.with_bf16_compute(multi_sample)
+    if dtype is not DType.FP32:
+      multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
 
     self._multi_sample = jax_utils.cached_partial(multi_sample, policy, rngs)
 
@@ -134,9 +146,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
           jitted_multi_sample, policy, rngs)
 
     self._hidden_state = self._policy.initial_state(batch_size, rngs)
-    if bf16:
+    if dtype is not DType.FP32:
       self._hidden_state = jax_utils.cast_floats_to_dtype(
-          self._hidden_state, jnp.bfloat16)
+          self._hidden_state, dtype.dtype)
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
