@@ -45,6 +45,8 @@ class LearnerConfig:
   optimizer_burnin_epochs: int = 1
   value_burnin_epochs: int = 1
 
+  bf16: bool = False
+
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
   value_function: RecurrentState
