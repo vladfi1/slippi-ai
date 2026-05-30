@@ -94,8 +94,9 @@ def cast_params_to_dtype(module: ModT, dtype) -> ModT:
   new_state = cast_floats_to_dtype(state, dtype)
   return nnx.merge(graphdef, new_state)
 
-def with_bf16_compute(
+def with_compute_dtype(
     loss_fn: tp.Callable[tp.Concatenate[ModT, P], T],
+    dtype: jnp.dtype,
 ) -> tp.Callable[tp.Concatenate[ModT, P], T]:
   """Wraps loss_fn(module, ...) to cast params to bf16 before computing.
 
@@ -104,9 +105,14 @@ def with_bf16_compute(
   """
   @functools.wraps(loss_fn)
   def wrapped(module: ModT, *args: P.args, **kwargs: P.kwargs):
-    casted_module = cast_params_to_dtype(module, jnp.bfloat16)
+    casted_module = cast_params_to_dtype(module, dtype=dtype)
     return loss_fn(casted_module, *args, **kwargs)
   return wrapped
+
+def with_bf16_compute(
+    loss_fn: tp.Callable[tp.Concatenate[ModT, P], T],
+) -> tp.Callable[tp.Concatenate[ModT, P], T]:
+  return with_compute_dtype(loss_fn, dtype=jnp.bfloat16)
 
 def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
   """Stack a list of modules by adding a leading axis to their parameters."""
