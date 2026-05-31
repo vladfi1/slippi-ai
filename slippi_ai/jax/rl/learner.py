@@ -449,7 +449,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     ]
 
     # Unroll teacher + value function, training value function.
-    # TODO: scan instead of for-loop
+    # NOTE: when using sim-envs with large batch sizes, we typically set
+    # num_batches = 1, which means that there isn't any benefit from fusing
+    # the loop over trajectories with a scan.
+    # TODO: we could try fusing the teacher/value unrolls
     teacher_state = initial_state.teacher
     teacher_logits: list[ControllerType] = []
     for trajectory in trajectories:
