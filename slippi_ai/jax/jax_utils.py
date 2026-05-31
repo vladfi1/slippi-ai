@@ -15,6 +15,8 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
 from flax import nnx
 from flax.nnx.transforms.transforms import _resolve_bound_callable
 
+from slippi_ai import utils
+
 Array = jax.Array
 
 P = tp.ParamSpec('P')
@@ -413,6 +415,7 @@ def grad_with_aux(
 def grad_with_aux_tuple(
     f: tp.Callable[P, tuple[Loss, *Outputs]],
     take_mean: bool = True,
+    fp32_grads: bool = True,
 ) -> tp.Callable[P, tuple[Grads, *Outputs]]:
 
   def packed_loss_fn(*args: P.args, **kwargs: P.kwargs):
@@ -423,6 +426,8 @@ def grad_with_aux_tuple(
 
   def grad_fn(*args: P.args, **kwargs: P.kwargs):
     grad, aux = packed_grad_fn(*args, **kwargs)
+    if fp32_grads:
+      grad = jax.tree.map(lambda x: x.astype(jnp.float32), grad)
     return (grad, *aux)
 
   return grad_fn
@@ -903,13 +908,156 @@ def cached_functional_jit(
     donate_argnums=donate_argnums,
     **jit_kwargs)
 
+def microbatch_array(x: jax.Array, axis: int, microbatch_size: int):
+  new_shape = x.shape[:axis] + (-1, microbatch_size) + x.shape[axis+1:]
+  return x.reshape(new_shape)
+
+def unmicrobatch_array(x: jax.Array, axis: int):
+  assert len(x.shape) > axis + 1
+  new_shape = x.shape[:axis] + (-1,) + x.shape[axis+2:]
+  return x.reshape(new_shape)
+
+def get_batch_size(axis_prefix: T, struct: T) -> int:
+  full_in_axes = jax.tree.broadcast(axis_prefix, struct)
+  batch_sizes = jax.tree.map(lambda x, axis: x.shape[axis], struct, full_in_axes)
+  batch_sizes: set[int] = set(jax.tree.leaves(batch_sizes))
+  if len(batch_sizes) != 1:
+    raise ValueError('Got different batch sizes')
+  return batch_sizes.pop()
+
+def microbatch_struct(axis_prefix: T, struct: T, microbatch_size: int) -> T:
+  return utils.map_nt(
+      lambda axis, substruct: utils.map_nt(
+          functools.partial(microbatch_array, axis=axis, microbatch_size=microbatch_size),
+          substruct),
+      axis_prefix, struct)
+
+def microbatch_fn(
+    f: tp.Callable[tp.Concatenate[ModT, P], tuple[*Outputs]],
+    microbatch_size: int,
+    in_axes: int | tuple = 0,
+    out_axes: int | tuple = 0,
+) -> tp.Callable[tp.Concatenate[ModT, P], tuple[*Outputs]]:
+  mbs = microbatch_size
+
+  def microbatched(
+      module: ModT, *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[*Outputs]:
+    batch_size = get_batch_size(in_axes, args)
+
+    if batch_size % mbs != 0:
+      raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
+
+    full_in_axes = jax.tree.broadcast(in_axes, args)
+    microbatched_inputs = utils.map_nt(
+        functools.partial(microbatch_array, microbatch_size=mbs),
+        args, full_in_axes)
+
+    output_shapes = nnx.eval_shape(f, module, *args, **kwargs)
+    full_out_axes = jax.tree.broadcast(out_axes, output_shapes)
+
+    def with_kwargs(module: ModT, *args: P.args):
+      return f(module, *args, **kwargs)
+
+    scan_fn = nnx.scan(
+        with_kwargs,
+        in_axes=(None, *full_in_axes),
+        out_axes=full_out_axes,
+    )
+
+    microbatched_outputs = scan_fn(module, *microbatched_inputs)
+    return jax.tree.map(unmicrobatch_array, microbatched_outputs, full_out_axes)
+
+  return microbatched
+
+def microbatched_grads(
+    loss_fn: tp.Callable[tp.Concatenate[ModT, P], tuple[Loss, *Outputs]],
+    microbatch_size: int,
+    in_axes: int | tuple = 0,
+    out_axes: int | tuple = 0,  # doesn't include Loss
+    take_mean: bool = True,
+    fp32_grads: bool = True,
+):
+  mbs = microbatch_size
+  grad_fn = grad_with_aux_tuple(loss_fn, take_mean=take_mean, fp32_grads=fp32_grads)
+
+  def compute_grads(
+      module: ModT, *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[Grads, *Outputs]:
+    batch_size = get_batch_size(in_axes, args)
+
+    num_microbatches, r = divmod(batch_size, mbs)
+    if r != 0:
+      raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
+
+    logging.info(f'Split inputs into {num_microbatches} microbatches of size {mbs}')
+
+    full_in_axes = jax.tree.broadcast(in_axes, args)
+    microbatched_inputs = jax.tree.map(
+        functools.partial(microbatch_array, microbatch_size=mbs),
+        args, full_in_axes)
+
+    output_shapes = nnx.eval_shape(grad_fn, module, *args, **kwargs)
+    zero_grads = jax.tree.map(jnp.zeros_like, output_shapes[0])
+    full_out_axes = jax.tree.broadcast(out_axes, output_shapes[1:])
+
+    @nnx.scan(
+        in_axes=(None, nnx.Carry, *full_in_axes),
+        out_axes=(nnx.Carry, *full_out_axes),
+    )
+    def scan_fn(module: ModT, grads_acc: Grads, *args: P.args):
+      grads_and_outputs = grad_fn(module, *args, **kwargs)
+      new_grads_acc: Grads = jax.tree.map(jnp.add, grads_and_outputs[0], grads_acc)
+      return (new_grads_acc, *grads_and_outputs[1:])
+
+    grads_and_outputs = scan_fn(module, zero_grads, *microbatched_inputs)
+
+    grads = grads_and_outputs[0]
+    if take_mean:
+      grads = jax.tree.map(lambda g: g / num_microbatches, grads)
+
+    microbatched_outputs = grads_and_outputs[1:]
+    outputs = jax.tree.map(unmicrobatch_array, microbatched_outputs, full_out_axes)
+
+    return (grads, *outputs)
+
+  return compute_grads
+
+def run_loss_fn(
+    module: ModT,
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,  # doesn't include Loss
+    microbatch_size: tp.Optional[int] = None,
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+  run_fn = no_loss(loss_fn)
+
+  if microbatch_size is not None:
+    run_fn = microbatch_fn(
+        run_fn,
+        microbatch_size=microbatch_size,
+        in_axes=input_batch_dims,
+        out_axes=output_batch_dims)
+
+  jit_run = nnx_jit(run_fn, donate_argnums=(0, 2))
+  return cached_partial(jit_run, module)
+
 def train_fn(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,  # doesn't include Loss
+    microbatch_size: tp.Optional[int] = None,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
 
-  grad_fn = grad_with_aux_tuple(loss_fn)
+  if microbatch_size is not None:
+    grad_fn = microbatched_grads(
+        loss_fn, microbatch_size,
+        in_axes=input_batch_dims,
+        out_axes=output_batch_dims)
+  else:
+    grad_fn = grad_with_aux_tuple(loss_fn)
 
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
@@ -919,7 +1067,7 @@ def train_fn(
     optimizer.update(module, outputs[0])
     return outputs[1:]
 
-  jit_train = nnx.jit(train, donate_argnums=(0, 1, 3))
+  jit_train = nnx_jit(train, donate_argnums=(0, 1, 3))
 
   return cached_partial(jit_train, module, optimizer)
 
