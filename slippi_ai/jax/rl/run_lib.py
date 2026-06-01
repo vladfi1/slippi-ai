@@ -618,6 +618,12 @@ def run(config: Config):
     if metrics is None:
       return
 
+    for profiler in [
+        step_profiler, learner_manager.rollout_profiler,
+        learner_manager.learner_profiler, learner_manager.reset_profiler,
+    ]:
+      profiler.reset()
+
     print('\nStep:', epoch)
 
     timings: dict = metrics['timings']

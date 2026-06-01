@@ -64,6 +64,9 @@ class Profiler:
   def mean_time(self):
     return self.cumtime / self.num_calls
 
+  def reset(self):
+    self.needs_reset = True
+
 class Periodically:
   def __init__(self, f: tp.Callable[..., T], interval: float):
     self.f = f
