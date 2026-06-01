@@ -419,30 +419,37 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
             lambda *xs: jnp.concatenate(xs, axis), *substructs),
         _TRAJECTORY_AXES, *trajectories)
 
-    grad_fn = jax_utils.microbatched_grads(
-        self.ppo_loss,
+    mbkwargs = MBKwargs(
         microbatch_size=mbs,
         input_batch_dims=(_ADVANTAGES_AXIS, _TEACHER_LOGITS_AXIS, _TRAJECTORY_AXES),
         output_batch_dims=1,  # metrics are time-major
     )
 
-    grads, metrics = grad_fn(
-        self.policy,
-        batched_advantages,
-        batched_logits,
-        batched_trajectories)
-
-    grads_dict = nnx.to_pure_dict(grads)
-    grad_norms = jax.tree.map(jnp.linalg.norm, grads_dict)
-    max_grad_norm = jax.tree.reduce(jnp.maximum, grad_norms)
-
-    metrics['grads'] = dict(
-        norms=grad_norms,
-        max_norm=max_grad_norm,
-    )
-
     if train:
+      grad_fn = jax_utils.microbatched_grads(
+          self.ppo_loss, **mbkwargs)
+
+      grads, metrics = grad_fn(
+          self.policy,
+          batched_advantages,
+          batched_logits,
+          batched_trajectories)
+
+      grads_dict = nnx.to_pure_dict(grads)
+      grad_norms = jax.tree.map(jnp.linalg.norm, grads_dict)
+      max_grad_norm = jax.tree.reduce(jnp.maximum, grad_norms)
+
+      metrics['grads'] = dict(
+          norms=grad_norms,
+          max_norm=max_grad_norm,
+      )
+
       self.policy_optimizer.update(self.policy, grads)
+    else:
+      run_ppo = jax_utils.microbatch_fn(
+          jax_utils.no_loss(self.ppo_loss),
+          **mbkwargs)
+      (metrics,) = run_ppo(self.policy, batched_advantages, batched_logits, batched_trajectories)
 
     actor_kl = metrics['actor_kl']
     metrics['actor_kl'] = dict(
