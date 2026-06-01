@@ -82,12 +82,15 @@ if __name__ == '__main__':
 
   KLW = flags.DEFINE_float('kl_weight', 1e-2, 'weight for KL teacher losses')
 
+  LEARNER_PERF = flags.DEFINE_bool('learner_perf', False, 'Run to measure learner performance')
+
   def main(_):
     config = flag_utils.dataclass_from_dict(
         run_lib.Config, CONFIG_FLAG.value)
 
     config.learner.kl_teacher_weight = KLW.value
     config.learner.reverse_kl_teacher_weight = KLW.value
+
 
     if config.teacher is not None:
       imitation_state = saving.load_state_from_disk(config.teacher)
@@ -129,6 +132,14 @@ if __name__ == '__main__':
         config.runtime.tag = f"{char_str}_d{delay}_{opp}_kl_{KLW.value:.0e}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
+
+    if LEARNER_PERF.value:
+      config.runtime.save_interval = -1
+      config.runtime.log_interval = 20
+      config.actor.use_sim_envs = False
+      config.actor.use_fake_envs = True
+      wandb_kwargs['mode'] = 'disabled'
+      config.agent
 
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.runtime.tag
