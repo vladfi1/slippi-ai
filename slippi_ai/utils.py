@@ -126,22 +126,22 @@ def deep_copy(nest: T) -> T:
   """Deep copy a nested structure of arrays."""
   return map_single_structure(lambda x: x, nest)
 
-def map_nt(f, *nt: T) -> T:
+def map_nt(f: tp.Callable, first: T, *rest: T) -> T:
   """Map over nested tuples and dicts.
 
   More efficient than tf/tree map_structure.
   """
-  t = type(nt[0])
+  t = type(first)
   if t is tuple:
-    return tuple([map_nt(f, *vs) for vs in zip(*nt)])
+    return tuple([map_nt(f, *vs) for vs in zip(first, *rest)])
   if issubclass(t, tuple):
-    return t(*(map_nt(f, *vs) for vs in zip(*nt)))
+    return t(*(map_nt(f, *vs) for vs in zip(first, *rest)))
   if issubclass(t, dict):
-    return {k: map_nt(f, *[v[k] for v in nt]) for k in nt[0].keys()}
+    return {k: map_nt(f, first[k], *(v[k] for v in rest)) for k in first.keys()}
   if t is list:
-    return [map_nt(f, *vs) for vs in zip(*nt)]
+    return [map_nt(f, *vs) for vs in zip(first, *rest)]
   # Not a nest.
-  return f(*nt)
+  return f(first, *rest)
 
 class IdFn(tp.Protocol):
 
