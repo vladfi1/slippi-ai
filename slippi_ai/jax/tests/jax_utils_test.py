@@ -15,9 +15,10 @@ import numpy as np
 
 import sys
 
-from jax_utils import (
+from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
+    microbatch_fn, microbatched_grads, grad_with_aux_tuple,
 )
 
 
@@ -226,6 +227,182 @@ class ArgPackerTest(unittest.TestCase):
     packed = packer.pack(arg)
     result = packer.unpack(packed)
     self._assert_pytree_equal(result, arg)
+
+
+def _simple_loss_fn(module: nnx.Linear, data: jax.Array) -> tuple[jax.Array, dict]:
+  """Loss fn returning per-example losses and a dict aux."""
+  y = module(data)
+  per_example = jnp.sum(y ** 2, axis=-1)  # shape [B]
+  return per_example, dict(loss=per_example)
+
+
+def _reference_grads(module: nnx.Linear, data: jax.Array):
+  """Return (grads, aux_dict) using grad_with_aux_tuple as the baseline.
+
+  grad_with_aux_tuple splats the aux tuple, so the return is (grads, *aux).
+  _simple_loss_fn has one aux element (a dict), giving (grads, dict).
+  """
+  grad_fn = grad_with_aux_tuple(_simple_loss_fn)
+  return grad_fn(module, data)
+
+
+class MicrobatchFnTest(unittest.TestCase):
+  """microbatch_fn(f, mbs)(module, data) must equal f(module, data)."""
+
+  def _assert_close(self, a, b):
+    for la, lb in zip(jax.tree.leaves(a), jax.tree.leaves(b)):
+      np.testing.assert_allclose(np.array(la), np.array(lb), rtol=1e-5, atol=1e-6)
+
+  def _forward_fn(self, module: nnx.Linear, data: jax.Array):
+    return module(data)
+
+  def test_matches_direct_call(self):
+    """microbatch_fn output should equal direct f(module, data)."""
+    module = nnx.Linear(4, 3, rngs=nnx.Rngs(0))
+    data = jax.random.normal(jax.random.PRNGKey(0), (8, 4))
+
+    ref = self._forward_fn(module, data)
+    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+
+    self._assert_close(ref, mb)
+
+  def test_batch_size_equals_microbatch_size(self):
+    """microbatch_size == batch_size means one microbatch; should match directly."""
+    module = nnx.Linear(3, 2, rngs=nnx.Rngs(1))
+    data = jax.random.normal(jax.random.PRNGKey(1), (4, 3))
+
+    ref = self._forward_fn(module, data)
+    mb = microbatch_fn(self._forward_fn, microbatch_size=4)(module, data)
+
+    self._assert_close(ref, mb)
+
+  def test_various_microbatch_sizes(self):
+    """Any divisor microbatch size should produce the same output."""
+    module = nnx.Linear(5, 3, rngs=nnx.Rngs(2))
+    data = jax.random.normal(jax.random.PRNGKey(2), (12, 5))
+    ref = self._forward_fn(module, data)
+
+    for mbs in [1, 2, 3, 4, 6, 12]:
+      with self.subTest(mbs=mbs):
+        mb = microbatch_fn(self._forward_fn, microbatch_size=mbs)(module, data)
+        self._assert_close(ref, mb)
+
+  def test_preserves_output_shape(self):
+    """Output shape should equal the un-batched output shape."""
+    module = nnx.Linear(4, 3, rngs=nnx.Rngs(3))
+    data = jax.random.normal(jax.random.PRNGKey(3), (6, 4))
+    ref = self._forward_fn(module, data)
+    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+    self.assertEqual(mb.shape, ref.shape)
+
+  def test_multi_output(self):
+    """Works when f returns a tuple of outputs."""
+    module = nnx.Linear(4, 3, rngs=nnx.Rngs(4))
+    data = jax.random.normal(jax.random.PRNGKey(4), (8, 4))
+
+    def f(module, x):
+      y = module(x)
+      return y, jnp.sum(y, axis=-1)
+
+    ref_y, ref_s = f(module, data)
+    mb_y, mb_s = microbatch_fn(f, microbatch_size=4)(module, data)
+
+    self._assert_close(ref_y, mb_y)
+    self._assert_close(ref_s, mb_s)
+
+  def test_non_zero_axis(self):
+    """in_axes/out_axes can specify a non-zero batch axis."""
+    module = nnx.Linear(3, 2, rngs=nnx.Rngs(5))
+    # time-major: shape [T, B, F]; batch along axis 1
+    data = jax.random.normal(jax.random.PRNGKey(5), (6, 4, 3))
+
+    def f(module, x):
+      # x: [T, B, F] → apply Linear over last dim
+      return jax.vmap(jax.vmap(module))(x)
+
+    ref = f(module, data)
+    mb = microbatch_fn(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
+    self._assert_close(ref, mb)
+
+
+class MicrobatchedGradsTest(unittest.TestCase):
+
+  def _assert_grads_close(self, grads_a, grads_b):
+    for la, lb in zip(jax.tree.leaves(grads_a), jax.tree.leaves(grads_b)):
+      np.testing.assert_allclose(
+          np.array(la), np.array(lb), rtol=1e-5, atol=1e-5)
+
+  def test_matches_reference_grads(self):
+    """microbatched_grads should match grad_with_aux_tuple."""
+    module = nnx.Linear(4, 3, rngs=nnx.Rngs(0))
+    data = jax.random.normal(jax.random.PRNGKey(10), (8, 4))
+
+    ref_grads, _ref_aux = _reference_grads(module, data)
+    mb_grads, _mb_aux = microbatched_grads(_simple_loss_fn, microbatch_size=4)(module, data)
+
+    self._assert_grads_close(ref_grads, mb_grads)
+
+  def test_microbatch_size_one(self):
+    """microbatch_size=1 (maximum splitting) should still match reference."""
+    module = nnx.Linear(3, 2, rngs=nnx.Rngs(1))
+    data = jax.random.normal(jax.random.PRNGKey(11), (4, 3))
+
+    ref_grads, _ref_aux = _reference_grads(module, data)
+    mb_grads, _mb_aux = microbatched_grads(_simple_loss_fn, microbatch_size=1)(module, data)
+
+    self._assert_grads_close(ref_grads, mb_grads)
+
+  def test_microbatch_size_equals_batch(self):
+    """microbatch_size == batch_size means one microbatch; should match exactly."""
+    module = nnx.Linear(5, 2, rngs=nnx.Rngs(2))
+    data = jax.random.normal(jax.random.PRNGKey(12), (6, 5))
+
+    ref_grads, _ref_aux = _reference_grads(module, data)
+    mb_grads, _mb_aux = microbatched_grads(_simple_loss_fn, microbatch_size=6)(module, data)
+
+    self._assert_grads_close(ref_grads, mb_grads)
+
+  def test_various_microbatch_sizes(self):
+    """All valid microbatch sizes should produce the same grads."""
+    module = nnx.Linear(4, 3, rngs=nnx.Rngs(3))
+    data = jax.random.normal(jax.random.PRNGKey(13), (12, 4))
+
+    ref_grads, _ref_aux = _reference_grads(module, data)
+
+    for mbs in [1, 2, 3, 4, 6, 12]:
+      with self.subTest(mbs=mbs):
+        mb_grads, _mb_aux = microbatched_grads(_simple_loss_fn, microbatch_size=mbs)(module, data)
+        self._assert_grads_close(ref_grads, mb_grads)
+
+  def test_aux_outputs_concatenated(self):
+    """Per-example aux values should be stacked across microbatches."""
+    module = nnx.Linear(3, 2, rngs=nnx.Rngs(4))
+    data = jax.random.normal(jax.random.PRNGKey(14), (8, 3))
+
+    # Reference: full-batch aux (per-example losses, shape [8])
+    _ref_grads, ref_aux = _reference_grads(module, data)
+    # Microbatched: aux should still cover all 8 examples
+    _mb_grads, mb_aux = microbatched_grads(_simple_loss_fn, microbatch_size=2)(module, data)
+
+    np.testing.assert_allclose(
+        np.array(ref_aux['loss']), np.array(mb_aux['loss']), rtol=1e-5, atol=1e-5)
+
+  def test_bad_microbatch_size_raises(self):
+    """Non-divisor microbatch_size should raise ValueError."""
+    module = nnx.Linear(3, 2, rngs=nnx.Rngs(5))
+    data = jax.random.normal(jax.random.PRNGKey(15), (7, 3))
+
+    with self.assertRaises(ValueError):
+      microbatched_grads(_simple_loss_fn, microbatch_size=4)(module, data)
+
+  def test_grads_are_fp32(self):
+    """fp32_grads=True (default) should return float32 gradients."""
+    module = nnx.Linear(4, 2, rngs=nnx.Rngs(6))
+    data = jax.random.normal(jax.random.PRNGKey(16), (8, 4))
+
+    mb_grads, _ = microbatched_grads(_simple_loss_fn, microbatch_size=2)(module, data)
+    for leaf in jax.tree.leaves(mb_grads):
+      self.assertEqual(leaf.dtype, jnp.float32)
 
 
 if __name__ == '__main__':
