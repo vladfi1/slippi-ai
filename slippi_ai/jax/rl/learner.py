@@ -2,6 +2,7 @@
 
 import dataclasses
 import functools
+import time
 import typing as tp
 
 import jax
@@ -470,16 +471,22 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         self._train_vf_mb, self.value_function, self.value_optimizer)
       ppo_epoch = self.ppo_epoch
 
+    timings: dict[str, float] = {}
+
     # Unroll teacher + value function, training value function.
     # NOTE: when using sim-envs with large batch sizes, we typically set
     # num_batches = 1, which means that there isn't any benefit from fusing
     # the loop over trajectories with a scan.
+
+    start = time.perf_counter()
     teacher_state = initial_state.teacher
     teacher_logits: list[ControllerType] = []
     for trajectory in trajectories:
       logits, teacher_state = unroll_teacher(trajectory, teacher_state)
       teacher_logits.append(logits)
+    timings['teacher'] = time.perf_counter() - start
 
+    start = time.perf_counter()
     value_state = initial_state.value_function
     advantages: list[Advantage] = []
     value_metrics_list: list[Metrics] = []
@@ -497,6 +504,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       value_metrics = utils.map_nt(
           lambda *xs: jnp.stack(xs).mean(), *value_metrics_list)
 
+    timings['vf'] = time.perf_counter() - start
+
     # Checkpoint policy state for potential reverting.
     # checkpoint = jax_utils.get_module_state(self.policy)
 
@@ -504,19 +513,26 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
     # PPO epochs with gradient updates.
     per_epoch_metrics = []
-    for _ in range(num_epochs):
+    for i in range(num_epochs):
+      start = time.perf_counter()
       epoch_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=True)
       per_epoch_metrics.append(epoch_metrics)
+      timings[f'ppo_{i}'] = time.perf_counter() - start
 
     # Final eval epoch (no gradient update) to measure post-update KL.
+    start = time.perf_counter()
     final_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=False)
     per_epoch_metrics.append(final_metrics)
+    timings[f'ppo_eval'] = time.perf_counter() - start
 
     metrics = dict(
         ppo_step={str(i): m for i, m in enumerate(per_epoch_metrics)},
         post_update=final_metrics,
         value=value_metrics,
     )
+
+    if jit:
+      metrics['timing'] = timings
 
     hidden_state = LearnerState(
         teacher=teacher_state,
