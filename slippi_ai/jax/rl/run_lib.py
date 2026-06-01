@@ -507,6 +507,11 @@ def run(config: Config):
           use_fake_envs=config.actor.use_fake_envs,
           async_envs=config.actor.async_envs,
           inner_batch_size=config.actor.inner_batch_size,
+          # When there's a single ppo batch we immediately use the trajectory
+          # data without invalidating it by calling rollout again, so there's
+          # no need to make a copy of the data. TODO: we could always avoid
+          # the copy only on the last rollout.
+          copy_data=config.learner.ppo.num_batches > 1,
       )
 
   learner_manager = LearnerManager(

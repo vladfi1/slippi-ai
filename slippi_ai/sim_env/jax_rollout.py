@@ -57,12 +57,16 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       use_fake_envs: bool = False,
       async_envs: bool = False,
       inner_batch_size: tp.Optional[int] = None,
+      # NOTE: if copy_data is False, calling rollout a second time invalidates
+      # the first rollout's trajectory data.
+      copy_data: bool = True,
   ):
     self._num_envs = num_envs
     self._num_players = self._num_envs * len(self.ports)
     self._rollout_length = rollout_length
     del batch_steps  # Not used yet.
     self._per_agent_outputs = per_agent_outputs
+    self._copy_data = copy_data
 
     self._batch_slice_by_port = {
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
@@ -358,9 +362,11 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       delayed_actions.extend(agent_info.agent.peek_n(num_left))
 
       if self._per_agent_outputs:
-        states = fast_map(
-            lambda x: np.asarray(x[:, env_slice]).copy(),
-            state_buffer.time_major)
+        if self._copy_data:
+          slice_trajectory = lambda x: x[:, env_slice].copy()
+        else:
+          slice_trajectory = lambda x: x[:, env_slice]
+        states = fast_map(slice_trajectory, state_buffer.time_major)
         trajectories[agent_info.ports[0]] = Trajectory(
             states=agent.policy.encode_game(states.game),
             name=np.broadcast_to(
@@ -368,16 +374,20 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
                 [num_steps + 1, env_slice.stop - env_slice.start]),
             actions=actions,
             rewards=rewards[:, env_slice].astype(np.float32),
-            is_resetting=states.needs_reset[:, env_slice].copy(),
+            is_resetting=slice_trajectory(states.needs_reset),
             initial_state=initial_state,
             delayed_actions=delayed_actions,
         )
       else:
         for port, env_to_port_slice, agent_to_port_slice in zip(
             agent_info.ports, agent_info.env_to_port_slices, agent_info.agent_to_port_slices):
-          states = fast_map(
-              lambda x: np.asarray(x[:, env_to_port_slice]).copy(),
-              state_buffer.time_major)
+
+          if self._copy_data:
+            slice_trajectory = lambda x: x[:, env_to_port_slice].copy()
+          else:
+            slice_trajectory = lambda x: x[:, env_to_port_slice]
+
+          states = fast_map(slice_trajectory, state_buffer.time_major)
           batch_size = agent_to_port_slice.stop - agent_to_port_slice.start
 
           trajectories[port] = Trajectory(
@@ -387,7 +397,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
                   [num_steps + 1, batch_size]),
               actions=slice_map((slice(None), agent_to_port_slice), actions),
               rewards=rewards[:, env_to_port_slice].astype(np.float32),
-              is_resetting=states.needs_reset[:, env_to_port_slice].copy(),
+              is_resetting=slice_trajectory(states.needs_reset),
               initial_state=slice_map(agent_to_port_slice, initial_state),
               delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
