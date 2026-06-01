@@ -16,6 +16,7 @@ from slippi_ai.jax import jax_utils, embed, rl_lib
 from slippi_ai.jax import value_function as vf_lib
 from slippi_ai.jax.policies import Policy, UnrollOutputs, ControllerType
 from slippi_ai.jax.networks import RecurrentState
+from slippi_ai.jax.agents import DType
 
 Array = jax.Array
 field = lambda f: dataclasses.field(default_factory=f)
@@ -50,6 +51,8 @@ class LearnerConfig:
   microbatch_size: int = 0
   teacher_mbs: int = 0
   value_mbs: int = 0
+
+  teacher_dtype: DType = DType.FP32
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
@@ -183,12 +186,14 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
     )
+    unroll_teacher = jax_utils.with_compute_dtype(
+        self._unroll_teacher, config.teacher_dtype.dtype)
     self._unroll_teacher_mb = jax_utils.microbatch_fn(
-        jax_utils.no_loss(self._unroll_teacher),
+        jax_utils.no_loss(unroll_teacher),
         **teacher_mbkwargs
     )
     self.unroll_teacher = jax_utils.run_loss_fn(
-        self.teacher, self._unroll_teacher,
+        self.teacher, unroll_teacher,
         **teacher_mbkwargs,
     )
 
@@ -231,8 +236,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   ) -> LearnerState:
     if rngs is None:
       rngs = nnx.Rngs(0)
+
+    teacher_state = jax_utils.cast_floats_to_dtype(
+        self.teacher.initial_state(batch_size, rngs),
+        dtype=self._config.teacher_dtype.dtype)
+
     return LearnerState(
-        teacher=self.teacher.initial_state(batch_size, rngs),
+        teacher=teacher_state,
         value_function=self.value_function.initial_state(batch_size, rngs),
     )
 
