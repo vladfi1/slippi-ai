@@ -17,6 +17,7 @@ import tree
 import numpy as np
 
 T = tp.TypeVar('T')
+P = tp.ParamSpec('P')
 
 def field(default_factory: tp.Callable[[], T]) -> T:
   return dataclasses.field(default_factory=default_factory)
@@ -67,13 +68,21 @@ class Profiler:
   def reset(self):
     self.needs_reset = True
 
-class Periodically:
-  def __init__(self, f: tp.Callable[..., T], interval: float):
+class Periodically(tp.Generic[P, T]):
+  """Wrapper to run a function periodically.
+
+  A negative interval means it never runs.
+  """
+
+  def __init__(self, f: tp.Callable[P, T], interval: float):
     self.f = f
     self.interval = interval
     self.last_call = None
 
-  def __call__(self, *args, **kwargs) -> tp.Optional[T]:
+  def __call__(self, *args: P.args, **kwargs: P.kwargs) -> tp.Optional[T]:
+    if self.interval < 0:
+      return
+
     now = time.time()
     if self.last_call is None or now - self.last_call > self.interval:
       self.last_call = now
