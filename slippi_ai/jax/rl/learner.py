@@ -41,13 +41,15 @@ class LearnerConfig:
   reward_halflife: float = 4  # measured in seconds
   reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
   ppo: PPOConfig = field(PPOConfig)
+  fused: bool = False
 
   optimizer_burnin_epochs: int = 1
   value_burnin_epochs: int = 1
 
-  microbatch_size: tp.Optional[int] = None
-  teacher_mbs: tp.Optional[int] = None
-  value_mbs: tp.Optional[int] = None
+  # 0 means no microbatching
+  microbatch_size: int = 0
+  teacher_mbs: int = 0
+  value_mbs: int = 0
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
@@ -116,7 +118,7 @@ def warmup_schedule(burnin_steps: int, base_value: float):
   return optax.join_schedules([burnin, normal], [burnin_steps])
 
 class MBKwargs(tp.TypedDict):
-  microbatch_size: tp.Optional[int]
+  microbatch_size: int
   input_batch_dims: int | tuple
   output_batch_dims: int | tuple
 
@@ -176,12 +178,18 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     mbs = self._config.microbatch_size
 
     teacher_mbs = self._config.teacher_mbs or mbs
-    self.unroll_teacher = jax_utils.run_loss_fn(
-        self.teacher,
-        self._unroll_teacher,
+    teacher_mbkwargs = MBKwargs(
         microbatch_size=teacher_mbs,
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
+    )
+    self._unroll_teacher_mb = jax_utils.microbatch_fn(
+        jax_utils.no_loss(self._unroll_teacher),
+        **teacher_mbkwargs
+    )
+    self.unroll_teacher = jax_utils.run_loss_fn(
+        self.teacher, self._unroll_teacher,
+        **teacher_mbkwargs,
     )
 
     value_mbkwargs = MBKwargs(
@@ -189,12 +197,16 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
     )
+    self._unroll_vf_mb = jax_utils.microbatch_fn(
+        self._unroll_vf, **value_mbkwargs)
     self.unroll_vf = jax_utils.run_loss_fn(
         self.value_function,
         self._unroll_vf,
         **value_mbkwargs,
     )
-    self.train_vf = jax_utils.train_fn(
+    self._train_vf_mb = jax_utils.train_fn(
+        self._unroll_vf, **value_mbkwargs)
+    self.train_vf = jax_utils.cached_train_fn(
         self.value_function,
         self.value_optimizer,
         self._unroll_vf,
@@ -206,6 +218,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         donate_argnums=0,
         static_argnames=['train'])
     self.jit_ppo_epoch = jax_utils.cached_partial(jit_ppo_epoch, self)
+
+    fused_ppo = jax_utils.nnx_jit(
+        Learner[ControllerType]._ppo,
+        donate_argnums=0,
+        static_argnames=['num_epochs'],
+    )
+    self.fused_ppo = jax_utils.cached_partial(fused_ppo, self)
 
   def initial_state(
       self, batch_size: int, rngs: tp.Optional[nnx.Rngs] = None,
@@ -365,7 +384,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def ppo_epoch(
       self,
-      # inputs: list[PPOInputs[ControllerType]],
       advantages: list[jax.Array],
       teacher_logits: list[ControllerType],
       trajectories: list[Trajectory],
@@ -393,8 +411,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     grad_fn = jax_utils.microbatched_grads(
         self.ppo_loss,
         microbatch_size=mbs,
-        in_axes=(_ADVANTAGES_AXIS, _TEACHER_LOGITS_AXIS, _TRAJECTORY_AXES),
-        out_axes=1,  # metrics are time-major
+        input_batch_dims=(_ADVANTAGES_AXIS, _TEACHER_LOGITS_AXIS, _TRAJECTORY_AXES),
+        output_batch_dims=1,  # metrics are time-major
     )
 
     grads, metrics = grad_fn(
@@ -422,6 +440,81 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
     return metrics
 
+  def _ppo(
+      self,
+      trajectories: list[Trajectory],
+      initial_state: LearnerState,
+      num_epochs: int,
+      # set jit to false to jit-trace the whole thing
+      jit: bool = False,
+  ) -> tp.Tuple[LearnerState, dict]:
+    assert len(trajectories) == self._config.ppo.num_batches
+
+    if jit:
+      unroll_teacher = self.unroll_teacher
+      train_vf = self.train_vf
+      ppo_epoch = self.jit_ppo_epoch
+    else:
+      unroll_teacher = jax_utils.partial(self._unroll_teacher_mb, self.teacher)
+      train_vf = jax_utils.partial(
+        self._train_vf_mb, self.value_function, self.value_optimizer)
+      ppo_epoch = self.ppo_epoch
+
+    # Unroll teacher + value function, training value function.
+    # NOTE: when using sim-envs with large batch sizes, we typically set
+    # num_batches = 1, which means that there isn't any benefit from fusing
+    # the loop over trajectories with a scan.
+    teacher_state = initial_state.teacher
+    teacher_logits: list[ControllerType] = []
+    for trajectory in trajectories:
+      logits, teacher_state = unroll_teacher(trajectory, teacher_state)
+      teacher_logits.append(logits)
+
+    value_state = initial_state.value_function
+    advantages: list[Advantage] = []
+    value_metrics_list: list[Metrics] = []
+    for trajectory in trajectories:
+      metrics, value_state, advantage = train_vf(trajectory, value_state)
+      advantages.append(advantage)
+      value_metrics_list.append(metrics)
+
+    # Collect value function metrics.
+    if jit:
+      value_metrics = utils.batch_nest(
+          utils.map_single_structure(np.asarray, value_metrics_list))
+      value_metrics = utils.map_single_structure(np.mean, value_metrics)
+    else:
+      value_metrics = utils.map_nt(
+          lambda *xs: jnp.stack(xs).mean(), *value_metrics_list)
+
+    # Checkpoint policy state for potential reverting.
+    # checkpoint = jax_utils.get_module_state(self.policy)
+
+    ppo_epoch = self.jit_ppo_epoch if jit else self.ppo_epoch
+
+    # PPO epochs with gradient updates.
+    per_epoch_metrics = []
+    for _ in range(num_epochs):
+      epoch_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=True)
+      per_epoch_metrics.append(epoch_metrics)
+
+    # Final eval epoch (no gradient update) to measure post-update KL.
+    final_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=False)
+    per_epoch_metrics.append(final_metrics)
+
+    metrics = dict(
+        ppo_step={str(i): m for i, m in enumerate(per_epoch_metrics)},
+        post_update=final_metrics,
+        value=value_metrics,
+    )
+
+    hidden_state = LearnerState(
+        teacher=teacher_state,
+        value_function=value_state,
+    )
+
+    return hidden_state, metrics
+
   def ppo(
       self,
       trajectories: list[Trajectory],
@@ -441,39 +534,11 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     Returns:
       Tuple of (new hidden state, metrics dict).
     """
-    assert len(trajectories) == self._config.ppo.num_batches
 
     # Compute rewards from game states.
     trajectories = [
         update_rewards(t, self._config.reward) for t in trajectories
     ]
-
-    # Unroll teacher + value function, training value function.
-    # NOTE: when using sim-envs with large batch sizes, we typically set
-    # num_batches = 1, which means that there isn't any benefit from fusing
-    # the loop over trajectories with a scan.
-    # TODO: we could try fusing the teacher/value unrolls
-    teacher_state = initial_state.teacher
-    teacher_logits: list[ControllerType] = []
-    for trajectory in trajectories:
-      logits, teacher_state = self.unroll_teacher(trajectory, teacher_state)
-      teacher_logits.append(logits)
-
-    value_state = initial_state.value_function
-    advantages: list[Advantage] = []
-    value_metrics_list: list[Metrics] = []
-    for trajectory in trajectories:
-      metrics, value_state, advantage = self.train_vf(trajectory, value_state)
-      advantages.append(advantage)
-      value_metrics_list.append(metrics)
-
-    # Collect value function metrics.
-    value_metrics = utils.batch_nest(
-        utils.map_single_structure(np.asarray, value_metrics_list))
-    value_metrics = utils.map_single_structure(np.mean, value_metrics)
-
-    # Checkpoint policy state for potential reverting.
-    # checkpoint = jax_utils.get_module_state(self.policy)
 
     if step < self._config.value_burnin_epochs:
       num_epochs = 0
@@ -482,17 +547,14 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     else:
       num_epochs = self._config.ppo.num_epochs
 
-    ppo_epoch = self.jit_ppo_epoch if jit else self.ppo_epoch
+    if self._config.fused:
+      final_state, metrics = self.fused_ppo(
+          trajectories, initial_state, num_epochs)
+    else:
+      final_state, metrics = self._ppo(
+          trajectories, initial_state, num_epochs, jit=jit)
 
-    # PPO epochs with gradient updates.
-    per_epoch_metrics: list[dict] = []
-    for _ in range(num_epochs):
-      epoch_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=True)
-      per_epoch_metrics.append(epoch_metrics)
-
-    # Final eval epoch (no gradient update) to measure post-update KL.
-    final_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=False)
-    per_epoch_metrics.append(final_metrics)
+    final_metrics = metrics['post_update']
 
     # Revert if the policy moved too far from the actor.
     reverted = False
@@ -502,19 +564,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       # TODO: implement state reversion
       raise ValueError(f"Mean actor KL after PPO update is too high: {final_metrics['actor_kl']['mean']}")
 
-    metrics = dict(
-        ppo_step={str(i): m for i, m in enumerate(per_epoch_metrics)},
-        post_update=final_metrics,
-        value=value_metrics,
-        reverted=reverted,
-    )
+    metrics['reverted'] = reverted
 
-    hidden_state = LearnerState(
-        teacher=teacher_state,
-        value_function=value_state,
-    )
-
-    return hidden_state, metrics
+    return final_state, metrics
 
   def get_state(self) -> dict:
     return jax_utils.get_module_state(self)
