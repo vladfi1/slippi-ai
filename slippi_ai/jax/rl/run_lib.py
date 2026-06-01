@@ -565,22 +565,18 @@ def run(config: Config):
 
     timings = dict(
         rollout=learner_manager.rollout_profiler.mean_time(),
-        learner=learner_manager.learner_profiler.mean_time(),
+        learner_total=learner_manager.learner_profiler.mean_time(),
         reset=learner_manager.reset_profiler.mean_time(),
         total=step_time,
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor'].pop('timing')
-    for key in ['env_pop', 'env_push']:
-      timings[key] = actor_timing[key]
+    timings['actor'] = utils.map_nt(
+        lambda x: x * 1000, metrics['actor'].pop('timing'))
 
-    agent_keys = ['agent_step']
-    if config.agent.async_inference:
-      agent_keys.append('agent_pop')
-    for key in agent_keys:
-      timings[key] = actor_timing[key][PORT]
-      timings[key + '_total'] = sum(actor_timing[key].values())
+    # non-fused learner
+    if 'timing' in metrics['learner']:
+      timings['learner'] = metrics['learner'].pop('timing')
 
     states: Game = utils.map_nt(
         lambda *xs: np.stack(xs, axis=1),
@@ -627,9 +623,8 @@ def run(config: Config):
     print('\nStep:', epoch)
 
     timings: dict = metrics['timings']
-    timing_str = ', '.join(
-        ['{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items()])
-    print(timing_str)
+    timings = utils.map_nt(lambda v: f'{v:.3f}', timings)
+    print(timings)
 
     learner_metrics = metrics['learner']
     post_update = learner_metrics['post_update']
