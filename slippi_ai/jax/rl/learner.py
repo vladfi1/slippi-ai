@@ -57,6 +57,8 @@ class LearnerConfig:
   value_dtype: DType = DType.FP32
   policy_dtype: DType = DType.FP32
 
+  policy_loss_scale: tp.Optional[float] = 1.0
+
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
   value_function: RecurrentState
@@ -393,6 +395,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         - self._config.entropy_weight * entropy
     )
 
+    if self._config.policy_loss_scale is not None:
+      loss *= self._config.policy_loss_scale
+
     metrics = dict(
         total_loss=loss,
         ppo_objective=ppo_objective,
@@ -453,7 +458,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       max_grad_norm = jax.tree.reduce(jnp.maximum, grad_norms)
 
       grad_abs = jax.tree.map(jnp.abs, grads_dict)
-      ps = np.linspace(0, 100, num=11)
+      ps = np.linspace(10, 100, num=10)
       grad_percentiles = jax.tree.map(
         lambda x: jnp.percentile(x, ps), grad_abs)
       grad_percentiles = jax.tree.leaves(grad_percentiles)
@@ -463,9 +468,12 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
       metrics['grads'] = dict(
           norms=grad_norms,
-          percentiles=list(zip(ps, grad_percentiles)),
+          percentiles=dict(zip(ps, grad_percentiles)),
           max_norm=max_grad_norm,
       )
+
+      if self._config.policy_loss_scale is not None:
+        grads = jax.tree.map(lambda g: g / self._config.policy_loss_scale, grads)
 
       self.policy_optimizer.update(self.policy, grads)
     else:
