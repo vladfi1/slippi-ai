@@ -54,7 +54,7 @@ class LearnerConfig:
   value_mbs: int = 0
 
   teacher_dtype: DType = DType.FP32
-  # value_dtype: DType = DType.FP32
+  value_dtype: DType = DType.FP32
   policy_dtype: DType = DType.FP32
 
 class LearnerState(tp.NamedTuple):
@@ -205,19 +205,21 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
     )
+    unroll_vf = jax_utils.with_compute_dtype(
+        self._unroll_vf, config.value_dtype.dtype)
     self._unroll_vf_mb = jax_utils.microbatch_fn(
         self._unroll_vf, **value_mbkwargs)
     self.unroll_vf = jax_utils.run_loss_fn(
         self.value_function,
-        self._unroll_vf,
+        unroll_vf,
         **value_mbkwargs,
     )
     self._train_vf_mb = jax_utils.train_fn(
-        self._unroll_vf, **value_mbkwargs)
+        unroll_vf, **value_mbkwargs)
     self.train_vf = jax_utils.cached_train_fn(
         self.value_function,
         self.value_optimizer,
-        self._unroll_vf,
+        unroll_vf,
         **value_mbkwargs,
     )
 
@@ -244,9 +246,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         self.teacher.initial_state(batch_size, rngs),
         dtype=self._config.teacher_dtype.dtype)
 
+    value_state = jax_utils.cast_floats_to_dtype(
+        self.value_function.initial_state(batch_size, rngs),
+        dtype=self._config.value_dtype.dtype)
+
     return LearnerState(
         teacher=teacher_state,
-        value_function=self.value_function.initial_state(batch_size, rngs),
+        value_function=value_state,
     )
 
   def policy_variables(self):
