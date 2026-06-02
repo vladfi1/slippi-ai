@@ -54,6 +54,8 @@ class LearnerConfig:
   value_mbs: int = 0
 
   teacher_dtype: DType = DType.FP32
+  # value_dtype: DType = DType.FP32
+  policy_dtype: DType = DType.FP32
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
@@ -352,7 +354,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     actor_log_probs = jax.lax.stop_gradient(
         self._get_log_prob(actor_logits, actor_outputs.controller_state))
 
-    policy_outputs = policy.unroll(policy_frames, trajectory.initial_state)
+    policy_dtype = jax_utils.module_dtype(policy)
+    initial_state = jax_utils.cast_floats_to_dtype(
+        trajectory.initial_state, policy_dtype)
+    policy_outputs = policy.unroll(policy_frames, initial_state)
     new_logits = policy_outputs.distances.logits
     new_log_probs = policy_outputs.log_probs
 
@@ -419,6 +424,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
             lambda *xs: jnp.concatenate(xs, axis), *substructs),
         _TRAJECTORY_AXES, *trajectories)
 
+    ppo_loss = jax_utils.with_compute_dtype(
+        self.ppo_loss, self._config.policy_dtype.dtype)
+
     mbkwargs = MBKwargs(
         microbatch_size=mbs,
         input_batch_dims=(_ADVANTAGES_AXIS, _TEACHER_LOGITS_AXIS, _TRAJECTORY_AXES),
@@ -426,8 +434,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
 
     if train:
-      grad_fn = jax_utils.microbatched_grads(
-          self.ppo_loss, **mbkwargs)
+      grad_fn = jax_utils.microbatched_grads(ppo_loss, **mbkwargs)
 
       grads, metrics = grad_fn(
           self.policy,
@@ -439,15 +446,25 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       grad_norms = jax.tree.map(jnp.linalg.norm, grads_dict)
       max_grad_norm = jax.tree.reduce(jnp.maximum, grad_norms)
 
+      grad_abs = jax.tree.map(jnp.abs, grads_dict)
+      ps = np.linspace(0, 100, num=11)
+      grad_percentiles = jax.tree.map(
+        lambda x: jnp.percentile(x, ps), grad_abs)
+      grad_percentiles = jax.tree.leaves(grad_percentiles)
+      grad_percentiles = jnp.stack(grad_percentiles, axis=1)
+      gmean_grad_percentiles = jnp.exp(jnp.log(grad_percentiles + 1e-9).mean(axis=1))
+      grad_percentiles = jnp.unstack(gmean_grad_percentiles)
+
       metrics['grads'] = dict(
           norms=grad_norms,
+          percentiles=list(zip(ps, grad_percentiles)),
           max_norm=max_grad_norm,
       )
 
       self.policy_optimizer.update(self.policy, grads)
     else:
       run_ppo = jax_utils.microbatch_fn(
-          jax_utils.no_loss(self.ppo_loss),
+          jax_utils.no_loss(ppo_loss),
           **mbkwargs)
       (metrics,) = run_ppo(self.policy, batched_advantages, batched_logits, batched_trajectories)
 
