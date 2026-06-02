@@ -2,6 +2,7 @@
 
 import dataclasses
 import functools
+import logging
 import time
 import typing as tp
 
@@ -31,6 +32,7 @@ class PPOConfig:
   beta: float = 0
   max_mean_actor_kl: float = 1e-4
 
+_DEFAULT_FP16_POLICY_LOSS_SCALE = 1024
 
 @dataclasses.dataclass
 class LearnerConfig:
@@ -57,7 +59,12 @@ class LearnerConfig:
   value_dtype: DType = DType.FP32
   policy_dtype: DType = DType.FP32
 
-  policy_loss_scale: tp.Optional[float] = 1.0
+  policy_loss_scale: tp.Optional[float] = None
+
+  def __post_init__(self):
+    if self.policy_dtype is DType.FP16 and self.policy_loss_scale is None:
+      self.policy_loss_scale = _DEFAULT_FP16_POLICY_LOSS_SCALE
+      logging.warning(f'Set default policy loss scale for FP16 to {self.policy_loss_scale} to stabilize training.')
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
