@@ -6,13 +6,18 @@ import tensorflow as tf
 
 from slippi_ai import utils, data, agents
 from slippi_ai.types import Game
-from slippi_ai.data import Action, StateAction
+from slippi_ai.data import StateAction
+from slippi_ai.policies import Platform
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 from slippi_ai.tf import policies, tf_utils
 
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   """Wraps a Policy to track hidden state."""
+
+  @property
+  def platform(self) -> Platform:
+    return Platform.TF
 
   def __init__(
       self,
@@ -170,6 +175,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     game = self._policy.network.dummy((self._batch_size,)).state
     needs_reset = np.full([self._batch_size], False)
     self.step(game, needs_reset)
+
+  def dummy_sample_outputs(self, shape: tp.Sequence[int]) -> SampleOutputs[ControllerType]:
+    return self._policy.controller_head.dummy_sample_outputs(shape)
 
   def step(
       self,

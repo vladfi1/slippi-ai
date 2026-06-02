@@ -11,10 +11,12 @@ entries expected by the learner.
 import collections
 import contextlib
 import itertools
+import logging
 import time
 import typing as tp
 
 import jax
+import jax.numpy as jnp
 import melee
 import numpy as np
 
@@ -25,7 +27,8 @@ from slippi_ai import utils
 from slippi_ai.sim_env.observations import build_trajectory_buffer
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
-from slippi_ai.jax.jax_utils import fast_map, slice_map
+from slippi_ai.jax.jax_utils import fast_map, slice_map, jit
+from slippi_ai.policies import Platform
 
 T = tp.TypeVar('T')
 
@@ -39,6 +42,11 @@ class AgentInfo(tp.NamedTuple):
   agent_to_port_slices: tuple[slice, ...]
   # buffer: _TrajectoryStateBuffer
 
+@jit
+def jax_stack(list_of_trees: list[T]) -> T:
+  """Stack a list of pytrees into a single pytree with an extra leading axis."""
+  print('tracing jax_stack')
+  return utils.map_nt(lambda *xs: jnp.stack(xs, axis=0), *list_of_trees)
 
 class JaxSimRolloutWorker(AbstractRolloutWorker):
   """RolloutWorker-compatible adapter for JAX policies on one sim batch."""
@@ -162,9 +170,22 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     # we need to leave each agent with at least batch_steps - 1 actions in its
     # buffer. This ensures that the agent will have enough env states pushed to
     # take a multi_step just as its output queue runs out.
-    self._env_runahead = min(
+    max_env_runahead = min(
         info.agent.delay - (info.agent.batch_steps - 1)
         for info in self._agents)
+
+    # We always want a second agent multi_step to be in flight before we start
+    # retrieving the results of the first multi_step. This allows jax to overlap
+    # the execution of the first multi_step with the pushing of env states for
+    # the second multi_step. We accomplish this by giving each agent at least
+    # batch_steps slack.
+    target_env_runahead = min(
+        info.agent.delay - (2 * info.agent.batch_steps - 1)
+        for info in self._agents)
+    target_env_runahead = max(target_env_runahead, 1)
+
+    self._env_runahead = min(max_env_runahead, target_env_runahead)
+    logging.info("env_runahead=%d", self._env_runahead)
 
     self._async_envs = async_envs
     self._inner_batch_size = inner_batch_size
@@ -246,7 +267,11 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       output = agent.pop()
       agent_outputs.append(output)
 
-      decoded_controllers = agent.decode_controller(output.controller_state)
+      controller = output.controller_state
+      if agent.policy.platform is Platform.JAX:
+        # Ensure the controller state is on the host before decoding.
+        controller = jax.device_get(controller)
+      decoded_controllers = agent.decode_controller(controller)
       # TODO: send actions to the environment without slicing by port
       for port, port_slice in zip(agent_info.ports, agent_info.agent_to_port_slices):
         controllers[port] = slice_map(port_slice, decoded_controllers)
@@ -355,7 +380,13 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       initial_state = initial_states[i]
       agent = agent_info.agent
       env_slice = agent_info.env_slice
-      actions = fast_map(utils.stack, *action_buffers[i])
+
+      actions = action_buffers[i]
+      if agent.policy.platform is Platform.JAX:
+        # Keep jax SampleOutputs on device for consumption by the learner.
+        actions = jax_stack(actions)
+      else:
+        actions = fast_map(utils.stack, *actions)
 
       delayed_actions = [actions[i] for actions in remaining_actions]
       num_left = agent_info.agent.delay - self._env_runahead
