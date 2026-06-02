@@ -176,7 +176,9 @@ if __name__ == '__main__':
       burnin_steps = math.ceil(32 / batch_steps) * batch_steps
       if SIM_ENVS.value:
         burnin_steps = ROLLOUT_LENGTH.value
-      evaluator.rollout(burnin_steps)
+
+      print(f'Burning in for {burnin_steps} steps...')
+      evaluator.rollout(burnin_steps, verbose=not QUIET.value)
 
       if TF_PROFILE.value:
         import tensorflow as tf
