@@ -1396,6 +1396,32 @@ def prefetch_data(
 
   yield from queue
 
+def _get_spec(x):
+  if isinstance(x, np.ndarray):
+    return (x.dtype, x.shape)
+  elif isinstance(x, jnp.ndarray):
+    return (x.dtype, x.shape)
+  raise ValueError(f'Unsupported type for _get_spec: {type(x)}')
+
+def jit_no_retrace(f: tp.Callable[P, T]) -> tp.Callable[P, T]:
+  jit_f = jit(f)
+
+  signature = None
+
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    nonlocal signature
+    if signature is None:
+      signature = jax.tree.map(_get_spec, (args, kwargs))
+    else:
+      new_signature = jax.tree.map(_get_spec, (args, kwargs))
+      errors = utils.check_same_structure(signature, new_signature, equal=True)
+      if errors:
+        print(errors)
+        raise ValueError(f'jit_no_retrace: got new argument types {new_signature}, expected {signature}')
+
+    return jit_f(*args, **kwargs)
+
+  return wrapped
 
 # Misc
 

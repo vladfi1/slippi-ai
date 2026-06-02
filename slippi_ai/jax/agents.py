@@ -9,6 +9,7 @@ from flax import nnx
 from slippi_ai import utils, data, agents
 from slippi_ai.types import Game, S
 from slippi_ai.data import StateAction
+from slippi_ai.policies import Platform
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 from slippi_ai.jax import policies, jax_utils
 
@@ -26,6 +27,10 @@ class DType(enum.Enum):
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   """Wraps a Policy to track hidden state."""
+
+  @property
+  def platform(self) -> Platform:
+    return Platform.JAX
 
   def __init__(
       self,
@@ -79,6 +84,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     if isinstance(dtype, str):
       dtype = DType(dtype)
+    self._dtype = dtype
 
     if dtype is not DType.FP32:
       sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
@@ -106,7 +112,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         name_code: jax.Array,
         prev_action: ControllerType,  # only for first step
         initial_state: policies.RecurrentState,
-    ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
+    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
 
       stacked_states_and_resets = jax.tree.map(
           lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
@@ -128,7 +134,12 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       stacked_sample_outputs, (_, final_state) = scan_fn(
           rngs.fork(split=length), stacked_states_and_resets, (prev_action, initial_state))
 
-      return stacked_sample_outputs, final_state
+      sample_outputs = [
+          utils.map_nt(lambda t: t[i], stacked_sample_outputs)
+          for i in range(length)
+      ]
+
+      return sample_outputs, final_state
 
     if dtype is not DType.FP32:
       multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
@@ -175,6 +186,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     needs_reset = np.full([self._batch_size], False)
     self.step(game, needs_reset)
 
+  def dummy_sample_outputs(self, shape: tp.Sequence[int]) -> SampleOutputs[ControllerType]:
+    outputs = self._policy.controller_head.dummy_sample_outputs(shape)
+    return jax_utils.cast_floats_to_dtype(outputs, self._dtype.dtype)
+
   def step(
       self,
       game: Game,
@@ -182,7 +197,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   ) -> SampleOutputs[ControllerType]:
     """Doesn't take into account delay."""
     sample_outputs = self.step_device(game, needs_reset)
-    return jax.copy_to_host_async(sample_outputs)
+    jax.copy_to_host_async(sample_outputs.controller_state)
+    return sample_outputs
 
   def step_device(
       self,
@@ -205,20 +221,6 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       self,
       states: list[tuple[Game, agents.BoolArray]],
   ) -> list[SampleOutputs[ControllerType]]:
-    sample_outputs = self.multi_step_stacked_device(states)
-    sample_outputs = jax.tree.map(np.asarray, sample_outputs)
-    sample_outputs = [
-        jax.tree.map(lambda t, i=i: t[i], sample_outputs)
-        for i in range(len(states))]
-    return sample_outputs
-
-  def multi_step_stacked_device(
-      self,
-      states: list[tuple[Game, agents.BoolArray]],
-  ) -> SampleOutputs[ControllerType]:
-    # Fast rollout code consumes a whole time chunk at once. Returning the
-    # stacked device tree avoids per-frame Python objects and host copies; the
-    # compatibility `multi_step` wrapper above still provides the old list API.
     states_and_resets = [
         (self._policy.network.encode_game(game), needs_reset)
         for game, needs_reset in states
@@ -228,7 +230,17 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     sample_outputs, self._hidden_state = multi_sample_fn(
         states_and_resets, self._name_code, self._prev_controller, self._hidden_state)
 
-    self._prev_controller = jax.tree.map(
-        lambda t: t[-1], sample_outputs.controller_state)
+    for output in sample_outputs:
+      jax.copy_to_host_async(output.controller_state)
 
+    self._prev_controller = sample_outputs[-1].controller_state
+
+    return sample_outputs
+
+
+    sample_outputs = self.multi_step_stacked_device(states)
+    sample_outputs = jax.tree.map(np.asarray, sample_outputs)
+    sample_outputs = [
+        jax.tree.map(lambda t, i=i: t[i], sample_outputs)
+        for i in range(len(states))]
     return sample_outputs

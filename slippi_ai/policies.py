@@ -1,20 +1,14 @@
 import abc
 import typing as tp
-import enum
 
 from slippi_ai.controller_heads import (
     ControllerHead,
     ControllerType,
 )
 from slippi_ai.types import Game
-from slippi_ai.agents import BasicAgent, RecurrentState
+from slippi_ai.agents import BasicAgent, RecurrentState, Platform
 
 PolicyState = tp.Any
-
-# TODO: find a better place for this
-class Platform(enum.Enum):
-  TF = 'tf'
-  JAX = 'jax'
 
 
 # Ideally we'd replace Array with Unknown, see https://github.com/python/typing/issues/2169

@@ -1,4 +1,5 @@
 import abc
+import enum
 import typing as tp
 
 import numpy as np
@@ -10,8 +11,19 @@ RecurrentState = tp.TypeVar('RecurrentState')
 
 BoolArray = np.ndarray[tuple[int], np.dtype[np.bool]]
 
+# TODO: find a better place for this
+class Platform(enum.Enum):
+  TF = 'tf'
+  JAX = 'jax'
+
+
 class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   """Wraps a Policy to track hidden state."""
+
+  @property
+  @abc.abstractmethod
+  def platform(self) -> Platform:
+    """The platform this agent runs on."""
 
   @property
   @abc.abstractmethod
@@ -23,6 +35,10 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
 
   def warmup(self):
     """Warm up the agent so that step is fast."""
+
+  @abc.abstractmethod
+  def dummy_sample_outputs(self, shape: tp.Sequence[int]) -> SampleOutputs[ControllerType]:
+    """Get dummy sample outputs for a given shape."""
 
   @abc.abstractmethod
   def hidden_state(self) -> RecurrentState:

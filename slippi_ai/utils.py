@@ -353,6 +353,8 @@ def is_namedtuple(t: type) -> bool:
   return hasattr(t, '_fields')
 
 def is_sequence(t: type) -> bool:
+  if t is str:
+    return False
   return issubclass(t, tp.Sequence)
 
 def _check_same_structure(

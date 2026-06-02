@@ -127,7 +127,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     self.delay = policy.delay - console_delay
     self._output_queue = collections.deque[SampleOutputs[ControllerType]]()
 
-    self.dummy_sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
+    self.dummy_sample_outputs = self._agent.dummy_sample_outputs([batch_size])
     for _ in range(self.delay):
       self._output_queue.append(self.dummy_sample_outputs)
 
@@ -156,12 +156,9 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     return utils.peek_deque(self._output_queue, n)
 
   def pop(self) -> SampleOutputs[ControllerType]:
-    outputs = self._output_queue.popleft()
-    if self.policy.platform == policies.Platform.JAX:
-      import jax
-      outputs = jax.tree.map(np.asarray, outputs)
-      # outputs = utils.map_single_structure(np.asarray, outputs)
-    return outputs
+    # Note: this returns device arrays for jax. We might want to copy at least
+    # the controller state to host.
+    return self._output_queue.popleft()
 
   def decode_controller(self, controller: ControllerType) -> Controller:
     return self.policy.controller_head.decode_controller(controller)
@@ -231,6 +228,9 @@ def _run_agent(
     game, needs_reset = next_item
     with step_profiler:
       sampled_controller = agent.step(game, needs_reset)
+      if agent == policies.Platform.JAX:
+        import jax
+        sampled_controller = jax.device_get(sampled_controller)
     controller_queue.put(sampled_controller)
     state_queue.task_done()
 
@@ -286,7 +286,7 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     self._output_queue: utils.PeekableQueue[SampleOutputs[ControllerType]] \
       = utils.PeekableQueue()
 
-    self.dummy_sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
+    self.dummy_sample_outputs = self._agent.dummy_sample_outputs([batch_size])
     for _ in range(self.delay):
       self._output_queue.put(self.dummy_sample_outputs)
 

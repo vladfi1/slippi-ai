@@ -24,13 +24,6 @@ class ControllerHead(abc.ABC, tp.Generic[ControllerType]):
     """Returns a dummy controller state for the given batch shape."""
 
   @abc.abstractmethod
-  def dummy_sample_outputs(
-      self,
-      shape: tp.Sequence[int],
-  ) -> SampleOutputs[ControllerType]:
-    """Returns dummy sample outputs for the given batch shape."""
-
-  @abc.abstractmethod
   def decode_controller(
       self,
       controller_state: ControllerType,
