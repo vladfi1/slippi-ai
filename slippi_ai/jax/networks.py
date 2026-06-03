@@ -832,7 +832,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     #     state, jax_utils.module_dtype(self._network))
     dtype = jax_utils.module_dtype(self)
     state_dtype = jax_utils.struct_dtype(state)
-    assert state_dtype == dtype, f"State dtype {state_dtype} does not match module dtype {dtype}"
+    assert state_dtype in (dtype, None), f"State dtype {state_dtype} does not match module dtype {dtype}"
     return state
 
   def step(
