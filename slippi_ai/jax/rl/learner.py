@@ -60,6 +60,7 @@ class LearnerConfig:
   policy_dtype: DType = DType.FP32
 
   policy_loss_scale: tp.Optional[float] = None
+  value_loss_scale: tp.Optional[float] = None
 
   def __post_init__(self):
     if self.policy_dtype is DType.FP16 and self.policy_loss_scale is None:
@@ -224,7 +225,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         **value_mbkwargs,
     )
     self._train_vf_mb = jax_utils.train_fn(
-        unroll_vf, **value_mbkwargs)
+        unroll_vf, loss_scale=self._config.value_loss_scale, **value_mbkwargs)
     self.train_vf = jax_utils.cached_train_fn(
         self.value_function,
         self.value_optimizer,
@@ -310,7 +311,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     value_frames = get_frames(trajectory)
     outputs, final_state = value_function.loss(
         value_frames, initial_state, self.discount)
-    return outputs.loss, outputs.metrics, final_state, outputs.advantages
+    # b16 metrics are annoying to log and print
+    metrics = utils.map_single_structure(
+        lambda x: jnp.astype(x, jnp.float32), outputs.metrics)
+    return outputs.loss, metrics, final_state, outputs.advantages
 
   def unroll(
       self,
@@ -402,9 +406,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         - self._config.entropy_weight * entropy
     )
 
-    if self._config.policy_loss_scale is not None:
-      loss *= self._config.policy_loss_scale
-
     metrics = dict(
         total_loss=loss,
         ppo_objective=ppo_objective,
@@ -452,7 +453,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
 
     if train:
-      grad_fn = jax_utils.microbatched_grads(ppo_loss, **mbkwargs)
+      grad_fn = jax_utils.microbatched_grads(
+          ppo_loss, loss_scale=self._config.policy_loss_scale, **mbkwargs)
 
       grads, metrics = grad_fn(
           self.policy,
@@ -478,9 +480,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
           percentiles=dict(zip(ps, grad_percentiles)),
           max_norm=max_grad_norm,
       )
-
-      if self._config.policy_loss_scale is not None:
-        grads = jax.tree.map(lambda g: g / self._config.policy_loss_scale, grads)
 
       self.policy_optimizer.update(self.policy, grads)
     else:
