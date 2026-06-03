@@ -26,8 +26,9 @@ from slippi_ai import (
 )
 from slippi_ai.jax.agents import DType
 from slippi_ai.jax import jax_utils
+from slippi_ai.jax import train_vf
 from slippi_ai.jax import saving as jax_saving
-from slippi_ai.jax import train_lib as train_lib
+from slippi_ai.jax import train_lib
 from slippi_ai.jax.rl import learner as learner_lib
 from slippi_ai.sim_env import jax_rollout
 from slippi_ai.types import Game
@@ -150,6 +151,10 @@ class Config:
   # One of these must be set.
   teacher: tp.Optional[str] = None
   restore: tp.Optional[str] = None
+
+  # Will override a value function in the teacher checkpoint. Necessary if the
+  # teacher has no value function i.e. was produced by policy-only training.
+  value_function: tp.Optional[str] = None
 
   override_delay: tp.Optional[int] = None
 
@@ -364,24 +369,47 @@ def run(config: Config):
   elif config.teacher:
     logging.info(f'Initializing from teacher: {config.teacher}')
     teacher_state = jax_saving.load_state_from_disk(config.teacher)
-    reset_optimizer_steps(teacher_state)
     rl_state = teacher_state
     step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
+  if not restore_path and config.value_function:
+    vf_state = jax_saving.load_state_from_disk(config.value_function)
+    errors = train_vf.check_compatibility(vf_state, rl_state)
+    if errors:
+      raise ValueError('Incompatible Policy and VF:\n' + '\n'.join(errors))
+
+    # TODO: share code with the merge_checkpoints script
+    for key in vf_state['state']:
+      if key in rl_state['state']:
+        logging.warning(f'State "{key}" is being overridden from {config.value_function}')
+
+    rl_state['state'].update(vf_state['state'])  # key names are compatible
+    rl_state['config']['value_function'] = dict(
+        separate_network_config=True,
+        network=vf_state['config']['network'],
+    )
+
+  if not restore_path:
+    reset_optimizer_steps(rl_state)
+
+  if 'value_function' not in teacher_state['config']:
+    raise ValueError('teacher was not trained with a value function')
+
+  # This is a bit hacky, pretraining could be policy-only i.e. from
+  # train_policy instead of train_lib but it works in practice.
+  pretraining_config = flag_utils.dataclass_from_dict(
+      train_lib.Config, rl_state['config'])
+  value_function = train_lib.value_function_from_config(
+      pretraining_config, rngs=nnx.Rngs(0))
+
   if config.override_delay is not None:
-    teacher_state['config']['policy']['delay'] = config.override_delay
+    for state in [rl_state, teacher_state]:
+      state['config']['policy']['delay'] = config.override_delay
 
   teacher = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
-
-  pretraining_config = flag_utils.dataclass_from_dict(
-      train_lib.Config,
-      jax_saving.upgrade_config(teacher_state['config']))
-
-  value_function = train_lib.value_function_from_config(
-      pretraining_config, rngs=nnx.Rngs(0))
 
   learner = learner_lib.Learner(
       config=config.learner,
