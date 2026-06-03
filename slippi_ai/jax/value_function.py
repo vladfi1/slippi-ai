@@ -89,7 +89,8 @@ class ValueFunction(nnx.Module):
     value_targets = rl_lib.discounted_returns(
         rewards=rewards,
         discounts=discounts,
-        bootstrap=last_value)
+        # Discounted returns computation doesn't work well in bf16.
+        bootstrap=last_value.astype(jnp.float32))
     value_targets = jax.lax.stop_gradient(value_targets)
     advantages = value_targets - values
     value_loss = jnp.square(advantages)
