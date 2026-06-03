@@ -30,26 +30,7 @@ def main(_):
   policy_state = saving.load_state_from_disk(POLICY.value)
   vf_state = saving.load_state_from_disk(VALUE_FUNCTION.value)
 
-  policy_config = flag_utils.dataclass_from_dict(
-      train_policy.Config, policy_state['config'])
-  vf_config = flag_utils.dataclass_from_dict(
-      train_vf.Config, vf_state['config'])
-
-  errors = []
-  if vf_config.max_names != policy_config.max_names:
-    errors.append(
-        f'max_names mismatch: vf={vf_config.max_names}'
-        f' policy={policy_config.max_names}')
-  if vf_config.observation != policy_config.observation:
-    errors.append(
-        f'observation mismatch: vf={vf_config.observation}'
-        f' policy={policy_config.observation}')
-  if vf_config.embed != policy_config.embed:
-    errors.append(
-        f'embed config mismatch: vf={vf_config.embed}'
-        f' policy={policy_config.embed}')
-  if vf_state['name_map'] != policy_state['name_map']:
-    errors.append('name_map mismatch')
+  errors = train_vf.check_compatibility(vf_state, policy_state)
   if errors:
     raise ValueError('Incompatible checkpoints:\n' + '\n'.join(errors))
 

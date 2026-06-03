@@ -57,9 +57,7 @@ def main(_):
     policy_state = saving.load_state_from_disk(config.compatible_policy)
     policy_config = flag_utils.dataclass_from_dict(
         train_policy.Config, policy_state['config'])
-    config.observation = policy_config.observation
-    config.max_names = policy_config.max_names
-    config.embed = policy_config.embed
+    config.make_compatible_with(policy_config)
     name_map = policy_state['name_map']
   else:
     dataset_config = data_lib.DatasetConfig(dataset_path=DATASET.value)

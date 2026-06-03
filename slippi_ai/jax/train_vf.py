@@ -25,7 +25,7 @@ from slippi_ai.policies import Platform
 from slippi_ai.jax import (
     embed as embed_lib,
     saving,
-    train_lib,
+    train_policy,
     jax_utils,
     networks,
     vf_learner as learner_lib,
@@ -75,6 +75,41 @@ class Config:
   version: int = 0
   platform: str = Platform.JAX.value
 
+  def make_compatible_with(self, policy_config: train_policy.Config):
+    # RL training currently only encodes the gamestate once using the policy's
+    # embed config, so the value function needs to use the same config.
+    self.embed = policy_config.embed
+    self.observation = policy_config.observation
+    self.max_names = policy_config.max_names
+    self.dataset.copy_characteristics_from(policy_config.dataset)
+
+
+def check_compatibility(vf_state: dict, policy_state: dict) -> list[str]:
+  policy_config = flag_utils.dataclass_from_dict(
+      train_policy.Config, policy_state['config'])
+  vf_config = flag_utils.dataclass_from_dict(Config, vf_state['config'])
+  errors = []
+  if vf_config.max_names != policy_config.max_names:
+    errors.append(
+        f'max_names mismatch: vf={vf_config.max_names}'
+        f' policy={policy_config.max_names}')
+  if vf_config.observation != policy_config.observation:
+    errors.append(
+        f'observation mismatch: vf={vf_config.observation}'
+        f' policy={policy_config.observation}')
+  if vf_config.embed != policy_config.embed:
+    errors.append(
+        f'embed config mismatch: vf={vf_config.embed}'
+        f' policy={policy_config.embed}')
+  for key in data_lib.DatasetConfig.characteristic_keys():
+    if getattr(vf_config.dataset, key) != getattr(policy_config.dataset, key):
+      errors.append(
+          f'dataset config mismatch: vf={getattr(vf_config.dataset, key)}'
+          f' policy={getattr(policy_config.dataset, key)}')
+  if vf_state['name_map'] != policy_state['name_map']:
+    errors.append('name_map mismatch')
+  return errors
+
 
 class TrainManager:
 
@@ -119,8 +154,8 @@ class TrainManager:
 
 
 def print_losses(name: str, stats: dict):
-  loss = train_lib.mean(stats['value']['loss'])
-  uev = train_lib.mean(stats['value']['uev'])
+  loss = train_policy.mean(stats['value']['loss'])
+  uev = train_policy.mean(stats['value']['uev'])
   print(f'{name}: loss={loss:.4f} uev={uev:.4f}')
 
 
@@ -130,7 +165,7 @@ def train(config: Config):
 
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
-  tag = config.tag or train_lib.get_experiment_tag()
+  tag = config.tag or train_policy.get_experiment_tag()
   expt_dir = config.expt_dir
   if expt_dir is None:
     expt_dir = os.path.join(config.expt_root, tag)
@@ -188,10 +223,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info('loading configs from %s', config.compatible_policy)
     imitation_state = saving.load_state_from_disk(config.compatible_policy)
     imitation_config = flag_utils.dataclass_from_dict(
-        train_lib.Config, imitation_state['config'])
+        train_policy.Config, imitation_state['config'])
 
-    config.observation = imitation_config.observation
-    config.max_names = imitation_config.max_names
+    # RL training currently only encodes the gamestate once using the policy's
+    # embed config, so the value function needs to use the same config.
+    config.make_compatible_with(imitation_config)
     name_map = imitation_state['name_map']
   else:
     logging.warning('No compatible policy or checkpoint specified.')
@@ -304,7 +340,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     test_stats, _ = test_manager.step()
 
     train_stats, test_stats = utils.map_single_structure(
-        train_lib.mean, (train_stats, test_stats))
+        train_policy.mean, (train_stats, test_stats))
 
     elapsed_time = log_tracker.update(time.time())
     total_steps = step
@@ -333,7 +369,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         test=test_stats,
         timings=timings,
     )
-    train_lib.log_stats(all_stats, total_steps)
+    train_policy.log_stats(all_stats, total_steps)
 
     print(f'step={total_steps} epoch={epoch:.3f}')
     print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
@@ -405,7 +441,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         num_batches=len(per_step_eval_stats),
     )
 
-    mean_stats = utils.map_single_structure(train_lib.mean, eval_stats)
+    mean_stats = utils.map_single_structure(train_policy.mean, eval_stats)
 
     to_log = dict(
         counters,
@@ -413,7 +449,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         eval_timings=timings,
     )
 
-    train_lib.log_stats(to_log, step, take_mean=False)
+    train_policy.log_stats(to_log, step, take_mean=False)
 
     eval_loss = mean_stats['value']['loss']
 
