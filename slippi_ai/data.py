@@ -222,6 +222,19 @@ class DatasetConfig:
 
   wds_path: Optional[str] = None
 
+  @classmethod
+  def characteristic_keys(cls):
+    """Keys that affect what kind of data is allowed in the dataset."""
+    # TODO: put this in its own dataclass?
+    return [
+        'allowed_characters', 'allowed_opponents', 'swap',
+        'allowed_names', 'banned_names', 'filter_opponent_name',
+    ]
+
+  def copy_characteristics_from(self, other: tp.Self):
+    for key in self.characteristic_keys():
+      setattr(self, key, getattr(other, key))
+
   def validate(self):
     if self.dataset_path is not None:
       if self.data_dir is not None or self.meta_path is not None or self.archive is not None:
