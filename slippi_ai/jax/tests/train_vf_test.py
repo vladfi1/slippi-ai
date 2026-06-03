@@ -14,7 +14,7 @@ network_config['name'] = 'tx_like'
 network_config['tx_like'].update(
     hidden_size=1,
     num_layers=1,
-    ffw_multiplier=4,
+    ffw_multiplier=2,
     recurrent_layer='lstm',
     activation='gelu',
 )
@@ -38,6 +38,7 @@ DEFAULT_CONFIG = train_vf.Config(
         num_eval_epochs=0.1,
     ),
     network=network_config,
+    compatible_policy=str(paths.JAX_IMITATION_CHECKPOINT),
 )
 
 if __name__ == '__main__':
