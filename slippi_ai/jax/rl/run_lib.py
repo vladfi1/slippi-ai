@@ -235,9 +235,14 @@ class LearnerManager:
       step: int,
   ) -> tuple[list[evaluators.Trajectory], dict]:
     with self.update_profiler:
-      variables = {self._port: self._learner.policy_variables()}
+      # Note: the parameters returned with to_numpy=False will be invalidated
+      # by jax buffer donation on the next learner update, but we don't need to
+      # make a copy because we use them only for the next rollout.
+      # TODO: we could also avoid the update entirely by sharing the Policy
+      # object and its parameters between the learner and actor.
+      variables = {self._port: self._learner.policy_variables(to_numpy=False)}
       if self._config.opponent.should_update(step):
-        variables[self._enemy_port] = self._learner.policy_variables()
+        variables[self._enemy_port] = self._learner.policy_variables(to_numpy=False)
       self.actor.update_variables(variables)
 
     with self.rollout_profiler:

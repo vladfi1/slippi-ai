@@ -234,8 +234,8 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     from slippi_ai.jax import agents  # avoid circular import
     return agents.BasicAgent(self, batch_size, **kwargs)
 
-  def get_state(self):
-    return jax_utils.get_module_state(self)
+  def get_state(self, to_numpy: bool = True):
+    return jax_utils.get_module_state(self, to_numpy=to_numpy)
 
   def set_state(self, state):
     jax_utils.set_module_state(self, state)
