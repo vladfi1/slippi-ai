@@ -144,6 +144,12 @@ jobs:
     - name: JAX Value Function
       run: python slippi_ai/jax/tests/train_vf_test.py
 
+    - name: JAX RL
+      run: python slippi_ai/jax/rl/tests/train_rl_test.py
+
+    - name: JAX RL with Separate VF
+      run: python slippi_ai/jax/rl/tests/train_rl_test.py --config.teacher slippi_ai/data/checkpoints/jax_policy_demo --config.value_function slippi_ai/data/checkpoints/jax_vf_demo
+
     - name: JAX Evaluator
       run: ./tests/run_evaluator.sh --player.ai.path=slippi_ai/data/checkpoints/jax_demo --player.ai.name="Diamond Player"
 
