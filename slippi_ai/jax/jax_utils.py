@@ -65,7 +65,7 @@ def num_devices() -> int:
   """Get the number of local devices."""
   return jax.local_device_count()
 
-def struct_dtype(struct) -> jnp.dtype:
+def struct_dtype(struct) -> tp.Optional[jnp.dtype]:
   leaves = jax.tree_util.tree_leaves(struct)
   floating_dtypes = set[jnp.dtype]()
   for leaf in leaves:
@@ -73,14 +73,17 @@ def struct_dtype(struct) -> jnp.dtype:
     if jnp.issubdtype(leaf.dtype, jnp.floating):
       floating_dtypes.add(leaf.dtype)
   if not floating_dtypes:
-    raise ValueError('No floating point arrays found in struct.')
+    return None
   if len(floating_dtypes) > 1:
     raise ValueError(f'Multiple floating point dtypes found in struct: {floating_dtypes}')
   return floating_dtypes.pop()
 
 def module_dtype(module: nnx.Module) -> jnp.dtype:
   state = nnx.state(module, nnx.Param)
-  return struct_dtype(state)
+  dtype = struct_dtype(state)
+  if dtype is None:
+    raise ValueError('No floating point parameters found in module.')
+  return dtype
 
 def cast_floats_to_dtype(struct: T, dtype: jnp.dtype) -> T:
   """Cast all floating point parameters in the module to the given dtype."""
