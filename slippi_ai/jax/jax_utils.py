@@ -400,34 +400,48 @@ def grad_with_aux(
     f: tp.Callable[P, tuple[Loss, AuxT]],
     argnums: int | tp.Sequence[int] = 0,
     take_mean: bool = True,
+    fp32_grads: bool = True,
+    loss_scale: tp.Optional[float] = None,
 ) -> tp.Callable[P, tuple[Grads, AuxT]]:
   """Adds type signature to nnx.grad."""
 
-  if take_mean:
-    def g(*args: P.args, **kwargs: P.kwargs):
-      loss, aux = f(*args, **kwargs)
-      return jnp.mean(loss), aux
-  else:
-    g = f
+  def g(*args: P.args, **kwargs: P.kwargs):
+    loss, aux = f(*args, **kwargs)
+    if take_mean:
+      loss = jnp.mean(loss)
+    if loss_scale is not None:
+      loss = loss * loss_scale
+    return loss, aux
 
-  return nnx.grad(g, argnums=argnums, has_aux=True)
+  _grad_fn = nnx.grad(g, argnums=argnums, has_aux=True)
+
+  def grad_fn(*args: P.args, **kwargs: P.kwargs):
+    grad, aux = _grad_fn(*args, **kwargs)
+    if fp32_grads:
+      grad = jax.tree.map(lambda x: x.astype(jnp.float32), grad)
+    if loss_scale is not None:
+      grad = jax.tree.map(lambda x: x / loss_scale, grad)
+    return grad, aux
+
+  return grad_fn
 
 def grad_with_aux_tuple(
     f: tp.Callable[P, tuple[Loss, *Outputs]],
     take_mean: bool = True,
     fp32_grads: bool = True,
+    loss_scale: tp.Optional[float] = None,
 ) -> tp.Callable[P, tuple[Grads, *Outputs]]:
 
   def packed_loss_fn(*args: P.args, **kwargs: P.kwargs):
     outputs = f(*args, **kwargs)
     return outputs[0], outputs[1:]
 
-  packed_grad_fn = grad_with_aux(packed_loss_fn, take_mean=take_mean)
+  packed_grad_fn = grad_with_aux(
+      packed_loss_fn, take_mean=take_mean,
+      fp32_grads=fp32_grads, loss_scale=loss_scale)
 
   def grad_fn(*args: P.args, **kwargs: P.kwargs):
     grad, aux = packed_grad_fn(*args, **kwargs)
-    if fp32_grads:
-      grad = jax.tree.map(lambda x: x.astype(jnp.float32), grad)
     return (grad, *aux)
 
   return grad_fn
@@ -980,9 +994,12 @@ def microbatched_grads(
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     take_mean: bool = True,
     fp32_grads: bool = True,
+    loss_scale: tp.Optional[float] = None,
 ):
   mbs = microbatch_size
-  grad_fn = grad_with_aux_tuple(loss_fn, take_mean=take_mean, fp32_grads=fp32_grads)
+  grad_fn = grad_with_aux_tuple(
+      loss_fn, take_mean=take_mean,
+      fp32_grads=fp32_grads, loss_scale=loss_scale)
 
   if microbatch_size == 0:
     return grad_fn
@@ -1053,12 +1070,17 @@ def train_fn(
     input_batch_dims: int | tuple = 0,
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     microbatch_size: int = 0,
+    fp32_grads: bool = True,
+    loss_scale: tp.Optional[float] = None,
 ) -> tp.Callable[tp.Concatenate[ModT, nnx.Optimizer[ModT], Data, State, P], tuple[AuxT, State, *Outputs]]:
 
   grad_fn = microbatched_grads(
       loss_fn, microbatch_size,
       input_batch_dims=input_batch_dims,
-      output_batch_dims=output_batch_dims)
+      output_batch_dims=output_batch_dims,
+      fp32_grads=fp32_grads,
+      loss_scale=loss_scale,
+  )
 
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
