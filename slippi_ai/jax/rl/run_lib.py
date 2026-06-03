@@ -601,8 +601,11 @@ def run(config: Config):
       metrics: dict,
   ) -> dict:
     step_time = step_profiler.mean_time()
+    sps = 1 / step_time
     frames_per_rollout = config.actor.num_envs * config.actor.rollout_length
-    fps = len(trajectories) * frames_per_rollout / step_time
+    if config.opponent.should_train():
+      frames_per_rollout *= 2
+    fps = len(trajectories) * frames_per_rollout * sps
     mps = fps / (60 * 60)
 
     timings = dict(
@@ -610,6 +613,7 @@ def run(config: Config):
         learner_total=learner_manager.learner_profiler.mean_time(),
         reset=learner_manager.reset_profiler.mean_time(),
         total=step_time,
+        sps=sps,
         fps=fps,
         mps=mps,
     )
