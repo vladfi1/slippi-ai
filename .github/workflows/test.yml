@@ -107,7 +107,7 @@ jobs:
         sudo apt install -y libfuse2 libegl1
 
     - name: Cache the SSBM iso
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       id: cache-iso  # give it a name for checking the cache hit-or-not
       with:
         path: SSBM.iso
