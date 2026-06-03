@@ -249,8 +249,14 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         self._env.push(decoded_actions)
 
   def update_variables(self, updates: tp.Mapping[Port, tp.Any]):
-    for ports, update in updates.items():
-      self._port_to_agent[ports].policy.set_state(update)
+    for port, update in updates.items():
+      # When using merged agents, we key the agent only by its first port, but
+      # the learner doesn't know this and will send updates for all ports.
+      # TODO: make the merged agent interface explicit. Currently we need to
+      # "hide" it because the dolphin evaluator doesn't support it.
+      if port not in self._port_to_agent:
+        continue
+      self._port_to_agent[port].policy.set_state(update)
 
   def _push_actions(self, timings: tp.Optional[dict] = None):
     """Pop actions from the agents and push them to the environment."""
