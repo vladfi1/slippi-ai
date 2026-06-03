@@ -494,7 +494,9 @@ def run(config: Config):
     def build_actor() -> evaluators.AbstractRolloutWorker:
       rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
       if config.opponent.should_train():
-        rollout_agent_kwargs = {(1, 2): agent_kwargs[PORT]}
+        merged_kwargs = agent_kwargs[PORT].copy()
+        merged_kwargs['name'] = main_agent_names + opp_names  # type: ignore
+        rollout_agent_kwargs = {(1, 2): merged_kwargs}
       else:
         rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
 
