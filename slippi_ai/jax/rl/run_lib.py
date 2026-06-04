@@ -30,7 +30,6 @@ from slippi_ai.jax import train_vf
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib
 from slippi_ai.jax.rl import learner as learner_lib
-from slippi_ai.sim_env import jax_rollout
 from slippi_ai.types import Game
 
 field = lambda f: dataclasses.field(default_factory=f)
@@ -525,6 +524,8 @@ def run(config: Config):
       raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
     def build_actor() -> evaluators.AbstractRolloutWorker:
+      from slippi_ai.sim_env import jax_rollout
+
       rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
       if config.opponent.should_train():
         merged_kwargs = agent_kwargs[PORT].copy()
