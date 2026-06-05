@@ -535,6 +535,10 @@ class Agent:
     game = utils.map_single_structure(lambda x: np.expand_dims(x, 0), game)
 
     sample_outputs = self._agent.step(game, needs_reset)
+    # TODO: The agent interface should hide this behind a flag
+    if self._agent.policy.platform is policies.Platform.JAX:
+      import jax
+      sample_outputs = jax.device_get(sample_outputs)
     action = sample_outputs.controller_state
     # Note: x.item() can return the wrong dtype, e.g. int instead of uint8.
     action = utils.map_single_structure(lambda x: x[0], action)
