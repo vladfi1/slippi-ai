@@ -60,7 +60,6 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       dolphin_kwargs: tp.Union[dict, tp.Sequence[dict]],
       num_envs: int,
       rollout_length: int,
-      batch_steps: int = 1,
       per_agent_outputs: bool = True,
       use_fake_envs: bool = False,
       async_envs: bool = False,
@@ -68,13 +67,14 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       # NOTE: if copy_data is False, calling rollout a second time invalidates
       # the first rollout's trajectory data.
       copy_data: bool = True,
+      keep_agent_outputs_on_device: bool = True,
   ):
     self._num_envs = num_envs
     self._num_players = self._num_envs * len(self.ports)
     self._rollout_length = rollout_length
-    del batch_steps  # Not used yet.
     self._per_agent_outputs = per_agent_outputs
     self._copy_data = copy_data
+    self._keep_agent_outputs_on_device = keep_agent_outputs_on_device
 
     self._batch_slice_by_port = {
         port: slice(i * self._num_envs, (i + 1) * self._num_envs)
@@ -271,6 +271,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       # if it batches steps across time.
       pop_start = time.perf_counter()
       output = agent.pop()
+      if agent.policy.platform is Platform.JAX and not self._keep_agent_outputs_on_device:
+        output = jax.device_get(output)
       agent_outputs.append(output)
 
       controller = output.controller_state
@@ -388,7 +390,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       env_slice = agent_info.env_slice
 
       actions = action_buffers[i]
-      if agent.policy.platform is Platform.JAX:
+      if agent.policy.platform is Platform.JAX and self._keep_agent_outputs_on_device:
         # Keep jax SampleOutputs on device for consumption by the learner.
         actions = jax_stack(actions)
       else:
