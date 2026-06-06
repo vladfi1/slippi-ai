@@ -140,6 +140,9 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     else:
       self._map_fn = utils.map_nt
 
+    self._observation_filter = observations.build_observation_filter(
+        observation_config, shape=(batch_size,))
+
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
@@ -189,6 +192,8 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 
     self._map_fn(np.copyto, input_buffer, (game, needs_reset))
     self._input_index += 1
+
+    self._observation_filter.filter_batched(input_buffer[0])
 
     if self._input_index == self._batch_steps:
       with self.step_profiler:

@@ -10,14 +10,20 @@ from melee.enums import Action
 from slippi_ai import types
 from slippi_ai import utils
 
+S = tp.TypeVar('S', bound=tuple[int, ...])
+
 Game0 = types.Game[tuple[()]]
 Game1 = types.Game[tuple[int]]
 
-class ObservationFilter(abc.ABC):
+class ObservationFilter(abc.ABC, tp.Generic[S]):
 
   def reset(self):
     """Reset the filter state."""
     pass
+
+  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+    """Filter a batched game in-place."""
+    raise NotImplementedError()
 
   @abc.abstractmethod
   def filter(self, game: Game0) -> Game0:
@@ -35,6 +41,10 @@ class ChainObservationFilter(ObservationFilter):
   def reset(self):
     for filter in self.filters:
       filter.reset()
+
+  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+    for filter in self.filters:
+      filter.filter_batched(game, env_slice)
 
   def filter(self, game: Game0) -> Game0:
     for filter in self.filters:
@@ -121,6 +131,7 @@ INDISTINGUISHABLE_ACTIONS: dict[int, list[ActionSet]] = {
 
 DEFAULT_TECH_MASK_WINDOW = 7
 TECH_ACTIONS = (N_TECH, F_TECH, B_TECH)
+_TECH_ACTIONS_NP = np.array(TECH_ACTIONS, dtype=ActionDType)
 
 # TODO: fill in data for all characters
 DEFAULT_ACTION_DATA = [(TECH_ACTIONS, DEFAULT_TECH_MASK_WINDOW)]
@@ -143,7 +154,7 @@ ACTION_MASKS = {
 }
 ACTION_MASKS = {}
 
-def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
+def mask_tech_action_with_char(char: int, action: ActionDType, frame: int) -> ActionDType:
   """Mask actions that are indistinguishable.
 
   For every set of indistinguishable actions, we return an arbitrary member of
@@ -157,46 +168,70 @@ def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
 
   return masks[frame]
 
-class AnimationFilter(ObservationFilter):
+class AnimationFilter(ObservationFilter, tp.Generic[S]):
   """Obscures tech animations that look the same for the first N frames."""
 
   def __init__(
-    self,
-    fast: bool = True,
-    tech_mask_window: int = DEFAULT_TECH_MASK_WINDOW,
+      self,
+      shape: S = (),
+      tech_mask_window: int = DEFAULT_TECH_MASK_WINDOW,
+      fast: bool = True,
   ):
-    self.fast = fast
+    self.shape = shape
     self.tech_mask_window = tech_mask_window
+    self.fast = fast
+    if not fast:
+      assert shape == (), 'Non-fast mode only supported for unbatched games'
     self.reset()
 
   def reset(self):
-    self.prev_action = ActionDType(0)
-    self.count = 0
+    self.prev_action = np.zeros(self.shape, dtype=ActionDType)
+    self.count = np.zeros(self.shape, dtype=int)
+
+  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+    """Updates in-place."""
+    if env_slice is not None:
+      actions = game.p0.action[env_slice]
+    else:
+      actions = game.p0.action
+    del game
+
+    same_action = actions == self.prev_action
+    self.count[:] += 1
+    self.count[~same_action] = 0
+    self.prev_action[:] = actions
+
+    needs_mask = self.count < self.tech_mask_window & np.isin(actions, _TECH_ACTIONS_NP)
+    actions[needs_mask] = _TECH_ACTIONS_NP[0]
 
   def update(self, char: int, action: ActionDType) -> ActionDType:
     if action == self.prev_action:
       self.count += 1
     else:
-      self.count = 0
-      self.prev_action = action
+      self.count[...] = 0
+      self.prev_action[...] = action
 
     if not self.fast:
-      return mask_tech_action(char, action, self.count)
+      return mask_tech_action_with_char(char, action, self.count.item())
 
     is_tech_action = action in TECH_ACTIONS
-    should_mask = is_tech_action and (self.count <= self.tech_mask_window)
+    should_mask = is_tech_action and (self.count < self.tech_mask_window)
     if should_mask:
       return TECH_ACTIONS[0]
 
     return action
 
   def filter(self, game: Game0) -> Game0:
-    masked_action = self.update(game.p1.character[0], game.p1.action[0])
+    assert self.shape == ()
+
+    masked_action = self.update(game.p1.character, game.p1.action)
     if masked_action != game.p1.action:
       return utils.replace_nt(game, ['p1', 'action'], masked_action)
     return game
 
   def filter_time(self, game: Game1) -> Game1:
+    assert self.shape == ()
+
     actions = np.concatenate([np.full([1], self.prev_action), game.p1.action])
 
     same_action = actions[:-1] == actions[1:]
@@ -273,10 +308,11 @@ NULL_OBSERVATION_CONFIG = ObservationConfig(
 
 def build_observation_filter(
     config: ObservationConfig,
-) -> ObservationFilter:
+    shape: S = (),
+) -> ObservationFilter[S]:
   filters = []
   if config.animation.mask:
-    filters.append(AnimationFilter(tech_mask_window=config.animation.tech_mask_window))
+    filters.append(AnimationFilter[S](shape=shape, tech_mask_window=config.animation.tech_mask_window))
   if config.frame_skip.skip > 1:
     filters.append(FrameSkipFilter(skip=config.frame_skip.skip))
   return ChainObservationFilter(filters)
