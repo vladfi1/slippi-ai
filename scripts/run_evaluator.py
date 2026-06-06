@@ -54,6 +54,7 @@ if __name__ == '__main__':
       'num_games', 0, 'Stop after this many initially active sim games finish.')
 
   QUIET = flags.DEFINE_boolean('quiet', False, 'Whether to suppress non-timing prints.')
+  BURNIN = flags.DEFINE_boolean('burnin', False, 'Do a burnin unroll for better timings.')
 
   def print_game_summary(games: list[dict]):
     # Sim envs expose completed-game records directly, so this summary reports
@@ -129,17 +130,6 @@ if __name__ == '__main__':
           inner_batch_size=INNER_BATCH_SIZE.value,
       )
 
-    evaluator_kwargs = dict(
-        agent_kwargs=agent_kwargs,
-        dolphin_kwargs=dolphin_kwargs,
-        num_envs=NUM_ENVS.value,
-        async_envs=ASYNC_ENVS.value,
-        env_kwargs=env_kwargs,
-        use_gpu=USE_GPU.value,
-        use_fake_envs=FAKE_ENVS.value,
-        use_sim_envs=SIM_ENVS.value,
-        damage_ratio=0,
-    )
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
 
@@ -162,23 +152,33 @@ if __name__ == '__main__':
           dolphin_kwargs=dolphin_kwargs,
           num_envs=NUM_ENVS.value,
           rollout_length=ROLLOUT_LENGTH.value,
-          batch_steps=NUM_AGENT_STEPS.value,
           use_fake_envs=FAKE_ENVS.value,
           async_envs=ASYNC_ENVS.value,
           inner_batch_size=INNER_BATCH_SIZE.value,
+          keep_agent_outputs_on_device=False,  # uses too much GPU memory
       )
     else:
-      evaluator = evaluators.Evaluator(**evaluator_kwargs)
+      evaluator = evaluators.Evaluator(
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=NUM_ENVS.value,
+          async_envs=ASYNC_ENVS.value,
+          env_kwargs=env_kwargs,
+          use_gpu=USE_GPU.value,
+          use_fake_envs=FAKE_ENVS.value,
+          use_sim_envs=SIM_ENVS.value,
+          damage_ratio=0,
+      )
 
     with evaluator.run():
-      # burnin
-      batch_steps = NUM_AGENT_STEPS.value or 1
-      burnin_steps = math.ceil(32 / batch_steps) * batch_steps
-      if SIM_ENVS.value:
-        burnin_steps = ROLLOUT_LENGTH.value
+      if BURNIN.value:
+        batch_steps = NUM_AGENT_STEPS.value or 1
+        burnin_steps = math.ceil(32 / batch_steps) * batch_steps
+        if SIM_ENVS.value:
+          burnin_steps = ROLLOUT_LENGTH.value
 
-      print(f'Burning in for {burnin_steps} steps...')
-      evaluator.rollout(burnin_steps, verbose=not QUIET.value)
+        print(f'Burning in for {burnin_steps} steps...')
+        evaluator.rollout(burnin_steps, verbose=not QUIET.value)
 
       if TF_PROFILE.value:
         import tensorflow as tf
