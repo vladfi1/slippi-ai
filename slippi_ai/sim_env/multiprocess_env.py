@@ -9,6 +9,7 @@ the shared `GameBatchBuffers`.
 import dataclasses
 import math
 import multiprocessing as mp
+from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
 from multiprocessing import shared_memory
 import queue
@@ -160,6 +161,12 @@ def alloc_from_specs(specs: T) -> Allocation[T]:
 def _copy_into_slice(src: np.ndarray, dst: np.ndarray, dst_slice: slice):
   dst[dst_slice] = src
 
+def _safe_close(process: BaseProcess, timeout: float = 5):
+  process.join(timeout=timeout)
+  process.terminate()
+  process.join(timeout=timeout)
+  process.close()
+
 class MultiprocessSimEnvironment:
   """Process-sharded `SimBatchedEnvironment` wrapper for JAX rollout."""
 
@@ -228,7 +235,7 @@ class MultiprocessSimEnvironment:
     self._stop_event = self._context.Event()
     self._completed_queue = self._context.Queue()
     self._error_queue = self._context.Queue()
-    self._processes = []
+    self._processes: list[BaseProcess] = []
 
     # Each worker gets a contiguous env range. The policy-facing action buffer
     # remains global: [all port-1 perspectives, all port-2 perspectives].
@@ -277,11 +284,7 @@ class MultiprocessSimEnvironment:
       for event in events:
         event.set()
     for process in self._processes:
-      process.join(timeout=5.0)
-      if process.is_alive():
-        process.terminate()
-        process.join(timeout=5.0)
-      process.close()
+      _safe_close(process)
     self._obs_alloc.close()
     self._action_alloc.close()
     self._misc_owner.close()
