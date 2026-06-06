@@ -539,7 +539,6 @@ def run(config: Config):
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
           rollout_length=config.actor.rollout_length,
-          batch_steps=config.agent.batch_steps,
           use_fake_envs=config.actor.use_fake_envs,
           async_envs=config.actor.async_envs,
           inner_batch_size=config.actor.inner_batch_size,
@@ -548,6 +547,7 @@ def run(config: Config):
           # no need to make a copy of the data. TODO: we could always avoid
           # the copy only on the last rollout.
           copy_data=config.learner.ppo.num_batches > 1,
+          keep_agent_outputs_on_device=True,
       )
 
   learner_manager = LearnerManager(
