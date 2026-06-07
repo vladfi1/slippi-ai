@@ -185,8 +185,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   def __init__(
       self,
       config: LearnerConfig,
-      policy: Policy[ControllerType, RecurrentState],
-      teacher: Policy[ControllerType, RecurrentState],
+      policy: Policy[ControllerType],
+      teacher: Policy[ControllerType],
       value_function: vf_lib.ValueFunction[ControllerType],
   ) -> None:
     self._config = config
@@ -345,7 +345,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def unroll(
       self,
-      trajectory: Trajectory[ControllerType, RecurrentState],
+      trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: LearnerState,
   ):
     _, teacher_state = self.unroll_teacher(trajectory, initial_state.teacher)
@@ -354,7 +354,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def ppo_loss(
       self,
-      policy: Policy[ControllerType, RecurrentState],
+      policy: Policy[ControllerType],
       advantages: jax.Array,
       teacher_logits: list[ControllerType],
       trajectory: FrameSkipTrajectory[ControllerType],
