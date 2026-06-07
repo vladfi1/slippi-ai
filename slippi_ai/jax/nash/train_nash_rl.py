@@ -233,6 +233,7 @@ def run(config: Config):
   elif config.restore:
     restore_path = config.restore
 
+  # All "_state" objects only have numpy arrays.
   jax_state = {}
 
   if restore_path:
@@ -269,6 +270,10 @@ def run(config: Config):
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
+  # TODO: handling all of these "state" objects that may take up a lot of
+  # memory is error prone; we should find a cleaner way to do this.
+  del teacher_state
+
   if config.override_delay is not None:
     policy_config['policy']['delay'] = config.override_delay
 
@@ -293,6 +298,7 @@ def run(config: Config):
   if not restore_path:
     for key in ['q_function', 'q_function_optimizer']:
       jax_state[key] = q_fn_state['state'][key]
+  del q_fn_state
 
   if q_fn_config.observation != pretraining_config.observation:
     raise ValueError(
@@ -314,9 +320,7 @@ def run(config: Config):
       # mesh=mesh,
       # frame_skip=frame_skip,
   )
-
-  if restore_path:
-    jax_utils.set_module_state(learner, rl_state['state'])
+  del jax_state
 
   PORT = 1
   ENEMY_PORT = 2
@@ -324,8 +328,14 @@ def run(config: Config):
   batch_size = config.actor.num_envs
   config.agent.check_allowed_chars(rl_state)
 
+  agent_state = rl_state.copy()
+  agent_state_keys = ['policy']
+  # Save memory by only keeping the keys we need.
+  agent_state['state'] = {k: agent_state['state'][k] for k in agent_state_keys}
+  del rl_state
+
   main_agent_kwargs = config.agent.get_kwargs()
-  main_agent_kwargs['state'] = rl_state
+  main_agent_kwargs['state'] = agent_state
 
   main_players = [dolphin_lib.AI() for _ in range(batch_size)]
   opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
@@ -380,8 +390,8 @@ def run(config: Config):
 
     combined_state = dict(
       state=jax_utils.get_module_state(learner),
-      config=teacher_state['config'],
-      name_map=teacher_state['name_map'],
+      config=policy_config,
+      name_map=rl_state['name_map'],
       step=step,
       rl_config=rl_config_dict,
     )

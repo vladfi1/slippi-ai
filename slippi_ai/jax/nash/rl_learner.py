@@ -151,7 +151,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(q_fn_learning_rate), wrt=nnx.Param)
 
-    jax_utils.set_module_state(self, state)
+    # NOTE: some jax_utils functions expect jax arrays inside modules.
+    jax_utils.set_module_state(self, utils.map_nt(jnp.asarray, state))
 
     if not config.include_action_taken_in_samples and config.num_samples < 2:
       raise ValueError('num_samples must be at least 2 if not including action taken in samples')
@@ -224,7 +225,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     **q_function_specs,
     # )
 
-    self.train_q_function = jax_utils.train_fn(
+    self.train_q_function = jax_utils.cached_train_fn(
         module=self.q_function,
         optimizer=self.q_function_optimizer,
         loss_fn=self._unroll_q_function,
