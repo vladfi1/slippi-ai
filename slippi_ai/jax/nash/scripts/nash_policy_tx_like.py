@@ -4,6 +4,8 @@
 import dataclasses
 import os
 
+os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
+
 from absl import app, flags
 import wandb
 import fancyflags as ff
