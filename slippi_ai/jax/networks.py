@@ -812,7 +812,10 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
 
   def _embed(self, state_action: StateAction[S, Action]) -> Array:
     if self._remat:
-      x = nnx.remat(apply)(self._embed_module, state_action)
+      if isinstance(self._embed_module, nnx.Module):
+        x = nnx.remat(apply)(self._embed_module, state_action)
+      else:
+        x = nnx.remat(self._embed_module)(state_action)
     else:
       x = self._embed_module(state_action)
     x = x.astype(jax_utils.module_dtype(self))
