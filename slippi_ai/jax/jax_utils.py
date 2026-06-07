@@ -721,13 +721,24 @@ def multi_vmap(
 def get_vma(x) -> set[str]:
   if hasattr(x, 'vma'):
     return x.vma
+  t = jax.typeof(x)
+  import jax.core as jc
+  if isinstance(t, jc.ShapedArray):
+    return t.manual_axis_type.varying
   return set()
 
 def as_vma(x: T, ref) -> T:
-  if not hasattr(ref, 'vma') or ref.vma is None:
-    return x
+  if isinstance(ref, jax.ShapeDtypeStruct):
+    if ref.manual_axis_type is None:
+      return x
+    vma = ref.manual_axis_type.varying
 
-  axes = tuple(ref.vma - get_vma(x))
+  else:
+    if not hasattr(ref, 'vma') or ref.vma is None:
+      return x
+    vma = ref.vma
+
+  axes = tuple(vma - get_vma(x))
   return jax.lax.pcast(x, axes, to='varying')
 
 PackedArg = list[np.ndarray]
