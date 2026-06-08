@@ -521,7 +521,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
     def nash_policy_distance_fn(policy_sample: list[Action]):
-      distance_outputs = nash_policy.controller_head.distance(
+      distance_outputs = nash_policy.controller_head.distance_outputs(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
           target_controller_state=policy_sample)

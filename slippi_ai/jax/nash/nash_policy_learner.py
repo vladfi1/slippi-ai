@@ -436,16 +436,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
     def nash_policy_distance_fn(nash_policy: Policy[Action], policy_sample: list[Action]):
-      distance_outputs = nash_policy.controller_head.distance(
+      distances = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
           target_controller_state=policy_sample)
-      return jax_utils.add_n([
-          jax_utils.add_n(
-              nash_policy.controller_head.controller_embedding.flatten(do.distance)
-          )
-          for do in distance_outputs
-      ]) / len(distance_outputs)
+      return jax_utils.add_n(distances) / len(distances)
 
     if self.config.sample_batch_size > 0:
       batch_distance_fn = jax_utils.lax_map_fn(

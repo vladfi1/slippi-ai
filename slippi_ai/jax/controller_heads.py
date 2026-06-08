@@ -18,7 +18,7 @@ from slippi_ai.jax import embed, jax_utils, networks
 from slippi_ai.types import Controller
 
 Array = jax.Array
-
+T = tp.TypeVar('T')
 
 class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]):
 
@@ -33,13 +33,25 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod
-  def distance(
+  def distance_outputs(
       self,
       inputs: Array,
       prev_controller_state: list[ControllerType],
       target_controller_state: list[ControllerType],
   ) -> list[DistanceOutputs[ControllerType]]:
     """A struct of distances (generally, negative log probs)."""
+
+  def distance(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[Array]:
+    """Only returns (frame-skipped) distances without per-component logits."""
+    return [
+      jax_utils.add_n(self.controller_embedding.flatten(do.distance))
+      for do in self.distance_outputs(inputs, prev_controller_state, target_controller_state)
+    ]
 
   @classmethod
   @abc.abstractmethod
@@ -122,7 +134,7 @@ class Independent(ControllerHead[ControllerType]):
 
     return outputs
 
-  def distance(
+  def distance_outputs(
       self,
       inputs: Array,
       prev_controller_state: list[ControllerType],
@@ -300,12 +312,13 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
     return jax_utils.unstack_pytree(stacked_outputs, axis=0)
 
-  def distance(
+  def _distance_outputs(
       self,
       inputs: Array,
       prev_controller_state: list[ControllerType],
       target_controller_state: list[ControllerType],
-  ) -> list[DistanceOutputs[ControllerType]]:
+      output_fn: tp.Callable[[DistanceOutputs[ControllerType]], T],
+  ) -> list[T]:
     if self.remat:
       residual = jax.remat(self.encoder)(inputs)
     else:
@@ -335,7 +348,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
           distance=self.embed_controller.unflatten(iter(distances)),
           logits=self.embed_controller.unflatten(iter(logits)),
       )
-      return distance_outputs, residual
+      return output_fn(distance_outputs), residual
 
     if self.remat:
       single_action_distance = nnx.remat(single_action_distance)
@@ -347,6 +360,25 @@ class AutoRegressive(ControllerHead[ControllerType]):
         stacked_target_controller_state, residual)
 
     return jax_utils.unstack_pytree(stacked_outputs, axis=0)
+
+  def distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    return self._distance_outputs(inputs, prev_controller_state, target_controller_state, lambda do: do)
+
+  def distance(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[Array]:
+    return self._distance_outputs(
+        inputs, prev_controller_state, target_controller_state,
+        lambda do: jax_utils.add_n(self.controller_embedding.flatten(do.distance)))
+
 
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,

@@ -353,7 +353,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         frames, initial_states)
     q_policy_imitation_loss = q_policy_outputs.imitation_loss
 
-    q_policy_distance = q_policy.controller_head.distance(
+    q_policy_distance = q_policy.controller_head.distance_outputs(
           inputs=q_policy_outputs.outputs,
           prev_controller_state=prev_action,
           target_controller_state=best_action,
