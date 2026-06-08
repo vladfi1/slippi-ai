@@ -118,7 +118,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     prev_action = utils.map_nt(lambda t: t[:-1], action)
     next_action = utils.map_nt(lambda t: t[1:], action)
 
-    distance_outputs = self._controller_head.distance(
+    distance_outputs = self._controller_head.distance_outputs(
         outputs, prev_action, next_action)
     losses = [
         jax_utils.add_n(jax.tree.leaves(do.distance))
@@ -195,7 +195,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     prev_action = utils.map_nt(lambda t: t[:-1], action)
     next_action = utils.map_nt(lambda t: t[1:], action)
 
-    distance_outputs = self._controller_head.distance(
+    distance_outputs = self._controller_head.distance_outputs(
         outputs, prev_action, next_action)
     losses = [
         jax_utils.add_n(jax.tree.leaves(do.distance))
