@@ -228,7 +228,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
     unroll_teacher = jax_utils.with_compute_dtype(
         self._unroll_teacher, config.teacher_dtype.dtype)
-    self._unroll_teacher_mb = jax_utils.microbatch_fn(
+    self._unroll_teacher_mb = jax_utils.microbatch_module(
         jax_utils.no_loss(unroll_teacher),
         **teacher_mbkwargs
     )
@@ -244,7 +244,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
     unroll_vf = jax_utils.with_compute_dtype(
         self._unroll_vf, config.value_dtype.dtype)
-    self._unroll_vf_mb = jax_utils.microbatch_fn(
+    self._unroll_vf_mb = jax_utils.microbatch_module(
         self._unroll_vf, **value_mbkwargs)
     self.unroll_vf = jax_utils.run_loss_fn(
         self.value_function,
@@ -523,7 +523,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
       self.policy_optimizer.update(self.policy, grads)
     else:
-      run_ppo = jax_utils.microbatch_fn(
+      run_ppo = jax_utils.microbatch_module(
           jax_utils.no_loss(ppo_loss),
           **mbkwargs)
       (metrics,) = run_ppo(self.policy, batched_advantages, batched_logits, batched_trajectories)

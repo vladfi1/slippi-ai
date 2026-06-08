@@ -941,35 +941,117 @@ def cached_functional_jit(
     donate_argnums=donate_argnums,
     **jit_kwargs)
 
-def microbatch_array(x: jax.Array, axis: int, microbatch_size: int):
+# Microbatching utilities.
+
+Axis = int | None
+AxisPrefix = Axis | tuple
+
+def microbatch_array(x: jax.Array, axis: Axis, microbatch_size: int):
+  if axis is None:
+    return x
   new_shape = x.shape[:axis] + (-1, microbatch_size) + x.shape[axis+1:]
   return x.reshape(new_shape)
 
 def unmicrobatch_array(x: jax.Array, axis: int):
+  """Merges microbatches back into the batch dimension."""
+  # NOTE: a None axis doesn't make sense for outputs
   assert len(x.shape) > axis + 1
   new_shape = x.shape[:axis] + (-1,) + x.shape[axis+2:]
   return x.reshape(new_shape)
 
-def get_batch_size(axis_prefix: T, struct: T) -> int:
-  full_in_axes = jax.tree.broadcast(axis_prefix, struct)
-  batch_sizes = jax.tree.map(lambda x, axis: x.shape[axis], struct, full_in_axes)
-  batch_sizes: set[int] = set(jax.tree.leaves(batch_sizes))
+def _substruct_batch_size(axis: Axis, substruct: tp.Any) -> int | None:
+  if axis is None:
+    return None
+  leaves = jax.tree.leaves(substruct)
+  batch_sizes = set(leaf.shape[axis] for leaf in leaves)
   if len(batch_sizes) != 1:
-    raise ValueError('Got different batch sizes')
+    raise ValueError('Got different batch sizes: ' + str(batch_sizes))
   return batch_sizes.pop()
 
-def microbatch_struct(axis_prefix: T, struct: T, microbatch_size: int) -> T:
-  return utils.map_nt(
-      lambda axis, substruct: utils.map_nt(
-          functools.partial(microbatch_array, axis=axis, microbatch_size=microbatch_size),
-          substruct),
+# We can't use jax.tree.map because it doesn't treat None as leaves, meaning
+# that map(None, struct) doesn't work.
+prefix_map = functools.partial(jax.tree.map, is_leaf=lambda x: x is None)
+
+def get_batch_size(axis_prefix: AxisPrefix, struct: tp.Any) -> int:
+  batch_sizes = jax.tree.leaves(prefix_map(
+      _substruct_batch_size, axis_prefix, struct))
+  batch_sizes = set(size for size in batch_sizes if size is not None)
+  if len(batch_sizes) != 1:
+    raise ValueError('Got different batch sizes: ' + str(batch_sizes))
+  return batch_sizes.pop()
+
+def microbatch_substruct(axis: Axis, substruct: T, microbatch_size: int) -> T:
+  if axis is None:
+    return substruct
+  return jax.tree.map(
+      functools.partial(microbatch_array, axis=axis, microbatch_size=microbatch_size),
+      substruct)
+
+def microbatch_struct(axis_prefix: AxisPrefix, struct: T, microbatch_size: int) -> T:
+  return prefix_map(
+      functools.partial(microbatch_substruct, microbatch_size=microbatch_size),
       axis_prefix, struct)
 
+def unmicrobatch_substruct(axis: int, substruct: T) -> T:
+  return jax.tree.map(
+      functools.partial(unmicrobatch_array, axis=axis),
+      substruct)
+
+def unmicrobatch_struct(axis_prefix: AxisPrefix, struct: T) -> T:
+  # Technically we don't need to use prefix_map here because axis_prefix should
+  # not contain Nones as they don't make sense for outputs.
+  return prefix_map(unmicrobatch_substruct, axis_prefix, struct)
+
 def microbatch_fn(
+    f: tp.Callable[P, T],  # operates on batched inputs
+    microbatch_size: int,  # 0 means no microbatching
+    input_batch_dims: Axis | tuple = 0,
+    output_batch_dims: Axis | tuple = 0,
+) -> tp.Callable[P, T]:
+  mbs = microbatch_size
+
+  if microbatch_size == 0:
+    return f
+
+  def microbatched(*args: P.args, **kwargs: P.kwargs) -> T:
+    batch_size = get_batch_size(input_batch_dims, args)
+
+    if batch_size % mbs != 0:
+      raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
+
+    microbatched_inputs = microbatch_struct(input_batch_dims, args, mbs)
+
+    def with_kwargs(*args: P.args):
+      return f(*args, **kwargs)
+
+    scan_fn = nnx.scan(
+        with_kwargs,
+        in_axes=input_batch_dims,
+        out_axes=output_batch_dims,
+    )
+
+    microbatched_outputs = scan_fn(*microbatched_inputs)
+    return unmicrobatch_struct(output_batch_dims, microbatched_outputs)
+
+  return microbatched
+
+def lax_map_fn(
+    f: tp.Callable[P, T],
+    microbatch_size: int = 1,
+    input_batch_dims: Axis | tuple = 0,
+    output_batch_dims: Axis | tuple = 0,
+) -> tp.Callable[P, T]:
+  """Like jax.lax.map but compatible with nnx."""
+  # TODO: PR to flax?
+  vmapped = nnx.vmap(f, in_axes=input_batch_dims, out_axes=output_batch_dims)
+  return microbatch_fn(vmapped, microbatch_size, input_batch_dims, output_batch_dims)
+
+# TODO: replace with microbatch_fn
+def microbatch_module(
     f: tp.Callable[tp.Concatenate[ModT, P], T],
     microbatch_size: int,  # 0 means no microbatching
-    input_batch_dims: int | tuple = 0,
-    output_batch_dims: int | tuple = 0,
+    input_batch_dims: Axis | tuple = 0,
+    output_batch_dims: Axis | tuple = 0,
 ) -> tp.Callable[tp.Concatenate[ModT, P], T]:
   mbs = microbatch_size
 
@@ -1075,7 +1157,7 @@ def run_loss_fn(
   run_fn = no_loss(loss_fn)
 
   if microbatch_size != 0:
-    run_fn = microbatch_fn(
+    run_fn = microbatch_module(
         run_fn,
         microbatch_size=microbatch_size,
         input_batch_dims=input_batch_dims,
