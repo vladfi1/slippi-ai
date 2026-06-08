@@ -281,17 +281,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # Because the action space is too large, we compute a finite subsample
     # using the sample_policy.
 
-    @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
-    def sample(rngs: nnx.Rngs):
-      # nnx doesn't complain about trace levels because the controller head
-      # manually iterates over the action components instead of using nnx.scan
+    @nnx.vmap(in_axes=(None, 0), out_axes=_SAMPLE_AXIS)
+    def sample(sample_policy: Policy[Action], rngs: nnx.Rngs):
       sample_outputs = sample_policy.controller_head.sample(
           rngs=rngs,
           inputs=sample_policy_outputs.outputs,
           prev_controller_state=prev_action)
       return [so.controller_state for so in sample_outputs]
 
-    policy_samples = sample(rngs.fork(split=self.num_samples))
+    policy_samples = sample(sample_policy, rngs.fork(split=self.num_samples))
 
     bm_loss = jnp.mean(sample_policy_outputs.imitation_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
@@ -437,7 +435,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
-    def nash_policy_distance_fn(policy_sample: list[Action]):
+    def nash_policy_distance_fn(nash_policy: Policy[Action], policy_sample: list[Action]):
       distance_outputs = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
@@ -450,13 +448,19 @@ class Learner(nnx.Module, tp.Generic[Action]):
       ]) / len(distance_outputs)
 
     if self.config.sample_batch_size > 0:
-      nash_policy_distance_fn = jax.remat(nash_policy_distance_fn)
+      batch_distance_fn = jax_utils.lax_map_fn(
+          nnx.remat(nash_policy_distance_fn),
+          microbatch_size=self.config.sample_batch_size,
+          input_batch_dims=(None, 0),
+          output_batch_dims=0,
+      )
+    else:
+      batch_distance_fn = nnx.vmap(
+          nash_policy_distance_fn,
+          in_axes=(None, 0), out_axes=0,
+      )
 
-    # [S, T, B, 2]
-    nash_policy_log_probs = -jax_utils.lax_map(
-        nash_policy_distance_fn, actions,
-        batch_size=self.config.sample_batch_size,
-    )
+    nash_policy_log_probs = -batch_distance_fn(nash_policy, actions)
 
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
 

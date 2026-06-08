@@ -720,7 +720,7 @@ class EmbedModule(abc.ABC, tp.Generic[Action]):
     """
 
   @abc.abstractmethod
-  def __call__(self, state_action: StateAction[S, Action]) -> Array:
+  def __call__(self, state_action: StateAction[S, Action], remat: bool = False) -> Array:
     """Embeds the state and action into an Array suitable for the network."""
 
 class Embeddings(tp.NamedTuple, tp.Generic[Action]):
@@ -778,7 +778,8 @@ class SimpleEmbedModule(EmbedModule[Action]):
   def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_game.from_state(game)
 
-  def __call__(self, state_action: StateAction[S, Action]) -> Array:
+  def __call__(self, state_action: StateAction[S, Action], remat: bool = False) -> Array:
+    del remat  # unused
     return self._embed_state_action(state_action)
 
 class SimpleEmbedNetwork(StateActionNetwork[Action]):
@@ -811,13 +812,13 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     return self._embed_module.encode_game(game)
 
   def _embed(self, state_action: StateAction[S, Action]) -> Array:
-    if self._remat:
-      if isinstance(self._embed_module, nnx.Module):
-        x = nnx.remat(apply)(self._embed_module, state_action)
-      else:
-        x = nnx.remat(self._embed_module)(state_action)
-    else:
-      x = self._embed_module(state_action)
+    # if self._remat:
+    #   if isinstance(self._embed_module, nnx.Module):
+    #     x = nnx.remat(apply)(self._embed_module, state_action, remat=True)
+    #   else:
+    #     x = nnx.remat(self._embed_module)(state_action)
+    # else:
+    x = self._embed_module(state_action, remat=self._remat)
     x = x.astype(jax_utils.module_dtype(self))
     return x
 
@@ -927,6 +928,7 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
   def unroll(
       self,
       controllers: list[Action],
+      remat: bool = False,
   ) -> Array:
     batch_shape = next(self._embed_controller.flatten(controllers[0])).shape
     initial_state = self.initial_state(batch_shape, nnx.Rngs(0))
@@ -934,7 +936,11 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
     inputs = self._embed_controller.map(
         lambda _, *xs: jnp.stack(xs), *controllers)  # type: ignore
 
-    outputs, _ = jax_utils.dynamic_rnn(self, inputs, initial_state)
+    cell_fn = ControllerRNN.__call__
+    if remat:
+      cell_fn = nnx.remat(cell_fn)
+
+    outputs, _ = jax_utils.dynamic_rnn_module(cell_fn, self, inputs, initial_state)
     return outputs[-1]
 
 
@@ -1222,7 +1228,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       parts.append(self._embed_player_or_nana(raw.nana, default.nana))
     return jnp.concatenate(parts, axis=-1)
 
-  def __call__(self, state_action: StateAction[tp.Any, Action]) -> Array:
+  def __call__(self, state_action: StateAction[tp.Any, Action], remat: bool = False) -> Array:
     raw_game = state_action.state
     default_state_action_embed = self._embed_state_action.map(
         lambda e, v: e(v), state_action)
@@ -1260,7 +1266,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     parts.append(tp.cast(Array, default_state_action_embed.name))
 
     if self._use_controller_rnn:
-      parts.append(self._controller_rnns[0].unroll(state_action.action))
+      parts.append(self._controller_rnns[0].unroll(state_action.action, remat=remat))
     else:
       parts.extend(map(self._embed_controller, state_action.action))
 
