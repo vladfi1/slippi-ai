@@ -363,6 +363,21 @@ def dynamic_rnn(
       out_axes=(0, nnx.Carry),
   )(inputs, initial_state)
 
+def dynamic_rnn_module(
+    cell_fn: tp.Callable[[ModT, InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
+    module: ModT,
+    inputs: InputTree,
+    initial_state: RecurrentState,
+) -> tuple[OutputTree, RecurrentState]:
+  # Workaround for https://docs.jax.dev/en/latest/notebooks/shard_map.html#scan-vma
+  _, state = nnx.eval_shape(cell_fn, module, inputs, initial_state)
+  initial_state = jax.tree.map(as_vma, initial_state, state)
+
+  return nnx.scan(
+      cell_fn,
+      in_axes=(None, 0, nnx.Carry),
+      out_axes=(0, nnx.Carry),
+  )(module, inputs, initial_state)
 
 def scan_rnn(
     cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],

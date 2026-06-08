@@ -271,26 +271,34 @@ class AutoRegressive(ControllerHead[ControllerType]):
   ) -> list[SampleOutputs[ControllerType]]:
     residual = self.encoder(inputs)
 
-    outputs: list[SampleOutputs[ControllerType]] = []
+    stacked_prev_controller_state = utils.map_nt(
+      lambda *xs: jnp.stack(xs, axis=0), *prev_controller_state)
 
-    # TODO: use jax.scan
-    for prev, res_blocks in zip(prev_controller_state, self.res_blocks):
-      prev_controller_flat = list(self.embed_controller.flatten(prev))
-
+    def single_action_sample(
+        res_blocks: tp.Iterable[AutoRegressiveComponent],
+        rngs: nnx.Rngs | nnx.RngStream,
+        prev_controller: ControllerType,
+        residual: NetworkState,
+    ):
+      prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
       component_outputs: list[SampleOutputs] = []
       for res_block, prev in zip(res_blocks, prev_controller_flat):
-        sample_fn = jax.remat(res_block.sample) if self.remat else res_block.sample
-        residual, sample = sample_fn(
-            rngs(), residual, prev, temperature=temperature)
+        residual, sample = res_block.sample(rngs(), residual, prev, temperature=temperature)
         component_outputs.append(sample)
 
       samples, logits = zip(*component_outputs)
-      outputs.append(SampleOutputs(
+      return SampleOutputs(
           controller_state=self.embed_controller.unflatten(iter(samples)),
           logits=self.embed_controller.unflatten(iter(logits)),
-      ))
+      ), residual
 
-    return outputs
+    stacked_outputs, _ = nnx.scan(
+        single_action_sample,
+        in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        self.res_blocks[0], rngs.fork(split=len(prev_controller_state)),
+        stacked_prev_controller_state, residual)
+
+    return jax_utils.unstack_pytree(stacked_outputs, axis=0)
 
   def distance(
       self,
@@ -298,11 +306,11 @@ class AutoRegressive(ControllerHead[ControllerType]):
       prev_controller_state: list[ControllerType],
       target_controller_state: list[ControllerType],
   ) -> list[DistanceOutputs[ControllerType]]:
-    residual = self.encoder(inputs)
+    if self.remat:
+      residual = jax.remat(self.encoder)(inputs)
+    else:
+      residual = self.encoder(inputs)
 
-    stacked_res_blocks: nnx.List[AutoRegressiveComponent] = nnx.List(
-        jax_utils.stack_modules(res_blocks)
-        for res_blocks in zip(*self.res_blocks))
     stack = lambda *xs: jnp.stack(xs, axis=0)
     stacked_prev_controller_state = utils.map_nt(stack, *prev_controller_state)
     stacked_target_controller_state = utils.map_nt(stack, *target_controller_state)
@@ -319,8 +327,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       component_distances: list[DistanceOutputs] = []
       for res_block, prev, target in zip(
           res_blocks, prev_controller_flat, target_controller_flat):
-        distance_fn = jax.remat(res_block.distance) if self.remat else res_block.distance
-        residual, distance = distance_fn(residual, prev, target)
+        residual, distance = res_block.distance(residual, prev, target)
         component_distances.append(distance)
 
       distances, logits = zip(*component_distances)
@@ -330,10 +337,13 @@ class AutoRegressive(ControllerHead[ControllerType]):
       )
       return distance_outputs, residual
 
+    if self.remat:
+      single_action_distance = nnx.remat(single_action_distance)
+
     stacked_outputs, _ = nnx.scan(
         single_action_distance,
-        in_axes=(0, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
-        stacked_res_blocks, stacked_prev_controller_state,
+        in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        self.res_blocks[0], stacked_prev_controller_state,
         stacked_target_controller_state, residual)
 
     return jax_utils.unstack_pytree(stacked_outputs, axis=0)
