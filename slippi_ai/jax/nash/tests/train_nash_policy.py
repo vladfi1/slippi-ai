@@ -11,7 +11,6 @@ from slippi_ai import data as data_lib
 from slippi_ai.jax.nash import train_nash_policy
 
 DEFAULT_CONFIG = train_nash_policy.Config(
-
     dataset=data_lib.DatasetConfig(
         data_dir=str(paths.TOY_DATA_DIR),
         meta_path=str(paths.TOY_META_PATH),
@@ -20,7 +19,7 @@ DEFAULT_CONFIG = train_nash_policy.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=12,
     ),
     runtime=train_nash_policy.RuntimeConfig(
         log_interval=4,
@@ -28,7 +27,7 @@ DEFAULT_CONFIG = train_nash_policy.Config(
         num_evals_per_epoch=2,
         max_eval_steps=3,
     ),
-    initialize_policies_from=str(paths.JAX_IMITATION_CHECKPOINT),
+    initialize_policies_from=str(paths.JAX_POLICY_CHECKPOINT),
     initialize_q_function_from=str(paths.JAX_NASH_Q_FN_CKPT),
 )
 
