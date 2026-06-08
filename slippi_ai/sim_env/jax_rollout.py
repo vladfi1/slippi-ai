@@ -413,7 +413,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
                 [num_steps + 1, env_slice.stop - env_slice.start]),
             actions=actions,
             rewards=rewards[:, env_slice].astype(np.float32),
-            is_resetting=slice_trajectory(states.needs_reset),
+            is_resetting=states.needs_reset,
             initial_state=initial_state,
             delayed_actions=delayed_actions,
         )
@@ -436,7 +436,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
                   [num_steps + 1, batch_size]),
               actions=slice_map((slice(None), agent_to_port_slice), actions),
               rewards=rewards[:, env_to_port_slice].astype(np.float32),
-              is_resetting=slice_trajectory(states.needs_reset),
+              is_resetting=states.needs_reset,
               initial_state=slice_map(agent_to_port_slice, initial_state),
               delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
