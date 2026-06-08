@@ -300,6 +300,9 @@ def run(config: Config):
       jax_state[key] = q_fn_state['state'][key]
   del q_fn_state
 
+  frame_skip = pretraining_config.policy.frame_skip
+
+  # TODO: move these into a helper function
   if q_fn_config.observation != pretraining_config.observation:
     raise ValueError(
       'Q-function observation config does not match policy: '
@@ -308,6 +311,15 @@ def run(config: Config):
     raise ValueError(
       'Q-function delay does not match policy delay: '
       f'{q_fn_config.delay} vs {pretraining_config.policy.delay}')
+  if q_fn_config.q_function.frame_skip != frame_skip:
+    raise ValueError(
+      'Q-function frame skip does not match policy frame skip: '
+      f'{q_fn_config.q_function.frame_skip} vs {frame_skip}')
+
+  if config.actor.rollout_length % frame_skip != 0:
+    raise ValueError(
+      'Rollout length must be divisible by frame skip: '
+      f'{config.actor.rollout_length} vs {frame_skip}')
 
   # mesh = jax_utils.get_mesh()
 

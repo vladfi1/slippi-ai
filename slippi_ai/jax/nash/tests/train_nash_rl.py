@@ -12,7 +12,7 @@ from slippi_ai.jax.rl import run_lib
 from slippi_ai.jax.nash import rl_learner
 
 DEFAULT_CONFIG = train_nash_rl.Config(
-  teacher=str(paths.JAX_IMITATION_CKPT),
+  teacher=str(paths.JAX_POLICY_CHECKPOINT),
   q_function=str(paths.JAX_NASH_Q_FN_CKPT),
   runtime=train_nash_rl.RuntimeConfig(
     max_step=5,
@@ -30,7 +30,7 @@ DEFAULT_CONFIG = train_nash_rl.Config(
   actor=run_lib.ActorConfig(
     use_fake_envs=True,
     num_envs=2,
-    rollout_length=64,
+    rollout_length=60,
   ),
   agent=run_lib.AgentConfig(
     char=[melee.Character.FOX],

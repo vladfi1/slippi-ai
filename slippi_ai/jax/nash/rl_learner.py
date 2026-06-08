@@ -13,6 +13,7 @@ from slippi_ai.types import S, Frames, Action, StateAction
 from slippi_ai.jax.policies import Policy, RecurrentState, DistanceOutputs
 from slippi_ai.jax import embed, rl_lib, jax_utils, saving
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
+from slippi_ai.jax.agents import DType
 from slippi_ai.nash import data as nash_data
 from slippi_ai.jax.nash import (
     q_function as q_lib,
@@ -39,6 +40,15 @@ class LearnerConfig:
   reverse_kl_teacher_weight: float = 0
 
   value_burnin_steps: int = 0
+
+  sample_policy_dtype: DType = DType.FP32
+  teacher_dtype: DType = DType.FP32
+  nash_policy_dtype: DType = DType.FP32
+  q_fn_dtype: DType = DType.FP32
+
+  microbatch_size: int = 0
+  teacher_mbs: int = 0
+
 
 _SAMPLE_AXIS = 0
 
@@ -104,6 +114,9 @@ def warmup_schedule(burnin_steps: int, base_value: float):
   normal = optax.constant_schedule(base_value)
   return optax.join_schedules([burnin, normal], [burnin_steps])
 
+@jax.jit
+def copy_struct(struct: T) -> T:
+  return jax.tree.map(jnp.copy, struct)
 
 class Learner(nnx.Module, tp.Generic[Action]):
 
@@ -197,9 +210,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
+    unroll_sample_policy = jax_utils.with_compute_dtype(
+      self._unroll_sample_policy, config.sample_policy_dtype.dtype)
+
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(self._unroll_sample_policy),
+            jax_utils.no_loss(unroll_sample_policy),
             donate_argnums=(0, 1, 3),
         ),
         self.policy, rngs,
@@ -225,15 +241,18 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     **q_function_specs,
     # )
 
+    unroll_q_function = jax_utils.with_compute_dtype(
+      self._unroll_q_function, config.q_fn_dtype.dtype)
+
     self.train_q_function = jax_utils.cached_train_fn(
         module=self.q_function,
         optimizer=self.q_function_optimizer,
-        loss_fn=self._unroll_q_function,
+        loss_fn=unroll_q_function,
     )
 
     self.run_q_function = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(self._unroll_q_function),
+            jax_utils.no_loss(unroll_q_function),
             donate_argnums=(0, 2),
         ),
         self.q_function,
@@ -260,11 +279,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     def unroll_teacher(
         teacher: Policy[Action],
-        frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
+        frames: Frames[nash_data.Rank3, Action], /,
         initial_states: RecurrentState,  # [B, 2]
     ) -> tuple[list[DistanceOutputs[Action]], RecurrentState]:
       teacher_outputs = teacher.unroll(frames, initial_states)
       return teacher_outputs.distances, teacher_outputs.final_state
+
+    unroll_teacher = jax_utils.with_compute_dtype(
+        unroll_teacher, config.teacher_dtype.dtype)
 
     self.run_teacher = jax_utils.cached_partial(
         jax_utils.nnx_jit(
@@ -279,16 +301,19 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=None,
     # )
 
+    unroll_nash_policy = jax_utils.with_compute_dtype(
+        self._unroll_nash_policy, config.nash_policy_dtype.dtype)
+
     self.train_nash_policy = jax_utils.train_fn_with_rngs(
         module=self.nash_policy,
         optimizer=self.policy_optimizer,
         rngs=rngs,
-        loss_fn=self._unroll_nash_policy,
+        loss_fn=unroll_nash_policy,
     )
 
     self.run_nash_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(self._unroll_nash_policy),
+            jax_utils.no_loss(unroll_nash_policy),
             donate_argnums=(0, 1, 3),
         ),
         self.nash_policy, rngs,
@@ -320,12 +345,23 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    return {
+    initial_states = {
         Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
         TEACHER: self.teacher.initial_state((batch_size, 2), rngs),
         NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
         # (sample) policy is also used by the actor
     }
+
+    dtypes = {
+        Q_FUNCTION: self.config.q_fn_dtype,
+        TEACHER: self.config.teacher_dtype,
+        NASH_POLICY: self.config.nash_policy_dtype,
+    }
+
+    for key, dtype in dtypes.items():
+      initial_states[key] = jax_utils.cast_floats_to_dtype(initial_states[key], dtype.dtype)
+
+    return initial_states
 
   def policy_variables(self):
     """Returns policy state for actor update via evaluators.update_variables."""
@@ -362,8 +398,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # Because the action space is too large, we compute a finite subsample
     # using the sample_policy.
 
-    @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
-    def sample(rngs: nnx.Rngs):
+    @nnx.vmap(in_axes=(None, 0), out_axes=_SAMPLE_AXIS)
+    def sample(sample_policy: Policy[Action], rngs: nnx.Rngs):
       # nnx doesn't complain about trace levels because the controller head
       # manually iterates over the action components instead of using nnx.scan
       sample_outputs = sample_policy.controller_head.sample(
@@ -372,7 +408,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
           prev_controller_state=prev_action)
       return [so.controller_state for so in sample_outputs]
 
-    policy_samples = sample(rngs.fork(split=self.num_samples))
+    policy_samples = sample(sample_policy, rngs.fork(split=self.num_samples))
 
     bm_loss = jnp.mean(sample_policy_outputs.imitation_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
@@ -521,6 +557,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
             inputs=nash_policy_outputs.outputs,
             prev_controller_state=prev_action)]
 
+    q_function = jax_utils.cast_params_to_dtype(
+        self.q_function, self.config.q_fn_dtype.dtype)
+
     # TODO: this is fairly inefficient -- we should instead pre-compute the
     # q-function's "outputs" on both the nash policy and the sampled actions,
     # the latter which we already have from the q-function unroll, and then use
@@ -541,7 +580,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         merge, nash_policy_samples, opponent_actions)
 
       def q_fn(actions: list[Action]):
-        two_player_qs = self.q_function.q_values_from_action_state(
+        two_player_qs = q_function.q_values_from_action_state(
           values=values,
           action_init_state=q_action_init_state,
           actions=actions,
@@ -690,8 +729,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     actor_logits = [so.logits for so in trajectory.actions]
     # Need to make a copy since the original one gets donated
-    initial_nash_state = jax.tree.map(
-      lambda x: x.copy(), initial_states[NASH_POLICY])
+    initial_nash_state = copy_struct(initial_states[NASH_POLICY])
     (
       metrics[NASH_POLICY],
       final_states[NASH_POLICY],

@@ -40,6 +40,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
     ),
     q_function=q_lib.QFunctionConfig(
         core_net=network_config,
+        action_net=network_config,
         embed=embed_lib.EmbedConfig(
             player=embed_lib.PlayerConfig(with_nana=False),
             items=embed_lib.ItemsConfig(type=embed_lib.ItemsType.SKIP),
@@ -49,10 +50,9 @@ DEFAULT_CONFIG = train_q_fn.Config(
             hidden_size=1,
         ),
     ),
-    delay=0,
     test_unroll_multiplier=2,
+    compatible_policy=str(paths.JAX_POLICY_CHECKPOINT),
 )
-DEFAULT_CONFIG.q_function.frame_skip = 2
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
