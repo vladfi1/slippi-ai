@@ -122,7 +122,6 @@ class Independent(ControllerHead[ControllerType]):
 
     return outputs
 
-  @abc.abstractmethod
   def distance(
       self,
       inputs: Array,
@@ -225,7 +224,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
     return dict(
         component=network_config,
         remat=False,
-        shared=False,
+        shared=True,
     )
 
   def __init__(
@@ -236,7 +235,7 @@ class AutoRegressive(ControllerHead[ControllerType]):
       embed_controller: embed.Embedding[Controller, ControllerType],
       component: dict,
       remat: bool = False,
-      shared: bool = False,
+      shared: bool = True,
   ):
     self.embed_controller = embed_controller
     self.encoder = AutoRegressiveEncoder(rngs, input_size, component)
@@ -252,11 +251,11 @@ class AutoRegressive(ControllerHead[ControllerType]):
           for e in self.embed_flat
       ])
 
-    if shared:
-      res_blocks = [build_res_blocks()] * frame_skip
-    else:
-      res_blocks = [build_res_blocks() for _ in range(frame_skip)]
+    if not shared:
+      raise NotImplementedError('Non-shared autoregressive controller heads are no longer supported.')
 
+    # Store as a list for compatibility with old checkpoints.
+    res_blocks = [build_res_blocks()]
     self.res_blocks = nnx.List(res_blocks)
 
   @property
