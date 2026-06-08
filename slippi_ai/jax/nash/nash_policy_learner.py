@@ -38,6 +38,8 @@ class LearnerConfig:
 
   nash_solver: str = 'simplex'
 
+  compute_nash_policy_qs: bool = True
+
 _SAMPLE_AXIS = 0
 
 Loss = jax.Array
@@ -465,56 +467,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
-    # Estimate nash_policy vs computed nash
-    nash_policy_samples = [  # list[Controller[T, B, 2]]
-        so.controller_state
-        for so in nash_policy.controller_head.sample(
-            rngs=rngs,
-            inputs=nash_policy_outputs.outputs,
-            prev_controller_state=prev_action)]
-
-    # Technically q_function should be an input to this method.
-    q_function = self.q_function  # stays in fp32 even if nash_policy is in bf16
-
-    # TODO: this is fairly inefficient -- we should instead pre-compute the
-    # q-function's "outputs" on both the nash policy and the sampled actions,
-    # the latter which we already have from the q-function unroll, and then use
-    # QFunction._q_values_from_outputs.
-    def compute_nash_policy_q_vs(opponent_actions: list[Action]) -> jax.Array:
-      # Line up nash policy vs the other policy samples.
-      def merge(nps: jax.Array, ps: jax.Array):
-        # nps is [T, B, 2], ps is [T, B, 2]
-        np1, np2 = jnp.unstack(nps, axis=2)
-        p1, p2 = jnp.unstack(ps, axis=2)
-
-        np1_vs_p2 = jnp.stack([np1, p2], axis=2)
-        p1_vs_np2 = jnp.stack([p1, np2], axis=2)
-
-        return jnp.stack([np1_vs_p2, p1_vs_np2], axis=0)  # [2, T, B, 2]
-
-      merged_actions = utils.map_nt(  # [2, T, B, 2]
-        merge, nash_policy_samples, opponent_actions)
-
-      def q_fn(actions: list[Action]):
-        two_player_qs = q_function.q_values_from_action_state(
-          values=values,
-          action_init_state=q_action_init_state,
-          actions=actions,
-        )
-        return p1_averaged_qs(two_player_qs)  # [T, B]
-
-      q_values = jax.vmap(q_fn, in_axes=0, out_axes=0)(merged_actions)  # [2, T, B]
-
-      np1_vs_p2_qs, p1_vs_np2_qs = jnp.unstack(q_values, axis=0)  # [T, B], [T, B]
-      return jnp.stack([np1_vs_p2_qs, -p1_vs_np2_qs], axis=-1)  # [T, B, 2]
-
-    nash_policy_qs = jax_utils.lax_map(  # [S, T, B, 2]
-        compute_nash_policy_q_vs, actions,
-        batch_size=self.config.sample_batch_size,
-    )
-    nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
-    nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
-
     losses = [
         self.config.nash_weight * nash_cross_entropy,
         self.config.imitation_weight * nash_policy_imitation_loss,
@@ -524,10 +476,62 @@ class Learner(nnx.Module, tp.Generic[Action]):
     metrics = dict(
         nash_entropy=nash_entropy,
         nash_cross_entropy=nash_cross_entropy,
-        nash_policy_qs=nash_policy_qs,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
     )
+
+    if self.config.compute_nash_policy_qs:
+      # Estimate nash_policy vs computed nash
+      nash_policy_samples = [  # list[Controller[T, B, 2]]
+          so.controller_state
+          for so in nash_policy.controller_head.sample(
+              rngs=rngs,
+              inputs=nash_policy_outputs.outputs,
+              prev_controller_state=prev_action)]
+
+      # Technically q_function should be an input to this method.
+      q_function = self.q_function  # stays in fp32 even if nash_policy is in bf16
+
+      # TODO: this is fairly inefficient -- we should instead pre-compute the
+      # q-function's "outputs" on both the nash policy and the sampled actions,
+      # the latter which we already have from the q-function unroll, and then use
+      # QFunction._q_values_from_outputs.
+      def compute_nash_policy_q_vs(opponent_actions: list[Action]) -> jax.Array:
+        # Line up nash policy vs the other policy samples.
+        def merge(nps: jax.Array, ps: jax.Array):
+          # nps is [T, B, 2], ps is [T, B, 2]
+          np1, np2 = jnp.unstack(nps, axis=2)
+          p1, p2 = jnp.unstack(ps, axis=2)
+
+          np1_vs_p2 = jnp.stack([np1, p2], axis=2)
+          p1_vs_np2 = jnp.stack([p1, np2], axis=2)
+
+          return jnp.stack([np1_vs_p2, p1_vs_np2], axis=0)  # [2, T, B, 2]
+
+        merged_actions = utils.map_nt(  # [2, T, B, 2]
+          merge, nash_policy_samples, opponent_actions)
+
+        def q_fn(actions: list[Action]):
+          two_player_qs = q_function.q_values_from_action_state(
+            values=values,
+            action_init_state=q_action_init_state,
+            actions=actions,
+          )
+          return p1_averaged_qs(two_player_qs)  # [T, B]
+
+        q_values = jax.vmap(q_fn, in_axes=0, out_axes=0)(merged_actions)  # [2, T, B]
+
+        np1_vs_p2_qs, p1_vs_np2_qs = jnp.unstack(q_values, axis=0)  # [T, B], [T, B]
+        return jnp.stack([np1_vs_p2_qs, -p1_vs_np2_qs], axis=-1)  # [T, B, 2]
+
+      nash_policy_qs = jax_utils.lax_map(  # [S, T, B, 2]
+          compute_nash_policy_q_vs, actions,
+          batch_size=self.config.sample_batch_size,
+      )
+      nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
+      nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
+
+      metrics['nash_policy_qs'] = nash_policy_qs
 
     if self.config.include_action_taken_in_samples:
       metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
