@@ -313,6 +313,7 @@ class LearnerManager(tp.Generic[Action]):
         trajectories.append(trajectory)
         actor_metrics.append(timings)
 
+      # Remove unsupported metrics from sim env
       for metrics in actor_metrics:
         metrics.pop('completed_games', None)
       actor_metrics = utils.map_nt(

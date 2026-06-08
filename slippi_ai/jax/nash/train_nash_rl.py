@@ -96,7 +96,7 @@ class LearnerManager(tp.Generic[Action]):
     self,
     learner: rl_learner.Learner[Action],
     config: Config,
-    build_actor: tp.Callable[[], evaluators.RolloutWorker],
+    build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
     ports: tuple[int, int],
   ):
     self._config = config
@@ -129,7 +129,7 @@ class LearnerManager(tp.Generic[Action]):
 
 
   def _rollout(self):
-    trajectories, timings = self.actor.rollout(self._rollout_length)
+    trajectories, metrics = self.actor.rollout(self._rollout_length)
     assert len(trajectories) == 2
 
     trajectory: Trajectory[Rank3, Action, RecurrentState] = stack_trajectories(
@@ -151,6 +151,8 @@ class LearnerManager(tp.Generic[Action]):
         utils.map_nt(lambda t: t[i::self.frame_skip], actions)
         for i in range(self.frame_skip)
     ]
+    # Note: actions are not owned by the rollout worker so we don't need to
+    # make a copy here.
     self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
 
     state = utils.map_single_structure(
@@ -179,7 +181,10 @@ class LearnerManager(tp.Generic[Action]):
         delayed_actions=trajectory.delayed_actions,
     )
 
-    return fs_trajectory, timings
+    # Remove unsupported metrics from sim env
+    metrics.pop('completed_games', None)
+
+    return fs_trajectory, metrics
 
 
   def _burnin_step(self):
@@ -269,6 +274,8 @@ def run(config: Config):
     step = 0
   else:
     raise ValueError('Must pass exactly one of "teacher" and "restore".')
+
+  name_map = rl_state['name_map']
 
   # TODO: handling all of these "state" objects that may take up a lot of
   # memory is error prone; we should find a cleaner way to do this.
@@ -386,6 +393,38 @@ def run(config: Config):
     use_fake_envs=config.actor.use_fake_envs,
   )
 
+  if config.actor.use_sim_envs:
+    if config.actor.async_envs:
+      if config.actor.num_envs % config.actor.inner_batch_size:
+        raise ValueError(
+            f'num_envs={config.actor.num_envs} must be divisible by '
+            f'inner_batch_size={config.actor.inner_batch_size} for sim RL.')
+    if config.agent.batch_steps > pretraining_config.policy.delay:
+      raise ValueError(
+          f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
+          f'{pretraining_config.policy.delay} for sim RL.')
+    if config.actor.rollout_length % max(1, config.agent.batch_steps):
+      raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
+
+    def build_actor() -> evaluators.AbstractRolloutWorker:
+      from slippi_ai.sim_env import jax_rollout
+
+      rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
+      # TODO: merge p1/p2 agent kwargs like in run_lib.py
+      rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
+
+      return jax_rollout.JaxSimRolloutWorker(
+          agent_kwargs=rollout_agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=config.actor.num_envs,
+          rollout_length=config.actor.rollout_length,
+          use_fake_envs=config.actor.use_fake_envs,
+          async_envs=config.actor.async_envs,
+          inner_batch_size=config.actor.inner_batch_size,
+          copy_data=False,
+          keep_agent_outputs_on_device=True,
+      )
+
   learner_manager = LearnerManager(
     config=config,
     learner=learner,
@@ -403,7 +442,7 @@ def run(config: Config):
     combined_state = dict(
       state=jax_utils.get_module_state(learner),
       config=policy_config,
-      name_map=rl_state['name_map'],
+      name_map=name_map,
       step=step,
       rl_config=rl_config_dict,
     )
