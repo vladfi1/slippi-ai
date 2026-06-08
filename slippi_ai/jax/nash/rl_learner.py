@@ -140,9 +140,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # We use the policy to sample and act, and regress the nash_policy towards
     # the resulting Nash distribution. At the end of each epoch, we copy the
     # nash_policy's weights to the policy.
-    self.policy = saving.policy_from_config_dict(policy_config)
-    self.nash_policy = saving.policy_from_config_dict(policy_config)
-    self.teacher = saving.policy_from_config_dict(policy_config)
+    self.policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
+    self.nash_policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
+    self.teacher: Policy[Action] = saving.policy_from_config_dict(policy_config)
 
     self._controller_embedding = self.policy.controller_head.controller_embedding
 
@@ -320,7 +320,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
 
     def post_update(
-        policy: Policy[Action],
+        policy: Policy[Action], /,
         frames: Frames[nash_data.Rank3, Action],
         initial_state: RecurrentState,
         fs_actor_logits: list[Action],  # FS x [T, B, 2]
@@ -338,6 +338,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
           'post_update_actor_kl': actor_kl
       }
       return metrics
+
+    post_update = jax_utils.with_compute_dtype(
+        post_update, config.nash_policy_dtype.dtype)
 
     self.post_update = jax_utils.cached_partial(
         jax_utils.nnx_jit(post_update),
@@ -393,6 +396,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     action = frames.state_action.action
     prev_action = utils.map_nt(lambda t: t[:-1], action)
 
+    # sample policy initial states come from the actor which might be in a different dtype
+    initial_states = jax_utils.cast_floats_to_dtype(
+        initial_states, self.config.sample_policy_dtype.dtype)
     sample_policy_outputs = sample_policy.unroll_with_outputs(frames, initial_states)
 
     # Because the action space is too large, we compute a finite subsample
@@ -400,8 +406,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     @nnx.vmap(in_axes=(None, 0), out_axes=_SAMPLE_AXIS)
     def sample(sample_policy: Policy[Action], rngs: nnx.Rngs):
-      # nnx doesn't complain about trace levels because the controller head
-      # manually iterates over the action components instead of using nnx.scan
       sample_outputs = sample_policy.controller_head.sample(
           rngs=rngs,
           inputs=sample_policy_outputs.outputs,
@@ -520,26 +524,23 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
-    def nash_policy_distance_fn(policy_sample: list[Action]):
-      distance_outputs = nash_policy.controller_head.distance_outputs(
+    def nash_policy_distance_fn(nash_policy: Policy[Action], policy_sample: list[Action]):
+      distances = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
           target_controller_state=policy_sample)
-      return jax_utils.add_n([
-          jax_utils.add_n(
-              nash_policy.controller_head.controller_embedding.flatten(do.distance)
-          )
-          for do in distance_outputs
-      ]) / len(distance_outputs)
+      return jax_utils.add_n(distances) / len(distances)
 
     if self.config.sample_batch_size > 0:
-      nash_policy_distance_fn = jax.remat(nash_policy_distance_fn)
+      nash_policy_distance_fn = nnx.remat(nash_policy_distance_fn)
 
     # [S, T, B, 2]
-    nash_policy_log_probs = -jax_utils.lax_map(
-        nash_policy_distance_fn, actions,
-        batch_size=self.config.sample_batch_size,
-    )
+    nash_policy_log_probs = -jax_utils.lax_map_fn(
+        nash_policy_distance_fn,
+        input_batch_dims=(None, 0),
+        output_batch_dims=0,
+        microbatch_size=self.config.sample_batch_size,
+    )(nash_policy, actions)
 
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
 
