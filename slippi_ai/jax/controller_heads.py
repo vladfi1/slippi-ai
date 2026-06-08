@@ -1,5 +1,6 @@
 import abc
 import copy
+import logging
 import typing as tp
 
 import jax
@@ -235,7 +236,6 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
     return dict(
         component=network_config,
-        remat=False,
         shared=True,
     )
 
@@ -253,7 +253,12 @@ class AutoRegressive(ControllerHead[ControllerType]):
     self.encoder = AutoRegressiveEncoder(rngs, input_size, component)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
-    self.remat = remat
+
+    # Remat used to be part of the config, but it should instead be set at
+    # runtime (i.e. post-initialization).
+    if remat:
+      logging.warning('Setting remat in the AutoRegressiveControllerHead config is deprecated, ignoring.')
+    self.remat = False
 
     def build_res_blocks():
       return nnx.List([
