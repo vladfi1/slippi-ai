@@ -18,7 +18,7 @@ import sys
 from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
-    microbatch_fn, microbatched_grads, grad_with_aux_tuple,
+    microbatch_module, microbatched_grads, grad_with_aux_tuple,
 )
 
 
@@ -262,7 +262,7 @@ class MicrobatchFnTest(unittest.TestCase):
     data = jax.random.normal(jax.random.PRNGKey(0), (8, 4))
 
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=2)(module, data)
 
     self._assert_close(ref, mb)
 
@@ -272,7 +272,7 @@ class MicrobatchFnTest(unittest.TestCase):
     data = jax.random.normal(jax.random.PRNGKey(1), (4, 3))
 
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=4)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=4)(module, data)
 
     self._assert_close(ref, mb)
 
@@ -284,7 +284,7 @@ class MicrobatchFnTest(unittest.TestCase):
 
     for mbs in [1, 2, 3, 4, 6, 12]:
       with self.subTest(mbs=mbs):
-        mb = microbatch_fn(self._forward_fn, microbatch_size=mbs)(module, data)
+        mb = microbatch_module(self._forward_fn, microbatch_size=mbs)(module, data)
         self._assert_close(ref, mb)
 
   def test_preserves_output_shape(self):
@@ -292,7 +292,7 @@ class MicrobatchFnTest(unittest.TestCase):
     module = nnx.Linear(4, 3, rngs=nnx.Rngs(3))
     data = jax.random.normal(jax.random.PRNGKey(3), (6, 4))
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=2)(module, data)
     self.assertEqual(mb.shape, ref.shape)
 
   def test_multi_output(self):
@@ -305,7 +305,7 @@ class MicrobatchFnTest(unittest.TestCase):
       return y, jnp.sum(y, axis=-1)
 
     ref_y, ref_s = f(module, data)
-    mb_y, mb_s = microbatch_fn(f, microbatch_size=4)(module, data)
+    mb_y, mb_s = microbatch_module(f, microbatch_size=4)(module, data)
 
     self._assert_close(ref_y, mb_y)
     self._assert_close(ref_s, mb_s)
@@ -321,7 +321,7 @@ class MicrobatchFnTest(unittest.TestCase):
       return jax.vmap(jax.vmap(module))(x)
 
     ref = f(module, data)
-    mb = microbatch_fn(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
+    mb = microbatch_module(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
     self._assert_close(ref, mb)
 
 
