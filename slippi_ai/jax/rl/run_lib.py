@@ -282,11 +282,11 @@ class LearnerManager(tp.Generic[Action]):
         delayed_actions=trajectory.delayed_actions,
     )
 
-    return fs_trajectory, timings
+    return fs_trajectory, trajectory, timings
 
   def unroll(self):
     """Advance hidden state without training (e.g. for burnin)."""
-    trajectory, _ = self._rollout()
+    trajectory, _, _ = self._rollout()
     _, self._hidden_state = self._learner.unroll(
         trajectory, self._hidden_state)
 
@@ -306,10 +306,12 @@ class LearnerManager(tp.Generic[Action]):
       self.actor.update_variables(variables)
 
     with self.rollout_profiler:
-      trajectories = []
+      fs_trajectories: list[learner_lib.FrameSkipTrajectory[Action]] = []
+      trajectories: list[evaluators.Trajectory[Rank2, Action, RecurrentState]] = []
       actor_metrics = []
       for _ in range(self._num_ppo_batches):
-        trajectory, timings = self._rollout()
+        fs_trajectory, trajectory, timings = self._rollout()
+        fs_trajectories.append(fs_trajectory)
         trajectories.append(trajectory)
         actor_metrics.append(timings)
 
@@ -322,7 +324,7 @@ class LearnerManager(tp.Generic[Action]):
     with self.learner_profiler:
 
       self._hidden_state, metrics = self._learner.ppo(
-          trajectories, self._hidden_state, step=step)
+          fs_trajectories, self._hidden_state, step=step)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
 
