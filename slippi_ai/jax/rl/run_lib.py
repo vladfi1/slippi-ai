@@ -232,7 +232,7 @@ class LearnerManager(tp.Generic[Action]):
     else:
       trajectory = trajectories[self._port]
 
-    trajectory: evaluators.Trajectory[Action, RecurrentState]
+    trajectory: evaluators.Trajectory[Rank2, Action, RecurrentState]
 
     assert not trajectory.delayed_actions, 'Not implemented'
 
