@@ -10,7 +10,8 @@ from slippi_ai import flag_utils, paths, reward as reward_lib
 from slippi_ai.jax.rl import run_lib, learner as learner_lib
 
 DEFAULT_CONFIG = run_lib.Config(
-    teacher=str(paths.JAX_MERGED_CHECKPOINT),
+    teacher=str(paths.JAX_POLICY_CHECKPOINT),
+    value_function=str(paths.JAX_VF_CHECKPOINT),
     runtime=run_lib.RuntimeConfig(
         max_step=10,
         log_interval=0,

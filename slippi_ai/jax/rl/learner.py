@@ -80,6 +80,18 @@ class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
   initial_state: RecurrentState  # [B]
   delayed_actions: list[SampleOutputs[ControllerType]]  # D x [B]
 
+  @classmethod
+  def batch_dims(cls) -> tp.Self:
+    return cls(
+        states=1,
+        name=1,
+        actions=1,
+        rewards=1,
+        is_resetting=1,
+        initial_state=0,
+        delayed_actions=0,
+    )
+
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
   value_function: RecurrentState
@@ -146,9 +158,9 @@ def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Fram
   )
 
 def update_rewards(
-    trajectory: Trajectory,
+    trajectory: FrameSkipTrajectory[ControllerType],
     reward_config: reward_lib.RewardConfig,
-) -> Trajectory:
+) -> FrameSkipTrajectory[ControllerType]:
   rewards = reward_lib.compute_rewards(
       trajectory.states, **dataclasses.asdict(reward_config))
   rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
@@ -164,20 +176,20 @@ class MBKwargs(tp.TypedDict):
   input_batch_dims: int | tuple
   output_batch_dims: int | tuple
 
-class PPOInputs(tp.NamedTuple, tp.Generic[ControllerType]):
-  teacher_logits: ControllerType
-  advantages: jax.Array
-  trajectory: Trajectory
-
 Metrics = dict[str, tp.Any]
 Advantage = jax.Array
 
 # batch axes
 _STATE_AXIS = 0
 _METRICS_AXIS = 1
-_TEACHER_LOGITS_AXIS = 1
+_TEACHER_LOGITS_AXIS = 2  # [T // FS, FS, B]
 _ADVANTAGES_AXIS = 1
-_TRAJECTORY_AXES = Trajectory.batch_dims()
+_TRAJECTORY_AXES = FrameSkipTrajectory.batch_dims()
+
+
+def batch_fs(xs: list[T], axis: int = 1) -> T:
+  return utils.map_nt(lambda *xs: jnp.stack(xs, axis=axis), *xs)
+
 
 class Learner(nnx.Module, tp.Generic[ControllerType]):
   """Implements PPO for RL fine-tuning."""
@@ -326,8 +338,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   ) -> tuple[jax_utils.Loss, ControllerType, RecurrentState]:
     teacher_frames = get_delayed_frames(trajectory)
     outputs = teacher.unroll(teacher_frames, initial_state)
-    loss = -outputs.log_probs  # unused
-    return loss, outputs.distances.logits, outputs.final_state
+    loss = -jax_utils.add_n(outputs.log_probs) / len(outputs.log_probs) # unused
+    logits = batch_fs([do.logits for do in outputs.distances])
+    return loss, logits, outputs.final_state
 
   def _unroll_vf(
       self,
@@ -356,7 +369,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       self,
       policy: Policy[ControllerType],
       advantages: jax.Array,
-      teacher_logits: list[ControllerType],
+      teacher_logits: ControllerType,  # Already batched
       trajectory: FrameSkipTrajectory[ControllerType],
   ) -> tp.Tuple[jax_utils.Loss, dict]:
     """Computes policy gradients for one PPO step.
@@ -379,15 +392,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # Advantages from [0, U]: take [D, U] -> U-D steps.
     advantages = jax.lax.stop_gradient(advantages[delay:])
 
-    def batch_fs(xs: list[T]) -> T:
-      return utils.map_nt(
-          lambda *xs: jnp.stack(xs, axis=1),
-          *xs
-      )
-
     # Teacher logits: [D, U+D] -> truncate last D -> [D, U].
     # Note: no stop_gradient needed since teacher has no trainable variables.
-    teacher_logits = batch_fs(utils.map_nt(remove_last, teacher_logits))
+    teacher_logits = remove_last(teacher_logits)
 
     # Policy frames: states [0, U-D+1], actions [D, U+1].
     policy_frames = Frames[Rank2, ControllerType](
@@ -459,6 +466,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def ppo_epoch(
       self,
+      # These are lists of length num_batches
       advantages: list[jax.Array],
       teacher_logits: list[ControllerType],
       trajectories: list[FrameSkipTrajectory[ControllerType]],
@@ -537,7 +545,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
   def _ppo(
       self,
-      trajectories: list[Trajectory],
+      trajectories: list[FrameSkipTrajectory[ControllerType]],
       initial_state: LearnerState,
       num_epochs: int,
       # set jit to false to jit-trace the whole thing
