@@ -155,7 +155,8 @@ if __name__ == '__main__':
           use_fake_envs=FAKE_ENVS.value,
           async_envs=ASYNC_ENVS.value,
           inner_batch_size=INNER_BATCH_SIZE.value,
-          keep_agent_outputs_on_device=False,  # uses too much GPU memory
+          # When burnin is enabled, mirror the behavior during RL training.
+          keep_agent_outputs_on_device=BURNIN.value,
       )
     else:
       evaluator = evaluators.Evaluator(
