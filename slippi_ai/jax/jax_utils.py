@@ -979,7 +979,9 @@ def _substruct_batch_size(axis: Axis, substruct: tp.Any) -> int | None:
     return None
   leaves = jax.tree.leaves(substruct)
   batch_sizes = set(leaf.shape[axis] for leaf in leaves)
-  if len(batch_sizes) != 1:
+  if len(batch_sizes) == 0:
+    return None
+  if len(batch_sizes) > 1:
     raise ValueError('Got different batch sizes: ' + str(batch_sizes))
   return batch_sizes.pop()
 
@@ -987,11 +989,13 @@ def _substruct_batch_size(axis: Axis, substruct: tp.Any) -> int | None:
 # that map(None, struct) doesn't work.
 prefix_map = functools.partial(jax.tree.map, is_leaf=lambda x: x is None)
 
-def get_batch_size(axis_prefix: AxisPrefix, struct: tp.Any) -> int:
+def get_batch_size(axis_prefix: AxisPrefix, struct: tp.Any) -> int | None:
   batch_sizes = jax.tree.leaves(prefix_map(
       _substruct_batch_size, axis_prefix, struct))
   batch_sizes = set(size for size in batch_sizes if size is not None)
-  if len(batch_sizes) != 1:
+  if len(batch_sizes) == 0:
+    return None
+  if len(batch_sizes) > 1:
     raise ValueError('Got different batch sizes: ' + str(batch_sizes))
   return batch_sizes.pop()
 
@@ -1031,7 +1035,7 @@ def microbatch_fn(
   def microbatched(*args: P.args, **kwargs: P.kwargs) -> T:
     batch_size = get_batch_size(input_batch_dims, args)
 
-    if batch_size % mbs != 0:
+    if batch_size is not None and batch_size % mbs != 0:
       raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
 
     microbatched_inputs = microbatch_struct(input_batch_dims, args, mbs)
@@ -1078,7 +1082,7 @@ def microbatch_module(
   ) -> T:
     batch_size = get_batch_size(input_batch_dims, args)
 
-    if batch_size % mbs != 0:
+    if batch_size is not None and batch_size % mbs != 0:
       raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
 
     full_in_axes = jax.tree.broadcast(input_batch_dims, args)
@@ -1124,6 +1128,9 @@ def microbatched_grads(
       module: ModT, *args: P.args, **kwargs: P.kwargs,
   ) -> tuple[Grads, *Outputs]:
     batch_size = get_batch_size(input_batch_dims, args)
+
+    if batch_size is None:
+      return grad_fn(module, *args, **kwargs)
 
     num_microbatches, r = divmod(batch_size, mbs)
     if r != 0:
