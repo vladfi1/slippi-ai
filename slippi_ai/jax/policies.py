@@ -80,11 +80,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     if isinstance(self.controller_head, AutoRegressive):
       self.controller_head.remat = True
 
-    if isinstance(self.network, networks.SimpleEmbedNetwork):
-      self.network._remat = True
-
-      if isinstance(self.network._network, networks.Sequential):
-        self.network._network.remat = True
+    self.network.enable_remat()
 
   def encode_game(self, game: Game) -> Game:
     return self.network.encode_game(game)

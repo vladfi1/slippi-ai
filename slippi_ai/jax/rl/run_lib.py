@@ -464,11 +464,11 @@ def run(config: Config):
     for state in [rl_state, teacher_state]:
       state['config']['policy']['delay'] = config.override_delay
 
-  rl_state['config']['network']['tx_like']['remat'] = config.remat
-  rl_state['config']['controller_head']['autoregressive']['remat'] = config.remat
-
   teacher = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
+
+  if config.remat:
+    policy.enable_remat()
 
   learner = learner_lib.Learner(
       config=config.learner,
