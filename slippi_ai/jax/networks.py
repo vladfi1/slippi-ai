@@ -39,6 +39,9 @@ Shape = int | tp.Sequence[int]
 
 class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
 
+  def enable_remat(self):
+    logging.warning('Remat is not supported for %s', self.__class__.__name__)
+
   @property
   @abc.abstractmethod
   def output_size(self) -> int:
@@ -376,6 +379,10 @@ class Sequential(Network[InputTree, InputTree]):
     self._layers = nnx.List(layers)
     self.remat = remat
 
+  def enable_remat(self):
+    # TODO: enable remat for all layers? that might be excessive
+    self.remat = True
+
   @property
   def output_size(self) -> int:
     return self._layers[-1].output_size
@@ -629,6 +636,9 @@ class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
   def output_size(self) -> int:
     """Returns the output size of the network."""
 
+  def enable_remat(self):
+    logging.warning('Remat is not supported for %s', self.__class__.__name__)
+
   @abc.abstractmethod
   def dummy(self, shape: S) -> StateAction[S, Action]:
     """Returns a dummy input of the given shape."""
@@ -798,6 +808,10 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
   @property
   def output_size(self) -> int:
     return self._network.output_size
+
+  def enable_remat(self):
+    self._remat = True
+    self._network.enable_remat()
 
   def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_module.dummy(shape)
