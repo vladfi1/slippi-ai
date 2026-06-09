@@ -14,7 +14,6 @@ from flax import nnx
 
 from slippi_ai import data, reward as reward_lib, utils
 from slippi_ai.types import S, Frames, StateAction, Game, FloatArray, BoolArray
-from slippi_ai.evaluators import Trajectory
 from slippi_ai.jax import jax_utils, embed, rl_lib
 from slippi_ai.jax import value_function as vf_lib
 from slippi_ai.jax.policies import (
@@ -156,15 +155,6 @@ def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Fram
       is_resetting=frames.is_resetting,
       reward=frames.reward,
   )
-
-def update_rewards(
-    trajectory: FrameSkipTrajectory[ControllerType],
-    reward_config: reward_lib.RewardConfig,
-) -> FrameSkipTrajectory[ControllerType]:
-  rewards = reward_lib.compute_rewards(
-      trajectory.states, **dataclasses.asdict(reward_config))
-  rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
-  return trajectory._replace(rewards=rewards)
 
 def warmup_schedule(burnin_steps: int, base_value: float):
   burnin = optax.constant_schedule(0)
@@ -652,11 +642,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     Returns:
       Tuple of (new hidden state, metrics dict).
     """
-
-    # Compute rewards from game states.
-    trajectories = [
-        update_rewards(t, self._config.reward) for t in trajectories
-    ]
 
     if step < self._config.value_burnin_epochs:
       num_epochs = 0
