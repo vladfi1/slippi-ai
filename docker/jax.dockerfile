@@ -7,7 +7,9 @@
 FROM nvcr.io/nvidia/jax:26.01-py3
 
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir s3cmd s3fs speedtest-cli
+RUN pip install --no-cache-dir s3cmd s3fs speedtest-cli ipdb ipython
+
+RUN apt update && apt install -y htop
 
 WORKDIR /root
 RUN git clone https://github.com/vladfi1/slippi-ai.git --branch jax
@@ -15,7 +17,7 @@ RUN git clone https://github.com/vladfi1/slippi-ai.git --branch jax
 WORKDIR /root/slippi-ai
 
 RUN pip install --no-cache-dir -r jax-requirements.txt
-RUN pip install --no-cache-dir -e .[jax]
+RUN pip install --no-cache-dir -e .[jax,cuda13]
 
 # Set default command
 CMD ["bash"]
