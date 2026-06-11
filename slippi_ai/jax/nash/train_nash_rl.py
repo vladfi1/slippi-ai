@@ -524,7 +524,7 @@ def run(config: Config):
     reset_interval = None
 
   try:
-    for i in range(config.runtime.max_step):
+    for i in range(config.runtime.max_step - step):
       with step_profiler:
         if i > 0 and reset_interval and i % reset_interval == 0:
           logging.info('Resetting environments')
