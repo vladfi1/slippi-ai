@@ -235,7 +235,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     # embed config, so the value function needs to use the same config.
     config.make_compatible_with(imitation_config)
     name_map = imitation_state['name_map']
-    config.dataset = imitation_config.dataset
   else:
     logging.warning('No compatible policy or checkpoint specified.')
 
@@ -288,7 +287,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=1,
+      extra_frames=config.frame_skip,
       observation_config=config.observation,
   )
   exit_stack.callback(train_data.shutdown)
@@ -388,6 +387,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' step={step_time:.3f}')
     print()
 
+  effective_unroll_length = config.data.unroll_length // config.frame_skip
   last_train_epoch_evaluated = 0.
 
   def maybe_eval(force: bool = False):
@@ -401,7 +401,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
 
     def time_mean(x: jax.Array, axis: int = 1) -> np.ndarray:
-      assert x.shape[axis] == config.data.unroll_length
+      assert x.shape[axis] == effective_unroll_length
       return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()

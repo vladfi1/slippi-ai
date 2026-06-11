@@ -18,9 +18,9 @@ def default_config():
   config = train_vf.Config(max_names=32)
 
   config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.unroll_length = 84
   config.data.damage_ratio = 0.01
-  config.data.num_workers = 1
+  config.data.num_workers = 2
   config.data.unroll_chunks = 4
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
@@ -100,7 +100,16 @@ if __name__ == '__main__':
         n = config.network[config.network['name']]['num_layers']
         h = config.network[config.network['name']]['hidden_size']
 
-        config.tag = f"vf_{char}{op}_tx{n}x{h}"
+        rfs = imitation_config.policy.frame_skip
+
+        embed_name = config.network['embed']['name']
+        embed_cfg = config.network['embed'][embed_name]
+        if embed_name == 'enhanced':
+          embed = f"enhanced-{embed_cfg['hidden_size']}"
+        else:
+          embed = embed_name
+
+        config.tag = f"vf_{char}{op}_tx{n}x{h}_{embed}_rfs{rfs}"
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
