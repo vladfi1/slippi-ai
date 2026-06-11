@@ -133,6 +133,17 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     _, init_state = self.action_init.step(core_outputs, zero_state)
     return init_state
 
+  def q_values_from_action_state_stacked(
+      self,
+      values: jax.Array,  # [..., 2]
+      action_init_state: networks.RecurrentState,  # [..., 2, H]
+      actions: jax.Array,  # [FS, ..., 2, embed_size]
+  ) -> jax.Array:  # [..., 2]
+    merged = to_merged_outputs(actions)  # [FS, ..., 2, 2 * embed_size]
+    reset = jnp.zeros(merged.shape[:-1], dtype=bool)  # [FS, ...]
+    outputs, _ = self.action_net.unroll(merged, reset, action_init_state)
+    return self._q_values_from_outputs(outputs[-1], values)
+
   def q_values_from_action_state(
       self,
       values: jax.Array,  # [..., 2]
@@ -141,10 +152,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
   ) -> jax.Array:  # [..., 2]
     embedded = [self.embed_action(a) for a in actions]
     stacked = jnp.stack(embedded, axis=0)  # [FS, ..., 2, embed_size]
-    merged = to_merged_outputs(stacked)  # [FS, ..., 2, 2 * embed_size]
-    reset = jnp.zeros(merged.shape[:-1], dtype=bool)  # [FS, ...]
-    outputs, _ = self.action_net.unroll(merged, reset, action_init_state)
-    return self._q_values_from_outputs(outputs[-1], values)
+    return self.q_values_from_action_state_stacked(values, action_init_state, stacked)
 
   def q_values_from_core_outputs(
       self,
@@ -165,20 +173,9 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
 
-    def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
-      # embedded_fs: [FS, T, B, 2, E]
-      reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
-      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_init_state)
-      return outputs[-1]  # [T, B, 2, O]
+    p1_action_inputs, p2_action_inputs = jnp.unstack(action_inputs, axis=-2)
 
-    action_outputs = jax_utils.lax_map(
-        process_one_sample,
-        action_inputs,
-        batch_size=batch_size,
-    )
-    p0_outputs, p1_outputs = jnp.unstack(action_outputs, axis=-2)  # [S, T, B, O]
-
-    num_samples = action_outputs.shape[0]
+    num_samples = action_inputs.shape[0]
 
     if batch_size is None:
       inner_bs = None
@@ -193,14 +190,14 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       inner_bs = 0
       outer_bs = batch_size // num_samples
 
-    def p0_fn(p0_outputs: jax.Array):
-      def p1_fn(p1_outputs: jax.Array):
-        outputs = jnp.stack([p0_outputs, p1_outputs], axis=-2)  # [T, B, 2, O]
-        return self._q_values_from_outputs(outputs, values)
+    def p0_fn(p0_inputs: jax.Array):
+      def p1_fn(p1_inputs: jax.Array):
+        inputs = jnp.stack([p0_inputs, p1_inputs], axis=-2)  # [FS, T, B, 2, E]
+        return self.q_values_from_action_state_stacked(values, action_init_state, inputs)
 
-      return jax_utils.lax_map(p1_fn, p1_outputs, batch_size=inner_bs)
+      return jax_utils.lax_map(p1_fn, p2_action_inputs, batch_size=inner_bs)
 
-    return jax_utils.lax_map(p0_fn, p0_outputs, batch_size=outer_bs)
+    return jax_utils.lax_map(p0_fn, p1_action_inputs, batch_size=outer_bs)
 
   def unroll(
       self,
