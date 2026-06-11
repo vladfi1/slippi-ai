@@ -145,7 +145,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     TMSS = PS(*tms_specs)  # time-major SxS
 
     policy_samples = TMS
-    vs = TM
     q_action_init = TM
     qs = TMSS
     nash_solution = TM
@@ -170,7 +169,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     q_function_specs = ShardingSpecs(
         extra_in_specs=(policy_samples,),
-        extra_out_specs=(vs, q_action_init, qs),
+        extra_out_specs=(q_action_init, qs),
     )
 
     # Keep q_function in fp32 so we can distinguish small differences in
@@ -206,7 +205,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
     nash_policy_specs = ShardingSpecs(
-        extra_in_specs=(policy_samples, vs, q_action_init, nash_solution),
+        extra_in_specs=(policy_samples, q_action_init, nash_solution),
         extra_out_specs=None,
     )
 
@@ -310,7 +309,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       bm_frames: Frames[nash_data.Rank3, Action],
       initial_states: RecurrentState,
       policy_samples: list[Action],
-  ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
+  ) -> tuple[Loss, Metrics, RecurrentState, RecurrentState, QValues]:
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
 
@@ -328,7 +327,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     assert _SAMPLE_AXIS == 0
      # [S, S, T, B, 2]
     sample_q_values = q_function.multi_q_values_from_action_state(
-        values=q_outputs.values,
         action_init_state=action_init_state,
         actions=actions,
         batch_size=self.config.sample_batch_size,
@@ -340,7 +338,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
-    return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values
+    return bm_loss, bm_metrics, final_state, action_init_state, q_values
 
   def _compute_nash(
       self,
@@ -411,7 +409,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
-      values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
   ) -> tuple[Loss, dict, RecurrentState]:
@@ -513,7 +510,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
         def q_fn(actions: list[Action]):
           two_player_qs = q_function.q_values_from_action_state(
-            values=values,
             action_init_state=q_action_init_state,
             actions=actions,
           )
@@ -578,7 +574,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
-      values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
       nash_solution: nash.NashVariables,  # [T, B]
       train: bool = True,
@@ -592,7 +587,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     fn = self.train_nash_policy if train else self.run_nash_policy
     return fn(
         frames, initial_state, policy_samples,
-        values, q_action_init_state, nash_solution,
+        q_action_init_state, nash_solution,
     )
 
   def step(
@@ -617,7 +612,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     (
       metrics[Q_FUNCTION],
       final_states[Q_FUNCTION],
-      values,
       q_action_init_state,
       q_values,
     ) = self.step_q_function(
@@ -633,6 +627,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         zipped_frames, initial_states[NASH_POLICY], policy_samples,
-        values, q_action_init_state, nash_variables, train=train)
+        q_action_init_state, nash_variables, train=train)
 
     return metrics, final_states

@@ -123,14 +123,12 @@ class TrainManager:
     return stats, batch
 
 def print_losses(name: str, stats: dict):
-  v_uev = stats[learner_lib.Q_FUNCTION]['v']['uev']
   q_uev = stats[learner_lib.Q_FUNCTION]['q']['uev']
-  v_loss = stats[learner_lib.Q_FUNCTION]['v']['loss']
   q_loss = stats[learner_lib.Q_FUNCTION]['q']['loss']
 
-  v_uev, q_uev, v_loss, q_loss = map(train_lib.mean, (v_uev, q_uev, v_loss, q_loss))
+  q_uev, q_loss = map(train_lib.mean, (q_uev, q_loss))
 
-  print(f'{name}: v_uev={v_uev:.4f} q_uev={q_uev:.4f} v_loss={v_loss:.4f} q_loss={q_loss:.4f}')
+  print(f'{name}: q_uev={q_uev:.4f} q_loss={q_loss:.4f}')
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
