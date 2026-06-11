@@ -7,6 +7,7 @@ the shared `GameBatchBuffers`.
 """
 
 import dataclasses
+import logging
 import math
 import multiprocessing as mp
 from multiprocessing.process import BaseProcess
@@ -275,6 +276,7 @@ class MultiprocessSimEnvironment:
       self._processes.append(process)
 
   def stop(self):
+    logging.info('Stopping multiprocess sim environment')
     if self._closed:
       return
     self._closed = True
