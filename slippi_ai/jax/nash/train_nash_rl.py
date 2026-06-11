@@ -6,7 +6,7 @@ import os
 import pickle
 import typing as tp
 
-import melee
+import jax
 import numpy as np
 from absl import logging
 from flax import nnx
@@ -88,6 +88,18 @@ def stack_trajectories(
       lambda axis, *ts: utils.batch_nest_nt(ts, axis=axis+1),
       Trajectory.batch_dims(), *trajectories)
 
+def unmerge_trajectory(
+    trajectory: Trajectory[Rank2, Action, RecurrentState],
+) -> Trajectory[Rank3, Action, RecurrentState]:
+  # Converts [..., 2B] -> [..., B, 2]
+  def unmerge_array(axis: int, x: np.ndarray) -> np.ndarray:
+    x = x.reshape(x.shape[:axis] + (2, x.shape[axis] // 2) + x.shape[axis+1:])
+    return np.swapaxes(x, axis, axis+1)
+
+  return jax.tree.map(
+    lambda axis, substruct: jax.tree.map(
+      lambda x: unmerge_array(axis, x), substruct),
+      Trajectory.batch_dims(), trajectory)
 
 
 class LearnerManager(tp.Generic[Action]):
@@ -127,13 +139,19 @@ class LearnerManager(tp.Generic[Action]):
       for _ in range(self._burnin):
         self._burnin_step()
 
-
   def _rollout(self):
-    trajectories, metrics = self.actor.rollout(self._rollout_length)
-    assert len(trajectories) == 2
+    # TODO: might be better to do trajectory manipulation in jax, as parts of
+    # the data are already on device (e.g. actions and initial state)
 
-    trajectory: Trajectory[Rank3, Action, RecurrentState] = stack_trajectories(
-        [trajectories[p] for p in self._ports])
+    trajectories, metrics = self.actor.rollout(self._rollout_length)
+    if len(trajectories) == 1:
+      assert trajectories[self._ports[0]].is_resetting.shape[1] == 2 * self.batch_size
+      trajectory = unmerge_trajectory(trajectories[self._ports[0]])
+    elif len(trajectories) == 2:
+      trajectory: Trajectory[Rank3, Action, RecurrentState] = stack_trajectories(
+          [trajectories[p] for p in self._ports])
+    else:
+      raise ValueError(f'Expected 1 or 2 trajectories, got {len(trajectories)}')
 
     assert not trajectory.delayed_actions, 'Not implemented'
 
@@ -359,6 +377,7 @@ def run(config: Config):
   main_players = [dolphin_lib.AI() for _ in range(batch_size)]
   opponent_players = [dolphin_lib.AI() for _ in range(batch_size)]
 
+  # TODO: should p1/p2 have different names?
   opponent_kwargs = main_agent_kwargs.copy()
   name_combinations = list(itertools.product(
     config.agent.name, config.agent.name))
@@ -409,12 +428,12 @@ def run(config: Config):
     def build_actor() -> evaluators.AbstractRolloutWorker:
       from slippi_ai.sim_env import jax_rollout
 
-      rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
-      # TODO: merge p1/p2 agent kwargs like in run_lib.py
-      rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
+      merged_kwargs = main_agent_kwargs.copy()
+      merged_kwargs['name'] = main_agent_names + opp_names
+      rollout_agent_kwargs = {(PORT, ENEMY_PORT): merged_kwargs}
 
       return jax_rollout.JaxSimRolloutWorker(
-          agent_kwargs=rollout_agent_kwargs,
+          agent_kwargs=rollout_agent_kwargs,  # type: ignore
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
           rollout_length=config.actor.rollout_length,
@@ -422,7 +441,8 @@ def run(config: Config):
           async_envs=config.actor.async_envs,
           inner_batch_size=config.actor.inner_batch_size,
           copy_data=False,
-          keep_agent_outputs_on_device=True,
+          # We need to manipulate agent outputs in python.
+          keep_agent_outputs_on_device=False,
       )
 
   learner_manager = LearnerManager(
