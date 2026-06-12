@@ -520,6 +520,32 @@ class Learner(nnx.Module, tp.Generic[Action]):
         policy_samples, frames.state_action.action)
       num_samples += 1
 
+    # Compute fraciton of actions that are unique
+    # TODO: this could belong in the sample policy unroll
+
+    # We assume that the action components are scalars
+    stacked_actions = utils.map_nt(  # [S, T, FS, B, 2]
+        lambda *xs: jnp.stack(xs, axis=2), *actions)
+
+    actions_eq = utils.map_nt(  # [S, S, T, FS, B, 2]
+        lambda x: x == jnp.expand_dims(x, axis=1), stacked_actions)
+
+    # [S, S, T, FS, B, 2]
+    actions_eq_iter = self._controller_embedding.flatten(actions_eq)
+    action_eq_acc = next(actions_eq_iter)
+    for action_eq in actions_eq_iter:
+      action_eq_acc = jnp.logical_and(action_eq_acc, action_eq)
+
+    actions_eq = jnp.logical_and.reduce(action_eq_acc, axis=3)  # [S, S, T, B, 2]
+    ns = jnp.arange(num_samples)
+    # is_first[i, j] = i < j for i, j in [0, S)
+    is_first = jnp.expand_dims(ns, 1) < ns  # [S, S]
+    is_first = jnp.expand_dims(is_first, axis=[2, 3, 4])  # [S, S, 1, 1, 1]
+    # i is disqualified by j if i < j and action[i] == action[j]
+    disqualified = jnp.logical_and(actions_eq, is_first)  # [S, S, T, B, 2]
+    is_unique = ~jnp.any(disqualified, axis=1)  # [S, T, B, 2]
+    unique_fraction = jnp.mean(is_unique, axis=0)  # [T, B, 2]
+
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
     nash_policy_imitation_loss = nash_policy_outputs.imitation_loss
@@ -638,6 +664,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         reverse_teacher_kl=reverse_teacher_kl,
         actor_kl=actor_kl,
         entropy=entropy,
+        unique_fraction=unique_fraction,
     )
 
     if self.config.include_action_taken_in_samples:

@@ -10,6 +10,7 @@ import jax
 import numpy as np
 from absl import logging
 from flax import nnx
+from pandas import isna
 
 from slippi_ai import (
   dolphin as dolphin_lib,
@@ -512,9 +513,13 @@ def run(config: Config):
     learner_metrics = metrics['learner']
     nash_xent = np.mean(
       learner_metrics[rl_learner.NASH_POLICY]['nash_cross_entropy'])
+    if np.isnan(nash_xent):
+      raise ValueError('nash_xent is NaN')
     nash_ent = np.mean(
       learner_metrics[rl_learner.NASH_POLICY]['nash_entropy'])
-    print(f'nash_xent={nash_xent:.3f} nash_ent={nash_ent:.3f}')
+    unique_fraction = np.mean(
+      learner_metrics[rl_learner.NASH_POLICY]['unique_fraction'])
+    print(f'nash_xent={nash_xent:.3f} nash_ent={nash_ent:.3f} unique_fraction={unique_fraction:.2f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
@@ -532,6 +537,7 @@ def run(config: Config):
 
         trajectory, metrics = learner_manager.step(step=step)
 
+      # TODO: allow some sort of runahead?
       logger.record(get_log_data(trajectory, metrics))
       maybe_flush(step)
       maybe_save(step)
