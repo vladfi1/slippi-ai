@@ -113,6 +113,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,  # [B, 2]
       *,
       unroll_batch_size: tp.Optional[int] = None,
+      lambda_: float = 1.0,
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = nash_utils.bm_to_tm(combined_frames)
     frames = self._get_delayed_frames(frames)
@@ -122,7 +123,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     q_outputs, final_state = q_function.loss_batched(
         frames, initial_state, self.discount, unroll_batch_size,
-        lambda_=self.config.gae_lambda)
+        lambda_=lambda_)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])  # [T, B, 2] -> [B]
     # metrics: [T, B, 2] -> [B, 2]
@@ -140,7 +141,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     frames = self._encode_frames(zipped_frames)
 
     if train:
-      metrics, final_state = self.train_q_function(frames, initial_state)
+      metrics, final_state = self.train_q_function(
+        frames, initial_state, lambda_=self.config.gae_lambda)
     else:
       metrics, final_state = self.run_q_function(
         frames, initial_state, unroll_batch_size=self.config.unroll_batch_size)

@@ -432,10 +432,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
       initial_states: RecurrentState,  # [B, 2]
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
+      lambda_: float = 1.0,
   ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
 
     q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
-        frames, initial_states, self.discount, lambda_=self.config.gae_lambda)
+        frames, initial_states, self.discount, lambda_=lambda_)
 
     actions = policy_samples
     if self.config.include_action_taken_in_samples:
@@ -666,7 +667,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       train: bool,
   ):
     fn = self.train_q_function if train else self.run_q_function
-    return fn(tm_frames, initial_state, policy_samples)
+    lambda_ = self.config.gae_lambda if train else 1.0
+    return fn(tm_frames, initial_state, policy_samples, lambda_=lambda_)
 
   @jax_utils.annotate_function
   def step_nash_policy(
