@@ -224,6 +224,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       discount: float,
       batch_size: int,  # batch size in time
       lambda_: float = 1.0,
+      eval_lambdas: list[float] = [0],
   ) -> tp.Tuple[QOutputs, RecurrentState]:
     total_unroll_length = frames.reward.shape[0]  # T
     num_batches, r = divmod(total_unroll_length, batch_size)
@@ -275,6 +276,17 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         discount=discount,
         lambda_=lambda_,
     )
+
+    for lambda_ in eval_lambdas:
+      eval_outputs = self._get_outputs(
+          frames=frames,
+          values=values,
+          q_values=q_values,
+          last_value=last_value,
+          discount=discount,
+          lambda_=lambda_,
+      )
+      outputs.metrics[f'lambda_{lambda_:.1f}'] = eval_outputs.metrics
 
     return outputs, final_state
 
