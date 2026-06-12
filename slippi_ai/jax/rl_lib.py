@@ -59,11 +59,11 @@ def generalized_returns(
     reward, discount, current_value, lambda_ = inputs
     value = reward + discount * future_value
     smoothed_value = lambda_ * value + (1 - lambda_) * current_value
-    return smoothed_value, smoothed_value
+    return smoothed_value, value
 
-  _, smoothed_returns = jax.lax.scan(
+  _, returns = jax.lax.scan(
       scan_fn, bootstrap, (rewards, discounts, values, lambdas), reverse=True)
-  return smoothed_returns
+  return returns
 
 def generalized_returns_with_resetting(
     rewards: Array,
@@ -75,7 +75,7 @@ def generalized_returns_with_resetting(
     dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
   discounts = jnp.where(is_resetting, 0.0, discount)
-  lambdas = jnp.where(is_resetting, 0.0, lambda_)
+  lambdas = jnp.full_like(discounts, lambda_)
 
   return generalized_returns(
       rewards=rewards,

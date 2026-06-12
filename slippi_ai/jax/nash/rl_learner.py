@@ -29,6 +29,7 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   q_fn_learning_rate: tp.Optional[float] = None
   reward_halflife: float = 4
+  gae_lambda: float = 1.0
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
@@ -434,7 +435,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
   ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
 
     q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
-        frames, initial_states, self.discount)
+        frames, initial_states, self.discount, lambda_=self.config.gae_lambda)
 
     actions = policy_samples
     if self.config.include_action_taken_in_samples:

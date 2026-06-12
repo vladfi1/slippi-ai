@@ -223,6 +223,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,  # [B, 2]
       discount: float,
       batch_size: int,  # batch size in time
+      lambda_: float = 1.0,
   ) -> tp.Tuple[QOutputs, RecurrentState]:
     total_unroll_length = frames.reward.shape[0]  # T
     num_batches, r = divmod(total_unroll_length, batch_size)
@@ -272,6 +273,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         q_values=q_values,
         last_value=last_value,
         discount=discount,
+        lambda_=lambda_,
     )
 
     return outputs, final_state
@@ -281,6 +283,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
       initial_state: RecurrentState,
       discount: float,
+      lambda_: float = 1.0,
   ) -> tp.Tuple[QOutputs, RecurrentState, RecurrentState]:
     """Returns (q_outputs, action_init_state, final_state).
 
@@ -311,6 +314,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         q_values=q_values,
         last_value=last_value,
         discount=discount,
+        lambda_=lambda_,
     )
 
     return outputs, action_init_state, final_state
@@ -322,6 +326,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       q_values: jax.Array,
       last_value: jax.Array,
       discount: float,
+      lambda_: float,
   ):
     value_targets = rl_lib.generalized_returns_with_resetting(
         rewards=frames.reward,
@@ -329,6 +334,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         is_resetting=frames.is_resetting[1:],
         bootstrap=last_value,
         discount=discount,
+        lambda_=lambda_,
     )
     value_targets = jax.lax.stop_gradient(value_targets)
 

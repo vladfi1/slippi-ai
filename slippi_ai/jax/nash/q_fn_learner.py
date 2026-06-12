@@ -21,10 +21,11 @@ from slippi_ai.jax.nash.q_function import Rank3
 class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
+  gae_lambda: float = 1.0
 
   unroll_batch_size: tp.Optional[int] = None
 
-Loss = jax.Array
+Loss = jax_utils.Loss
 Rank2 = tuple[int, int]
 
 Q_FUNCTION = 'q_function'
@@ -120,7 +121,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       unroll_batch_size = frames.reward.shape[0]
 
     q_outputs, final_state = q_function.loss_batched(
-        frames, initial_state, self.discount, unroll_batch_size)
+        frames, initial_state, self.discount, unroll_batch_size,
+        lambda_=self.config.gae_lambda)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])  # [T, B, 2] -> [B]
     # metrics: [T, B, 2] -> [B, 2]
