@@ -17,6 +17,7 @@ from slippi_ai.jax.agents import DType
 from slippi_ai.nash import data as nash_data
 from slippi_ai.jax.nash import (
     q_function as q_lib,
+    nash_policy_learner,
 )
 from slippi_ai.jax.nash import nash
 from slippi_ai.jax.rl.learner import FrameSkipTrajectory
@@ -458,8 +459,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_values = sample_q_values
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
+
+    metrics = dict(
+        q_outputs.metrics,
+        information_fraction=nash_policy_learner.information_fraction(q_values),
+    )
+
     bm_metrics = utils.map_single_structure(
-      lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
+      lambda x: jnp.mean(x, axis=0), metrics)
 
     return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values
 
@@ -520,31 +527,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         policy_samples, frames.state_action.action)
       num_samples += 1
 
-    # Compute fraciton of actions that are unique
-    # TODO: this could belong in the sample policy unroll
-
-    # We assume that the action components are scalars
-    stacked_actions = utils.map_nt(  # [S, T, FS, B, 2]
-        lambda *xs: jnp.stack(xs, axis=2), *actions)
-
-    actions_eq = utils.map_nt(  # [S, S, T, FS, B, 2]
-        lambda x: x == jnp.expand_dims(x, axis=1), stacked_actions)
-
-    # [S, S, T, FS, B, 2]
-    actions_eq_iter = self._controller_embedding.flatten(actions_eq)
-    action_eq_acc = next(actions_eq_iter)
-    for action_eq in actions_eq_iter:
-      action_eq_acc = jnp.logical_and(action_eq_acc, action_eq)
-
-    actions_eq = jnp.logical_and.reduce(action_eq_acc, axis=3)  # [S, S, T, B, 2]
-    ns = jnp.arange(num_samples)
-    # is_first[i, j] = i < j for i, j in [0, S)
-    is_first = jnp.expand_dims(ns, 1) < ns  # [S, S]
-    is_first = jnp.expand_dims(is_first, axis=[2, 3, 4])  # [S, S, 1, 1, 1]
-    # i is disqualified by j if i < j and action[i] == action[j]
-    disqualified = jnp.logical_and(actions_eq, is_first)  # [S, S, T, B, 2]
-    is_unique = ~jnp.any(disqualified, axis=1)  # [S, T, B, 2]
-    unique_fraction = jnp.mean(is_unique, axis=0)  # [T, B, 2]
+    unique_fraction = nash_policy_learner.compute_unique_fraction(actions)
 
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
