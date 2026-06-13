@@ -20,12 +20,12 @@ from slippi_ai.jax.nash import (
     q_function as q_lib,
 )
 from slippi_ai.jax.nash import nash
+from slippi_ai.jax.agents import DType
 
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4  # only for q_function metrics
-  bf16: bool = False
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
@@ -37,6 +37,10 @@ class LearnerConfig:
   imitation_weight: float = 0
 
   nash_solver: str = 'simplex'
+
+  sample_policy_dtype: DType = DType.FP32
+  nash_policy_dtype: DType = DType.FP32
+  # q_fn_dtype: DType = DType.FP32
 
   compute_nash_policy_qs: bool = True
 
@@ -194,9 +198,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         extra_out_specs=(policy_samples,),
     )
 
-    unroll_sample_policy = self._unroll_sample_policy
-    if config.bf16:
-      unroll_sample_policy = jax_utils.with_bf16_compute(unroll_sample_policy)
+    unroll_sample_policy = jax_utils.with_compute_dtype(
+        self._unroll_sample_policy, config.sample_policy_dtype.dtype)
 
     self.run_sample_policy = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.sample_policy,
@@ -247,10 +250,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         extra_in_specs=(policy_samples, vs, q_action_init, nash_solution),
         extra_out_specs=None,
     )
-
-    unroll_nash_policy = self._unroll_nash_policy
-    if config.bf16:
-      unroll_nash_policy = jax_utils.with_bf16_compute(unroll_nash_policy)
+    unroll_nash_policy = jax_utils.with_compute_dtype(
+        self._unroll_nash_policy, config.nash_policy_dtype.dtype)
 
     self.train_nash_policy = jax_utils.data_parallel_train_with_rngs(
         module=self.nash_policy,
@@ -270,12 +271,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
+    nash_policy_state = jax_utils.cast_floats_to_dtype(
+        self.nash_policy.initial_state((batch_size, 2), rngs),
+        self.config.nash_policy_dtype.dtype)
+    sample_policy_state = jax_utils.cast_floats_to_dtype(
+        self.sample_policy.initial_state((batch_size, 2), rngs),
+        self.config.sample_policy_dtype.dtype)
+
     state = {
-        NASH_POLICY: self.nash_policy.initial_state((batch_size, 2), rngs),
-        SAMPLE_POLICY: self.sample_policy.initial_state((batch_size, 2), rngs),
+        NASH_POLICY: nash_policy_state,
+        SAMPLE_POLICY: sample_policy_state,
     }
-    if self.config.bf16:
-      state = jax_utils.cast_floats_to_dtype(state, jnp.bfloat16)
 
     # q_function is in fp32
     state[Q_FUNCTION] = self.q_function.initial_state(batch_size, rngs)
