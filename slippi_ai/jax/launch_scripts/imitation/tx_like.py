@@ -28,6 +28,7 @@ def default_config():
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
   config.learner.reward_halflife=4
+  config.learner.bf16 = True
   config.embed.controller.type = 'custom_v1'
   config.embed.controller.default.axis_spacing=32
   config.embed.controller.default.shoulder_spacing=10
@@ -191,11 +192,6 @@ if __name__ == '__main__':
         n = arch_config.network[net]['num_layers']
         h = net_config['hidden_size']
 
-        if config.learner.bf16:
-          bf16 = '_bf16'
-        else:
-          bf16 = ''
-
         rfs = f'rfs{config.policy.frame_skip}'
 
         ch = arch_config.controller_head['autoregressive']['component']
@@ -204,7 +200,7 @@ if __name__ == '__main__':
         chn = ch['num_layers']
         chs = ch['hidden_size']
 
-        config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chn}x{chs}{bf16}_{rfs}"
+        config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chn}x{chs}_{rfs}"
 
     config.dataset.allowed_characters = char
 
