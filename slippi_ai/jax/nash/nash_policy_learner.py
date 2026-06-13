@@ -83,6 +83,44 @@ def p1_averaged_qs(two_player_qs: jax.Array) -> jax.Array:
       two_player_qs, jnp.array([1, -1], dtype=two_player_qs.dtype),
       axis=-1) / 2
 
+def compute_unique_fraction(actions: list[Action]) -> jax.Array:
+  # Compute fraction of actions that are unique
+
+  # We assume that the action components are scalars
+  stacked_actions = utils.map_nt(  # [S, T, FS, B, 2]
+      lambda *xs: jnp.stack(xs, axis=2), *actions)
+  combined_actions = jnp.stack(
+      jax.tree.leaves(stacked_actions), axis=-1)  # [S, T, FS, B, 2, C]
+  num_samples = combined_actions.shape[0]
+
+  actions_eq = combined_actions == jnp.expand_dims(combined_actions, axis=1)  # [S, S, T, FS, B, 2, C]
+  actions_eq = jnp.all(actions_eq, axis=[2, -1])  # [S, S, T, B, 2]
+
+  ns = jnp.arange(num_samples)
+  # is_first[i, j] = i < j for i, j in [0, S)
+  is_first = jnp.expand_dims(ns, 1) < ns  # [S, S]
+  is_first = jnp.expand_dims(is_first, axis=[2, 3, 4])  # [S, S, 1, 1, 1]
+  # i is disqualified by j if i < j and action[i] == action[j]
+  disqualified = jnp.logical_and(actions_eq, is_first)  # [S, S, T, B, 2]
+  is_unique = ~jnp.any(disqualified, axis=1)  # [S, T, B, 2]
+  unique_fraction = jnp.mean(is_unique, axis=0)  # [T, B, 2]
+
+  return unique_fraction
+
+def information_fraction(
+  payoff_matrices: jax.Array,  # [..., S, S]
+  eps: float = 1e-8,
+) -> jax.Array:
+  """Fraction of a payoff matrix that can't be explained by additive interactions."""
+  P = payoff_matrices
+  m = P.mean(axis=[-2, -1], keepdims=True)
+  P_m = P - m
+  r = P_m.mean(axis=-1, keepdims=True)
+  c = P_m.mean(axis=-2, keepdims=True)
+  I = P_m - r - c
+
+  return I.var(axis=[-2, -1]) / (P_m.var(axis=[-2, -1]) + eps)
+
 class Learner(nnx.Module, tp.Generic[Action]):
 
   def __init__(
@@ -337,8 +375,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_values = sample_q_values
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
+
+    metrics = dict(
+        q_outputs.metrics,
+        information_fraction=information_fraction(q_values),
+    )
+
     bm_metrics = utils.map_single_structure(
-      lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
+      lambda x: jnp.mean(x, axis=0), metrics)
 
     return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values
 
@@ -431,6 +475,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
         policy_samples, frames.state_action.action)
       num_samples += 1
 
+    # TODO: this could belong in the sample policy unroll
+    unique_fraction = compute_unique_fraction(actions)
+
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
     nash_policy_imitation_loss = nash_policy_outputs.imitation_loss
@@ -478,6 +525,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         nash_cross_entropy=nash_cross_entropy,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
+        unique_fraction=unique_fraction,
     )
 
     if self.config.compute_nash_policy_qs:
