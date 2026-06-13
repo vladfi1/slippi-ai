@@ -7,8 +7,9 @@ import fancyflags as ff
 
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
-from slippi_ai.jax import networks
+from slippi_ai.jax import networks, embed as embed_lib
 from slippi_ai.jax.q import train_q_fn
+from slippi_ai.jax.q import q_function as q_lib
 
 network_config = networks.default_config()
 network_config['name'] = 'tx_like'
@@ -29,7 +30,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=6,
     ),
     runtime=train_q_fn.RuntimeConfig(
         log_interval=4,
@@ -37,8 +38,20 @@ DEFAULT_CONFIG = train_q_fn.Config(
         num_evals_per_epoch=2,
         max_eval_steps=3,
     ),
-    network=network_config,
-    delay=0,
+    q_function=q_lib.QFunctionConfig(
+        core_net=network_config,
+        action_net=network_config,
+        embed=embed_lib.EmbedConfig(
+            player=embed_lib.PlayerConfig(with_nana=False),
+            items=embed_lib.ItemsConfig(type=embed_lib.ItemsType.SKIP),
+        ),
+        head=q_lib.HeadConfig(
+            num_layers=1,
+            hidden_size=1,
+        ),
+    ),
+    test_unroll_multiplier=2,
+    compatible_policy=str(paths.JAX_POLICY_CHECKPOINT),
 )
 
 if __name__ == '__main__':
