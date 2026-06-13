@@ -586,7 +586,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
 
+  maybe_eval()  # Possibly run initial evaluation
+
   while time.time() - start_time < runtime.max_runtime:
+
+    if config.runtime.max_step is not None and step >= config.runtime.max_step:
+      logging.info('Reached max step %d, stopping training.', step)
+      break
+
     with train_profiler:
       train_stats, _ = train_manager.step()
 
@@ -597,10 +604,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     maybe_log(train_stats)
     maybe_eval()
-
-    if config.runtime.max_step is not None and step >= config.runtime.max_step:
-      logging.info('Reached max step %d, stopping training.', step)
-      break
 
   # maybe_eval(force=True)
   if config.runtime.profile_trace_dir is not None:
