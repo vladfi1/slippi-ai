@@ -12,6 +12,7 @@ from absl import logging
 import numpy as np
 import jax
 from flax import nnx
+import tqdm
 import wandb
 
 from slippi_ai import (
@@ -48,6 +49,8 @@ class RuntimeConfig:
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
   eval_at_start: bool = False
+  verbose_eval: bool = False
+  save_best: bool = True
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -160,15 +163,16 @@ class TrainManager:
 
 def print_losses(name: str, stats: dict):
   spl = stats[learner_lib.SAMPLE_POLICY]['loss']
+  ifrac = stats[learner_lib.Q_FUNCTION]['information_fraction']
   nent = stats[learner_lib.NASH_POLICY]['nash_entropy']
   nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy']
-  spl, nent, nxent = map(train_lib.mean, (spl, nent, nxent))
+  spl, ifrac, nent, nxent = map(train_lib.mean, (spl, ifrac, nent, nxent))
 
   # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
   ns = np.asarray(stats[learner_lib.NASH]['num_steps'])
 
   print(
-      f'{name}: spl={spl:.3f} nent={nent:.3f} nxent={nxent:.3f} '
+      f'{name}: spl={spl:.3f} ifrac={ifrac:.3f} nent={nent:.3f} nxent={nxent:.3f} '
       # f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
       f' nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
 
@@ -498,22 +502,35 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
+    prev_test_epoch = initial_test_epoch
     test_stats_jax = None
     num_eval_steps = 0
-    while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
-      # Get _previous_ step's stats to allow jax runahead
-      if test_stats_jax is not None:
-        test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
-        test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
-        per_step_eval_stats.append(test_stats_np)
 
-      test_stats_jax, batch = test_manager.step()
-      metas.append(batch.meta)
+    with tqdm.tqdm(
+      total=runtime.max_eval_steps or runtime.num_eval_epochs,
+      disable=not runtime.verbose_eval,
+      unit='step' if runtime.max_eval_steps is not None else 'epoch',
+    ) as pbar:
+      while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
+        # Get _previous_ step's stats to allow jax runahead
+        if test_stats_jax is not None:
+          test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
+          test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
+          per_step_eval_stats.append(test_stats_np)
 
-      # Optionally stop eval early
-      num_eval_steps += 1
-      if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
-        break
+        test_stats_jax, batch = test_manager.step()
+        metas.append(batch.meta)
+
+        if runtime.max_eval_steps is not None:
+          pbar.update(1)
+        else:
+          pbar.update(test_manager.last_epoch - prev_test_epoch)
+        prev_test_epoch = test_manager.last_epoch
+
+        # Optionally stop eval early
+        num_eval_steps += 1
+        if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
+          break
 
     assert test_stats_jax is not None
     test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
@@ -562,7 +579,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     eval_loss = mean_stats[learner_lib.NASH_POLICY]['total_loss']
 
     # Save if the eval loss is the best so far
-    if eval_loss < best_eval_loss:
+    if eval_loss < best_eval_loss and config.runtime.save_best:
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
