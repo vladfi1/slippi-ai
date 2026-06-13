@@ -233,14 +233,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   restored = False
   combined_state: tp.Optional[dict] = None
-  if config.restore_path:
-    logging.info('restoring from %s', config.restore_path)
-    with open(config.restore_path, 'rb') as f:
-      combined_state = pickle.load(f)
-    restored = True
-  elif os.path.exists(pickle_path):
+  if os.path.exists(pickle_path):
     logging.info('restoring from %s', pickle_path)
     with open(pickle_path, 'rb') as f:
+      combined_state = pickle.load(f)
+    restored = True
+    if config.restore_path is not None:
+      logging.warning('found existing checkpoint, ignoring restore_path')
+  elif config.restore_path:
+    logging.info('restoring from %s', config.restore_path)
+    with open(config.restore_path, 'rb') as f:
       combined_state = pickle.load(f)
     restored = True
   else:
