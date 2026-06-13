@@ -11,7 +11,7 @@ import wandb
 
 import melee
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import train_lib, train_policy, embed, networks
+from slippi_ai.jax import train_lib, train_policy, embed, networks, saving
 from skypilot import launch
 
 NET_NAME = networks.TransformerLike.name()
@@ -21,7 +21,7 @@ def default_config():
 
   config.policy.delay = 21
   config.data.batch_size=512
-  config.data.unroll_length=80
+  config.data.unroll_length=84
   config.data.damage_ratio=0.01
   config.data.num_workers=1
   config.data.unroll_chunks=4
@@ -99,7 +99,7 @@ if __name__ == '__main__':
       ),
   )
 
-  NO_VF = flags.DEFINE_bool('no_vf', False, 'Use a toy value function for quick testing')
+  WITH_VF = flags.DEFINE_bool('with_vf', False, 'Use a value function for training')
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
@@ -126,10 +126,45 @@ if __name__ == '__main__':
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
 
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
     delay = config.policy.delay
 
+    char = CHAR.value
+
+    arch_config = config
+    if config.restore_path is not None:
+      restore_state = saving.load_state_from_disk(config.restore_path)
+      arch_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, saving.upgrade_config(restore_state['config']))
+      del restore_state
+
+      char = arch_config.dataset.allowed_characters
+      config.dataset.copy_characteristics_from(arch_config.dataset)
+      net = arch_config.network['name']
+      net_config = arch_config.network[net]
+    else:
+      net_config = dict(NET.value)
+      net = net_config.pop('name')
+
+      embed_config = dict(EMBED.value)
+      embed_name = embed_config['name']
+      enhanced = embed_config['enhanced']
+      if enhanced['hidden_size'] is None:
+        enhanced['hidden_size'] = net_config['hidden_size'] // 4
+      enhanced['use_self_nana'] = char in ['popo', 'all']
+
+      def update_embed_config(config: dict):
+        config['name'] = embed_name
+        config[embed_name].update(embed_config[embed_name])
+
+      def update_network_config(config: dict):
+        config['name'] = net
+        config[net].update(net_config)
+        update_embed_config(config['embed'])
+
+      update_network_config(config.network)
+
+      vf_net_config = config.value_function.network
+      update_network_config(vf_net_config)
 
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
@@ -144,8 +179,6 @@ if __name__ == '__main__':
     else:
       config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
-      char = CHAR.value
-
       if config.tag is None:
         ops = config.dataset.allowed_opponents
         if ops == 'all':
@@ -155,7 +188,7 @@ if __name__ == '__main__':
         else:
           op = f"_vs_{ops}"
 
-        n = config.network[net]['num_layers']
+        n = arch_config.network[net]['num_layers']
         h = net_config['hidden_size']
 
         if config.learner.bf16:
@@ -165,7 +198,7 @@ if __name__ == '__main__':
 
         rfs = f'rfs{config.policy.frame_skip}'
 
-        ch = config.controller_head['autoregressive']['component']
+        ch = arch_config.controller_head['autoregressive']['component']
         assert ch['name'] == 'tx_like'
         ch = ch['tx_like']
         chn = ch['num_layers']
@@ -174,27 +207,6 @@ if __name__ == '__main__':
         config.tag = f"{char}_d{delay}{op}_{n}x{h}_ch{chn}x{chs}{bf16}_{rfs}"
 
     config.dataset.allowed_characters = char
-
-    embed_config = dict(EMBED.value)
-    embed_name = embed_config['name']
-    enhanced = embed_config['enhanced']
-    if enhanced['hidden_size'] is None:
-      enhanced['hidden_size'] = net_config['hidden_size'] // 4
-    enhanced['use_self_nana'] = char in ['popo', 'all']
-
-    def update_embed_config(config: dict):
-      config['name'] = embed_name
-      config[embed_name].update(embed_config[embed_name])
-
-    def update_network_config(config: dict):
-      config['name'] = net
-      config[net].update(net_config)
-      update_embed_config(config['embed'])
-
-    update_network_config(config.network)
-
-    vf_net_config = config.value_function.network
-    update_network_config(vf_net_config)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
@@ -207,9 +219,9 @@ if __name__ == '__main__':
         **wandb_kwargs,
     )
 
-    if NO_VF.value:
-      train_policy.train(config)
-    else:
+    if WITH_VF.value:
       train_lib.train(config)
+    else:
+      train_policy.train(config)
 
   app.run(main)
