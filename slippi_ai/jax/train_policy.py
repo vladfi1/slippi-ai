@@ -269,6 +269,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       logging.warning(
           f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
       best_eval_loss = float('inf')
+      config.runtime.eval_at_start = True
+    if restore_config.policy.frame_skip != config.policy.frame_skip:
+      logging.warning(
+          f'Changing frame skip from {restore_config.policy.frame_skip} to {config.policy.frame_skip}.')
+      best_eval_loss = float('inf')
+      config.runtime.eval_at_start = True
 
     for key in ['network', 'controller_head', 'embed', 'max_names']:
       current = getattr(config, key)
@@ -629,6 +635,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.runtime.max_step is None:
       raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
+
+  maybe_eval()
 
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:
