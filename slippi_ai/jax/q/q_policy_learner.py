@@ -6,7 +6,8 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-from slippi_ai.data import Batch, Frames, StateAction
+from slippi_ai import utils
+from slippi_ai.data import Batch, Frames
 from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax.q import q_function as q_lib
 from slippi_ai.jax import embed, rl_lib, jax_utils
@@ -26,13 +27,8 @@ class LearnerConfig:
 
 _SAMPLE_AXIS = 0
 
-class QFunctionOutputs(tp.NamedTuple):
-  values: jax.Array  # [T, B]
-  sample_q_values: jax.Array  # [num_samples, T, B]
-
 Loss = jax.Array
 Rank2 = tuple[int, int]
-type QPFrames[Action] = dict[str, Frames[Rank2, Action]]
 
 class ShardingKwargs(tp.TypedDict):
   mesh: jax.sharding.Mesh
@@ -72,7 +68,12 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.sample_policy = sample_policy
     self.q_policy = q_policy
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.frame_skip = q_function.frame_skip
+    assert sample_policy.frame_skip == self.frame_skip
+    assert q_policy.frame_skip == self.frame_skip
+
+    self.discount = rl_lib.discount_from_halflife(
+      config.reward_halflife, frame_skip=self.frame_skip)
 
     learning_rate = config.learning_rate
 
@@ -92,6 +93,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     self.delay = q_policy.delay
     assert sample_policy.delay == self.delay
+    assert self.delay == 0
 
     jax_utils.replicate_module(self, mesh)
 
@@ -122,7 +124,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     q_function_specs = ShardingSpecs(
         extra_in_specs=(TMS,),  # policy samples
-        # best_action, values, q_values, q_fn hidden states
+        # best_action, values, q_values, action_init_state
         extra_out_specs=(TM, TM, TM, TM),
     )
 
@@ -134,7 +136,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     )
 
     q_policy_specs = ShardingSpecs(
-        # best_action, values, q_values, q_fn hidden states
+        # best_action, values, q_values, action_init_state
         extra_in_specs=(TM, TM, TM, TM),
         extra_out_specs=None,
     )
@@ -164,6 +166,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     }
 
   def _get_delayed_frames(self, frames: Frames[Rank2, embed.Action]) -> Frames[Rank2, embed.Action]:
+    # delay == 0, so this is a no-op; kept for parity with nash.
     state_action = frames.state_action
     # Includes "overlap" frame.
     unroll_length = frames.is_resetting.shape[0] - self.delay
@@ -181,33 +184,21 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         reward=frames.reward[self.delay:],
     )
 
+  def _encode(self, network, frames: Frames[Rank2, embed.Action]) -> Frames[Rank2, embed.Action]:
+    return Frames(
+        state_action=network.encode(frames.state_action),
+        is_resetting=frames.is_resetting,
+        reward=frames.reward,
+    )
+
   def prepare_frames(self, batch: Batch[Rank2]) -> dict[str, Frames[Rank2, embed.Action]]:
-    state_action = StateAction(
-        batch.game, batch.game.p0.controller, batch.name)
+    frames = batch.to_frames(self.frame_skip)
 
-    frames = {}
-
-    frames[SAMPLE_POLICY] = Frames(
-        state_action=self.sample_policy.network.encode(state_action),
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
-
-    frames[Q_FUNCTION] = Frames(
-        state_action=self.q_function.core_net.encode(state_action),
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
-
-    frames[Q_POLICY] = Frames(
-        state_action=self.q_policy.network.encode(state_action),
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
-
-    return frames
-
-    # return jax_utils.device_put(frames, self.data_sharding)
+    return {
+        SAMPLE_POLICY: self._encode(self.sample_policy.network, frames),
+        Q_FUNCTION: self._encode(self.q_function.core_net, frames),
+        Q_POLICY: self._encode(self.q_policy.network, frames),
+    }
 
   def _unroll_sample_policy(
       self,
@@ -215,7 +206,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
-  ) -> tuple[Loss, dict, RecurrentState, embed.Action]:
+  ) -> tuple[Loss, dict, RecurrentState, list[embed.Action]]:
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
@@ -227,14 +218,15 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     # Because the action space is too large, we compute a finite subsample
     # using the sample_policy.
 
-    @nnx.vmap(in_axes=0, out_axes=_SAMPLE_AXIS)
-    def sample(rngs: nnx.Rngs):
-      return sample_policy.controller_head.sample(
+    @nnx.vmap(in_axes=(None, 0), out_axes=_SAMPLE_AXIS)
+    def sample(sample_policy: Policy[embed.Action], rngs: nnx.Rngs):
+      sample_outputs = sample_policy.controller_head.sample(
           rngs=rngs,
           inputs=sample_policy_outputs.outputs,
-          prev_controller_state=prev_action).controller_state
+          prev_controller_state=prev_action)
+      return [so.controller_state for so in sample_outputs]
 
-    policy_samples = sample(rngs.fork(split=self.num_samples))
+    policy_samples = sample(sample_policy, rngs.fork(split=self.num_samples))
 
     bm_loss = jnp.mean(sample_policy_outputs.imitation_loss, axis=0)
     bm_metrics = jax.tree.map(jax_utils.swap_axes, sample_policy_outputs.metrics)
@@ -251,29 +243,23 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       q_function: q_lib.QFunction[embed.Action],
       bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
-      policy_samples: embed.Action,
-  ) -> tuple[Loss, dict, RecurrentState, embed.Action, jax.Array, jax.Array, RecurrentState]:
+      policy_samples: list[embed.Action],  # frame_skip x [S, T, B]
+  ) -> tuple[Loss, dict, RecurrentState, list[embed.Action], jax.Array, jax.Array, RecurrentState]:
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, hidden_states = q_function.loss_and_hidden_states(
+    q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
         frames, initial_states, self.discount)
-    final_state = jax.tree.map(lambda t: t[-1], hidden_states)
 
     q_bias = q_outputs.q_values - q_outputs.values
 
-    def q_fn(policy_samples: embed.Action) -> jax.Array:
-      return self.q_function.q_values_from_hidden_states(
-          values=q_outputs.values,
-          hidden_states=hidden_states,
-          actions=policy_samples,
-      )
-
     assert _SAMPLE_AXIS == 0
-    sample_q_values = jax_utils.lax_map(
-        q_fn, policy_samples,
+    sample_q_values = q_function.multi_q_values_from_action_state(
+        values=q_outputs.values,
+        action_init_state=action_init_state,
+        actions=policy_samples,
         batch_size=self.config.sample_batch_size,
-    )
+    )  # [S, T, B]
 
     sample_policy_expected_return = jnp.mean(
         sample_q_values, axis=_SAMPLE_AXIS)
@@ -283,7 +269,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     q_values = sample_q_values
 
     if self.include_action_taken_in_samples:
-      actions = jax.tree.map(
+      actions = utils.map_nt(
         lambda samples, action_taken: jnp.concatenate(
           [samples, jnp.expand_dims(action_taken[1:], axis=_SAMPLE_AXIS)], axis=_SAMPLE_AXIS),
         policy_samples, frames.state_action.action)
@@ -325,7 +311,9 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     bm_metrics = jax.tree.map(jax_utils.swap_axes, metrics)
 
-    return bm_loss, bm_metrics, final_state, best_action, q_outputs.values, q_outputs.q_values, hidden_states
+    return (
+        bm_loss, bm_metrics, final_state,
+        best_action, q_outputs.values, q_outputs.q_values, action_init_state)
 
   def _unroll_q_policy(
       self,
@@ -333,10 +321,10 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       bm_frames: Frames[Rank2, embed.Action],
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
-      best_action: embed.Action,
-      values: jax.Array,
+      best_action: list[embed.Action],  # frame_skip x [T, B]
+      values: jax.Array,  # [T, B]
       q_values: jax.Array,  # just for action taken
-      q_hidden_states: RecurrentState,
+      action_init_state: RecurrentState,  # [T, B, H]
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
@@ -344,34 +332,30 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     action = frames.state_action.action
     prev_action = jax.tree.map(lambda t: t[:-1], action)
 
-    num_samples = self.num_samples
-    if self.include_action_taken_in_samples:
-      num_samples += 1
-
     # Train the q_policy by argmaxing the q_function over the sample_policy
     q_policy_outputs = q_policy.unroll_with_outputs(
         frames, initial_states)
     q_policy_imitation_loss = q_policy_outputs.imitation_loss
 
-    q_policy_distance = q_policy.controller_head.distance_outputs(
-          inputs=q_policy_outputs.outputs,
-          prev_controller_state=prev_action,
-          target_controller_state=best_action,
-      ).distance
-
-    q_policy_argmax_loss = jax_utils.add_n(
-        q_policy.controller_head.controller_embedding.flatten(
-            q_policy_distance))
+    # Distance to the best (highest-q) frame_skip action sequence.
+    q_policy_distances = q_policy.controller_head.distance(
+        inputs=q_policy_outputs.outputs,
+        prev_controller_state=prev_action,
+        target_controller_state=best_action,
+    )
+    q_policy_argmax_loss = jax_utils.add_n(q_policy_distances) / len(q_policy_distances)
 
     # Estimate q_policy returns
-    q_policy_samples = q_policy.controller_head.sample(
-        rngs=rngs,
-        inputs=q_policy_outputs.outputs,
-        prev_controller_state=prev_action).controller_state
+    q_policy_samples = [
+        so.controller_state
+        for so in q_policy.controller_head.sample(
+            rngs=rngs,
+            inputs=q_policy_outputs.outputs,
+            prev_controller_state=prev_action)]
 
-    q_policy_sample_q_values = self.q_function.q_values_from_hidden_states(
+    q_policy_sample_q_values = self.q_function.q_values_from_action_state(
         values=values,
-        hidden_states=q_hidden_states,
+        action_init_state=action_init_state,
         actions=q_policy_samples,
     )
     q_policy_advantages = q_policy_sample_q_values - q_values
@@ -400,7 +384,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       initial_states: RecurrentState,
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
-    # TODO: take into account delay
     final_states = initial_states  # GC initial states as they are replaced
     metrics = {}
 
@@ -417,11 +400,10 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       best_action,
       values,
       q_values,
-      q_hidden_states,
+      action_init_state,
     ) = self.run_q_function(
         frames[Q_FUNCTION], initial_states[Q_FUNCTION], policy_samples)
     del policy_samples
-
 
     step_q_policy = self.train_q_policy if train else self.run_q_policy
     (
@@ -429,6 +411,6 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       final_states[Q_POLICY],
     ) = step_q_policy(
         frames[Q_POLICY], initial_states[Q_POLICY],
-        best_action, values, q_values, q_hidden_states)
+        best_action, values, q_values, action_init_state)
 
     return metrics, final_states

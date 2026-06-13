@@ -27,7 +27,6 @@ from slippi_ai.jax import (
     saving,
     train_lib,
     jax_utils,
-    networks,
 )
 from slippi_ai.jax.embed import Action
 from slippi_ai.jax.q import (
@@ -80,10 +79,6 @@ class RLEvaluatorConfig:
   opponent: tp.Optional[str] = None
   opponent_name: str = nametags.DEFAULT_NAME
   gpu_inference: bool = True
-
-@dataclasses.dataclass
-class QFunctionConfig:
-  network: dict = _field(networks.default_config)
 
 @dataclasses.dataclass
 class Config:
@@ -278,13 +273,14 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Initialize q_function
   if restored:
     assert isinstance(restored_state, dict)
-    q_function = q_lib.q_function_from_config(restored_state['q_function_config'])
+    q_function = q_lib.q_function_from_config(
+        restored_state['q_function_config']['q_function'])
     # q_function_optimizer_state = None
 
   elif config.initialize_q_function_from:
     with open(config.initialize_q_function_from, 'rb') as f:
       q_fn_state = pickle.load(f)
-    q_function = q_lib.q_function_from_config(q_fn_state['config'])
+    q_function = q_lib.q_function_from_config(q_fn_state['config']['q_function'])
 
     # These keys have to match the attributes in q_only_learner.Learner
     jax_utils.set_module_state(q_function, q_fn_state['state']['q_function'])
@@ -343,6 +339,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   )
 
   ### Dataset Creation ###
+  frame_skip = q_function.frame_skip
+  assert q_policy.frame_skip == frame_skip
+  assert sample_policy.frame_skip == frame_skip
+
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = frame_skip
+
   train_data_config = config.data
   test_data_config = dataclasses.replace(
       train_data_config,
@@ -354,7 +357,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       train_data_config=train_data_config,
       test_data_config=test_data_config,
       name_map=name_map,
-      extra_frames=q_policy.delay + 1,
+      extra_frames=q_policy.delay + frame_skip,
       observation_config=imitation_config.observation,
   )
   exit_stack.callback(train_data.shutdown)
