@@ -16,22 +16,22 @@ NET_NAME = 'tx_like'
 def default_config():
   config = train_q_fn.Config()
 
-  config.max_names = 128
   config.delay = 0
   config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
   config.data.damage_ratio = 0.01
-  config.data.unroll_chunks = 4
   config.data.num_workers = 2
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
   config.learner.reward_halflife = 4
-  config.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
-  config.embed.player.with_nana = True
-  config.embed.items.type = embed.ItemsType.FLAT
-  config.embed.with_fod = True
-  config.embed.with_randall = True
+
+  q_fn = config.q_function
+  q_fn.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
+  q_fn.embed.player.with_nana = True
+  q_fn.embed.items.type = embed.ItemsType.FLAT
+  q_fn.embed.with_fod = True
+  q_fn.embed.with_randall = True
 
   config.dataset.mirror = False
   config.dataset.allowed_opponents = 'all'
@@ -46,10 +46,16 @@ if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
 
-  NET = ff.DEFINE_dict(
-      'net',
-      name=ff.String(NET_NAME),
-      hidden_size=ff.Integer(512),
+  CORE_NET = ff.DEFINE_dict(
+      'core_net',
+      hidden_size=ff.Integer(1024),
+      num_layers=ff.Integer(1),
+      ffw_multiplier=ff.Integer(2),
+      recurrent_layer=ff.String('lstm'),
+  )
+  ACTION_NET = ff.DEFINE_dict(
+      'action_net',
+      hidden_size=ff.Integer(256),
       num_layers=ff.Integer(1),
       ffw_multiplier=ff.Integer(2),
       recurrent_layer=ff.String('lstm'),
@@ -94,9 +100,6 @@ if __name__ == '__main__':
           train_lib.Config,
           saving.upgrade_config(imitation_state['config']))
 
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
-
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
       config.dataset.meta_path = str(paths.TOY_META_PATH)
@@ -114,42 +117,43 @@ if __name__ == '__main__':
         char = CHAR.value
 
       if config.tag is None:
-        n = config.network[net]['num_layers']
-        h = net_config['hidden_size']
+        def net_str(net_config: dict):
+          n = net_config['num_layers']
+          h = net_config['hidden_size']
+          return f"{n}x{h}"
+
+        core_str = net_str(CORE_NET.value)
+        action_str = net_str(ACTION_NET.value)
+
+        head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
+
         if imitation_config is not None:
-          fs = imitation_config.observation.frame_skip.skip
+          fs = imitation_config.policy.frame_skip
         else:
-          fs = config.observation.frame_skip.skip
+          fs = config.q_function.frame_skip
+
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
 
-        ops = config.dataset.allowed_opponents
-        if ops == 'all':
-          op = ''
-        elif ops == char:
-          op = '_ditto'
-        else:
-          op = f"_vs_{ops}"
+        gae = f"gae{config.learner.gae_lambda:.1f}"
 
-        config.tag = f"{char}_d{config.delay}{op}_{n}x{h}_fs{fs}_um{um}_rh{rh}"
+        config.tag = f"q_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}"
 
     config.dataset.allowed_characters = char
 
+
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
-    embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
+    embed_config['enhanced']['hidden_size'] = CORE_NET.value['hidden_size'] // 4
     embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
 
-    def update_embed_config(config: dict):
-      config['name'] = embed_name
-      config[embed_name].update(embed_config[embed_name])
+    config.q_function.core_net['name'] = NET_NAME
+    config.q_function.core_net[NET_NAME].update(CORE_NET.value)
+    config.q_function.core_net['embed']['name'] = embed_name
+    config.q_function.core_net['embed'][embed_name].update(embed_config[embed_name])
 
-    def update_network_config(config: dict):
-      config['name'] = net
-      config[net].update(net_config)
-      update_embed_config(config['embed'])
-
-    update_network_config(config.network)
+    config.q_function.action_net['name'] = NET_NAME
+    config.q_function.action_net[NET_NAME].update(ACTION_NET.value)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
