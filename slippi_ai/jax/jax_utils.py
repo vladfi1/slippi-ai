@@ -454,6 +454,7 @@ def grad_with_aux(
 ) -> tp.Callable[P, tuple[Grads, AuxT]]:
   """Adds type signature to nnx.grad."""
 
+  @functools.wraps(f)  # needed to help nnx figure out the type signature
   def g(*args: P.args, **kwargs: P.kwargs):
     loss, aux = f(*args, **kwargs)
     if take_mean:
@@ -481,6 +482,7 @@ def grad_with_aux_tuple(
     loss_scale: tp.Optional[float] = None,
 ) -> tp.Callable[P, tuple[Grads, *Outputs]]:
 
+  @functools.wraps(f)  # needed to help nnx figure out the type signature
   def packed_loss_fn(*args: P.args, **kwargs: P.kwargs):
     outputs = f(*args, **kwargs)
     return outputs[0], outputs[1:]
