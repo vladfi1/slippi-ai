@@ -511,15 +511,30 @@ def run(config: Config):
     print(timing_str)
 
     learner_metrics = metrics['learner']
-    nash_xent = np.mean(
-      learner_metrics[rl_learner.NASH_POLICY]['nash_cross_entropy'])
-    if np.isnan(nash_xent):
-      raise ValueError('nash_xent is NaN')
-    nash_ent = np.mean(
-      learner_metrics[rl_learner.NASH_POLICY]['nash_entropy'])
-    unique_fraction = np.mean(
-      learner_metrics[rl_learner.NASH_POLICY]['unique_fraction'])
-    print(f'nash_xent={nash_xent:.3f} nash_ent={nash_ent:.3f} unique_fraction={unique_fraction:.2f}')
+
+    to_print = dict(
+        ufrac = learner_metrics[rl_learner.NASH_POLICY]['unique_fraction'],
+        ifrac = learner_metrics[rl_learner.Q_FUNCTION]['information_fraction'],
+        ent = learner_metrics[rl_learner.NASH_POLICY]['entropy'],
+        akl = learner_metrics[rl_learner.NASH_POLICY]['actor_kl'],
+        tkl = learner_metrics[rl_learner.NASH_POLICY]['teacher_kl'],
+        nent = learner_metrics[rl_learner.NASH_POLICY]['nash_entropy'],
+        nxent = learner_metrics[rl_learner.NASH_POLICY]['nash_cross_entropy'],
+    )
+    to_print = utils.map_nt(train_lib.mean, to_print)
+
+    # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
+    ns = np.asarray(learner_metrics[rl_learner.NASH]['num_steps'])
+
+    items = []
+    for key, value in to_print.items():
+      items.append(f'{key}={value:.3f}')
+
+    items.extend([
+      f'nsmean={ns.mean():.3f}',
+      f'nsmax={ns.max():.3f}',
+    ])
+    print(' '.join(items))
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 

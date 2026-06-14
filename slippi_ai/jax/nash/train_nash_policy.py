@@ -163,19 +163,27 @@ class TrainManager:
     return stats, batch
 
 def print_losses(name: str, stats: dict):
-  spl = stats[learner_lib.SAMPLE_POLICY]['loss']
-  ifrac = stats[learner_lib.Q_FUNCTION]['information_fraction']
-  nent = stats[learner_lib.NASH_POLICY]['nash_entropy']
-  nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy']
-  spl, ifrac, nent, nxent = map(train_lib.mean, (spl, ifrac, nent, nxent))
+  to_print = dict(
+      spl = stats[learner_lib.SAMPLE_POLICY]['loss'],
+      ufrac = stats[learner_lib.NASH_POLICY]['unique_fraction'],
+      ifrac = stats[learner_lib.Q_FUNCTION]['information_fraction'],
+      nent = stats[learner_lib.NASH_POLICY]['nash_entropy'],
+      nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy'],
+  )
+  to_print = utils.map_nt(train_lib.mean, to_print)
 
   # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
   ns = np.asarray(stats[learner_lib.NASH]['num_steps'])
 
-  print(
-      f'{name}: spl={spl:.3f} ifrac={ifrac:.3f} nent={nent:.3f} nxent={nxent:.3f} '
-      # f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
-      f' nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
+  items = [f'{name}:']
+  for key, value in to_print.items():
+    items.append(f'{key}={value:.3f}')
+
+  items.extend([
+    f'nsmean={ns.mean():.1f}',
+    f'nsmax={ns.max():.1f}',
+  ])
+  print(' '.join(items))
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
