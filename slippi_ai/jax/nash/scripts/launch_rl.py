@@ -14,11 +14,10 @@ if __name__ == '__main__':
   import fancyflags as ff
   import wandb
 
-  import melee
-
   from slippi_ai.data import chars_from_string
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
+  from slippi_ai.jax.agents import DType
   from slippi_ai.jax.nash import train_nash_rl
 
   PP="Platinum Player"
@@ -46,6 +45,17 @@ if __name__ == '__main__':
   CONFIG.learner.reward_halflife=4
   CONFIG.learner.num_samples = 4
   CONFIG.learner.sample_batch_size = 1
+
+  # Policies have lower KL to fp32 in fp16 than bf16.
+  # However, KL-based training is more stable in bf16 (whereas PPO prefers fp16 + loss scaling).
+  # And for the q-function, we use fp32 for maximum precision as the nash
+  # probabilities are sensitive to small differences in q-values.
+  CONFIG.learner.sample_policy_dtype = DType.FP16
+  CONFIG.learner.teacher_dtype = DType.FP16
+  CONFIG.learner.nash_policy_dtype = DType.BF16
+  CONFIG.learner.q_fn_dtype = DType.FP32
+  CONFIG.agent.jax.dtype = DType.FP16
+
   CONFIG.reward.damage_ratio=0.01
   CONFIG.reward.ledge_grab_penalty=0.02
   CONFIG.reward.stalling_penalty=0.1
@@ -121,6 +131,8 @@ if __name__ == '__main__':
     if config.runtime.tag is None:
       fs = imitation_config.policy.frame_skip
       ns = config.learner.num_samples
+      if config.learner.include_action_taken_in_samples:
+        ns += 1
 
       if klw > 0:
         klw_str = f"_klw{klw:.0e}"
@@ -129,7 +141,11 @@ if __name__ == '__main__':
 
       ep = config.learner.epoch_length
 
-      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}"
+      sub = ""
+      if config.learner.subsample:
+        sub = f"_sub{config.learner.subsample}"
+
+      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}{sub}_ep{ep}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
