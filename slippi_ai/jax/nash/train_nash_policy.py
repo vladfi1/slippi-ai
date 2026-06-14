@@ -51,6 +51,7 @@ class RuntimeConfig:
   eval_at_start: bool = False
   verbose_eval: bool = False
   save_best: bool = True
+  run_single_eval: bool = False
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -178,7 +179,7 @@ def print_losses(name: str, stats: dict):
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
-    _train(config, exit_stack)
+    return _train(config, exit_stack)
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Nash solver needs float64 for stability
@@ -488,7 +489,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   needs_first_eval = runtime.eval_at_start
 
   def maybe_eval(force: bool = False):
-    nonlocal best_eval_loss, last_train_epoch_evaluated, needs_first_eval
+    nonlocal last_train_epoch_evaluated, needs_first_eval
 
     train_epoch = train_manager.last_epoch
     if (not force and not needs_first_eval
@@ -496,6 +497,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       return
     last_train_epoch_evaluated = train_epoch
     needs_first_eval = False
+
+    return do_eval()
+
+  def do_eval():
+    nonlocal best_eval_loss
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
@@ -592,6 +598,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' num_batches={len(per_step_eval_stats)}')
     print()
 
+    return mean_stats
+
     # TODO: Log losses aggregated by name.
 
   start_time = time.time()
@@ -602,6 +610,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.runtime.max_step is None:
       raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
+
+  if config.runtime.run_single_eval:
+    config.runtime.save_best = False
+    return do_eval()
 
   maybe_eval()  # Possibly run initial evaluation
 

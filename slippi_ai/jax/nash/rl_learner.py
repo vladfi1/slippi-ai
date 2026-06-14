@@ -17,7 +17,7 @@ from slippi_ai.jax.agents import DType
 from slippi_ai.nash import data as nash_data
 from slippi_ai.jax.nash import (
     q_function as q_lib,
-    nash_policy_learner,
+    utils as nash_utils,
 )
 from slippi_ai.jax.nash import nash
 from slippi_ai.jax.rl.learner import FrameSkipTrajectory
@@ -462,7 +462,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     metrics = dict(
         q_outputs.metrics,
-        information_fraction=nash_policy_learner.information_fraction(q_values),
+        information_fraction=nash_utils.information_fraction(q_values),
     )
 
     bm_metrics = utils.map_single_structure(
@@ -527,7 +527,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         policy_samples, frames.state_action.action)
       num_samples += 1
 
-    unique_fraction = nash_policy_learner.compute_unique_fraction(actions)
+    unique_fraction = nash_utils.compute_unique_fraction(actions)
 
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
