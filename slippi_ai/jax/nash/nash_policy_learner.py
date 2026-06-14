@@ -30,6 +30,8 @@ class LearnerConfig:
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
   include_action_taken_in_samples: bool = True
+  # Only train on the highest probability subsample.
+  subsample: tp.Optional[int] = None
 
   nash_error: float = 1e-3
 
@@ -481,23 +483,50 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # TODO: this could belong in the sample policy unroll
     unique_fraction = nash_utils.compute_unique_fraction(actions)
 
+    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [T, B, 2, S]
+    nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
+    nash_entropy = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
+
+    nash_policy_mbs = self.config.sample_batch_size
+
+    # Save on computation by only training on the highest probability subsample.
+    if self.config.subsample:
+      if self.config.subsample > num_samples:
+        raise ValueError(f'subsample {self.config.subsample} is greater than num_samples {num_samples}')
+
+      indices = jnp.argsort(
+          nash_probs, axis=-1, descending=True)[..., :self.config.subsample]
+      nash_probs = jnp.take_along_axis(nash_probs, indices, axis=-1)
+      nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize
+
+      indices = jnp.moveaxis(indices, -1, _SAMPLE_AXIS)
+      actions = utils.map_nt(
+          lambda x: jnp.take_along_axis(x, indices, axis=_SAMPLE_AXIS),
+          actions)
+      num_samples = self.config.subsample
+
+      if self.config.subsample < nash_policy_mbs:
+        nash_policy_mbs = 0
+      elif nash_policy_mbs > 0 and self.config.subsample % nash_policy_mbs != 0:
+        raise ValueError(f'subsample {self.config.subsample} is not divisible by sample_batch_size {nash_policy_mbs}')
+
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
     nash_policy_imitation_loss = nash_policy_outputs.imitation_loss
 
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
-    def nash_policy_distance_fn(nash_policy: Policy[Action], policy_sample: list[Action]):
+    def nash_policy_distance_fn(nash_policy: Policy[Action], /, policy_sample: list[Action]):
       distances = nash_policy.controller_head.distance(
           inputs=nash_policy_outputs.outputs,
           prev_controller_state=prev_action,
           target_controller_state=policy_sample)
       return jax_utils.add_n(distances) / len(distances)
 
-    if self.config.sample_batch_size > 0:
+    if nash_policy_mbs > 0:
       batch_distance_fn = jax_utils.lax_map_fn(
           nnx.remat(nash_policy_distance_fn),
-          microbatch_size=self.config.sample_batch_size,
+          microbatch_size=nash_policy_mbs,
           input_batch_dims=(None, 0),
           output_batch_dims=0,
       )
@@ -508,13 +537,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       )
 
     nash_policy_log_probs = -batch_distance_fn(nash_policy, actions)
-
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
-
-    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [T, B, 2, S]
-    nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
-    nash_entropy = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
-
     nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
     losses = [
@@ -577,7 +600,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
       nash_policy_qs = jax_utils.lax_map(  # [S, T, B, 2]
           compute_nash_policy_q_vs, actions,
-          batch_size=self.config.sample_batch_size,
+          batch_size=nash_policy_mbs,
       )
       nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
       nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
