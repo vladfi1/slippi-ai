@@ -10,7 +10,7 @@ from absl import app, flags
 import wandb
 import fancyflags as ff
 
-from slippi_ai import flag_utils, paths
+from slippi_ai import flag_utils, paths, utils
 from slippi_ai.jax import saving, train_lib
 from slippi_ai.jax.nash import train_nash_policy
 from slippi_ai.jax.agents import DType
@@ -19,9 +19,8 @@ def default_config():
   config = train_nash_policy.Config()
 
   config.runtime.max_step = 0
-  config.runtime.eval_at_start = True
   config.runtime.verbose_eval = True
-  config.runtime.save_best = False
+  config.runtime.run_single_eval = True
 
   config.data.batch_size = 256
   config.data.unroll_length = 84
@@ -78,8 +77,7 @@ if __name__ == '__main__':
       char = 'all'
       config.data.cached = True
       config.data.num_workers = 0
-      config.runtime.log_interval = 15
-      config.runtime.num_evals_per_epoch = 0
+      config.runtime.max_eval_steps = 1
     else:
       char = imitation_config.dataset.allowed_characters
 
@@ -101,6 +99,20 @@ if __name__ == '__main__':
         config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
-    train_nash_policy.train(config)
+    mean_stats = train_nash_policy.train(config)
+    assert mean_stats is not None
+
+    print(utils.map_nt(lambda x: f'{x:.3f}', mean_stats['nash']['entropy_above']))
+
+    ps_stats = mean_stats['nash']['ps']
+    cutoffs = sorted(next(iter(ps_stats.values()))['above'].keys())
+    print('\t'.join(['count'] + list(map(str, cutoffs))))
+
+    for count in sorted(ps_stats.keys()):
+      cutoff_stats = ps_stats[count]['above']
+      cols = [f'{count}']
+      for cutoff in cutoffs:
+        cols.append(f'{cutoff_stats[cutoff]:.3f}')
+      print('\t'.join(cols))
 
   app.run(main)

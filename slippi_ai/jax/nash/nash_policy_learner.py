@@ -87,43 +87,6 @@ def p1_averaged_qs(two_player_qs: jax.Array) -> jax.Array:
       two_player_qs, jnp.array([1, -1], dtype=two_player_qs.dtype),
       axis=-1) / 2
 
-def compute_unique_fraction(actions: list[Action]) -> jax.Array:
-  # Compute fraction of actions that are unique
-
-  # We assume that the action components are scalars
-  stacked_actions = utils.map_nt(  # [S, T, FS, B, 2]
-      lambda *xs: jnp.stack(xs, axis=2), *actions)
-  combined_actions = jnp.stack(
-      jax.tree.leaves(stacked_actions), axis=-1)  # [S, T, FS, B, 2, C]
-  num_samples = combined_actions.shape[0]
-
-  actions_eq = combined_actions == jnp.expand_dims(combined_actions, axis=1)  # [S, S, T, FS, B, 2, C]
-  actions_eq = jnp.all(actions_eq, axis=[2, -1])  # [S, S, T, B, 2]
-
-  ns = jnp.arange(num_samples)
-  # is_first[i, j] = i < j for i, j in [0, S)
-  is_first = jnp.expand_dims(ns, 1) < ns  # [S, S]
-  is_first = jnp.expand_dims(is_first, axis=[2, 3, 4])  # [S, S, 1, 1, 1]
-  # i is disqualified by j if i < j and action[i] == action[j]
-  disqualified = jnp.logical_and(actions_eq, is_first)  # [S, S, T, B, 2]
-  is_unique = ~jnp.any(disqualified, axis=1)  # [S, T, B, 2]
-  unique_fraction = jnp.mean(is_unique, axis=0)  # [T, B, 2]
-
-  return unique_fraction
-
-def information_fraction(
-  payoff_matrices: jax.Array,  # [..., S, S]
-  eps: float = 1e-8,
-) -> jax.Array:
-  """Fraction of a payoff matrix that can't be explained by additive interactions."""
-  P = payoff_matrices
-  m = P.mean(axis=[-2, -1], keepdims=True)
-  P_m = P - m
-  r = P_m.mean(axis=-1, keepdims=True)
-  c = P_m.mean(axis=-2, keepdims=True)
-  I = P_m - r - c
-
-  return I.var(axis=[-2, -1]) / (P_m.var(axis=[-2, -1]) + eps)
 
 class Learner(nnx.Module, tp.Generic[Action]):
 
@@ -384,7 +347,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     metrics = dict(
         q_outputs.metrics,
-        information_fraction=information_fraction(q_values),
+        information_fraction=nash_utils.information_fraction(q_values),
     )
 
     bm_metrics = utils.map_single_structure(
@@ -397,6 +360,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_values: jax.Array,  # [S, S, T, B, 2]
   ) -> tuple[nash.NashVariables, Metrics]:
     s1, s2, t, b, n = q_values.shape
+    assert s1 == s2
     assert n == 2
 
     p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
@@ -441,9 +405,42 @@ class Learner(nnx.Module, tp.Generic[Action]):
       solve_vmap = jax_utils.multi_vmap(solve_one, axes=[0, 1])
 
       nash_variables, tm_metrics = solve_vmap(payoff_matrices)
+      assert isinstance(nash_variables, nash.NashVariables)
 
     nash_variables = utils.map_single_structure(
         lambda x: x.astype(jnp.float32), nash_variables)
+
+    ps = jnp.stack([nash_variables.p1, nash_variables.p2], axis=-2)  # [T, B, 2, S]
+    assert ps.shape == (t, b, 2, s1)
+    ps = ps / jnp.sum(ps, axis=-1, keepdims=True)  # re-normalize for numerical stability
+
+    ps_stats = {}
+    sorted_ps = jnp.sort(ps, descending=True, axis=-1)
+    cumsum_ps = jnp.cumsum(sorted_ps, axis=-1)
+
+    for count in range(1, min(s1 + 1, 6)):
+      count_stats = {}
+      mass_covered = cumsum_ps[..., count-1]
+      count_stats['mean'] = mass_covered
+
+      cutoff_stats = {}
+      for cutoff in [0.99, 0.98, 0.95, 0.9, 0.8, 0.7, 0.5]:
+        cutoff_stats[cutoff] = mass_covered >= cutoff
+      count_stats['above'] = cutoff_stats
+
+      ps_stats[count] = count_stats
+
+    tm_metrics['ps'] = ps_stats
+
+    nash_entropy = jax_utils.entropy(ps, axis=-1)  # [T, B, 2]
+    tm_metrics['entropy'] = nash_entropy
+    entropy_stats = {}
+
+    for cutoff in [0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 1.4, 2]:
+      # Mean will be taken later
+      entropy_stats[cutoff] = nash_entropy > cutoff
+
+    tm_metrics['entropy_above'] = entropy_stats
 
     # Keep time dim so we can take max over num_steps
     bm_metrics = utils.map_single_structure(
@@ -482,7 +479,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       num_samples += 1
 
     # TODO: this could belong in the sample policy unroll
-    unique_fraction = compute_unique_fraction(actions)
+    unique_fraction = nash_utils.compute_unique_fraction(actions)
 
     nash_policy_outputs = nash_policy.unroll_with_outputs(
         frames, initial_states)
