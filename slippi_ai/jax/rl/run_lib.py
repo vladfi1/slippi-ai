@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from slippi_ai.types import Action, Game
 from slippi_ai import (
     dolphin as dolphin_lib,
     eval_lib,
@@ -31,7 +32,7 @@ from slippi_ai.jax import train_vf
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib
 from slippi_ai.jax.rl import learner as learner_lib
-from slippi_ai.types import Action, Game
+from slippi_ai.jax import train_policy
 from slippi_ai.jax.networks import RecurrentState
 
 Rank2 = tuple[int, int]
@@ -331,19 +332,27 @@ class LearnerManager(tp.Generic[Action]):
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
 
-
 class Logger:
 
   def __init__(self):
     self.buffer: list[dict] = []
 
+  def _pull_last_from_device(self):
+    last = jax.device_get(self.buffer.pop())
+    last = jax.tree.map(train_policy.mean, last)
+    self.buffer.append(last)
+
   def record(self, to_log):
-    to_log = utils.map_single_structure(np.mean, to_log)
+    if self.buffer:
+      self._pull_last_from_device()
+
     self.buffer.append(to_log)
 
   def flush(self, step: int, extras: dict = {}) -> tp.Optional[dict]:
     if not self.buffer:
       return None
+
+    self._pull_last_from_device()
 
     to_log = utils.map_nt(
         lambda *xs: np.mean(xs), *self.buffer)
