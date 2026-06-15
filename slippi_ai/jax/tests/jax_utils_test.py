@@ -18,7 +18,7 @@ import sys
 from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
-    microbatch_module, microbatched_grads, grad_with_aux_tuple,
+    microbatch_fn, microbatch_module, microbatched_grads, grad_with_aux_tuple,
 )
 
 
@@ -323,6 +323,49 @@ class MicrobatchFnTest(unittest.TestCase):
     ref = f(module, data)
     mb = microbatch_module(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
     self._assert_close(ref, mb)
+
+
+class MicrobatchRngsTest(unittest.TestCase):
+  """An Rngs passed via nnx.StateAxes should draw fresh randomness per microbatch."""
+
+  def _run(self, rngs, data, microbatch_size):
+    # nnx.StateAxes({...: Carry}) threads the Rngs state across microbatches
+    # (carried), rather than broadcasting the same key to each one.
+    in_axes = (nnx.StateAxes({...: nnx.Carry}), 0)
+
+    def f(rngs: nnx.Rngs, data: jax.Array):
+      # One scalar draw per microbatch, broadcast over the microbatch rows so
+      # the output keeps a batch axis to un-microbatch.
+      x = jax.random.normal(rngs.params())
+      return jnp.full((data.shape[0],), x)
+
+    out = microbatch_fn(f, microbatch_size, input_batch_dims=in_axes)(rngs, data)
+    return out
+
+  def test_fresh_draw_per_microbatch(self):
+    batch, microbatch_size, feat = 12, 3, 4
+    num_microbatches = batch // microbatch_size
+    rngs = nnx.Rngs(0)
+    data = jax.random.normal(jax.random.PRNGKey(0), (batch, feat))
+
+    out = self._run(rngs, data, microbatch_size)
+    self.assertEqual(out.shape, (batch,))
+
+    # The per-microbatch scalar lives in column 0 of each microbatch.
+    per_microbatch = np.asarray(out).reshape(num_microbatches, microbatch_size)[:, 0]
+    # If the Rngs were broadcast instead of carried, every microbatch would draw
+    # the same key and these would all be identical.
+    self.assertEqual(len(np.unique(per_microbatch)), num_microbatches)
+
+  def test_advances_rngs_state(self):
+    """The caller's Rngs should have advanced after microbatching (state merged back)."""
+    rngs = nnx.Rngs(0)
+    data = jax.random.normal(jax.random.PRNGKey(1), (8, 4))
+
+    before = int(nnx.state(rngs)['default'].count[...])
+    self._run(rngs, data, microbatch_size=2)
+    after = int(nnx.state(rngs)['default'].count[...])
+    self.assertGreater(after, before)
 
 
 class MicrobatchedGradsTest(unittest.TestCase):
