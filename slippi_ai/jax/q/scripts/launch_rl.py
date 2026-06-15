@@ -17,7 +17,9 @@ if __name__ == '__main__':
   from slippi_ai.data import chars_from_string
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
+  from slippi_ai.jax.rl import run_lib as train_rl
   from slippi_ai.jax.q import train_q_rl
+  from slippi_ai.jax.agents import DType
 
   PP = "Platinum Player"
   DP = "Diamond Player"
@@ -27,7 +29,7 @@ if __name__ == '__main__':
 
   CONFIG = train_q_rl.Config()
 
-  CONFIG.runtime.max_step = 100000
+  CONFIG.runtime.max_step = 20000
   CONFIG.runtime.log_interval = 300
   CONFIG.dolphin.path = os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso = os.environ.get('ISO_PATH')
@@ -42,7 +44,16 @@ if __name__ == '__main__':
   CONFIG.learner.q_fn_learning_rate = 1e-4
   CONFIG.learner.reward_halflife = 4
   CONFIG.learner.num_samples = 4
-  CONFIG.learner.sample_batch_size = 1
+  # CONFIG.learner.sample_batch_size = 1
+
+  CONFIG.learner.sample_policy_dtype = DType.FP16
+  CONFIG.learner.teacher_dtype = DType.FP16
+  CONFIG.learner.q_policy_dtype = DType.BF16
+  CONFIG.learner.q_fn_dtype = DType.FP32
+  CONFIG.agent.jax.dtype = DType.FP16
+  CONFIG.opponent.other.jax.dtype = DType.FP16
+
+  CONFIG.opponent.type = train_rl.OpponentType.SELF
   CONFIG.reward.damage_ratio = 0.01
   CONFIG.reward.ledge_grab_penalty = 0.02
   CONFIG.reward.stalling_penalty = 0.1
@@ -126,7 +137,7 @@ if __name__ == '__main__':
     if DRY_RUN.value:
       wandb_kwargs['mode'] = 'disabled'
       config.actor.use_fake_envs = True
-      config.runtime.log_interval = 0
+      config.runtime.log_interval = 20
       config.runtime.save_interval = -1
 
     wandb.init(config=CONFIG_FLAG.value, **wandb_kwargs)
