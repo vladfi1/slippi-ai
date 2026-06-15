@@ -28,7 +28,7 @@ from slippi_ai.jax.policies import Policy, RecurrentState, DistanceOutputs
 from slippi_ai.jax import embed, rl_lib, jax_utils, saving
 from slippi_ai.jax.agents import DType
 from slippi_ai.jax.q import q_function as q_lib
-from slippi_ai.jax.rl.learner import FrameSkipTrajectory, get_frames
+from slippi_ai.jax.rl.learner import FrameSkipTrajectory, get_frames, MBKwargs
 
 T = tp.TypeVar('T')
 Rank2 = tuple[int, int]
@@ -61,6 +61,7 @@ class LearnerConfig:
   q_fn_dtype: DType = DType.FP32
 
   microbatch_size: int = 0
+  remat: bool = False
 
 
 _SAMPLE_AXIS = 0
@@ -116,6 +117,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
     self.q_policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
     self.teacher: Policy[Action] = saving.policy_from_config_dict(policy_config)
+
+    if config.remat:
+      self.q_policy.enable_remat()
 
     self._controller_embedding = self.policy.controller_head.controller_embedding
 
@@ -197,11 +201,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
         self.teacher,
     )
 
-    unroll_q_policy = jax_utils.with_compute_dtype(
-        self._unroll_q_policy, config.q_policy_dtype.dtype)
-
     TM = 1
     BM = 0
+    _Q_FUNCTION_AXIS = None
     _RNG_AXIS = nnx.StateAxes({...: nnx.Carry})
     _FRAMES_AXIS = TM
     _STATE_AXIS = BM
@@ -215,36 +217,45 @@ class Learner(nnx.Module, tp.Generic[Action]):
     _METRICS_AXIS = BM
 
     q_policy_input_batch_dims = (
-        _RNG_AXIS, _FRAMES_AXIS, _STATE_AXIS,
+        _Q_FUNCTION_AXIS, _RNG_AXIS, _FRAMES_AXIS, _STATE_AXIS,
         _BEST_ACTION_AXIS, _VALUES_AXIS, _ACTION_INIT_STATE_AXIS,
         _Q_VALUES_AXIS, _TEACHER_OUTPUTS_AXIS, _ACTOR_LOGITS_AXIS,
     )
-
     q_policy_output_batch_dims = (
         _METRICS_AXIS, _STATE_AXIS,
     )
-
-    train_q_policy_mb = jax_utils.train_fn(
-        unroll_q_policy,
+    q_policy_mbkwargs = MBKwargs(
         microbatch_size=config.microbatch_size,
         input_batch_dims=q_policy_input_batch_dims,
         output_batch_dims=q_policy_output_batch_dims,
     )
+
+    unroll_q_policy = jax_utils.with_compute_dtype(
+        self._unroll_q_policy, config.q_policy_dtype.dtype)
+
+    train_q_policy_mb = jax_utils.train_fn(
+        unroll_q_policy,
+        **q_policy_mbkwargs,
+    )
     jit_train_q_policy = jax_utils.nnx_jit(
         train_q_policy_mb,
-        donate_argnums=(0, 1, 2, 4),
+        donate_argnums=(0, 1, 2, 3, 5),
     )
     self.train_q_policy = jax_utils.cached_partial(
         jit_train_q_policy,
-        self.q_policy, self.policy_optimizer, rngs,
+        self.q_policy, self.policy_optimizer, self.q_function, rngs,
     )
 
+    run_q_policy_mb = jax_utils.microbatch_module(
+        jax_utils.no_loss(unroll_q_policy),
+        **q_policy_mbkwargs,
+    )
     self.run_q_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(unroll_q_policy),
-            donate_argnums=(0, 1, 3),
+            run_q_policy_mb,
+            donate_argnums=(0, 1, 2, 4),
         ),
-        self.q_policy, rngs,
+        self.q_policy, self.q_function, rngs,
     )
 
     def post_update(
@@ -402,6 +413,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
   def _unroll_q_policy(
       self,
       q_policy: Policy[Action],
+      q_function: q_lib.QFunction[Action],
       rngs: nnx.Rngs,
       frames: Frames[Rank2, Action],  # [T, B]
       initial_states: RecurrentState,  # [B]
@@ -435,7 +447,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
             prev_controller_state=prev_action)]
 
     q_function = jax_utils.cast_params_to_dtype(
-        self.q_function, self.config.q_fn_dtype.dtype)
+        q_function, self.config.q_fn_dtype.dtype)
     q_policy_sample_q_values = q_function.q_values_from_action_state(
         values=values,
         action_init_state=action_init_state,
@@ -448,6 +460,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     actor_logits = batch_fs(fs_actor_logits)
     actor_logits = utils.map_nt(lambda x: x[1:], actor_logits)
 
+    # These aren't techincally correct -- the actions should be sampled from
+    # the first distribution when computing the KL. Even the actor_kl is not
+    # quite right because the trajectory comes from picking the best action
+    # sequence from among the S samples for each state.
     teacher_kl = self._compute_kl(q_policy_logits, teacher_logits)  # [T, FS, B]
     reverse_teacher_kl = self._compute_kl(teacher_logits, q_policy_logits)
     actor_kl = self._compute_kl(actor_logits, q_policy_logits)

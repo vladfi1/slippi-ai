@@ -126,6 +126,8 @@ if __name__ == '__main__':
     if config.runtime.tag is None:
       fs = imitation_config.policy.frame_skip
       ns = config.learner.num_samples
+      if config.learner.include_action_taken_in_samples:
+        ns += 1
       klw_str = f"_klw{klw:.0e}" if klw > 0 else ""
       ep = config.learner.epoch_length
       config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}"
@@ -137,6 +139,7 @@ if __name__ == '__main__':
     if DRY_RUN.value:
       wandb_kwargs['mode'] = 'disabled'
       config.actor.use_fake_envs = True
+      config.actor.use_sim_envs = False  # fake sim envs give bad data
       config.runtime.log_interval = 20
       config.runtime.save_interval = -1
 

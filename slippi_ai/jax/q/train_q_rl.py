@@ -97,14 +97,13 @@ class LearnerManager(tp.Generic[Action]):
     self,
     learner: rl_learner.Learner[Action],
     config: Config,
-    build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
+    actor: evaluators.AbstractRolloutWorker,
     port: int,
     enemy_port: int,
     exit_stack: contextlib.ExitStack,
   ):
     self._config = config
     self._learner = learner
-    self._build_actor = build_actor
     self._unroll_length = config.actor.rollout_length
     self._port = port
     self._enemy_port = enemy_port
@@ -127,12 +126,11 @@ class LearnerManager(tp.Generic[Action]):
     ] * (self.frame_skip - 1)
     self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size], False)
 
-    with self.reset_profiler:
-      self.actor = self._build_actor()
-      self.actor.start()
-      exit_stack.callback(self.actor.stop)
-      for _ in range(self._burnin):
-        self._burnin_step()
+    self.actor = actor
+    self.actor.start()
+    exit_stack.callback(self.actor.stop)
+    for _ in range(self._burnin):
+      self._burnin_step()
 
   def _rollout(self):
     trajectories, timings = self.actor.rollout(self._unroll_length)
@@ -357,6 +355,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   main_agent_kwargs = config.agent.get_kwargs()
   main_agent_kwargs['state'] = agent_state
   agent_kwargs = {PORT: main_agent_kwargs}
+  del agent_state
 
   main_players = [dolphin_lib.AI() for _ in range(batch_size)]
   if config.opponent.type == run_lib.OpponentType.CPU:
@@ -390,6 +389,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     main_agent_kwargs['name'] = list(main_agent_names)
     opponent_kwargs['name'] = list(opp_names)
     agent_kwargs[ENEMY_PORT] = opponent_kwargs
+    del opponent_kwargs
 
     main_chars = [None] if config.agent.char is None else config.agent.char
     opp_chars_list = [None] if opponent_chars is None else opponent_chars
@@ -404,6 +404,8 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       if char is not None:
         player.character = char
 
+  del main_agent_kwargs
+
   dolphin_kwargs = [
     dict(
       players={PORT: main_players[i], ENEMY_PORT: opponent_players[i]},
@@ -417,16 +419,6 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       num_steps=config.actor.num_env_steps,
       inner_batch_size=config.actor.inner_batch_size,
     )
-
-  build_actor = lambda: evaluators.RolloutWorker(
-    agent_kwargs=agent_kwargs,
-    dolphin_kwargs=dolphin_kwargs,
-    env_kwargs=env_kwargs,
-    num_envs=config.actor.num_envs,
-    async_envs=config.actor.async_envs,
-    use_gpu=config.actor.gpu_inference,
-    use_fake_envs=config.actor.use_fake_envs,
-  )
 
   if config.actor.use_sim_envs:
     if config.opponent.type == run_lib.OpponentType.CPU:
@@ -443,36 +435,47 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     if config.actor.rollout_length % max(1, config.agent.batch_steps):
       raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
-    def build_actor() -> evaluators.AbstractRolloutWorker:
-      from slippi_ai.sim_env import jax_rollout
+    from slippi_ai.sim_env import jax_rollout
 
-      rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
-      if config.opponent.should_train():
-        merged_kwargs = agent_kwargs[PORT].copy()
-        merged_kwargs['name'] = main_agent_names + opp_names  # type: ignore
-        rollout_agent_kwargs = {(PORT, ENEMY_PORT): merged_kwargs}
-      else:
-        rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
+    rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
+    if config.opponent.should_train():
+      merged_kwargs = agent_kwargs[PORT].copy()
+      merged_kwargs['name'] = main_agent_names + opp_names  # type: ignore
+      rollout_agent_kwargs = {(PORT, ENEMY_PORT): merged_kwargs}
+    else:
+      rollout_agent_kwargs = {k: v for k, v in agent_kwargs.items()}
 
-      return jax_rollout.JaxSimRolloutWorker(
-          agent_kwargs=rollout_agent_kwargs,
-          dolphin_kwargs=dolphin_kwargs,
-          num_envs=config.actor.num_envs,
-          rollout_length=config.actor.rollout_length,
-          use_fake_envs=config.actor.use_fake_envs,
-          async_envs=config.actor.async_envs,
-          inner_batch_size=config.actor.inner_batch_size,
-          copy_data=False,
-          keep_agent_outputs_on_device=False,
-      )
+    actor = jax_rollout.JaxSimRolloutWorker(
+        agent_kwargs=rollout_agent_kwargs,
+        dolphin_kwargs=dolphin_kwargs,
+        num_envs=config.actor.num_envs,
+        rollout_length=config.actor.rollout_length,
+        use_fake_envs=config.actor.use_fake_envs,
+        async_envs=config.actor.async_envs,
+        inner_batch_size=config.actor.inner_batch_size,
+        copy_data=False,
+        keep_agent_outputs_on_device=True,
+    )
+    del rollout_agent_kwargs
+  else:
+    actor = evaluators.RolloutWorker(
+      agent_kwargs=agent_kwargs,
+      dolphin_kwargs=dolphin_kwargs,
+      env_kwargs=env_kwargs,
+      num_envs=config.actor.num_envs,
+      async_envs=config.actor.async_envs,
+      use_gpu=config.actor.gpu_inference,
+      use_fake_envs=config.actor.use_fake_envs,
+    )
+  del agent_kwargs
 
   learner_manager = LearnerManager(
-    config=config,
-    learner=learner,
-    port=PORT,
-    enemy_port=ENEMY_PORT,
-    build_actor=build_actor,
-    exit_stack=exit_stack,
+      config=config,
+      learner=learner,
+      port=PORT,
+      enemy_port=ENEMY_PORT,
+      actor=actor,
+      exit_stack=exit_stack,
   )
 
   step_profiler = utils.Profiler()
@@ -505,7 +508,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     timings = dict(
       rollout=learner_manager.rollout_profiler.mean_time(),
       learner=learner_manager.learner_profiler.mean_time(),
-      reset=learner_manager.reset_profiler.mean_time(),
+      # reset=learner_manager.reset_profiler.mean_time(),
       total=step_time,
       fps=fps,
       mps=mps,
