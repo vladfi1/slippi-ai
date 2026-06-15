@@ -60,6 +60,8 @@ class LearnerConfig:
   q_policy_dtype: DType = DType.FP32
   q_fn_dtype: DType = DType.FP32
 
+  microbatch_size: int = 0
+
 
 _SAMPLE_AXIS = 0
 
@@ -198,11 +200,43 @@ class Learner(nnx.Module, tp.Generic[Action]):
     unroll_q_policy = jax_utils.with_compute_dtype(
         self._unroll_q_policy, config.q_policy_dtype.dtype)
 
-    self.train_q_policy = jax_utils.train_fn_with_rngs(
-        module=self.q_policy,
-        optimizer=self.policy_optimizer,
-        rngs=rngs,
-        loss_fn=unroll_q_policy,
+    TM = 1
+    BM = 0
+    _RNG_AXIS = nnx.StateAxes({...: nnx.Carry})
+    _FRAMES_AXIS = TM
+    _STATE_AXIS = BM
+    _BEST_ACTION_AXIS = TM
+    _VALUES_AXIS = TM
+    _ACTION_INIT_STATE_AXIS = TM
+    _Q_VALUES_AXIS = TM
+    _TEACHER_OUTPUTS_AXIS = TM
+    _ACTOR_LOGITS_AXIS = TM
+
+    _METRICS_AXIS = BM
+
+    q_policy_input_batch_dims = (
+        _RNG_AXIS, _FRAMES_AXIS, _STATE_AXIS,
+        _BEST_ACTION_AXIS, _VALUES_AXIS, _ACTION_INIT_STATE_AXIS,
+        _Q_VALUES_AXIS, _TEACHER_OUTPUTS_AXIS, _ACTOR_LOGITS_AXIS,
+    )
+
+    q_policy_output_batch_dims = (
+        _METRICS_AXIS, _STATE_AXIS,
+    )
+
+    train_q_policy_mb = jax_utils.train_fn(
+        unroll_q_policy,
+        microbatch_size=config.microbatch_size,
+        input_batch_dims=q_policy_input_batch_dims,
+        output_batch_dims=q_policy_output_batch_dims,
+    )
+    jit_train_q_policy = jax_utils.nnx_jit(
+        train_q_policy_mb,
+        donate_argnums=(0, 1, 2, 4),
+    )
+    self.train_q_policy = jax_utils.cached_partial(
+        jit_train_q_policy,
+        self.q_policy, self.policy_optimizer, rngs,
     )
 
     self.run_q_policy = jax_utils.cached_partial(
@@ -371,7 +405,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       frames: Frames[Rank2, Action],  # [T, B]
       initial_states: RecurrentState,  # [B]
-      best_action: list[Action],  # frame_skip x [T, B]
+      best_action: list[Action],  # FS x [T, B]
       values: jax.Array,  # [T, B]
       action_init_state: RecurrentState,  # [T, B, H]
       q_values: jax.Array,  # [T, B], for the action taken

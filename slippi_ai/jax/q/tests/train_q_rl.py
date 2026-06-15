@@ -21,8 +21,8 @@ DEFAULT_CONFIG = train_q_rl.Config(
   ),
   learner=rl_learner.LearnerConfig(
     num_samples=1,
-    learning_rate=0,
     epoch_length=2,
+    microbatch_size=1,
   ),
   reward=reward.RewardConfig(
     nana_ratio=0,
