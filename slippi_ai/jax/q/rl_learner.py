@@ -32,6 +32,7 @@ from slippi_ai.jax.rl.learner import FrameSkipTrajectory, get_frames, MBKwargs
 
 T = tp.TypeVar('T')
 Rank2 = tuple[int, int]
+field = lambda f: dataclasses.field(default_factory=f)
 
 
 @dataclasses.dataclass

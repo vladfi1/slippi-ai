@@ -54,11 +54,6 @@ if __name__ == '__main__':
   CONFIG.opponent.other.jax.dtype = DType.FP16
 
   CONFIG.opponent.type = train_rl.OpponentType.SELF
-  CONFIG.reward.damage_ratio = 0.01
-  CONFIG.reward.ledge_grab_penalty = 0.02
-  CONFIG.reward.stalling_penalty = 0.1
-  CONFIG.reward.stalling_threshold = 50
-  CONFIG.reward.approaching_factor = 1e-3
   CONFIG.actor.rollout_length = 84
   CONFIG.actor.num_envs = int(os.environ.get('NUM_ENVS', 200))
   CONFIG.actor.inner_batch_size = int(os.environ.get('INNER_BATCH_SIZE', 8))
