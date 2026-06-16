@@ -48,12 +48,7 @@ if __name__ == '__main__':
   CONFIG.learner.learning_rate=3e-5
   CONFIG.learner.value_cost=1
   CONFIG.learner.policy_gradient_weight=PGW
-  CONFIG.learner.reward_halflife=8
-  CONFIG.learner.reward.damage_ratio=0.01
-  CONFIG.learner.reward.ledge_grab_penalty=0.02
-  CONFIG.learner.reward.stalling_penalty=0.1
-  CONFIG.learner.reward.stalling_threshold = 50
-  CONFIG.learner.reward.approaching_factor=1e-3
+  CONFIG.learner.reward_halflife=4
   CONFIG.learner.ppo.num_epochs=2
   CONFIG.learner.ppo.num_batches=16
   CONFIG.learner.ppo.beta=3e-1

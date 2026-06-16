@@ -21,11 +21,11 @@ def default_config():
   config.data.batch_size = 512
   config.data.unroll_length = 80
   config.test_unroll_multiplier = 16
-  config.data.damage_ratio = 0.01
-  config.data.unroll_chunks = 4
   config.data.num_workers = 2
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
+
+  # Match Q RL reward config
   config.learner.reward_halflife = 4
   config.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
   config.embed.player.with_nana = True

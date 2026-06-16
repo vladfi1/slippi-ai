@@ -20,6 +20,7 @@ from slippi_ai import (
     utils,
     data as data_lib,
     dolphin as dolphin_lib,
+    reward as reward_lib,
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
@@ -95,6 +96,7 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
@@ -344,6 +346,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       name_map=name_map,
       extra_frames=1 + nash_policy.delay,
       observation_config=imitation_config.observation,
+      reward_kwargs=dataclasses.asdict(config.reward),
   )
 
   def make_source(source: data_lib.AbstractDataSource):

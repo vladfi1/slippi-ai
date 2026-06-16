@@ -26,12 +26,13 @@ Rank1 = tuple[int]
 BoolDType = np.dtype[np.bool]
 FloatDType = np.dtype[np.float32]
 Int32DType = np.dtype[np.int32]
+UInt16DType = np.dtype[np.uint16]
 
 BoolArray: tp.TypeAlias = np.ndarray[S, BoolDType]
 FloatArray: tp.TypeAlias =  np.ndarray[S, FloatDType]
 Int32Array: tp.TypeAlias =  np.ndarray[S, Int32DType]
 UInt8Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint8]]
-UInt16Array: tp.TypeAlias = np.ndarray[S, np.dtype[np.uint16]]
+UInt16Array: tp.TypeAlias = np.ndarray[S, UInt16DType]
 
 class Buttons(NamedTuple, Generic[S]):
   A: BoolArray[S]

@@ -43,7 +43,7 @@ class LearnerConfig:
   entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 4  # measured in seconds
-  reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
+  reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig.default)
   ppo: PPOConfig = field(PPOConfig)
   fused: bool = False
 

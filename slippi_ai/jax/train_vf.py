@@ -20,6 +20,7 @@ from slippi_ai import (
     observations as obs_lib,
     utils,
     data as data_lib,
+    reward as reward_lib,
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
@@ -54,6 +55,7 @@ class Config:
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
   # Loads obs config and name map to be compatible with a given policy.
   compatible_policy: tp.Optional[str] = None
@@ -282,6 +284,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       max_names=config.max_names,
       extra_frames=1,
       observation_config=config.observation,
+      reward_kwargs=dataclasses.asdict(config.reward),
   )
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)

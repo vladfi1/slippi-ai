@@ -19,13 +19,13 @@ def default_config():
 
   config.data.batch_size = 512
   config.data.unroll_length = 80
-  config.data.damage_ratio = 0.01
   config.data.num_workers = 1
   config.data.unroll_chunks = 4
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
   config.learner.bf16 = True
   config.learner.reward_halflife = 4
+
   config.embed.controller.type = 'custom_v1'
   config.embed.player.with_nana = True
   config.embed.items.type = embed.ItemsType.FLAT

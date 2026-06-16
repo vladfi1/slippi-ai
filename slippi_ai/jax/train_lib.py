@@ -364,6 +364,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       max_names=config.max_names,
       extra_frames=policy.delay + 1,
       observation_config=config.observation,
+      reward_kwargs=dataclasses.asdict(config.reward),
   )
   exit_stack.callback(train_data.shutdown)
   exit_stack.callback(test_data.shutdown)
