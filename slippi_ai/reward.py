@@ -5,13 +5,13 @@ import dataclasses
 import numpy as np
 
 import melee
-from slippi_ai.types import Game, Player, S
+from slippi_ai.types import Game, Player, S, UInt16Array, BoolArray
 
-def is_dying(player_action: np.ndarray) -> np.ndarray:
+def is_dying(player_action: UInt16Array[S]) -> BoolArray[S]:
   # See https://docs.google.com/spreadsheets/d/1JX2w-r2fuvWuNgGb6D3Cs4wHQKLFegZe2jhbBuIhCG8/edit#gid=13
   return player_action <= 0xA
 
-def process_deaths(player_action: np.ndarray) -> np.ndarray:
+def process_deaths(player_action: UInt16Array[S]) -> BoolArray[S]:
   deaths = is_dying(player_action)
   # Players are in a dead action-state for many consecutive frames.
   # Prune all but the first frame of death
@@ -82,7 +82,7 @@ def amount_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
   return np.sqrt(np.square(dx) + np.square(dy))
 
 
-DEFAULT_STALLING_THRESHOLD = 20
+DEFAULT_STALLING_THRESHOLD = 50
 
 def is_stalling_offstage(
     player: Player,
@@ -114,6 +114,17 @@ class RewardConfig:
   stalling_penalty: float = 0  # per second
   stalling_threshold: float = DEFAULT_STALLING_THRESHOLD
   nana_ratio: float = 0.5
+
+  @classmethod
+  def default(cls):
+    return cls(
+        damage_ratio=0.01,
+        ledge_grab_penalty=0.02,
+        approaching_factor=1e-3,
+        stalling_penalty=0.1,
+        stalling_threshold=DEFAULT_STALLING_THRESHOLD,
+        nana_ratio=0.5,
+    )
 
 def ko_diff(game: Game[S]) -> np.ndarray[S, np.dtype[np.int32]]:
   """Compute the KO difference (p0 KOs - p1 KOs) per frame."""

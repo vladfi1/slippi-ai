@@ -70,7 +70,7 @@ class Config:
   actor: run_lib.ActorConfig = field(run_lib.ActorConfig)
   agent: run_lib.AgentConfig = field(run_lib.AgentConfig)
   opponent: run_lib.OpponentConfig = field(run_lib.OpponentConfig)
-  reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig)
+  reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig.default)
 
   # Exactly one of teacher or restore must be set.
   teacher: tp.Optional[str] = None
@@ -218,7 +218,7 @@ class LearnerManager(tp.Generic[Action]):
       metrics, self._hidden_state = self._learner.step(
         fs_trajectory, self._hidden_state, train=True, step=step)
 
-    return [trajectory], dict(learner=metrics, actor=actor_metrics)
+    return trajectory, dict(learner=metrics, actor=actor_metrics)
 
 
 def run(config: Config):
@@ -454,7 +454,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
         async_envs=config.actor.async_envs,
         inner_batch_size=config.actor.inner_batch_size,
         copy_data=False,
-        keep_agent_outputs_on_device=True,
+        keep_agent_outputs_on_device=False,
     )
     del rollout_agent_kwargs
   else:
@@ -500,7 +500,12 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   logger = run_lib.Logger()
 
-  def get_log_data(metrics: dict) -> dict:
+  MINUTES_PER_FRAME = 60 * 60
+
+  def get_log_data(
+      trajectory: evaluators.Trajectory[Rank2, Action, RecurrentState],
+      metrics: dict,
+  ) -> dict:
     step_time = step_profiler.mean_time()
     fps = config.actor.num_envs * config.actor.rollout_length / step_time
     mps = fps / (60 * 60)
@@ -514,29 +519,50 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       mps=mps,
       sps=1 / step_time,
     )
-    actor_timing = metrics['actor'].pop('timing')
-    for key in ['env_pop', 'env_push']:
-      timings[key] = 1000 * actor_timing[key]
-    timings['agent_step'] = 1000 * actor_timing['agent_step'][PORT]
+    timings['actor'] = utils.map_nt(
+        lambda x: x * 1000, metrics['actor'].pop('timing'))
 
-    metrics.update(timings=timings)
+    states = trajectory.states
+
+    p0_stats = reward_lib.player_stats(
+        states.p0, states.p1, states.stage,
+        stalling_threshold=config.reward.stalling_threshold)
+
+    if not config.opponent.should_train():
+      metrics['ko_diff'] = reward_lib.ko_diff(states) * MINUTES_PER_FRAME
+
+    metrics.update(
+        timings=timings,
+        p0=p0_stats,
+    )
     return metrics
 
+  frames_per_step = config.actor.num_envs * config.actor.rollout_length
+  if config.opponent.should_train():
+    frames_per_step *= 2
+
   def flush(step: int):
-    metrics = logger.flush(step)
+    total_frames = step * frames_per_step
+    extras = dict(
+        total_frames=total_frames,
+    )
+
+    metrics = logger.flush(step, extras=extras)
     if metrics is None:
       return
 
     print('\nStep:', step)
     timings: dict = metrics['timings']
-    timing_str = ', '.join(f'{k}: {v:.2f}' for k, v in timings.items())
-    print(timing_str)
+    timings = utils.map_nt(lambda v: f'{v:.2f}', timings)
+    print(timings)
 
     q_policy_metrics = metrics['learner'][rl_learner.Q_POLICY]
     q_loss = np.mean(q_policy_metrics['q_loss'])
     actor_kl = np.mean(q_policy_metrics['post_update_actor_kl'])
     entropy = np.mean(q_policy_metrics['entropy'])
     print(f'q_loss={q_loss:.4f} actor_kl={actor_kl:.3g} entropy={entropy:.3f}')
+    if not config.opponent.should_train():
+      print(f'ko_diff: {metrics["ko_diff"]:.3f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
@@ -554,11 +580,11 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
         logging.info('Resetting environments')
         learner_manager.reset_env()
 
-      _, metrics = learner_manager.step(step=step)
+      trajectory, metrics = learner_manager.step(step=step)
 
-    logger.record(get_log_data(metrics))
+    logger.record(get_log_data(trajectory, metrics))
     maybe_flush(step)
-    maybe_save(step)
     step += 1
+    maybe_save(step)
 
   save(step)

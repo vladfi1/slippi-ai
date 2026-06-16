@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Test Q-policy RL training loop with fake envs."""
 
+import os
+os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
+
 import melee
 from absl import app
 import fancyflags as ff

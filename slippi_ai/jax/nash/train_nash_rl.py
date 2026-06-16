@@ -531,8 +531,8 @@ def run(config: Config):
       items.append(f'{key}={value:.3f}')
 
     items.extend([
-      f'nsmean={ns.mean():.3f}',
-      f'nsmax={ns.max():.3f}',
+      f'nsmean={ns.mean():.1f}',
+      f'nsmax={ns.max():.1f}',
     ])
     print(' '.join(items))
 
