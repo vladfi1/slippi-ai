@@ -491,11 +491,12 @@ def run(config: Config):
       total=step_time,
       fps=fps,
       mps=mps,
+      sps=1 / step_time,
     )
     actor_timing = metrics['actor'].pop('timing')
     for key in ['env_pop', 'env_push']:
-      timings[key] = actor_timing[key]
-    timings['agent_step'] = actor_timing['agent_step'][PORT]
+      timings[key] = 1000 * actor_timing[key]
+    timings['agent_step'] = 1000 * actor_timing['agent_step'][PORT]
 
     metrics.update(timings=timings)
     return metrics
@@ -507,7 +508,7 @@ def run(config: Config):
 
     print('\nStep:', step)
     timings: dict = metrics['timings']
-    timing_str = ', '.join(f'{k}: {v:.3f}' for k, v in timings.items())
+    timing_str = ', '.join(f'{k}: {v:.2f}' for k, v in timings.items())
     print(timing_str)
 
     learner_metrics = metrics['learner']
