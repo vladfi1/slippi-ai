@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 
 # Make sure not to import things unless we're the main module.
-# This allows child processes to avoid importing tensorflow,
+# This allows child processes to avoid importing jax,
 # which uses a lot of memory.
+import dataclasses
+
+
 if __name__ == '__main__':
   __spec__ = None  # https://github.com/python/cpython/issues/87115
 
@@ -159,7 +162,7 @@ if __name__ == '__main__':
       config.runtime.save_interval = -1
 
     wandb.init(
-        config=CONFIG_FLAG.value,
+        config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
 
