@@ -128,7 +128,9 @@ if __name__ == '__main__':
         ns += 1
       klw_str = f"_klw{klw:.0e}" if klw > 0 else ""
       ep = config.learner.epoch_length
-      config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}"
+
+      lr = config.learner.learning_rate
+      config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
     if wandb_kwargs['name'] is None:
