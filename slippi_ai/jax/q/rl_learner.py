@@ -52,6 +52,8 @@ class LearnerConfig:
   kl_teacher_weight: float = 0
   reverse_kl_teacher_weight: float = 0
   actor_kl_weight: float = 0
+  # Weight the argmax-distillation loss by the advantage of the best action.
+  weight_by_advantage: bool = False
 
   # Delay q_policy updates while the q_function warms up.
   value_burnin_steps: int = 0
@@ -96,6 +98,11 @@ def warmup_schedule(burnin_steps: int, base_value: float):
 def copy_struct(struct: T) -> T:
   return jax.tree.map(jnp.copy, struct)
 
+class QFunctionOutputs(tp.NamedTuple, tp.Generic[Action]):
+  values: jax.Array
+  action_init_state: RecurrentState
+  best_action: list[Action]
+  best_values: jax.Array  # Q-values for the best action
 
 class Learner(nnx.Module, tp.Generic[Action]):
 
@@ -208,10 +215,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     _RNG_AXIS = nnx.StateAxes({...: nnx.Carry})
     _FRAMES_AXIS = TM
     _STATE_AXIS = BM
-    _BEST_ACTION_AXIS = TM
-    _VALUES_AXIS = TM
-    _ACTION_INIT_STATE_AXIS = TM
-    _Q_VALUES_AXIS = TM
+    _Q_FUNCTION_OUTPUTS_AXIS = TM
     _TEACHER_OUTPUTS_AXIS = TM
     _ACTOR_LOGITS_AXIS = TM
 
@@ -219,8 +223,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     q_policy_input_batch_dims = (
         _Q_FUNCTION_AXIS, _RNG_AXIS, _FRAMES_AXIS, _STATE_AXIS,
-        _BEST_ACTION_AXIS, _VALUES_AXIS, _ACTION_INIT_STATE_AXIS,
-        _Q_VALUES_AXIS, _TEACHER_OUTPUTS_AXIS, _ACTOR_LOGITS_AXIS,
+        _Q_FUNCTION_OUTPUTS_AXIS, _TEACHER_OUTPUTS_AXIS, _ACTOR_LOGITS_AXIS,
     )
     q_policy_output_batch_dims = (
         _METRICS_AXIS, _STATE_AXIS,
@@ -375,7 +378,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )  # [S, T, B]
 
     sample_policy_expected_return = jnp.mean(sample_q_values, axis=_SAMPLE_AXIS)
-    sample_policy_advantages = sample_policy_expected_return - q_outputs.q_values
+    sample_policy_advantages = sample_policy_expected_return - q_outputs.values
 
     actions = policy_samples
     q_values = sample_q_values
@@ -396,20 +399,27 @@ class Learner(nnx.Module, tp.Generic[Action]):
         actions)
 
     optimal_expected_return = jnp.max(q_values, axis=_SAMPLE_AXIS)
-    optimal_advantages = optimal_expected_return - q_outputs.q_values
+    optimal_advantages = optimal_expected_return - q_outputs.values
+    optimal_advantage_std = jnp.std(optimal_advantages, keepdims=True)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
     metrics = dict(
         q_outputs.metrics,
         sample_policy_advantages=sample_policy_advantages,
         optimal_advantages=optimal_advantages,
+        optimal_advantage_std=optimal_advantage_std,
         q_bias=q_bias,
     )
     bm_metrics = jax.tree.map(lambda x: jnp.mean(x, axis=0), metrics)
 
-    return (
-        bm_loss, bm_metrics, final_state,
-        q_outputs.values, action_init_state, q_outputs.q_values, best_action)
+    outputs = QFunctionOutputs(
+        values=q_outputs.values,
+        action_init_state=action_init_state,
+        best_action=best_action,
+        best_values=optimal_expected_return,
+    )
+
+    return bm_loss, bm_metrics, final_state, outputs
 
   def _unroll_q_policy(
       self,
@@ -418,10 +428,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       frames: Frames[Rank2, Action],  # [T, B]
       initial_states: RecurrentState,  # [B]
-      best_action: list[Action],  # FS x [T, B]
-      values: jax.Array,  # [T, B]
-      action_init_state: RecurrentState,  # [T, B, H]
-      q_values: jax.Array,  # [T, B], for the action taken
+      q_function_outputs: QFunctionOutputs[Action],
       teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B]
       fs_actor_logits: list[Action],  # FS x [T, B]
   ) -> tuple[Loss, dict, RecurrentState]:
@@ -435,9 +442,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_policy_distances = q_policy.controller_head.distance(
         inputs=q_policy_outputs.outputs,
         prev_controller_state=prev_action,
-        target_controller_state=best_action,
+        target_controller_state=q_function_outputs.best_action,
     )
     q_policy_argmax_loss = jax_utils.add_n(q_policy_distances) / len(q_policy_distances)
+
+    if self.config.weight_by_advantage:
+      q_policy_advantages = q_function_outputs.best_values - q_function_outputs.values
+      q_policy_argmax_loss *= q_policy_advantages / q_policy_advantages.mean()
 
     # Estimate q_policy returns.
     q_policy_samples = [
@@ -450,11 +461,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_function = jax_utils.cast_params_to_dtype(
         q_function, self.config.q_fn_dtype.dtype)
     q_policy_sample_q_values = q_function.q_values_from_action_state(
-        values=values,
-        action_init_state=action_init_state,
+        values=q_function_outputs.values,
+        action_init_state=q_function_outputs.action_init_state,
         actions=q_policy_samples,
     )
-    q_policy_advantages = q_policy_sample_q_values - q_values
+    q_policy_advantages = q_policy_sample_q_values - q_function_outputs.values
+    optimality_gap = q_function_outputs.best_values - q_policy_sample_q_values
 
     q_policy_logits = batch_fs([do.logits for do in q_policy_outputs.distances])
     teacher_logits = batch_fs([do.logits for do in teacher_outputs])
@@ -487,6 +499,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         imitation_loss=q_policy_imitation_loss,
         total_loss=q_policy_total_loss,
         q_policy_advantages=q_policy_advantages,
+        optimality_gap=optimality_gap,
         teacher_kl=teacher_kl,
         reverse_teacher_kl=reverse_teacher_kl,
         actor_kl=actor_kl,
@@ -499,26 +512,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return bm_loss, bm_metrics, q_policy_outputs.final_state
 
-  @jax_utils.annotate_function
   def step_sample_policy(self, tm_frames, initial_state):
     return self.run_sample_policy(tm_frames, initial_state)
 
-  @jax_utils.annotate_function
   def step_q_function(self, tm_frames, initial_state, policy_samples, train: bool):
     fn = self.train_q_function if train else self.run_q_function
     lambda_ = self.config.gae_lambda if train else 1.0
     return fn(tm_frames, initial_state, policy_samples, lambda_)
-
-  @jax_utils.annotate_function
-  def step_q_policy(
-      self, tm_frames, initial_state, best_action, values, action_init_state,
-      q_values, teacher_outputs, actor_logits, train: bool = True,
-  ):
-    fn = self.train_q_policy if train else self.run_q_policy
-    return fn(
-        tm_frames, initial_state, best_action, values, action_init_state,
-        q_values, teacher_outputs, actor_logits,
-    )
 
   def step(
       self,
@@ -541,10 +541,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     (
       metrics[Q_FUNCTION],
       final_states[Q_FUNCTION],
-      values,
-      q_action_init_state,
-      q_values,
-      best_action,
+      q_function_outputs,
     ) = self.step_q_function(
         frames, initial_states[Q_FUNCTION], policy_samples, train=train)
     del policy_samples
@@ -554,16 +551,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[TEACHER],
     ) = self.run_teacher(frames, initial_states[TEACHER])
 
+
+    step_q_policy = self.train_q_policy if train else self.run_q_policy
     actor_logits = [so.logits for so in trajectory.actions]
     # Need a copy since the original gets donated by the q_policy update.
     initial_q_policy_state = copy_struct(initial_states[Q_POLICY])
     (
       metrics[Q_POLICY],
       final_states[Q_POLICY],
-    ) = self.step_q_policy(
-        frames, initial_states[Q_POLICY], best_action, values,
-        q_action_init_state, q_values, teacher_outputs, actor_logits,
-        train=train)
+    ) = step_q_policy(
+        frames, initial_states[Q_POLICY], q_function_outputs, teacher_outputs,
+        actor_logits)
 
     post_update_metrics = self.post_update(
         frames, initial_q_policy_state, actor_logits)

@@ -130,7 +130,9 @@ if __name__ == '__main__':
       ep = config.learner.epoch_length
 
       lr = config.learner.learning_rate
-      config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}"
+
+      wba = f"_wba" if config.learner.weight_by_advantage else ""
+      config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
     if wandb_kwargs['name'] is None:
