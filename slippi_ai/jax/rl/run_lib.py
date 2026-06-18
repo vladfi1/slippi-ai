@@ -127,7 +127,9 @@ class OpponentConfig:
   other: AgentConfig = field(AgentConfig)
 
   update_interval: tp.Optional[int] = None
-  train: bool = False
+  # Note: not training or updating when type=self is equivalent to setting
+  # type=other and other.path to the teacher checkpoint.
+  train: bool = True
 
   def should_update(self, step: int):
     if self.type is not OpponentType.SELF:
