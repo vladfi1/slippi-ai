@@ -20,6 +20,7 @@ if __name__ == '__main__':
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
   from slippi_ai.jax.rl import run_lib
+  from slippi_ai.jax.agents import DType
 
   PP="Platinum Player"
   DP="Diamond Player"
@@ -55,6 +56,15 @@ if __name__ == '__main__':
   CONFIG.learner.ppo.num_batches=16
   CONFIG.learner.ppo.beta=3e-1
   CONFIG.learner.ppo.epsilon=1e-2
+
+  CONFIG.learner.ppo.num_batches = 1
+  CONFIG.learner.ppo.num_epochs = 1
+  CONFIG.learner.teacher_dtype = DType.FP16
+  CONFIG.learner.value_dtype = DType.FP32  # could be bf16
+  CONFIG.learner.policy_dtype = DType.FP16
+  CONFIG.agent.jax.dtype = DType.FP16
+  CONFIG.opponent.other.jax.dtype = DType.FP16
+
   # CONFIG.teacher=f'pickled_models/jax/{MODEL}'
   CONFIG.opponent.type=run_lib.OpponentType.SELF
   CONFIG.opponent.train=True
@@ -146,7 +156,7 @@ if __name__ == '__main__':
 
       fs = imitation_config.policy.frame_skip
 
-      config.runtime.tag = f"{char_str}_d{delay}_{opp}_kl_{KLW.value:.0e}_rfs{fs}"
+      config.runtime.tag = f"{char_str}_d{delay}_{opp}_klw{KLW.value:.0e}_rfs{fs}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
