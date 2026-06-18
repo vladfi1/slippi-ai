@@ -20,6 +20,7 @@ from slippi_ai import (
     observations as obs_lib,
     utils,
     data as data_lib,
+    paths,
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
@@ -52,6 +53,7 @@ class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
+  toy_data: bool = False
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
 
@@ -76,6 +78,18 @@ class Config:
   version: int = 0
   platform: str = Platform.JAX.value
 
+  def __post_init__(self):
+    if self.toy_data:
+      logging.info('Overriding dataset config for toy data')
+      self.dataset.data_dir = str(paths.TOY_DATA_DIR)
+      self.dataset.meta_path = str(paths.TOY_META_PATH)
+      self.dataset.test_ratio = 0.5
+      self.dataset.allowed_opponents = 'all'
+      self.data.cached = True
+      self.data.num_workers = 0
+      self.runtime.log_interval = 15
+      self.runtime.num_evals_per_epoch = 0
+
   def make_compatible_with(self, policy_config: train_policy.Config):
     # RL training currently only encodes the gamestate once using the policy's
     # embed config, so the value function needs to use the same config.
@@ -83,7 +97,8 @@ class Config:
     self.observation = policy_config.observation
     self.max_names = policy_config.max_names
     self.frame_skip = policy_config.policy.frame_skip
-    self.dataset.copy_characteristics_from(policy_config.dataset)
+    if not self.toy_data:
+      self.dataset.copy_characteristics_from(policy_config.dataset)
 
 
 def check_compatibility(vf_state: dict, policy_state: dict) -> list[str]:
