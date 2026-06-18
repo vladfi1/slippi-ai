@@ -476,13 +476,16 @@ def run(config: Config):
 
   logger = run_lib.Logger()
 
+  MINUTES_PER_FRAME = 60 * 60
+  frames_per_step = 2 * config.actor.num_envs * config.actor.rollout_length
+
   def get_log_data(
     trajectory: FrameSkipTrajectory,
     metrics: dict,
   ) -> dict:
     step_time = step_profiler.mean_time()
-    fps = config.actor.num_envs * config.actor.rollout_length / step_time
-    mps = 2 * fps / (60 * 60)
+    fps = frames_per_step / step_time
+    mps = fps / MINUTES_PER_FRAME
 
     timings = dict(
       rollout=learner_manager.rollout_profiler.mean_time(),

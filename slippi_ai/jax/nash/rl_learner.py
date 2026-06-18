@@ -39,6 +39,7 @@ class LearnerConfig:
   epoch_length: int = 100
 
   nash_weight: float = 1
+  weight_by_advantage: bool = False
   kl_teacher_weight: float = 0
   reverse_kl_teacher_weight: float = 0
 
@@ -510,6 +511,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       policy_samples: list[Action],  # FS x [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
+      q_values: jax.Array,  # [S, S, T, B, 2]
       nash_solution: nash.NashVariables,  # [T, B]
       teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
       fs_actor_logits: list[Action],  # FS x [T, B, 2]
@@ -533,6 +535,38 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [T, B, 2, S]
     nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
     nash_entropy = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
+
+    p1_nash_value = nash_solution.p1_nash_value
+    p2_nash_value = -nash_solution.p1_nash_value
+
+    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
+    mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
+    payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
+
+    p12_matrices = jnp.stack([
+        payoff_matrices,
+        -payoff_matrices.swapaxes(-1, -2)],
+    axis=2)  # [T, B, 2, S, S]
+
+    def payoffs(
+      p: jax.Array,  # [T, B, 2, S]
+      q: jax.Array,  # [T, B, 2, S]
+    ) -> jax.Array:  # [T, B, 2]
+      """Compute payoffs of policy p vs policy q."""
+      return jnp.vecdot(p, jnp.matvec(p12_matrices, q))
+
+    vs_mean = p12_matrices.mean(axis=-1)  # [T, B, 2, S]
+    argmax_vs_mean = jnp.max(vs_mean, axis=-1)  # [T, B, 2]
+    argmax_policy = jnp.argmax(vs_mean, axis=-1)  # [T, B, 2]
+    argmax_policy_probs = jax.nn.one_hot(argmax_policy, num_classes=num_samples)  # [T, B, 2, S]
+
+    nash_vs_argmax = payoffs(nash_probs, argmax_policy_probs)
+    nash_vs_mean = jnp.vecdot(nash_probs, vs_mean)  # [T, B, 2]
+    argmax_advantage = argmax_vs_mean - nash_vs_mean
+
+    nash_advantage = nash_vs_mean
+    nash_advantage_std = jnp.std(nash_advantage, keepdims=True)
+    nash_advantage_log_std = jnp.log(nash_advantage + 1e-8).std(keepdims=True)
 
     nash_policy_mbs = self.config.sample_batch_size
 
@@ -584,6 +618,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
     nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
+    if self.config.weight_by_advantage:
+      # Weight the cross-entropy by how much better the nash distribution does
+      # compared to the sample policy, i.e. how much we gain by using the nash
+      # distribution for that state.
+      nash_cross_entropy *= nash_vs_mean / nash_vs_mean.mean()
+
     # Estimate nash_policy vs computed nash
     nash_policy_samples = [  # list[Controller[T, B, 2]]
         so.controller_state
@@ -634,6 +674,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
     nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
 
+    nash_values = jnp.stack([p1_nash_value, p2_nash_value], axis=-1)  # [T, B, 2]
+    optimality_gap = nash_values - nash_policy_qs
+
     nash_policy_logits = batch_fs([
         do.logits for do in nash_policy_outputs.distances])
 
@@ -671,6 +714,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
         actor_kl=actor_kl,
         entropy=entropy,
         unique_fraction=unique_fraction,
+        optimality_gap=optimality_gap,  # nash(sampled actions) vs nash_policy
+        nash_advantage=nash_advantage,  # nash(sampled actions) vs mean(sampled actions)
+        nash_advantage_std=nash_advantage_std,
+        nash_advantage_log_std=nash_advantage_log_std,
+        argmax_advantage=argmax_advantage,  # how much better argmax does vs mean compared to nash vs mean
+        nash_vs_argmax=nash_vs_argmax,  # nash(sampled actions) vs argmax(sampled actions)
     )
 
     if self.config.include_action_taken_in_samples:
@@ -711,6 +760,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
       values: jax.Array,  # [T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
+      q_values: jax.Array,  # [S, S, T, B, 2]
       nash_solution: nash.NashVariables,  # [T, B]
       teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
       actor_logits: list[Action],  # FS x [T, B, 2]
@@ -720,7 +770,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return fn(
         tm_frames, initial_state, policy_samples, values, q_action_init_state,
-        nash_solution, teacher_outputs, actor_logits,
+        q_values, nash_solution, teacher_outputs, actor_logits,
     )
 
   def step(
@@ -772,7 +822,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         frames, initial_states[NASH_POLICY], policy_samples, values,
-        q_action_init_state, nash_variables, teacher_outputs, actor_logits,
+        q_action_init_state, q_values, nash_variables, teacher_outputs, actor_logits,
         train=train)
 
     post_update_metrics = self.post_update(
