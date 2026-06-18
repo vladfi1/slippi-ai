@@ -160,7 +160,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       action_init_state: networks.RecurrentState,  # [T, B, 2, H]
       actions: list[Action],  # frame_skip x [S, T, B, 2]
       batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
-  ) -> jax.Array:  # [S, S, T, B, 2]
+  ) -> jax.Array:  # [S, S, T, B, 2]  ([p0-idx, p1-idx, ...])
     embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
 

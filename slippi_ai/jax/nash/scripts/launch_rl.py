@@ -148,7 +148,9 @@ if __name__ == '__main__':
       if config.learner.subsample:
         sub = f"_sub{config.learner.subsample}"
 
-      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}{sub}_ep{ep}"
+      wba = f"_wba" if config.learner.weight_by_advantage else ""
+
+      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}{sub}_ep{ep}{wba}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
