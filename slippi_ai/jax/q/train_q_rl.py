@@ -501,13 +501,16 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   logger = run_lib.Logger()
 
   MINUTES_PER_FRAME = 60 * 60
+  frames_per_step = config.actor.num_envs * config.actor.rollout_length
+  if config.opponent.should_train():
+    frames_per_step *= 2
 
   def get_log_data(
       trajectory: evaluators.Trajectory[Rank2, Action, RecurrentState],
       metrics: dict,
   ) -> dict:
     step_time = step_profiler.mean_time()
-    fps = config.actor.num_envs * config.actor.rollout_length / step_time
+    fps = frames_per_step / step_time
     mps = fps / (60 * 60)
 
     timings = dict(

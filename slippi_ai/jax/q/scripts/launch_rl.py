@@ -122,6 +122,22 @@ if __name__ == '__main__':
     config.learner.reverse_kl_teacher_weight = klw
 
     if config.runtime.tag is None:
+      if config.opponent.type is train_rl.OpponentType.SELF:
+        if config.opponent.train:
+          opp = 'ditto'
+        elif config.opponent.update_interval is not None:
+          opp = f'ditto-{config.opponent.update_interval}'
+        else:
+          opp = 'ditto-fixed'
+      elif config.opponent.type is train_rl.OpponentType.CPU:
+        opp = 'vs_cpu'
+      elif config.opponent.type is train_rl.OpponentType.OTHER:
+        # assert config.opponent.other.path is not None
+        # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
+        opp = 'vs-fixed'
+      else:
+        raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
+
       fs = imitation_config.policy.frame_skip
       ns = config.learner.num_samples
       if config.learner.include_action_taken_in_samples:
@@ -132,7 +148,7 @@ if __name__ == '__main__':
       lr = config.learner.learning_rate
 
       wba = f"_wba" if config.learner.weight_by_advantage else ""
-      config.runtime.tag = f"qrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}"
+      config.runtime.tag = f"qrl_{char_str}_d{delay}_{opp}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
     if wandb_kwargs['name'] is None:
