@@ -505,7 +505,12 @@ def run(config: Config):
     return metrics
 
   def flush(step: int):
-    metrics = logger.flush(step)
+    total_frames = step * frames_per_step
+    extras = dict(
+        total_frames=total_frames,
+    )
+
+    metrics = logger.flush(step, extras=extras)
     if metrics is None:
       return
 
