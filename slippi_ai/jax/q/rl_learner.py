@@ -401,6 +401,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     optimal_expected_return = jnp.max(q_values, axis=_SAMPLE_AXIS)
     optimal_advantages = optimal_expected_return - q_outputs.values
     optimal_advantage_std = jnp.std(optimal_advantages, keepdims=True)
+    optimal_advantage_log_std = jnp.log(optimal_advantages + 1e-8).std(keepdims=True)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
     metrics = dict(
@@ -408,6 +409,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         sample_policy_advantages=sample_policy_advantages,
         optimal_advantages=optimal_advantages,
         optimal_advantage_std=optimal_advantage_std,
+        optimal_advantage_log_std=optimal_advantage_log_std,
         q_bias=q_bias,
     )
     bm_metrics = jax.tree.map(lambda x: jnp.mean(x, axis=0), metrics)
@@ -447,8 +449,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_policy_argmax_loss = jax_utils.add_n(q_policy_distances) / len(q_policy_distances)
 
     if self.config.weight_by_advantage:
-      q_policy_advantages = q_function_outputs.best_values - q_function_outputs.values
-      q_policy_argmax_loss *= q_policy_advantages / q_policy_advantages.mean()
+      optimal_advantages = q_function_outputs.best_values - q_function_outputs.values
+      q_policy_argmax_loss *= optimal_advantages / optimal_advantages.mean()
 
     # Estimate q_policy returns.
     q_policy_samples = [
