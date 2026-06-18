@@ -51,11 +51,27 @@ if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
 
-  TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
   NUM_DAYS = flags.DEFINE_float('num_days', 2, 'Number of days to train for')
 
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_default(default_config()))
+
+  EMBED = ff.DEFINE_dict(
+      'embed',
+      name=ff.String('enhanced'),
+      simple=dict(),
+      enhanced=dict(
+          rnn_cell=ff.String('lstm'),
+          hidden_size=ff.Integer(None),
+          use_controller_rnn=ff.Boolean(True),
+          use_learned_char=ff.Boolean(False),
+          use_learned_action=ff.Boolean(False),
+          use_char_action_joint=ff.Boolean(True),
+          use_item_sum=ff.Boolean(True),
+          use_items=ff.Boolean(True),
+          hybrid_embed=ff.Boolean(False),
+      ),
+  )
 
   WANDB = ff.DEFINE_dict(
       'wandb',
@@ -71,52 +87,55 @@ if __name__ == '__main__':
     config = flag_utils.dataclass_from_dict(train_vf.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
-    if TOY_DATA.value:
-      config.dataset.data_dir = str(paths.TOY_DATA_DIR)
-      config.dataset.meta_path = str(paths.TOY_META_PATH)
-      config.dataset.test_ratio = 0.5
-      char = 'all'
-      config.data.cached = True
-      config.data.num_workers = 0
-      config.runtime.log_interval = 15
-      config.runtime.num_evals_per_epoch = 0
-    else:
-      assert config.compatible_policy is not None
-      imitation_state = saving.load_state_from_disk(config.compatible_policy)
-      imitation_config = flag_utils.dataclass_from_dict(
-          train_lib.Config, imitation_state['config'])
+    assert config.compatible_policy is not None
+    imitation_state = saving.load_state_from_disk(config.compatible_policy)
+    imitation_config = flag_utils.dataclass_from_dict(
+        train_lib.Config, imitation_state['config'])
 
-      char = imitation_config.dataset.allowed_characters
+    char = imitation_config.dataset.allowed_characters
 
-      if config.tag is None:
-        ops = config.dataset.allowed_opponents
-        if ops == 'all':
-          op = ''
-        elif ops == char:
-          op = '_ditto'
-        else:
-          op = f"_vs_{ops}"
+    net = config.network['name']
+    net_config = config.network[net]
+    n = net_config['num_layers']
+    h = net_config['hidden_size']
 
-        n = config.network[config.network['name']]['num_layers']
-        h = config.network[config.network['name']]['hidden_size']
+    embed_config = dict(EMBED.value)
+    embed_name = embed_config['name']
 
-        rfs = imitation_config.policy.frame_skip
+    enhanced = embed_config['enhanced']
+    if enhanced['hidden_size'] is None:
+      enhanced['hidden_size'] = h // 4
+    enhanced['use_self_nana'] = char in ['popo', 'all']
 
-        embed_name = config.network['embed']['name']
-        embed_cfg = config.network['embed'][embed_name]
-        if embed_name == 'enhanced':
-          embed = f"enhanced-{embed_cfg['hidden_size']}"
-        else:
-          embed = embed_name
+    config.network['embed']['name'] = embed_name
+    config.network['embed'][embed_name].update(embed_config[embed_name])
 
-        config.tag = f"vf_{char}{op}_tx{n}x{h}_{embed}_rfs{rfs}"
+    if not config.toy_data and config.tag is None:
+      ops = config.dataset.allowed_opponents
+      if ops == 'all':
+        op = ''
+      elif ops == char:
+        op = '_ditto'
+      else:
+        op = f"_vs_{ops}"
+
+      rfs = imitation_config.policy.frame_skip
+
+      if embed_name == 'enhanced':
+        embed = f"enhanced-{enhanced['hidden_size']}"
+      else:
+        embed = embed_name
+
+      config.tag = f"vf_{char}{op}_tx{n}x{h}_{embed}_rfs{rfs}"
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.tag
-      if TOY_DATA.value:
+      if config.toy_data:
         wandb_kwargs['mode'] = 'disabled'
 
+
+    print(config.dataset)
     wandb.init(**wandb_kwargs)
     train_vf.train(config)
 
