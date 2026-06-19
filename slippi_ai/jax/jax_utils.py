@@ -227,6 +227,11 @@ def set_module_state(module: nnx.Module | nnx.Optimizer, state_dict: dict):
   nnx.replace_by_pure_dict(state, state_dict)
   nnx.update(module, state)
 
+def cast_module_state_to_dtype(module: nnx.Module, dtype: jnp.dtype):
+  state = nnx.state(module)
+  state = cast_floats_to_dtype(state, dtype)
+  nnx.update(module, state)
+
 class MLP(nnx.Module):
 
   def __init__(
