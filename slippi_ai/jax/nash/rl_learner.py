@@ -308,19 +308,19 @@ class Learner(nnx.Module, tp.Generic[Action]):
     unroll_nash_policy = jax_utils.with_compute_dtype(
         self._unroll_nash_policy, config.nash_policy_dtype.dtype)
 
-    self.train_nash_policy = jax_utils.train_fn_with_rngs(
-        module=self.nash_policy,
-        optimizer=self.policy_optimizer,
-        rngs=rngs,
-        loss_fn=unroll_nash_policy,
+    train_nash_policy = jax_utils.train_fn(unroll_nash_policy)
+
+    self.train_nash_policy = jax_utils.cached_partial(
+        jax_utils.nnx_jit(train_nash_policy, donate_argnums=(0, 1, 2, 3, 5)),
+        self.nash_policy, self.policy_optimizer, rngs, self.q_function,
     )
 
     self.run_nash_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(unroll_nash_policy),
-            donate_argnums=(0, 1, 3),
+            donate_argnums=(0, 1, 2, 4),
         ),
-        self.nash_policy, rngs,
+        self.nash_policy, rngs, self.q_function,
     )
 
     def post_update(
@@ -508,6 +508,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       self,
       nash_policy: Policy[Action],
       rngs: nnx.Rngs,
+      q_function: q_lib.QFunction[Action],
       frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
       initial_states: RecurrentState,  # [B, 2]
       policy_samples: list[Action],  # FS x [S, T, B, 2]
@@ -592,7 +593,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
         argmax_advantage=argmax_advantage,  # argmax-vs-mean - nash-vs-mean
         nash_vs_argmax_advantage=nash_vs_argmax_advantage,  # nash-vs-argmax - nash-vs-nash
         nash_value_error=nash_value_error,
+        nash_value_error_max=nash_value_error_max,
         nash_suboptimality=nash_suboptimality,
+        nash_suboptimality_max=nash_suboptimality_max,
     )
 
     nash_policy_mbs = self.config.sample_batch_size
@@ -660,7 +663,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
             prev_controller_state=prev_action)]
 
     q_function = jax_utils.cast_params_to_dtype(
-        self.q_function, self.config.q_fn_dtype.dtype)
+        q_function, self.config.q_fn_dtype.dtype)
 
     # TODO: this is fairly inefficient -- we should instead pre-compute the
     # q-function's "outputs" on both the nash policy and the sampled actions,
