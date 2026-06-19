@@ -532,16 +532,13 @@ def run(config: Config):
     )
     to_print = utils.map_nt(train_lib.mean, to_print)
 
-    # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
-    ns = np.asarray(learner_metrics[rl_learner.NASH]['num_steps'])
-
     items = []
     for key, value in to_print.items():
       items.append(f'{key}={value:.3f}')
 
     items.extend([
-      f'nsmean={ns.mean():.1f}',
-      f'nsmax={ns.max():.1f}',
+      f'nsmean={learner_metrics[rl_learner.NASH]['num_steps']:.1f}',
+      f'nsmax={learner_metrics[rl_learner.NASH]['num_steps_max']:.1f}',
     ])
     print(' '.join(items))
 
