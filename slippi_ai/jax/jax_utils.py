@@ -46,10 +46,6 @@ def data_sharding(mesh: Mesh, axis_name: str = DATA_AXIS) -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
 
-def device_put(pytree: T, sharding: tp.Optional[NamedSharding]) -> T:
-  """Shard a pytree of arrays with the given sharding."""
-  return jax.device_put(pytree, sharding)
-
 def map_update(
     f: tp.Callable[[jax.Array], jax.Array],
     module: nnx.Module | nnx.Rngs,
@@ -652,6 +648,9 @@ jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
 shard_map = _typed_transform(jax.shard_map)
 annotate_function = _typed_transform(jax.profiler.annotate_function)
+
+device_put = _typed_transform(jax.device_put)
+device_get = _typed_transform(jax.device_get)
 
 def grad0(
     f: tp.Callable[tp.Concatenate[T, P], Loss],

@@ -809,6 +809,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
   ) -> tuple[dict, RecurrentState]:
     # TODO: take into account delay
     frames = get_frames(trajectory)
+    frames = jax_utils.device_put(frames)
 
     final_states = dict(initial_states)
     metrics = {}
