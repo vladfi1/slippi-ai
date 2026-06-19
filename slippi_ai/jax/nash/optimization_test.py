@@ -4,6 +4,7 @@ import typing as tp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import tqdm
 
 from slippi_ai import utils
@@ -33,12 +34,16 @@ class QuadraticOptimizationProblem(optimization.ConstrainedOptimizationProblem[E
     return jnp.zeros([0], dtype=variables.dtype)
 
 
-def test_solve_quadratic_optimization(num_dims: int = 3):
+def run_quadratic_optimization(num_dims: int = 3):
   xs = np.arange(num_dims, dtype=np.float32)
   problem = QuadraticOptimizationProblem(xs)
   variables, _ = optimization.solve_optimization_interior_point_primal_dual(
       problem, Empty, error=1e-3, expected_dtype=jnp.float32)
   assert np.all(np.abs(np.asarray(variables)) < 1e-3)
+
+
+def test_solve_quadratic_optimization():
+  run_quadratic_optimization()
 
 CornerParams = jax.Array
 CornerVariables = jax.Array
@@ -60,7 +65,7 @@ class CornerOptimizationProblem(optimization.ConstrainedOptimizationProblem[Corn
 
 P = tp.ParamSpec('P')
 
-def test_solve_corner_optimization(
+def run_corner_optimization(
     max_size: int = 1,
     solver: optimization.Solver[CornerParams, CornerVariables, P] = optimization.solve_optimization_interior_point_primal_dual,
     *solver_args: P.args,
@@ -75,7 +80,13 @@ def test_solve_corner_optimization(
   expected = np.asarray(sizes)
 
   atol = solver_kwargs.get('error', 1e-2)
+  assert isinstance(atol, float), atol
   np.testing.assert_allclose(actual, expected, atol=atol)
+
+
+@pytest.mark.parametrize('is_linear', [True, False])
+def test_solve_corner_optimization(is_linear: bool):
+  run_corner_optimization(error=1e-3, max_size=3, is_linear=is_linear)
 
 
 def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
@@ -133,7 +144,7 @@ def run_nash_test(
   return stats
 
 
-def test_rps(dtype=np.float64, solver=None, **kwargs):
+def run_rps(dtype=np.float64, solver=None, **kwargs):
   if solver is None:
     solver = nash.solve_zero_sum_nash_simplex
   payoff_matrix = np.array([
@@ -145,7 +156,7 @@ def test_rps(dtype=np.float64, solver=None, **kwargs):
     return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
-def test_random_nash(
+def run_random_nash(
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float64,
     batch_size: int = 0,
@@ -181,7 +192,7 @@ def random_nash_tests(
   all_stats = []
   solve_times = []
   for i in tqdm.trange(num_tests):
-    stats = test_random_nash(
+    stats = run_random_nash(
         batch_size=batch_size,
         solver=solver,
         **kwargs,
@@ -210,15 +221,16 @@ def random_nash_tests(
     print(f'{key}: {mean:.1e} ± {std:.1e}, [{min_value:.1e}, {max_value:.1e}]')
 
 def run_nash_tests(
+    dtype = np.float64,
     **solver_kwargs,
 ):
   solver_kwargs = dict(
     solver_kwargs,
-    dtype=np.float64,
+    dtype=dtype,
   )
 
   print('RPS')
-  test_rps(**solver_kwargs)
+  run_rps(**solver_kwargs)
 
   nash_kwargs = dict(
       solver_kwargs,
@@ -237,13 +249,45 @@ def run_nash_tests(
       **nash_kwargs,
   )
 
+# Solver configurations for the parametrized nash tests. Each entry maps a
+# readable test id (used as the pytest parametrize id) to the kwargs passed
+# through to the nash solver / run_nash_test.
+NASH_SOLVERS = {
+    'ippd_linear': dict(
+        solver=nash.solve_zero_sum_nash_ippd,
+        error=1e-5, max_steps=200, is_linear=True, atol=1e-1),
+    'ippd_nonlinear': dict(
+        solver=nash.solve_zero_sum_nash_ippd,
+        error=1e-5, max_steps=200, is_linear=False, atol=1e-1),
+    'simplex': dict(
+        solver=nash.solve_zero_sum_nash_simplex,
+        atol=1e-4),
+    'simplex_fp32': dict(
+        solver=nash.solve_zero_sum_nash_simplex,
+        atol=1e-4, dtype=np.float32),
+}
+
+
+@pytest.mark.parametrize(
+    'solver_kwargs', NASH_SOLVERS.values(), ids=NASH_SOLVERS.keys())
+def test_rps(solver_kwargs: dict):
+  run_rps(**solver_kwargs)
+
+
+@pytest.mark.parametrize(
+    'solver_kwargs', NASH_SOLVERS.values(), ids=NASH_SOLVERS.keys())
+@pytest.mark.parametrize('batch_size', [0, 10], ids=['unbatched', 'batched'])
+def test_random_nash(solver_kwargs: dict, batch_size: int):
+  run_random_nash(size=(10, 11), batch_size=batch_size, **solver_kwargs)
+
+
 if __name__ == '__main__':
-  test_solve_quadratic_optimization()
+  run_quadratic_optimization()
 
   for is_linear in [True, False]:
     print(f'Testing with is_linear={is_linear}')
 
-    test_solve_corner_optimization(
+    run_corner_optimization(
         error=1e-3,
         max_size=3,
         is_linear=is_linear,
