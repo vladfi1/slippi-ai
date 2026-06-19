@@ -55,6 +55,8 @@ class RuntimeConfig:
   reset_every_n_steps: tp.Optional[int] = None
   burnin_steps_after_reset: int = 0
 
+  profile_trace_dir: tp.Optional[str] = None
+
 
 @dataclasses.dataclass
 class Config:
@@ -549,6 +551,11 @@ def run(config: Config):
     logging.info('Finite time mode, disabling env resets')
     reset_interval = None
 
+  if config.runtime.profile_trace_dir is not None:
+    if config.runtime.max_step is None:
+      raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
+    jax.profiler.start_trace(config.runtime.profile_trace_dir)
+
   try:
     for i in range(config.runtime.max_step - step):
       with step_profiler:
@@ -568,3 +575,6 @@ def run(config: Config):
 
   finally:
     learner_manager.actor.stop()
+
+    if config.runtime.profile_trace_dir is not None:
+      jax.profiler.stop_trace()
