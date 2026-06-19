@@ -276,7 +276,7 @@ def test_rps(solver_kwargs: dict):
 
 @pytest.mark.parametrize(
     'solver_kwargs', NASH_SOLVERS.values(), ids=NASH_SOLVERS.keys())
-@pytest.mark.parametrize('batch_size', [0, 10], ids=['unbatched', 'batched'])
+@pytest.mark.parametrize('batch_size', [0, 100], ids=['unbatched', 'batched'])
 def test_random_nash(solver_kwargs: dict, batch_size: int):
   run_random_nash(size=(10, 11), batch_size=batch_size, **solver_kwargs)
 

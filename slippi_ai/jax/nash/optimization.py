@@ -683,19 +683,195 @@ def vmap1_qpax_feasibility_solver(
   return jax_utils.vmap1(solver, static_argnames=qpax_static_argnames)
 
 
+def ruiz_equilibration(
+    G: jax.Array,
+    num_iters: int,
+) -> tuple[jax.Array, jax.Array]:
+  """Compute Ruiz diagonal scaling factors for the matrix G.
+
+  Ruiz equilibration finds positive diagonal scalings D_r = diag(d_r) and
+  D_c = diag(d_c) such that every row and column of the scaled matrix
+  D_r @ G @ D_c has infinity-norm close to 1. This makes the entries O(1),
+  which (a) lets a single fixed tolerance like sqrt(machine_eps) be meaningful
+  across the whole tableau and (b) improves the conditioning of the pivots.
+
+  The iteration repeatedly divides each row and column by the square root of its
+  current max absolute entry; the square root splits each rebalancing step evenly
+  between the row and column factors, which is what makes the two-sided iteration
+  converge. A fixed `num_iters` is run unconditionally (no convergence test) so
+  the routine stays jit/vmap-friendly; ~5-10 iterations is typically plenty.
+
+  Zero rows/columns (max entry 0) are left unscaled (factor 1) to avoid division
+  by zero.
+
+  Args:
+    G: Matrix to equilibrate, shape [m, n].
+    num_iters: Number of Ruiz iterations to run.
+
+  Returns:
+    (d_r, d_c) with shapes [m] and [n]: the diagonal row and column scale
+    factors. The equilibrated matrix is d_r[:, None] * G * d_c[None, :].
+  """
+  m, n = G.shape
+  dtype = G.dtype
+
+  def body(_, carry):
+    M, d_r, d_c = carry
+    r = jnp.sqrt(jnp.max(jnp.abs(M), axis=1))  # [m]
+    c = jnp.sqrt(jnp.max(jnp.abs(M), axis=0))  # [n]
+    # Leave zero rows/columns unscaled.
+    r = jnp.where(r > 0, r, jnp.ones_like(r))
+    c = jnp.where(c > 0, c, jnp.ones_like(c))
+    M = M / r[:, None] / c[None, :]
+    return M, d_r / r, d_c / c
+
+  init = (G, jnp.ones([m], dtype), jnp.ones([n], dtype))
+  _, d_r, d_c = jax.lax.fori_loop(0, num_iters, body, init)
+  return d_r, d_c
+
+
 def solve_lp_simplex(
     c: jax.Array,
     G: jax.Array,
     h: jax.Array,
     *,
     max_steps: int = 200,
+    equilibrate_iters: int = 5,
     expected_dtype: tp.Optional[jnp.dtype] = None,
 ) -> tuple[jax.Array, jax.Array, Stats]:
   """Solve LP: max c^T x s.t. G x <= h, x >= 0 using the simplex method.
 
-  Requires h >= 0 so that x=0 is a feasible initial point (natural BFS).
-  Returns (x_opt, ineq_dual, stats) where ineq_dual[i] >= 0 is the dual
-  variable for constraint G[i] @ x <= h[i].
+  This is a JAX-friendly implementation of the (primal) simplex method in
+  "standard form". Every step is expressed as dense array operations on a single
+  tableau so that the whole routine can be jitted, vmapped, and differentiated
+  through `jax.lax.while_loop` with a fixed memory footprint.
+
+  Shapes and batching
+  -------------------
+  This function solves a SINGLE LP; it is NOT internally batched. It expects:
+
+      c: [n]        G: [m, n]        h: [m]
+      ->  x_opt: [n]   ineq_dual: [m]
+
+  where n is the number of decision variables and m the number of inequalities.
+  `m, n = G.shape` assumes G is exactly 2-D, and all intermediates (the tableau,
+  basis, etc.) carry no batch axis. To solve many LPs at once, vmap the whole
+  function over a leading batch axis (see `vmap1_simplex_feasibility_solver` /
+  `jax_utils.vmap1`, which map over the leading axis of the parameters). All
+  shapes documented below and inline are for the un-batched problem.
+
+  Standard form and slack variables
+  ---------------------------------
+  We introduce one nonnegative slack variable s_i per inequality to turn the
+  inequalities into equalities:
+
+      max  c^T x
+      s.t. G x + s = h,   x >= 0,   s >= 0
+
+  Stacking the decision and slack variables as z = [x; s] (length n + m), the
+  feasible region is described by the equalities [G | I] z = h together with
+  z >= 0. The simplex method walks along vertices ("basic feasible solutions",
+  BFS) of this polytope, at each step swapping one variable into the basis and
+  one out, until no objective-improving swap remains.
+
+  Why h >= 0 is required
+  ----------------------
+  The algorithm needs a feasible starting vertex and uses the trivial one x = 0,
+  s = h (i.e. the slacks form the initial basis). That point is feasible iff
+  s = h >= 0. We therefore *require* h >= 0 and skip the usual "phase 1" that
+  would otherwise be needed to find an initial feasible vertex. Callers who only
+  have h >= 0 by construction (e.g. slacks of an already-feasible point) can use
+  this directly; others must pre-process their problem.
+
+  Tableau layout
+  --------------
+  We store an (m + 1) x (n + m + 1) tableau `tab`:
+
+      columns:  [ 0 .. n-1 ]      decision variables x
+                [ n .. n+m-1 ]    slack variables s
+                [ n+m ]           right-hand side (RHS)
+
+      rows 0 .. m-1:  the constraint rows [G | I | h]
+      row  m:         the objective row   [c | 0 | 0]
+
+  An invariant maintained throughout: each basic variable appears as a unit
+  column (a single 1 in its constraint row, 0 elsewhere including the objective
+  row). The RHS column of the constraint rows then holds the current values of
+  the basic variables, and the RHS of the objective row holds the current
+  objective value (negated, see below). `basis[r]` records which variable index
+  is basic in row r; it starts as the slacks (columns n .. n+m-1).
+
+  One simplex iteration (Dantzig's rule)
+  --------------------------------------
+  - Entering variable: pick the column with the largest objective-row coefficient
+    `obj`. A positive coefficient means increasing that variable still improves
+    the (maximization) objective. If the largest coefficient is <= eps, no
+    improving direction remains and we are optimal.
+  - Leaving variable: increasing the entering variable is blocked when some basic
+    variable would go negative. The min-ratio test rhs/col over rows with a
+    positive entry `col > eps` finds the first basic variable to hit zero; that
+    row leaves the basis. (Rows with col <= eps impose no bound and get ratio
+    +inf so they are never selected.)
+  - Pivot: Gauss-Jordan eliminate the entering column so it becomes a unit column
+    on the leaving row. This updates the whole tableau, including the objective
+    row, in one rank-1 update.
+
+  Branchless control flow for JAX
+  -------------------------------
+  Because everything runs inside `lax.while_loop` we cannot branch out early.
+  Instead each iteration always computes a candidate pivot, then uses
+  `can_pivot = ~optimal & (pval > eps)` to decide (via `jnp.where`) whether to
+  commit it. When we are optimal or no valid pivot exists (degenerate / pval too
+  small), we leave the tableau unchanged and set `done`, which stops the loop.
+  This also guards against dividing by a near-zero pivot.
+
+  Dual variables
+  --------------
+  At optimality the reduced cost of slack s_i (the objective-row entry in its
+  column, `tab[m, n+i]`) equals the negative of the dual price of constraint i.
+  Hence `ineq_dual[i] = -tab[m, n+i] >= 0` is the (nonnegative) dual / shadow
+  price for `G[i] @ x <= h[i]`.
+
+  Numerical notes and equilibration
+  ---------------------------------
+  `eps = sqrt(machine_eps)` is used both as the optimality threshold and as the
+  guard for "is this entry effectively zero". A fixed small constant like 1e-9 is
+  below float32 machine epsilon (~1.2e-7) and would fail to prevent tiny pivots,
+  letting the tableau blow up to inf/NaN. For ill-conditioned problems prefer
+  float64.
+
+  Because that tolerance is ABSOLUTE, it implicitly assumes the data is O(1).
+  The problem `max c^T x s.t. G x <= h` is invariant under rescaling the data
+  (e.g. multiplying c, G, h by 1/1000 leaves the optimum unchanged), but a fixed
+  absolute tolerance is not -- it would then reject legitimate pivots as "zero".
+  To remove this dependence we first equilibrate: we pick positive diagonal
+  scalings D_r, D_c (via `ruiz_equilibration`) so the scaled matrix
+  G' = D_r G D_c has O(1) rows and columns, solve the equivalent LP
+
+      max  c'^T x'   s.t.   G' x' <= h',   x' >= 0
+      where  c' = D_c c,   h' = D_r h,   x = D_c x'
+
+  and unscale the result: the primal is x = D_c x' and the inequality duals are
+  u = D_r u' (column scaling is a change of variables and does not touch the
+  duals; row scaling rescales each constraint, so its dual scales with D_r).
+  Equilibration preserves h >= 0 (D_r > 0) and x >= 0 (D_c > 0), so the initial
+  BFS is still valid. Pass equilibrate_iters=0 to disable.
+
+  Args:
+    c: Objective coefficients, shape [n]. The objective `c^T x` is MAXIMIZED.
+    G: Inequality constraint matrix, shape [m, n], for `G x <= h`.
+    h: Inequality right-hand side, shape [m]. MUST satisfy h >= 0.
+    max_steps: Maximum number of pivot iterations before giving up. Acts as a
+      safety bound; well-posed problems converge in O(m) pivots in practice.
+    equilibrate_iters: Number of Ruiz equilibration iterations to apply to the
+      problem data before solving (0 disables). See `ruiz_equilibration`.
+    expected_dtype: If provided, assert that G has this dtype.
+
+  Returns:
+    A tuple (x_opt, ineq_dual, stats):
+      x_opt: Optimal decision variables, shape [n].
+      ineq_dual: Nonnegative dual variables, shape [m], one per inequality.
+      stats: Dict with 'num_steps', the number of iterations actually taken.
   """
   m, n = G.shape
   dtype = G.dtype
@@ -703,47 +879,67 @@ def solve_lp_simplex(
   if expected_dtype is not None:
     assert dtype == expected_dtype, f"Expected dtype {expected_dtype}, got {dtype}"
 
+  # Equilibrate so the data is O(1) and the absolute tolerance below is meaningful.
+  # We solve the scaled LP (c', G', h') and unscale the result at the end.
+  if equilibrate_iters > 0:
+    d_r, d_c = ruiz_equilibration(G, equilibrate_iters)  # [m], [n]
+    c = d_c * c
+    G = d_r[:, None] * G * d_c[None, :]
+    h = d_r * h
+  else:
+    d_r = jnp.ones([m], dtype)
+    d_c = jnp.ones([n], dtype)
+
   # Use a dtype-relative epsilon. For float32, 1e-9 < machine epsilon (~1.2e-7),
   # so it fails to guard against near-zero pivots, causing tableau overflow and NaN.
-  # sqrt(eps_machine) balances numerical safety with sensitivity (~1.1e-4 for f32).
-  eps = jnp.sqrt(jnp.finfo(dtype).eps).astype(dtype)
+  # pow(eps_machine, 3/4) balances numerical safety with sensitivity (~6.4e-6 for f32).
+  eps = jnp.pow(jnp.finfo(dtype).eps, 3/4).astype(dtype)
   inf_val = jnp.asarray(jnp.inf, dtype=dtype)
 
   # Standard form: max [c; 0]^T [x; s] s.t. [G | I][x; s] = h, x,s >= 0
   # Tableau rows 0..m-1: [G | I | h]; row m: [c | 0 | 0]
   tab = jnp.concatenate([
-      jnp.concatenate([G, jnp.eye(m, dtype=dtype), h[:, None]], axis=1),
-      jnp.concatenate([c[None, :], jnp.zeros([1, m + 1], dtype=dtype)], axis=1),
-  ], axis=0)
+      jnp.concatenate([G, jnp.eye(m, dtype=dtype), h[:, None]], axis=1),  # [m, n+m+1]
+      jnp.concatenate([c[None, :], jnp.zeros([1, m + 1], dtype=dtype)], axis=1),  # [1, n+m+1]
+  ], axis=0)  # tab: [m+1, n+m+1]
 
   # Initial basis: slack variables (columns n..n+m-1)
-  basis = jnp.arange(n, n + m, dtype=jnp.int32)
+  basis = jnp.arange(n, n + m, dtype=jnp.int32)  # [m]
 
   def cond_fun(carry: tuple) -> jax.Array:
     _, _, done, step = carry
     return ~done & (step < max_steps)
 
   def body_fun(carry: tuple) -> tuple:
-    tab, basis, done, step = carry
+    tab, basis, done, step = carry  # tab: [m+1, n+m+1], basis: [m]
 
-    obj = tab[m, :n + m]
-    entering = jnp.argmax(obj).astype(jnp.int32)
-    optimal = obj[entering] <= eps
+    # Entering variable: column with the most positive reduced cost (Dantzig).
+    # If even the best column can't improve the objective, we're optimal.
+    obj = tab[m, :n + m]  # [n+m]
+    entering = jnp.argmax(obj).astype(jnp.int32)  # scalar
+    optimal = obj[entering] <= eps  # scalar bool
 
-    col = tab[:m, entering]
-    rhs = tab[:m, -1]
-    ratios = jnp.where(col > eps, rhs / col, inf_val)
-    leaving = jnp.argmin(ratios).astype(jnp.int32)
-    pval = tab[leaving, entering]
+    # Leaving variable: min-ratio test. Among rows where the entering column is
+    # positive (so increasing the variable decreases that basic var), pick the
+    # one that hits zero first. Non-positive entries impose no bound (+inf).
+    col = tab[:m, entering]  # [m]
+    rhs = tab[:m, -1]  # [m]
+    ratios = jnp.where(col > eps, rhs / col, inf_val)  # [m]
+    leaving = jnp.argmin(ratios).astype(jnp.int32)  # scalar
+    pval = tab[leaving, entering]  # scalar; pivot element
 
-    prow = tab[leaving, :]
-    entering_col_vals = tab[:, entering]
-    new_tab = tab - (entering_col_vals / pval)[:, None] * prow[None, :]
-    is_pivot_row = jnp.arange(m + 1) == leaving
+    # Gauss-Jordan pivot: rank-1 update that zeros the entering column in every
+    # row except the pivot row, then normalize the pivot row to unit pivot.
+    prow = tab[leaving, :]  # [n+m+1]
+    entering_col_vals = tab[:, entering]  # [m+1]
+    new_tab = tab - (entering_col_vals / pval)[:, None] * prow[None, :]  # [m+1, n+m+1]
+    is_pivot_row = jnp.arange(m + 1) == leaving  # [m+1]
     new_tab = jnp.where(is_pivot_row[:, None], (prow / pval)[None, :], new_tab)
 
-    new_basis = basis.at[leaving].set(entering)
+    new_basis = basis.at[leaving].set(entering)  # [m]
 
+    # Only commit the pivot if it both improves and is numerically safe;
+    # otherwise leave the tableau untouched and terminate the loop.
     can_pivot = ~optimal & (pval > eps)
     return (
         jnp.where(can_pivot, new_tab, tab),
@@ -755,12 +951,19 @@ def solve_lp_simplex(
   init = (tab, basis, jnp.zeros([], dtype=jnp.bool_), jnp.zeros([], dtype=jnp.int32))
   tab, basis, _, num_steps = jax.lax.while_loop(cond_fun, body_fun, init)
 
-  # Extract primal: x[j] = tableau RHS for the row where basis == j
-  eq = basis[:, None] == jnp.arange(n)[None, :]  # (m, n)
-  x = jnp.sum(jnp.where(eq, tab[:m, -1:], jnp.zeros_like(tab[:m, -1:])), axis=0)
+  # Extract primal: a decision variable x[j] that is basic equals the RHS of its
+  # row; a nonbasic x[j] is zero. `eq[r, j]` marks the row (if any) basic in j,
+  # so summing the masked RHS over rows picks out that value (0 if nonbasic).
+  eq = basis[:, None] == jnp.arange(n)[None, :]  # [m, n]
+  x = jnp.sum(jnp.where(eq, tab[:m, -1:], jnp.zeros_like(tab[:m, -1:])), axis=0)  # [n]
 
-  # Dual variables: u[i] = -tab[m, n+i] (reduced cost of slack s_i)
-  ineq_dual = -tab[m, n:n + m]
+  # Dual variables: at optimality the shadow price of constraint i is the
+  # negated reduced cost of its slack s_i, which sits at tab[m, n+i].
+  ineq_dual = -tab[m, n:n + m]  # [m]
+
+  # Undo equilibration: x = D_c x', u = D_r u' (no-op when disabled, d=1).
+  x = d_c * x
+  ineq_dual = d_r * ineq_dual
 
   return x, ineq_dual, {'num_steps': num_steps}
 
