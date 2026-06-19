@@ -10,7 +10,7 @@ if __name__ == '__main__':
   __spec__ = None  # https://github.com/python/cpython/issues/87115
 
   import os
-  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
+  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
   os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
 
   from absl import app, flags

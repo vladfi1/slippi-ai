@@ -7,6 +7,7 @@ import numpy as np
 from slippi_ai.data import Game, NAME_DTYPE
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 
+State = tp.Any
 RecurrentState = tp.TypeVar('RecurrentState')
 
 BoolArray = np.ndarray[tuple[int], np.dtype[np.bool]]
@@ -43,6 +44,10 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   @abc.abstractmethod
   def hidden_state(self) -> RecurrentState:
     """Returns the current hidden state."""
+
+  @abc.abstractmethod
+  def set_policy_state(self, state: State):
+    """Sets the current state."""
 
   @abc.abstractmethod
   def step(

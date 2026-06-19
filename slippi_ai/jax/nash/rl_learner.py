@@ -214,12 +214,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     #     extra_out_specs=(policy_samples,),
     # )
 
-    unroll_sample_policy = jax_utils.with_compute_dtype(
-      self._unroll_sample_policy, config.sample_policy_dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(
+      self.policy, config.sample_policy_dtype.dtype)
 
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(unroll_sample_policy),
+            jax_utils.no_loss(self._unroll_sample_policy),
             donate_argnums=(0, 1, 3),
         ),
         self.policy, rngs,
@@ -289,8 +289,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       teacher_outputs = teacher.unroll(frames, initial_states)
       return teacher_outputs.distances, teacher_outputs.final_state
 
-    unroll_teacher = jax_utils.with_compute_dtype(
-        unroll_teacher, config.teacher_dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(
+      self.teacher, config.teacher_dtype.dtype)
 
     self.run_teacher = jax_utils.cached_partial(
         jax_utils.nnx_jit(
@@ -845,7 +845,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     actor_logits = [so.logits for so in trajectory.actions]
     # Need to make a copy since the original one gets donated
-    initial_nash_state = copy_struct(initial_states[NASH_POLICY])
+    # initial_nash_state = copy_struct(initial_states[NASH_POLICY])
     (
       metrics[NASH_POLICY],
       final_states[NASH_POLICY],
@@ -854,11 +854,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
         q_action_init_state, q_values, nash_variables, teacher_outputs, actor_logits,
         train=train)
 
-    post_update_metrics = self.post_update(
-        frames, initial_nash_state, actor_logits)
-    metrics[NASH_POLICY].update(post_update_metrics)
+    # post_update_metrics = self.post_update(
+    #     frames, initial_nash_state, actor_logits)
+    # metrics[NASH_POLICY].update(post_update_metrics)
 
     if train and step % self.config.epoch_length == 0:
-      jax_utils.set_module_state(self.policy, jax_utils.get_module_state(self.nash_policy))
+      nash_policy_state = nnx.state(self.nash_policy)
+      policy_state = jax_utils.cast_floats_to_dtype(
+          nash_policy_state, self.config.sample_policy_dtype.dtype)
+      nnx.update(self.policy, policy_state)
 
     return metrics, final_states
