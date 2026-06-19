@@ -13,6 +13,8 @@ from slippi_ai.policies import Platform
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 from slippi_ai.jax import policies, jax_utils
 
+State = tp.Any
+
 class DType(enum.Enum):
   FP32 = 'float32'
   FP16 = 'float16'
@@ -89,8 +91,11 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       dtype = DType(dtype)
     self._dtype = dtype
 
-    if dtype is not DType.FP32:
-      sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(policy, dtype.dtype)
+
+    # TODO: this shouldn't be necessay if we always make sure that the policy
+    # parameters are in the correct dtype.
+    sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
 
     self._sample = jax_utils.cached_partial(sample, policy, rngs)
 
@@ -178,6 +183,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     elif len(name_code) != self._batch_size:
       raise ValueError(f'name_code list must have length batch_size={self._batch_size}')
     self._name_code = np.array(name_code, dtype=data.NAME_DTYPE)
+
+  def set_policy_state(self, state: State):
+    state = jax_utils.cast_floats_to_dtype(state, self._dtype.dtype)
+    self._policy.set_state(state)
 
   @property
   def name_code(self) -> np.ndarray[tuple[int], np.dtype[data.NAME_DTYPE]]:
