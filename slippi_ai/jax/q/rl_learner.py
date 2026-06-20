@@ -55,6 +55,8 @@ class LearnerConfig:
   # Weight the argmax-distillation loss by the advantage of the best action.
   weight_by_advantage: bool = False
 
+  max_actor_kl: tp.Optional[float] = None
+
   # Delay q_policy updates while the q_function warms up.
   value_burnin_steps: int = 0
 
@@ -275,7 +277,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
       actor_logits = utils.map_nt(lambda x: x[1:], actor_logits)
 
       actor_kl = self._compute_kl(actor_logits, policy_logits)
-      return {'post_update_actor_kl': actor_kl}
+
+      actor_kl_metrics = dict(
+          mean=jnp.mean(actor_kl),
+          max=jnp.max(actor_kl),
+      )
+
+      return {'post_update_actor_kl': actor_kl_metrics}
 
     post_update = jax_utils.with_compute_dtype(
         post_update, config.q_policy_dtype.dtype)
@@ -568,6 +576,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     post_update_metrics = self.post_update(
         frames, initial_q_policy_state, actor_logits)
     metrics[Q_POLICY].update(post_update_metrics)
+
+    mean_actor_kl = jax.device_get(post_update_metrics['post_update_actor_kl']['mean'])
+    if self.config.max_actor_kl is not None and mean_actor_kl > self.config.max_actor_kl:
+      raise ValueError(f"Mean actor KL after Q-policy update is too high: {mean_actor_kl}")
 
     if train and step % self.config.epoch_length == 0:
       jax_utils.set_module_state(
