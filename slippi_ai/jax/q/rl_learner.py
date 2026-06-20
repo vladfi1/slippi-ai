@@ -167,12 +167,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.frame_skip = self.policy.frame_skip
     assert self.q_function.frame_skip == self.frame_skip
 
-    unroll_sample_policy = jax_utils.with_compute_dtype(
-      self._unroll_sample_policy, config.sample_policy_dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(
+      self.policy, config.sample_policy_dtype.dtype)
 
     self.run_sample_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
-            jax_utils.no_loss(unroll_sample_policy),
+            jax_utils.no_loss(self._unroll_sample_policy),
             donate_argnums=(0, 1, 3),
         ),
         self.policy, rngs,
@@ -203,8 +203,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       teacher_outputs = teacher.unroll(frames, initial_states)
       return teacher_outputs.distances, teacher_outputs.final_state
 
-    unroll_teacher = jax_utils.with_compute_dtype(
-        unroll_teacher, config.teacher_dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(
+      self.teacher, config.teacher_dtype.dtype)
 
     self.run_teacher = jax_utils.cached_partial(
         jax_utils.nnx_jit(unroll_teacher, donate_argnums=(0, 2)),
@@ -292,6 +292,20 @@ class Learner(nnx.Module, tp.Generic[Action]):
         jax_utils.nnx_jit(post_update),
         self.q_policy,
     )
+
+    @nnx.jit(donate_argnums=(0, 1))
+    def update_policy(
+      policy: Policy[Action],
+      q_policy: Policy[Action],
+    ):
+      q_policy_state = nnx.state(q_policy)
+      policy_state = jax_utils.cast_floats_to_dtype(
+          q_policy_state, self.config.sample_policy_dtype.dtype)
+      nnx.update(policy, policy_state)
+
+    self._update_policy = jax_utils.cached_partial(
+        update_policy, self.policy, self.q_policy)
+
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     initial_states = {
@@ -538,6 +552,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       train: bool = True,
   ) -> tuple[dict, dict[str, RecurrentState]]:
     frames = get_frames(trajectory)
+    frames = jax_utils.device_put(frames)
 
     final_states = dict(initial_states)
     metrics = {}
@@ -582,7 +597,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       raise ValueError(f"Mean actor KL after Q-policy update is too high: {mean_actor_kl}")
 
     if train and step % self.config.epoch_length == 0:
-      jax_utils.set_module_state(
-          self.policy, jax_utils.get_module_state(self.q_policy))
+      self._update_policy()
 
     return metrics, final_states
