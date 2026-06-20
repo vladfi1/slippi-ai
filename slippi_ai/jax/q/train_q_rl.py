@@ -560,10 +560,11 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     print(timings)
 
     q_policy_metrics = metrics['learner'][rl_learner.Q_POLICY]
-    q_loss = np.mean(q_policy_metrics['q_loss'])
-    actor_kl = np.mean(q_policy_metrics['post_update_actor_kl'])
-    entropy = np.mean(q_policy_metrics['entropy'])
-    print(f'q_loss={q_loss:.4f} actor_kl={actor_kl:.3g} entropy={entropy:.3f}')
+    q_loss = q_policy_metrics['q_loss']
+    mean_actor_kl = q_policy_metrics['post_update_actor_kl']['mean']
+    max_actor_kl = q_policy_metrics['post_update_actor_kl']['max']
+    entropy = q_policy_metrics['entropy']
+    print(f'q_loss={q_loss:.4f} mean_actor_kl={mean_actor_kl:.3g} max_actor_kl={max_actor_kl:.3g} entropy={entropy:.3f}')
     if not config.opponent.should_train():
       print(f'ko_diff: {metrics["ko_diff"]:.3f}')
 
