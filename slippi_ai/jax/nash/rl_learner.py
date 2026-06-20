@@ -385,7 +385,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
   def policy_variables(self):
     """Returns policy state for actor update via evaluators.update_variables."""
-    return self.policy.get_state()
+    return self.policy.get_state(to_numpy=False)
 
   def _sum_leaves(self, embedding: embed.Embedding[tp.Any, T], struct: T) -> jax.Array:
     return functools.reduce(jnp.add, embedding.flatten(struct))
