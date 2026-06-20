@@ -351,6 +351,19 @@ class Learner(nnx.Module, tp.Generic[Action]):
         self.nash_policy,
     )
 
+    @nnx.jit(donate_argnums=(0, 1))
+    def update_policy(
+      policy: Policy[Action],
+      nash_policy: Policy[Action],
+    ):
+      nash_policy_state = nnx.state(nash_policy)
+      policy_state = jax_utils.cast_floats_to_dtype(
+          nash_policy_state, self.config.sample_policy_dtype.dtype)
+      nnx.update(policy, policy_state)
+
+    self._update_policy = jax_utils.cached_partial(
+        update_policy, self.policy, self.nash_policy)
+
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     initial_states = {
         Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
@@ -859,9 +872,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # metrics[NASH_POLICY].update(post_update_metrics)
 
     if train and step % self.config.epoch_length == 0:
-      nash_policy_state = nnx.state(self.nash_policy)
-      policy_state = jax_utils.cast_floats_to_dtype(
-          nash_policy_state, self.config.sample_policy_dtype.dtype)
-      nnx.update(self.policy, policy_state)
+      self._update_policy()
 
     return metrics, final_states

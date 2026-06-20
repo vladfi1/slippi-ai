@@ -79,7 +79,6 @@ class Config:
   # Required: path to a pre-trained (single-player) Q-function checkpoint.
   q_function: tp.Optional[str] = None
 
-  remat: bool = True
   override_delay: tp.Optional[int] = None
 
 
@@ -291,9 +290,6 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   if config.override_delay is not None:
     policy_config['policy']['delay'] = config.override_delay
-
-  policy_config['network']['tx_like']['remat'] = config.remat
-  policy_config['controller_head']['autoregressive']['remat'] = config.remat
 
   pretraining_config = flag_utils.dataclass_from_dict(train_lib.Config, policy_config)
 
