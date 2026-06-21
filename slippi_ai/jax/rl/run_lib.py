@@ -771,8 +771,8 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   def save(step: int):
     combined_state = dict(
         state=learner.get_state(),
-        config=teacher_state['config'],
-        name_map=teacher_state['name_map'],
+        config=rl_state['config'],
+        name_map=rl_state['name_map'],
         step=step,
         rl_config=rl_config_dict,
     )
