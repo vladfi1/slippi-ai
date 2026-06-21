@@ -1,5 +1,6 @@
 
 import dataclasses
+import logging
 from typing import Optional
 import typing as tp
 import types
@@ -36,6 +37,7 @@ class LearnerConfig:
   smap_optimizer: bool = True
   pack_data: bool = False
   bf16: bool = False
+  remat: bool = False
 
 # TODO: move to jax_utils
 P = tp.ParamSpec('P')
@@ -138,8 +140,11 @@ class PolicyLearner(nnx.Module):
 
     if config.bf16:
       dtypes = check_compute_dtypes(policy)
-      import logging
       logging.info('bf16 compute dtypes: %s', dtypes)
+
+    if config.remat:
+      logging.info('Enabling remat for policy')
+      self.policy.enable_remat()
 
     if config.lr_decay.steps is None:
       schedule = config.learning_rate
