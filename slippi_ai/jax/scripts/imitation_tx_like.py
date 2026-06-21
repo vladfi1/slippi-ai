@@ -4,6 +4,8 @@
 
 import os
 
+os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
+
 from absl import app, flags
 import fancyflags as ff
 
@@ -42,13 +44,11 @@ def default_config():
 
   config.network[NET_NAME].update(
       num_layers=3,
-      hidden_size=512,
   )
 
   config.value_function.separate_network_config = True
   config.value_function.network[NET_NAME].update(
       num_layers=1,
-      hidden_size=512,
   )
 
   ch_name = 'autoregressive'
