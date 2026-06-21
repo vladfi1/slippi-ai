@@ -267,6 +267,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, combined_state['config'])
 
+    for key in ['value_function', 'value_optimizer']:
+      if key in combined_state['state']:
+        del combined_state['state'][key]
+        logging.warning(f'Removing {key} from state')
+
     if restore_config.policy.delay != config.policy.delay:
       logging.warning(
           f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
