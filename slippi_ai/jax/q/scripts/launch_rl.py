@@ -148,7 +148,8 @@ if __name__ == '__main__':
       lr = config.learner.learning_rate
 
       wba = f"_wba" if config.learner.weight_by_advantage else ""
-      config.runtime.tag = f"qrl_{char_str}_d{delay}_{opp}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}"
+      gae = f"_gae{config.learner.gae_lambda:.1f}" if config.learner.gae_lambda != 1.0 else ""
+      config.runtime.tag = f"qrl_{char_str}_d{delay}_{opp}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}{gae}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
     if wandb_kwargs['name'] is None:
