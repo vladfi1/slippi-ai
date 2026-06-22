@@ -470,11 +470,11 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   if not restore_path:
     reset_optimizer_steps(rl_state)
 
-  if 'value_function' not in teacher_state['config']:
+  if 'value_function' not in rl_state['config']:
     raise ValueError('teacher was not trained with a value function')
 
-  # This is a bit hacky, pretraining could be policy-only i.e. from
-  # train_policy instead of train_lib but it works in practice.
+  # This is a bit hacky; we rely on the value function initialization from
+  # combined policy/vf training which we don't really use anymore.
   pretraining_config = flag_utils.dataclass_from_dict(
       train_lib.Config, rl_state['config'])
   value_function = train_lib.value_function_from_config(
@@ -485,6 +485,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       state['config']['policy']['delay'] = config.override_delay
 
   teacher = jax_saving.load_policy_from_state(teacher_state)
+  del teacher_state
   policy = jax_saving.load_policy_from_state(rl_state)
 
   if config.remat:
@@ -816,7 +817,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     logger.record(get_log_data(trajectories, metrics))
     maybe_flush(step)
 
-    maybe_save(step)
     step += 1
+    maybe_save(step)
 
   save(step)
