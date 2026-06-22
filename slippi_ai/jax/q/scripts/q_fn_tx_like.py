@@ -137,7 +137,9 @@ if __name__ == '__main__':
 
         gae = f"gae{config.learner.gae_lambda:.1f}"
 
-        config.tag = f"q_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}"
+        lr = config.learner.learning_rate
+
+        config.tag = f"q_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}_lr{lr:.0e}"
 
     config.dataset.allowed_characters = char
 
