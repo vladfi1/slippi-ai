@@ -554,6 +554,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
     metrics['nash_entropy'] = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
 
+    if self.config.include_action_taken_in_samples:
+      metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
+        nash_probs, index=-1, axis=-1, keepdims=False)  # [T, B, 2]
+
     nash_values = jnp.stack([
         nash_solution.p1_nash_value, -nash_solution.p1_nash_value
     ], axis=-1)  # [T, B, 2]
@@ -762,10 +766,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
         actor_kl=actor_kl,
         entropy=entropy,
     )
-
-    if self.config.include_action_taken_in_samples:
-      metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
-        nash_probs, index=-1, axis=-1, keepdims=False)  # [T, B, 2]
 
     bm_loss = jnp.mean(nash_policy_total_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
