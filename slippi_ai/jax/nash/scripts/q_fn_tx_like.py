@@ -89,6 +89,8 @@ if __name__ == '__main__':
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_default(default_config()))
 
+  TAG_SUFFIX = flags.DEFINE_string('tag_suffix', None, 'Tag suffix to add to the experiment name')
+
   WANDB = ff.DEFINE_dict(
       'wandb',
       project=ff.String('slippi-ai'),
@@ -148,6 +150,9 @@ if __name__ == '__main__':
         gae = f"gae{config.learner.gae_lambda:.1f}"
 
         config.tag = f"nq_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}"
+
+        if TAG_SUFFIX.value is not None:
+          config.tag += f"_{TAG_SUFFIX.value}"
 
     config.dataset.allowed_characters = char
 
