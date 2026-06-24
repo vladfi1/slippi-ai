@@ -361,6 +361,10 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     uev_delta = uev - quev
 
     metrics = {
+        'reward': {
+            'mean': frames.reward,
+            'std': jnp.std(frames.reward, keepdims=True),
+        },
         'v': {
             'loss': value_loss,
             'uev': uev,
