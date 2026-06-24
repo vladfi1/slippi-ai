@@ -72,6 +72,8 @@ if __name__ == '__main__':
 
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
+  TAG_SUFFIX = flags.DEFINE_string('tag_suffix', None, 'Tag suffix to add to the experiment name')
+
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
 
   NUM_DAYS = flags.DEFINE_float('num_days', 14, 'Number of days to train for')
@@ -140,6 +142,8 @@ if __name__ == '__main__':
         lr = config.learner.learning_rate
 
         config.tag = f"q_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}_lr{lr:.0e}"
+        if TAG_SUFFIX.value is not None:
+          config.tag += f"_{TAG_SUFFIX.value}"
 
     config.dataset.allowed_characters = char
 
