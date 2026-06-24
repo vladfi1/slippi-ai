@@ -17,7 +17,7 @@ from slippi_ai.jax import embed, rl_lib, jax_utils
 class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
-  gae_lambda: float = 1.0
+  gae_lambda: float = 0
 
   unroll_batch_size: tp.Optional[int] = None
 

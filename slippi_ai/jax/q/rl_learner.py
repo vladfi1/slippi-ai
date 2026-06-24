@@ -40,7 +40,7 @@ class LearnerConfig:
   learning_rate: float = 1e-4
   q_fn_learning_rate: tp.Optional[float] = None
   reward_halflife: float = 4
-  gae_lambda: float = 1.0
+  gae_lambda: float = 0
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
