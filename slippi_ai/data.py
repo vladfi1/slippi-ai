@@ -184,7 +184,11 @@ class Batch(NamedTuple, tp.Generic[S]):
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
 
-  def to_frames(self, frame_skip: int) -> Frames[S, Controller[S]]:
+  def to_frames(
+    self,
+    frame_skip: int,
+    discount: float = 1.0,
+  ) -> Frames[S, Controller[S]]:
     B, T = self.is_resetting.shape
     assert self.reward.shape == (B, T - 1)
 
@@ -210,7 +214,9 @@ class Batch(NamedTuple, tp.Generic[S]):
     assert len(actions) == frame_skip
 
     is_resetting = reshaped.is_resetting.any(axis=-1)
-    reward = reshaped.reward.sum(axis=-1)
+
+    discounts = discount ** np.arange(frame_skip)
+    reward = np.vecdot(reshaped.reward, discounts)
 
     return Frames(
         state_action=StateAction(
@@ -239,6 +245,13 @@ NONE = 'none'
 GAMES_DIR = 'games'
 META_PATH = 'meta.json'
 
+field = lambda f: dataclasses.field(default_factory=f)
+
+@dataclasses.dataclass
+class PartitionConfig:
+  index: int = 0
+  num_partitions: int = 1
+
 @dataclasses.dataclass
 class DatasetConfig:
   data_dir: Optional[str] = None  # required
@@ -246,6 +259,7 @@ class DatasetConfig:
   archive: Optional[str] = None
   dataset_path: Optional[str] = None
 
+  train_partition: PartitionConfig = field(PartitionConfig)
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
   allowed_characters: str = ALL
@@ -431,6 +445,7 @@ def train_test_split(
     logging.warning("Only one replay found, using it for both train and test.")
     return replays, replays
 
+  # TODO: stable partition?
   rng = random.Random(config.seed)
   rng.shuffle(replays)
 
@@ -439,6 +454,9 @@ def train_test_split(
 
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
+
+  if config.train_partition.num_partitions > 1:
+    train_replays = train_replays[config.train_partition.index::config.train_partition.num_partitions]
 
   def add_mirrored(unmirrored: List[ReplayInfo]):
     mirrored = []
