@@ -281,6 +281,60 @@ def solve_zero_sum_nash_linrax(
       expected_dtype=payoff_matrix.dtype)
 
 
+def _solve_nash_mpax_impl(
+    payoff_matrix: jax.Array,
+    *,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    eps_abs: float = 1e-4,
+    eps_rel: float = 1e-4,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using mpax's r2HPDHG LP solver."""
+  dtype = payoff_matrix.dtype
+  z, ineq_dual, stats = optimization.solve_optimization_mpax_with_extras(
+      _player2_nash_lp, payoff_matrix,
+      expected_dtype=expected_dtype,
+      eps_abs=eps_abs, eps_rel=eps_rel)
+
+  sum_z = jnp.sum(z)
+  p2 = z / sum_z
+  p1 = ineq_dual / jnp.sum(ineq_dual)
+
+  shift = jnp.min(payoff_matrix) - jnp.ones([], dtype=dtype)
+  v = sum_z ** -1 + shift
+
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), stats
+
+
+_mpax_static_argnames = ('expected_dtype', 'eps_abs', 'eps_rel')
+
+_jitted_solve_nash_mpax = jax_utils.jit(
+    _solve_nash_mpax_impl,
+    static_argnames=_mpax_static_argnames)
+
+_batched_solve_nash_mpax = jax_utils.vmap1(
+    _solve_nash_mpax_impl,
+    static_argnames=_mpax_static_argnames)
+
+
+def solve_zero_sum_nash_mpax(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    **_,
+) -> tuple[NashVariables, dict]:
+  """Solve a zero-sum Nash equilibrium using mpax's r2HPDHG LP solver."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_nash_mpax
+  elif jit:
+    solver = _jitted_solve_nash_mpax
+  else:
+    solver = _solve_nash_mpax_impl
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      expected_dtype=payoff_matrix.dtype)
+
+
 class NashSolver(tp.Protocol):
   def __call__(
       self,
