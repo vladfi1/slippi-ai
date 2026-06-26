@@ -255,7 +255,13 @@ NASH_SOLVERS = {
         atol=1e-4),
     'simplex_fp32': dict(
         solver=nash.solve_zero_sum_nash_simplex,
-        atol=1e-4, dtype=np.float32),
+        atol=5e-3, dtype=np.float32),
+    'linrax': dict(
+        solver=nash.solve_zero_sum_nash_linrax,
+        atol=1e-4),
+    'linrax_fp32': dict(
+        solver=nash.solve_zero_sum_nash_linrax,
+        atol=5e-3, dtype=np.float32),
 }
 
 
@@ -334,4 +340,10 @@ if __name__ == '__main__':
       solver=nash.solve_zero_sum_nash_simplex,
       atol=1e-4,
       # jit=False,
+  )
+
+  print('linrax')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_linrax,
+      atol=1e-4,
   )

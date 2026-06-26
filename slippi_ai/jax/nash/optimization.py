@@ -8,6 +8,8 @@ import numpy as np
 
 from slippi_ai.jax import jax_utils
 
+from linrax.optim import linprog
+
 Parameters = tp.TypeVar('Parameters')
 Variables = tp.TypeVar('Variables')
 
@@ -729,6 +731,8 @@ def ruiz_equilibration(
   _, d_r, d_c = jax.lax.fori_loop(0, num_iters, body, init)
   return d_r, d_c
 
+SimplexVariables = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+
 
 def solve_lp_simplex(
     c: jax.Array,
@@ -910,13 +914,13 @@ def solve_lp_simplex(
     _, _, done, step = carry
     return ~done & (step < max_steps)
 
-  def body_fun(carry: tuple) -> tuple:
+  def body_fun(carry: SimplexVariables) -> SimplexVariables:
     tab, basis, done, step = carry  # tab: [m+1, n+m+1], basis: [m]
 
     # Entering variable: column with the most positive reduced cost (Dantzig).
     # If even the best column can't improve the objective, we're optimal.
     obj = tab[m, :n + m]  # [n+m]
-    entering = jnp.argmax(obj).astype(jnp.int32)  # scalar
+    entering = jnp.argmax(obj)  # scalar
     optimal = obj[entering] <= eps  # scalar bool
 
     # Leaving variable: min-ratio test. Among rows where the entering column is
@@ -925,7 +929,7 @@ def solve_lp_simplex(
     col = tab[:m, entering]  # [m]
     rhs = tab[:m, -1]  # [m]
     ratios = jnp.where(col > eps, rhs / col, inf_val)  # [m]
-    leaving = jnp.argmin(ratios).astype(jnp.int32)  # scalar
+    leaving = jnp.argmin(ratios)  # scalar
     pval = tab[leaving, entering]  # scalar; pivot element
 
     # Gauss-Jordan pivot: rank-1 update that zeros the entering column in every
@@ -1027,6 +1031,76 @@ def solve_optimization_simplex(
 solve_feasibility_simplex = as_feasibility_solver(solve_optimization_simplex)
 
 simplex_static_argnames = ('max_steps', 'expected_dtype')
+
+
+def solve_lp_linrax(
+    c: jax.Array,
+    G: jax.Array,
+    h: jax.Array,
+    *,
+    primal_tol: float = 1e-6,
+    dual_tol: float = 1e-6,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[jax.Array, jax.Array, Stats]:
+  """Solve LP: max c^T x s.t. G x <= h, x >= 0 using linrax.
+
+  Returns (x_opt, ineq_dual, stats) where ineq_dual[i] is the dual variable
+  for constraint i (shadow price of G[i,:] x <= h[i]).
+  """
+  m, n = G.shape
+  if expected_dtype is not None:
+    assert G.dtype == expected_dtype, f'Expected dtype {expected_dtype}, got {G.dtype}'
+  sol, sol_type = linprog(-c, A_ub=G, b_ub=h, primal_tol=primal_tol, dual_tol=dual_tol)
+  # After _standard_form, the final tableau cols are [primal (n) | slack (m) | RHS].
+  # Reduced costs of slack variables equal the dual variables for G x <= h.
+  ineq_dual = sol.tableau[-1, n:n + m]
+  stats = dict(feasible=sol_type.feasible, bounded=sol_type.bounded)
+  return sol.x, ineq_dual, stats
+
+
+linrax_static_argnames = ('primal_tol', 'dual_tol', 'expected_dtype')
+
+
+def solve_optimization_linrax_with_extras(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    primal_tol: float = 1e-6,
+    dual_tol: float = 1e-6,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    **_,
+) -> tuple[Variables, jax.Array, Stats]:
+  """Solve a linear program using linrax, also returning inequality dual variables.
+
+  Assumes:
+  - The objective and constraint_violations are linear in the variables.
+  - No equality constraints.
+  - Variables are implicitly non-negative (x >= 0).
+  - The initial variables are feasible (constraint_violations <= 0).
+  """
+  variables = problem.initial_variables(parameters)
+  flatten, unflatten, _ = _setup_flatten(variables)
+  x0 = flatten(variables)
+
+  dtype = x0.dtype
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f'Expected dtype {expected_dtype}, got {dtype}'
+
+  def obj_fn(x: jax.Array) -> jax.Array:
+    return problem.objective(parameters, unflatten(x))
+
+  def constr_fn(x: jax.Array) -> jax.Array:
+    return problem.constraint_violations(parameters, unflatten(x))
+
+  c_min = jax.grad(obj_fn)(x0)
+  G = jax.jacrev(constr_fn)(x0)
+  h = jnp.matvec(G, x0) - constr_fn(x0)
+
+  x_opt, ineq_dual, stats = solve_lp_linrax(
+      -c_min, G, h,
+      primal_tol=primal_tol, dual_tol=dual_tol,
+      expected_dtype=dtype)
+  return unflatten(x_opt), ineq_dual, stats
 
 
 def jitted_simplex_feasibility_solver(

@@ -231,6 +231,56 @@ def solve_zero_sum_nash_simplex(
       **kwargs)
 
 
+def _solve_nash_linrax_impl(
+    payoff_matrix: jax.Array,
+    *,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using linrax's LP solver."""
+  dtype = payoff_matrix.dtype
+  z, ineq_dual, stats = optimization.solve_optimization_linrax_with_extras(
+      _player2_nash_lp, payoff_matrix, expected_dtype=expected_dtype)
+
+  sum_z = jnp.sum(z)
+  p2 = z / sum_z
+  p1 = ineq_dual / jnp.sum(ineq_dual)
+
+  shift = jnp.min(payoff_matrix) - jnp.ones([], dtype=dtype)
+  v = sum_z ** -1 + shift
+
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), stats
+
+
+_linrax_static_argnames = ('expected_dtype',)
+
+_jitted_solve_nash_linrax = jax_utils.jit(
+    _solve_nash_linrax_impl,
+    static_argnames=_linrax_static_argnames)
+
+_batched_solve_nash_linrax = jax_utils.vmap1(
+    _solve_nash_linrax_impl,
+    static_argnames=_linrax_static_argnames)
+
+
+def solve_zero_sum_nash_linrax(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    **_,
+) -> tuple[NashVariables, dict]:
+  """Solve a zero-sum Nash equilibrium using linrax's LP solver."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_nash_linrax
+  elif jit:
+    solver = _jitted_solve_nash_linrax
+  else:
+    solver = _solve_nash_linrax_impl
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      expected_dtype=payoff_matrix.dtype)
+
+
 class NashSolver(tp.Protocol):
   def __call__(
       self,
