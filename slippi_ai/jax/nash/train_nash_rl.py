@@ -1,5 +1,6 @@
 """RL training loop using Nash policy learning instead of PPO."""
 
+import contextlib
 import dataclasses
 import itertools
 import os
@@ -111,12 +112,12 @@ class LearnerManager(tp.Generic[Action]):
     self,
     learner: rl_learner.Learner[Action],
     config: Config,
-    build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
+    actor: evaluators.AbstractRolloutWorker,
     ports: tuple[int, int],
   ):
     self._config = config
     self._learner = learner
-    self._build_actor = build_actor
+    self.actor = actor
     self._rollout_length = config.actor.rollout_length
     self._ports = ports
     self._burnin = config.runtime.burnin_steps_after_reset
@@ -136,11 +137,8 @@ class LearnerManager(tp.Generic[Action]):
     ] * (self.frame_skip - 1)
     self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size, 2], False)
 
-    with self.reset_profiler:
-      self.actor = self._build_actor()
-      self.actor.start()
-      for _ in range(self._burnin):
-        self._burnin_step()
+    for _ in range(self._burnin):
+      self._burnin_step()
 
   def _rollout(self):
     # TODO: might be better to do trajectory manipulation in jax, as parts of
@@ -236,6 +234,11 @@ class LearnerManager(tp.Generic[Action]):
 
 
 def run(config: Config):
+  with contextlib.ExitStack() as exit_stack:
+    _run(config, exit_stack)
+
+
+def _run(config: Config, exit_stack: contextlib.ExitStack):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
   expt_dir = config.runtime.expt_dir
   if expt_dir is None:
@@ -405,16 +408,6 @@ def run(config: Config):
       inner_batch_size=config.actor.inner_batch_size,
     )
 
-  build_actor = lambda: evaluators.RolloutWorker(
-    agent_kwargs=agent_kwargs,
-    dolphin_kwargs=dolphin_kwargs,
-    env_kwargs=env_kwargs,
-    num_envs=config.actor.num_envs,
-    async_envs=config.actor.async_envs,
-    use_gpu=config.actor.gpu_inference,
-    use_fake_envs=config.actor.use_fake_envs,
-  )
-
   if config.actor.use_sim_envs:
     if config.actor.async_envs:
       if config.actor.num_envs % config.actor.inner_batch_size:
@@ -428,31 +421,42 @@ def run(config: Config):
     if config.actor.rollout_length % max(1, config.agent.batch_steps):
       raise ValueError('agent.batch_steps must divide rollout_length for sim RL.')
 
-    def build_actor() -> evaluators.AbstractRolloutWorker:
-      from slippi_ai.sim_env import jax_rollout
+    from slippi_ai.sim_env import jax_rollout
 
-      merged_kwargs = main_agent_kwargs.copy()
-      merged_kwargs['name'] = main_agent_names + opp_names
-      rollout_agent_kwargs = {(PORT, ENEMY_PORT): merged_kwargs}
+    merged_kwargs = main_agent_kwargs.copy()
+    merged_kwargs['name'] = main_agent_names + opp_names
+    rollout_agent_kwargs = {(PORT, ENEMY_PORT): merged_kwargs}
 
-      return jax_rollout.JaxSimRolloutWorker(
-          agent_kwargs=rollout_agent_kwargs,  # type: ignore
-          dolphin_kwargs=dolphin_kwargs,
-          num_envs=config.actor.num_envs,
-          rollout_length=config.actor.rollout_length,
-          use_fake_envs=config.actor.use_fake_envs,
-          async_envs=config.actor.async_envs,
-          inner_batch_size=config.actor.inner_batch_size,
-          copy_data=False,
-          # We need to manipulate agent outputs in python.
-          keep_agent_outputs_on_device=False,
-      )
+    actor = jax_rollout.JaxSimRolloutWorker(
+        agent_kwargs=rollout_agent_kwargs,  # type: ignore
+        dolphin_kwargs=dolphin_kwargs,
+        num_envs=config.actor.num_envs,
+        rollout_length=config.actor.rollout_length,
+        use_fake_envs=config.actor.use_fake_envs,
+        async_envs=config.actor.async_envs,
+        inner_batch_size=config.actor.inner_batch_size,
+        copy_data=False,
+        # We need to manipulate agent outputs in python.
+        keep_agent_outputs_on_device=False,
+    )
+  else:
+    actor = evaluators.RolloutWorker(
+      agent_kwargs=agent_kwargs,
+      dolphin_kwargs=dolphin_kwargs,
+      env_kwargs=env_kwargs,
+      num_envs=config.actor.num_envs,
+      async_envs=config.actor.async_envs,
+      use_gpu=config.actor.gpu_inference,
+      use_fake_envs=config.actor.use_fake_envs,
+    )
+
+  exit_stack.enter_context(actor.run())
 
   learner_manager = LearnerManager(
     config=config,
     learner=learner,
     ports=(PORT, ENEMY_PORT),
-    build_actor=build_actor,
+    actor=actor,
   )
 
   step_profiler = utils.Profiler()
@@ -492,7 +496,7 @@ def run(config: Config):
     timings = dict(
       rollout=learner_manager.rollout_profiler.mean_time(),
       learner=learner_manager.learner_profiler.mean_time(),
-      reset=learner_manager.reset_profiler.mean_time(),
+      # reset=learner_manager.reset_profiler.mean_time(),
       total=step_time,
       fps=fps,
       mps=mps,
