@@ -1115,3 +1115,90 @@ def vmap1_simplex_feasibility_solver(
 ):
   solver = jax_utils.partial(solve_feasibility_simplex, problem)
   return jax_utils.vmap1(solver, static_argnames=simplex_static_argnames)
+
+
+def solve_lp_mpax(
+    c: jax.Array,
+    G: jax.Array,
+    h: jax.Array,
+    *,
+    eps_abs: float = 1e-4,
+    eps_rel: float = 1e-4,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[jax.Array, jax.Array, Stats]:
+  """Solve LP: max c^T x s.t. G x <= h, x >= 0 using mpax's r2HPDHG.
+
+  Returns (x_opt, ineq_dual, stats) where ineq_dual[i] is the dual variable
+  for constraint i (shadow price of G[i,:] x <= h[i]).
+  """
+  from mpax.r2hpdhg import r2HPDHG
+  from mpax.mp_io import create_lp
+
+  m, n = G.shape
+  if expected_dtype is not None:
+    assert G.dtype == expected_dtype, f'Expected dtype {expected_dtype}, got {G.dtype}'
+
+  # mpax minimizes c^T x s.t. G x >= h, l <= x <= u.
+  # Convert: max c^T x s.t. G x <= h, x >= 0
+  #       => min (-c)^T x s.t. (-G) x >= (-h), 0 <= x <= inf
+  A_eq = jnp.zeros([0, n], dtype=G.dtype)
+  b_eq = jnp.zeros([0], dtype=G.dtype)
+  l = jnp.zeros([n], dtype=G.dtype)
+  u = jnp.full([n], jnp.inf, dtype=G.dtype)
+
+  lp = create_lp(-c, A_eq, b_eq, -G, -h, l, u, use_sparse_matrix=False)
+  solver = r2HPDHG(eps_abs=eps_abs, eps_rel=eps_rel)
+  output = solver.optimize(lp)
+
+  # dual_solution[i] equals the KKT dual variable for (-G[i,:]) x >= -h[i],
+  # which by complementarity equals the shadow price for G[i,:] x <= h[i].
+  stats = dict(
+      termination_status=output.termination_status,
+      num_steps=output.iteration_count,
+  )
+  return output.primal_solution, output.dual_solution, stats
+
+
+mpax_static_argnames = ('eps_abs', 'eps_rel', 'expected_dtype')
+
+
+def solve_optimization_mpax_with_extras(
+    problem: ConstrainedOptimizationProblem[Parameters, Variables],
+    parameters: Parameters,
+    *,
+    eps_abs: float = 1e-4,
+    eps_rel: float = 1e-4,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    **_,
+) -> tuple[Variables, jax.Array, Stats]:
+  """Solve a linear program using mpax's r2HPDHG, also returning inequality dual variables.
+
+  Assumes:
+  - The objective and constraint_violations are linear in the variables.
+  - No equality constraints (equality_violations must return an empty array).
+  - Variables are implicitly non-negative (x >= 0).
+  - The initial variables are feasible (constraint_violations <= 0).
+  """
+  variables = problem.initial_variables(parameters)
+  flatten, unflatten, _ = _setup_flatten(variables)
+  x0 = flatten(variables)
+
+  dtype = x0.dtype
+  if expected_dtype is not None:
+    assert dtype == expected_dtype, f'Expected dtype {expected_dtype}, got {dtype}'
+
+  def obj_fn(x: jax.Array) -> jax.Array:
+    return problem.objective(parameters, unflatten(x))
+
+  def constr_fn(x: jax.Array) -> jax.Array:
+    return problem.constraint_violations(parameters, unflatten(x))
+
+  c_min = jax.grad(obj_fn)(x0)
+  G = jax.jacrev(constr_fn)(x0)
+  h = jnp.matvec(G, x0) - constr_fn(x0)
+
+  x_opt, ineq_dual, stats = solve_lp_mpax(
+      -c_min, G, h,
+      eps_abs=eps_abs, eps_rel=eps_rel,
+      expected_dtype=dtype)
+  return unflatten(x_opt), ineq_dual, stats

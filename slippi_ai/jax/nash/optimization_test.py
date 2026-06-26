@@ -262,6 +262,9 @@ NASH_SOLVERS = {
     'linrax_fp32': dict(
         solver=nash.solve_zero_sum_nash_linrax,
         atol=5e-3, dtype=np.float32),
+    'mpax': dict(
+        solver=nash.solve_zero_sum_nash_mpax,
+        atol=5e-3, dtype=np.float32),
 }
 
 
@@ -346,4 +349,11 @@ if __name__ == '__main__':
   run_nash_tests(
       solver=nash.solve_zero_sum_nash_linrax,
       atol=1e-4,
+  )
+
+  print('mpax')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_mpax,
+      atol=1e-3,
+      dtype=np.float32,
   )
