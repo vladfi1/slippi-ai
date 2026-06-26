@@ -89,33 +89,24 @@ def test_solve_corner_optimization(is_linear: bool):
   run_corner_optimization(error=1e-3, max_size=3, is_linear=is_linear)
 
 
-def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
-  nonzero = p > 1e-6
-  safe_p = np.where(nonzero, p, 1)
-  safe_q = np.where(nonzero, q, 1)
-  log_ratio = np.log(safe_p / safe_q)
-  return np.sum(p * log_ratio, axis=-1)
-
-
 def verify_nash(
     payoff_matrix: np.ndarray,
     solution: nash.NashVariables,
     atol: float = 1e-1,
 ):
-  jax_p1 = np.asarray(solution.p1)
-  jax_p2 = np.asarray(solution.p2)
-  jax_nash_value = np.asarray(solution.p1_nash_value)
+  p1 = np.asarray(solution.p1)
+  p2 = np.asarray(solution.p2)
+  nash_value = np.asarray(solution.p1_nash_value)
 
-  p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
-  np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
+  # p1's worst-case payoff against the best pure-strategy response from p2
+  # must equal the Nash value (p1 guarantees at least v).
+  p1_worst = np.min(p1 @ payoff_matrix)
+  np.testing.assert_allclose(p1_worst, nash_value, atol=atol)
 
-  kl1 = kl_divergence(p1, jax_p1)
-  assert kl1 < atol, kl1
-
-  kl2 = kl_divergence(p2, jax_p2)
-  assert kl2 < atol, kl2
-
-  np.testing.assert_allclose(jax_nash_value, nash_value, atol=atol)
+  # p2's worst-case payoff against the best pure-strategy response from p1
+  # must also equal the Nash value (p2 holds p1 to at most v).
+  p2_worst = np.max(payoff_matrix @ p2)
+  np.testing.assert_allclose(p2_worst, nash_value, atol=atol)
 
 def run_nash_test(
     payoff_matrix: np.ndarray,
