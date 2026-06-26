@@ -3,6 +3,7 @@ import functools
 import logging
 import typing as tp
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -858,7 +859,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     actor_logits = [so.logits for so in trajectory.actions]
     # Need to make a copy since the original one gets donated
-    # initial_nash_state = copy_struct(initial_states[NASH_POLICY])
+    initial_nash_state = copy_struct(initial_states[NASH_POLICY])
     (
       metrics[NASH_POLICY],
       final_states[NASH_POLICY],
@@ -867,9 +868,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
         q_action_init_state, q_values, nash_variables, teacher_outputs, actor_logits,
         train=train)
 
-    # post_update_metrics = self.post_update(
-    #     frames, initial_nash_state, actor_logits)
-    # metrics[NASH_POLICY].update(post_update_metrics)
+    post_update_metrics = self.post_update(
+        frames, initial_nash_state, actor_logits)
+    metrics[NASH_POLICY].update(post_update_metrics)
+
+    for path, value in jax.tree.leaves_with_path(jax.device_get(post_update_metrics)):
+      if np.any(np.isnan(value)):
+        raise ValueError(f'NaN in post_update_metrics at {path}')
 
     if train and step % self.config.epoch_length == 0:
       self._update_policy()
