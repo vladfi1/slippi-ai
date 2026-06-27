@@ -896,8 +896,8 @@ def solve_lp_simplex(
 
   # Use a dtype-relative epsilon. For float32, 1e-9 < machine epsilon (~1.2e-7),
   # so it fails to guard against near-zero pivots, causing tableau overflow and NaN.
-  # pow(eps_machine, 3/4) balances numerical safety with sensitivity (~6.4e-6 for f32).
-  eps = jnp.pow(jnp.finfo(dtype).eps, 3/4).astype(dtype)
+  # pow(eps_machine, 0.6) balances numerical safety with sensitivity (~7e-5 for f32).
+  eps = jnp.pow(jnp.finfo(dtype).eps, 0.6).astype(dtype)
   inf_val = jnp.asarray(jnp.inf, dtype=dtype)
 
   # Standard form: max [c; 0]^T [x; s] s.t. [G | I][x; s] = h, x,s >= 0
@@ -920,7 +920,7 @@ def solve_lp_simplex(
     # Entering variable: column with the most positive reduced cost (Dantzig).
     # If even the best column can't improve the objective, we're optimal.
     obj = tab[m, :n + m]  # [n+m]
-    entering = jnp.argmax(obj)  # scalar
+    entering = jnp.argmax(obj).astype(jnp.int32)  # scalar
     optimal = obj[entering] <= eps  # scalar bool
 
     # Leaving variable: min-ratio test. Among rows where the entering column is
@@ -929,7 +929,7 @@ def solve_lp_simplex(
     col = tab[:m, entering]  # [m]
     rhs = tab[:m, -1]  # [m]
     ratios = jnp.where(col > eps, rhs / col, inf_val)  # [m]
-    leaving = jnp.argmin(ratios)  # scalar
+    leaving = jnp.argmin(ratios).astype(jnp.int32)  # scalar
     pval = tab[leaving, entering]  # scalar; pivot element
 
     # Gauss-Jordan pivot: rank-1 update that zeros the entering column in every
