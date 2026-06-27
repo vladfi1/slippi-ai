@@ -212,7 +212,7 @@ def random_nash_tests(
     print(f'{key}: {mean:.1e} ± {std:.1e}, [{min_value:.1e}, {max_value:.1e}]')
 
 def run_nash_tests(
-    dtype = np.float64,
+    dtype: type = np.float64,
     **solver_kwargs,
 ):
   solver_kwargs = dict(
