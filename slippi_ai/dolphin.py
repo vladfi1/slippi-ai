@@ -292,6 +292,8 @@ class DolphinConfig:
   """Configure dolphin for evaluation."""
   path: Optional[str] = None  # Path to folder containing the dolphin executable
   iso: Optional[str] = None  # Path to melee 1.02 iso.
+  dolphin_home_path: Optional[str] = None  # Path to dolphin home directory.
+  tmp_home_directory: bool = True  # Create a temporary home directory for dolphin.
   copy_home_directory: bool = False  # Copy the dolphin home directory to a temp location.
   stage: melee.Stage = melee.Stage.RANDOM_STAGE  # Which stage to play on.
   online_delay: int = 0  # Simulate online delay.
