@@ -119,6 +119,8 @@ if __name__ == '__main__':
         char = CHAR.value
 
       if config.tag is None:
+        parts = ['q', char, f'd{config.delay}']
+
         def net_str(net_config: dict):
           n = net_config['num_layers']
           h = net_config['hidden_size']
@@ -126,24 +128,37 @@ if __name__ == '__main__':
 
         core_str = net_str(CORE_NET.value)
         action_str = net_str(ACTION_NET.value)
-
         head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
+
+        parts.extend([
+            f'c{core_str}',
+            f'a{action_str}',
+            f'qv{head_str}',
+        ])
 
         if imitation_config is not None:
           fs = imitation_config.policy.frame_skip
         else:
           fs = config.q_function.frame_skip
+        parts.append(f'rfs{fs}')
 
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
+        parts.extend([f'um{um}', f'rh{rh}'])
 
-        gae = f"gae{config.learner.gae_lambda:.1f}"
+        if config.learner.gae_lambda > 0:
+          parts.append(f"gae{config.learner.gae_lambda:.1f}")
 
         lr = config.learner.learning_rate
+        if lr != 1e-4:
+          parts.append(f"lr{lr:.0e}")
 
-        config.tag = f"q_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}_lr{lr:.0e}"
+        parts.append(config.q_function.distance)
+
         if TAG_SUFFIX.value is not None:
-          config.tag += f"_{TAG_SUFFIX.value}"
+          parts.append(TAG_SUFFIX.value)
+
+        config.tag = "_".join(parts)
 
     config.dataset.allowed_characters = char
 

@@ -12,6 +12,8 @@ from slippi_ai.jax import networks, jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.types import Controller, Action
 
+Gaussian = rl_lib.Gaussian
+
 class QOutputs(tp.NamedTuple):
   returns: jax.Array  # [T, B]
   advantages: jax.Array  # [T, B]
@@ -22,10 +24,51 @@ class QOutputs(tp.NamedTuple):
   metrics: dict
 
 class UnrollOutputs(tp.NamedTuple):
-  values: jax.Array  # [T, B]
-  q_values: jax.Array  # [T, B]
+  values: Gaussian  # [T, B]
+  q_values: Gaussian  # [T, B]
 
 Rank2 = tuple[int, int]
+
+# Floor on predicted variances for numerical stability.
+_MIN_VARIANCE = 1e-6
+# Floor on target variances so divergences stay finite even when the
+# bootstrapped return is (near) deterministic.
+_VAR_EPS = 1e-8
+
+def gaussian_kl(p: Gaussian, q: Gaussian) -> jax.Array:
+  """KL(P || Q) between two diagonal Gaussians."""
+  return 0.5 * (
+      jnp.log(q.variance) - jnp.log(p.variance)
+      + (p.variance + jnp.square(p.mean - q.mean)) / q.variance
+      - 1.0)
+
+def _half_normal_abs_mean(g: Gaussian) -> jax.Array:
+  """E[|Z|] for Z ~ N(g)."""
+  mu = g.mean
+  var = g.variance
+  sigma = jnp.sqrt(var)
+  return (
+      sigma * jnp.sqrt(2 / jnp.pi) * jnp.exp(-jnp.square(mu) / (2 * var))
+      + mu * jax.scipy.special.erf(mu / (sigma * jnp.sqrt(2.0))))
+
+def gaussian_cramer(p: Gaussian, q: Gaussian) -> jax.Array:
+  """Cramer distance (integral of squared CDF difference) between Gaussians.
+
+  Uses the closed form via the energy-distance identity:
+    int (F_P - F_Q)^2 dx = E|X - Y| - (E|X - X'| + E|Y - Y'|) / 2,
+  where X ~ P, Y ~ Q (and primed copies are iid). For Gaussians this reduces to
+  the expressions below. The distance is symmetric in P and Q.
+  """
+  stddev_p = jnp.sqrt(p.variance)
+  stddev_q = jnp.sqrt(q.variance)
+  difference = Gaussian(mean=p.mean - q.mean, variance=p.variance + q.variance)
+  cross = _half_normal_abs_mean(difference)
+  return cross - (stddev_p + stddev_q) / jnp.sqrt(jnp.pi)
+
+_DISTANCES = {
+    'kl': gaussian_kl,
+    'cramer': gaussian_cramer,
+}
 
 @dataclasses.dataclass
 class HeadConfig:
@@ -44,6 +87,7 @@ class QFunctionConfig:
 
   advantage_qs: bool = True  # Have q-head predict advantages
   frame_skip: int = 1  # Number of actions per frame-skip step
+  distance: str = 'kl'  # Distributional loss between Gaussians: 'kl' or 'cramer'
 
 class QFunction(nnx.Module, tp.Generic[Action]):
   """Single-player Q-function with frame-skip support.
@@ -75,18 +119,24 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     self.action_net = networks.construct_network(
         rngs, input_size=self.embed_action.size, **config.action_net)
 
+    # Heads output two scalars per step: (mean, raw_variance).
     self.value_head = jax_utils.MLP(
       rngs=rngs,
       input_size=self.core_net.output_size,
-      features=[config.head.hidden_size] * config.head.num_layers + [1],
+      features=[config.head.hidden_size] * config.head.num_layers + [2],
       activate_final=False,
     )
     self.q_head = jax_utils.MLP(
       rngs=rngs,
       input_size=self.action_net.output_size,
-      features=[config.head.hidden_size] * config.head.num_layers + [1],
+      features=[config.head.hidden_size] * config.head.num_layers + [2],
       activate_final=False,
     )
+
+    if config.distance not in _DISTANCES:
+      raise ValueError(
+          f'Unknown distance {config.distance!r}; expected one of {list(_DISTANCES)}.')
+    self._distance_fn = _DISTANCES[config.distance]
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> networks.RecurrentState:
     return self.core_net.initial_state(batch_size, rngs)
@@ -95,16 +145,40 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     x = self.embed_action(action)
     return x.astype(jax_utils.module_dtype(self))
 
+  def _gaussian_from_head(self, head_output: jax.Array) -> Gaussian:
+    """[..., 2] -> Gaussian([...], [...])."""
+    mean = head_output[..., 0]
+    variance = jax.nn.softplus(head_output[..., 1]) + _MIN_VARIANCE
+    return Gaussian(mean=mean, variance=variance)
+
+  def _value_dist_from_outputs(self, outputs: jax.Array) -> Gaussian:
+    """[..., O_core] -> Gaussian([...], [...])."""
+    return self._gaussian_from_head(self.value_head(outputs))
+
   def _values_from_outputs(self, outputs: jax.Array) -> jax.Array:
     """[..., O_core] -> [...]"""
-    return jnp.squeeze(self.value_head(outputs), -1)
+    return self._value_dist_from_outputs(outputs).mean
+
+  def _q_dist_from_outputs(
+      self,
+      outputs: jax.Array,  # [..., O_action]
+      values: Gaussian,  # [...]
+  ) -> Gaussian:  # [...]
+    q_dist = self._gaussian_from_head(self.q_head(outputs))
+
+    if self.config.advantage_qs:
+      # The q-head predicts an advantage on the mean; its variance is the
+      # q-value's own (absolute) uncertainty.
+      q_dist = q_dist._replace(mean=values.mean + q_dist.mean)
+
+    return q_dist
 
   def _q_values_from_outputs(
       self,
       outputs: jax.Array,  # [..., O_action]
       values: jax.Array,  # [...]
   ) -> jax.Array:  # [...]
-    qs = jnp.squeeze(self.q_head(outputs), -1)
+    qs = self.q_head(outputs)[..., 0]
 
     if self.config.advantage_qs:
       return values + qs
@@ -141,6 +215,27 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     init_state = self._action_net_initial_state(core_outputs)
     return self.q_values_from_action_state(values, init_state, actions)
 
+  def _q_dist_from_action_state(
+      self,
+      values: Gaussian,  # [...]
+      action_init_state: networks.RecurrentState,  # [..., H]
+      actions: list[Action],  # frame_skip x [...]
+  ) -> Gaussian:  # [...]
+    embedded = [self._embed_action(a) for a in actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
+    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
+    outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
+    return self._q_dist_from_outputs(outputs[-1], values)
+
+  def _q_dist_from_core_outputs(
+      self,
+      values: Gaussian,  # [...]
+      core_outputs: jax.Array,  # [..., O_core]
+      actions: list[Action],  # frame_skip x [...]
+  ) -> Gaussian:  # [...]
+    init_state = self._action_net_initial_state(core_outputs)
+    return self._q_dist_from_action_state(values, init_state, actions)
+
   def multi_q_values_from_action_state(
       self,
       values: jax.Array,  # [T, B]
@@ -172,9 +267,9 @@ class QFunction(nnx.Module, tp.Generic[Action]):
   ) -> tuple[UnrollOutputs, RecurrentState]:
     core_outputs, final_state = self.core_net.unroll(
         state_action, is_resetting, initial_state)
-    values = self._values_from_outputs(core_outputs)
+    values = self._value_dist_from_outputs(core_outputs)
 
-    q_values = self.q_values_from_core_outputs(
+    q_values = self._q_dist_from_core_outputs(
         values, core_outputs, next_actions)
 
     return UnrollOutputs(values=values, q_values=q_values), final_state
@@ -228,7 +323,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     last_output, _ = self.core_net.step_with_reset(
         last_state_action, last_is_resetting, final_state)
 
-    last_value = self._values_from_outputs(last_output)
+    last_value = self._value_dist_from_outputs(last_output)
 
     outputs = self._get_outputs(
         frames=frames,
@@ -239,16 +334,16 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         lambda_=lambda_,
     )
 
-    for lambda_ in eval_lambdas:
+    for eval_lambda in eval_lambdas:
       eval_outputs = self._get_outputs(
           frames=frames,
           values=values,
           q_values=q_values,
           last_value=last_value,
           discount=discount,
-          lambda_=lambda_,
+          lambda_=eval_lambda,
       )
-      outputs.metrics[f'lambda_{lambda_:.1f}'] = eval_outputs.metrics
+      outputs.metrics[f'lambda_{eval_lambda:.1f}'] = eval_outputs.metrics
 
     return outputs, final_state
 
@@ -268,18 +363,18 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     core_outputs, final_state = self.core_net.unroll(
         state_action_T, frames.is_resetting[:-1], initial_state)
 
-    values = self._values_from_outputs(core_outputs)
+    values = self._value_dist_from_outputs(core_outputs)
 
     last_output, _ = self.core_net.step_with_reset(
         utils.map_nt(lambda x: x[-1], frames.state_action),
         frames.is_resetting[-1], final_state)
-    last_value = self._values_from_outputs(last_output)
+    last_value = self._value_dist_from_outputs(last_output)
 
     action_init_state = self._action_net_initial_state(core_outputs)
 
     next_actions = jax.tree.map(
         lambda t: t[1:], frames.state_action.action)
-    q_values = self.q_values_from_action_state(
+    q_values = self._q_dist_from_action_state(
         values, action_init_state, next_actions)
 
     outputs = self._get_outputs(
@@ -296,13 +391,13 @@ class QFunction(nnx.Module, tp.Generic[Action]):
   def _get_outputs(
       self,
       frames: data.Frames[Rank2, Action],
-      values: jax.Array,
-      q_values: jax.Array,
-      last_value: jax.Array,
+      values: Gaussian,
+      q_values: Gaussian,
+      last_value: Gaussian,
       discount: float,
       lambda_: float,
   ):
-    value_targets = rl_lib.generalized_returns_with_resetting(
+    target = rl_lib.generalized_returns_gaussian_with_resetting(
         rewards=frames.reward,
         values=values,
         is_resetting=frames.is_resetting[1:],
@@ -310,15 +405,24 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         discount=discount,
         lambda_=lambda_,
     )
-    value_targets = jax.lax.stop_gradient(value_targets)
+    target = jax.lax.stop_gradient(target)
+    # Floor the target variance so divergences stay finite for (near)
+    # deterministic returns (e.g. variance 0 at resets when lambda_ == 1).
+    target = target._replace(variance=target.variance + _VAR_EPS)
 
-    advantages = value_targets - values
+    advantages = target.mean - values.mean
+
+    # Keep the "loss" metric as L2 on the means for comparison with prior runs.
     value_loss = jnp.square(advantages)
+    q_loss = jnp.square(target.mean - q_values.mean)
 
-    _, value_variance = jax_utils.mean_and_variance(value_targets)
+    # Distributional divergences (the actually-optimized losses).
+    value_div = self._distance_fn(target, values)
+    q_div = self._distance_fn(target, q_values)
+
+    _, value_variance = jax_utils.mean_and_variance(target.mean)
     uev = value_loss / (value_variance + 1e-8)
 
-    q_loss = jnp.square(value_targets - q_values)
     quev = q_loss / (value_variance + 1e-8)
     uev_delta = uev - quev
 
@@ -326,6 +430,9 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         'v': {
             'loss': value_loss,
             'uev': uev,
+            'div': value_div,
+            self.config.distance: value_div,
+            'variance': values.variance,
         },
         'q': {
             'loss': q_loss,
@@ -333,15 +440,18 @@ class QFunction(nnx.Module, tp.Generic[Action]):
             'uev_delta': uev_delta,
             # Take log to result in a geometric mean.
             'rel_v_loss': jnp.log((value_loss + 1e-8) / (q_loss + 1e-8)),
+            'div': q_div,
+            self.config.distance: q_div,
+            'variance': q_values.variance,
         },
     }
 
     return QOutputs(
-        returns=value_targets,
+        returns=target.mean,
         advantages=advantages,
-        values=values,
-        q_values=q_values,
-        loss=value_loss + q_loss,
+        values=values.mean,
+        q_values=q_values.mean,
+        loss=value_div + q_div,
         # hidden_states=hidden_states,
         metrics=metrics,
     )
