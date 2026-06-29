@@ -1,10 +1,17 @@
-"""Compare two q-functions by how they rank actions sampled from a policy.
+"""Compare two q-functions on actions sampled from a policy.
 
 Given a (sample) policy and two q-functions, this samples a finite set of
 actions from the policy at each frame and evaluates both q-functions on those
-actions. We then measure how much the two q-functions agree on the *relative
-ordering* of the sampled actions (rather than the absolute q-values), via
-Spearman rank correlation, Kendall's tau, and top-1 (argmax) agreement.
+actions. We then measure agreement at two levels:
+
+* Relative ordering of the sampled actions (rather than the absolute q-values),
+  via Spearman rank correlation, Kendall's tau, and top-1 (argmax) agreement.
+* The actual q-values, via ``value_agreement``: how much better one
+  q-function's q-values predict the other's q-values than the other's
+  state-only value does. Since a state's value is constant across actions, the
+  only information one q-function can contribute is its *advantage*
+  (``Q(s, a) - V(s)``), so this measures how well the two q-functions'
+  advantages line up (see ``value_agreement`` for details).
 
 This reuses the same sampling / q-evaluation machinery as
 ``q_policy_learner.Learner`` but without any training.
@@ -129,6 +136,125 @@ def rank_agreement(qa: jax.Array, qb: jax.Array) -> dict[str, jax.Array]:
   )
 
 
+def value_agreement(
+    qa: jax.Array,
+    qb: jax.Array,
+    va: jax.Array,
+    vb: jax.Array,
+) -> dict[str, jax.Array]:
+  """Agreement between two q-functions' actual q-values.
+
+  We ask how much better one q-function's q-values predict the other's q-values
+  than the other's *state-only* value does. Because a state's value V(s) is
+  constant across actions, the only thing one q-function can contribute to
+  predicting another's q-values (beyond V) is its advantage A(s, a) = Q - V.
+
+  This assumes the two q-functions are on the same reward scale (true when they
+  share a discount / reward halflife; ``compare`` warns when they don't). To
+  predict q-function B's q-values we compare two predictors *at unit scale*:
+    - baseline: ``vb`` (B's state value, constant across the S sampled actions),
+      with error ``sum_S (qb - vb)^2 = sum_S adv_b^2``;
+    - candidate: ``vb + adv_a`` (B's state value plus A's advantage, unscaled).
+
+  This returns per-element second moments (summed over the sample axis) rather
+  than a finished R^2, because R^2 must be *pooled* across states -- i.e. summed
+  numerator over summed denominator -- not averaged per state. A per-state R^2
+  is unbounded below and blows up at states where B values the sampled actions
+  almost equally (``sq_b ~ 0``), so a plain mean of per-state R^2 is dominated
+  by those states. ``compare`` forms the pooled ``r2_b_from_a`` /
+  ``r2_a_from_b`` (fraction of one q-function's action-induced variance
+  explained by the other's q-values; negative when worse than the state value),
+  ``advantage_cosine_pooled`` (the variance-weighted cosine; the cosine of the
+  advantage vectors stacked across all states), and ``advantage_rms_a`` /
+  ``advantage_rms_b`` (advantage scales) from these.
+
+  ``advantage_cosine`` is the scale-invariant, signed alignment of the advantage
+  vectors and is bounded, so it is reported as a per-state mean directly. It
+  weights every state equally, whereas ``advantage_cosine_pooled`` weights each
+  state by its advantage magnitude (so high-stakes states dominate).
+
+  Args:
+    qa: [S, T, B] q-values from the first q-function.
+    qb: [S, T, B] q-values from the second q-function.
+    va: [T, B] state-only values from the first q-function.
+    vb: [T, B] state-only values from the second q-function.
+
+  Returns:
+    Dict of [T, B] metrics: advantage_cosine plus the second moments
+    _sq_residual, _sq_a, _sq_b (combined into R^2 / RMS by ``compare``).
+  """
+  adv_a = qa - jnp.expand_dims(va, axis=_SAMPLE_AXIS)  # [S, T, B]
+  adv_b = qb - jnp.expand_dims(vb, axis=_SAMPLE_AXIS)
+
+  dot = jnp.sum(adv_a * adv_b, axis=_SAMPLE_AXIS)  # [T, B]
+  sq_a = jnp.sum(jnp.square(adv_a), axis=_SAMPLE_AXIS)
+  sq_b = jnp.sum(jnp.square(adv_b), axis=_SAMPLE_AXIS)
+  # Residual sum of squares from predicting one advantage with the other at unit
+  # scale; the same for both directions.
+  residual = jnp.sum(jnp.square(adv_a - adv_b), axis=_SAMPLE_AXIS)
+
+  cosine = dot / (jnp.sqrt(sq_a * sq_b) + 1e-8)
+
+  q_loss = jnp.square(qa - qb)
+  v_loss = jnp.square(va - vb)
+
+  q_rel_v_ab = jnp.log(q_loss / jnp.square(adv_b)).mean()
+  q_rel_v_ba = jnp.log(q_loss / jnp.square(adv_a)).mean()
+
+  return dict(
+      advantage_cosine=cosine,
+      _sq_residual=residual,
+      _sq_a=sq_a,
+      _sq_b=sq_b,
+      q_loss=q_loss,
+      v_loss=v_loss,
+      q_rel_v_ab=q_rel_v_ab,
+      q_rel_v_ba=q_rel_v_ba,
+  )
+
+
+def policy_regret(qa: jax.Array, qb: jax.Array) -> dict[str, jax.Array]:
+  """Regret from acting by one q-function but scoring with the other.
+
+  For each state we pick the action that maximizes the *chooser* q-function
+  among the S samples, then measure its regret under the *truth* q-function: how
+  much worse it is than the action the truth would have picked. We normalize by
+  the truth's own spread between its best and its mean sampled q-value, so 0
+  means the chooser selects the truth's best action and 1 means it does no
+  better than an average (random) sample. (Per state the ratio can exceed 1 when
+  the chooser picks worse-than-average actions.)
+
+  This is scale-invariant in the truth q-function (numerator and denominator
+  share its units), so unlike value_agreement it needs no shared-scale
+  assumption. Returns per-[T, B] numerators and denominators; ``compare`` pools
+  them (sum numerator / sum denominator) across all states.
+
+  Args:
+    qa: [S, T, B] q-values from the first q-function.
+    qb: [S, T, B] q-values from the second q-function.
+
+  Returns:
+    Dict of [T, B] second moments: _regret_num_a_b, _regret_den_b (choose by A,
+    truth B) and _regret_num_b_a, _regret_den_a (choose by B, truth A).
+  """
+  def regret(chooser: jax.Array, truth: jax.Array):
+    chosen_idx = jnp.argmax(chooser, axis=_SAMPLE_AXIS, keepdims=True)
+    truth_chosen = jnp.take_along_axis(
+        truth, chosen_idx, axis=_SAMPLE_AXIS)[0]  # [T, B]
+    truth_best = jnp.max(truth, axis=_SAMPLE_AXIS)
+    truth_mean = jnp.mean(truth, axis=_SAMPLE_AXIS)
+    return truth_best - truth_chosen, truth_best - truth_mean
+
+  num_a_b, den_b = regret(qa, qb)  # choose by A, evaluate under truth B
+  num_b_a, den_a = regret(qb, qa)  # choose by B, evaluate under truth A
+  return dict(
+      _regret_num_a_b=num_a_b,
+      _regret_den_b=den_b,
+      _regret_num_b_a=num_b_a,
+      _regret_den_a=den_a,
+  )
+
+
 class Comparator(nnx.Module):
 
   def __init__(
@@ -207,7 +333,7 @@ class Comparator(nnx.Module):
            jnp.expand_dims(q_outputs.q_values, axis=_SAMPLE_AXIS)],
           axis=_SAMPLE_AXIS)
 
-    return sample_q_values, final_state
+    return sample_q_values, q_outputs.values, final_state
 
   def step(
       self,
@@ -240,14 +366,16 @@ class Comparator(nnx.Module):
     policy_samples = sample(
         self.sample_policy, self.rngs.fork(split=self.num_samples))
 
-    qa, final_states[Q_FUNCTION_A] = self._q_values_for_samples(
+    qa, va, final_states[Q_FUNCTION_A] = self._q_values_for_samples(
         self.q_function_a, frames[Q_FUNCTION_A],
         initial_states[Q_FUNCTION_A], policy_samples)
-    qb, final_states[Q_FUNCTION_B] = self._q_values_for_samples(
+    qb, vb, final_states[Q_FUNCTION_B] = self._q_values_for_samples(
         self.q_function_b, frames[Q_FUNCTION_B],
         initial_states[Q_FUNCTION_B], policy_samples)
 
     metrics = rank_agreement(qa, qb)
+    metrics.update(value_agreement(qa, qb, va, vb))
+    metrics.update(policy_regret(qa, qb))
     return metrics, final_states
 
 
@@ -274,6 +402,18 @@ def compare(config: Config) -> dict[str, float]:
   # Load q-functions.
   q_function_a, q_config_a = load_q_function(config.q_function_a)
   q_function_b, q_config_b = load_q_function(config.q_function_b)
+
+  # value_agreement assumes both q-functions share a reward scale, which is set
+  # by the training discount (reward halflife). Warn if they differ, since the
+  # R^2 metrics would then be conflated with a scale mismatch.
+  halflife_a = q_config_a.learner.reward_halflife
+  halflife_b = q_config_b.learner.reward_halflife
+  if halflife_a != halflife_b:
+    logging.warning(
+        'q-functions trained with different reward halflives (%s vs %s); their '
+        'q-value scales likely differ, so value_agreement R^2 metrics will be '
+        'distorted. advantage_cosine and advantage_rms_a/b remain meaningful.',
+        halflife_a, halflife_b)
 
   config.dataset.copy_characteristics_from(policy_config.dataset)
 
@@ -345,7 +485,34 @@ def compare(config: Config) -> dict[str, float]:
       k: float(sum(s[k] for s in per_step) / len(per_step)) for k in keys
   }
 
-  print('=== q-function ordering agreement (mean over %d steps) ===' % len(per_step))
+  # Pool the value-agreement second moments into R^2 / RMS. Each step contains
+  # the same number of [T, B] elements, so the mean of a second moment over all
+  # steps equals its global mean, and a ratio of these means is the pooled
+  # quantity (summed numerator over summed denominator).
+  num_samples = config.num_samples + int(config.include_action_taken)
+  sq_residual = summary.pop('_sq_residual')
+  sq_a = summary.pop('_sq_a')
+  sq_b = summary.pop('_sq_b')
+  summary['r2_b_from_a'] = 1.0 - sq_residual / (sq_b + 1e-8)
+  summary['r2_a_from_b'] = 1.0 - sq_residual / (sq_a + 1e-8)
+  # Pooled (variance-weighted) cosine: the cosine of the two advantage vectors
+  # stacked across all states, equivalently each state weighted by its advantage
+  # magnitude. Recovered from the pooled second moments via the polarization
+  # identity dot = (sq_a + sq_b - residual) / 2. Unlike advantage_cosine (a flat
+  # mean of per-state cosines), this is dominated by high-advantage states.
+  dot = 0.5 * (sq_a + sq_b - sq_residual)
+  summary['advantage_cosine_pooled'] = dot / ((sq_a * sq_b) ** 0.5 + 1e-8)
+  summary['advantage_rms_a'] = (sq_a / num_samples) ** 0.5
+  summary['advantage_rms_b'] = (sq_b / num_samples) ** 0.5
+
+  # Pooled normalized regret: sum of regrets over sum of (best - mean) spreads.
+  # regret_a_b = argmax by A, scored under truth B (and vice versa).
+  summary['regret_a_b'] = (
+      summary.pop('_regret_num_a_b') / (summary.pop('_regret_den_b') + 1e-8))
+  summary['regret_b_a'] = (
+      summary.pop('_regret_num_b_a') / (summary.pop('_regret_den_a') + 1e-8))
+
+  print('=== q-function agreement (mean over %d steps) ===' % len(per_step))
   for k, v in summary.items():
     print(f'  {k}: {v:.4f}')
 
