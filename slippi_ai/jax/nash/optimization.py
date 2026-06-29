@@ -987,8 +987,9 @@ def solve_optimization_simplex_with_extras(
   - No equality constraints (equality_violations must return an empty array).
   - Variables are implicitly non-negative (x >= 0); do NOT include -x <= 0 in
     constraint_violations — simplex enforces non-negativity structurally.
-  - The initial variables returned by problem.initial_variables() are feasible,
-    i.e. constraint_violations(initial) <= 0, so h = -violations(initial) >= 0.
+  - initial_variables() must return the zero vector. With x0=0, h = -constr_fn(0),
+    so feasibility at the origin (constraint_violations(0) <= 0) guarantees h >= 0.
+    Feasibility at a nonzero x0 does NOT imply h >= 0 in general.
   """
   variables = problem.initial_variables(parameters)
   flatten, unflatten, _ = _setup_flatten(variables)
@@ -1014,6 +1015,7 @@ def solve_optimization_simplex_with_extras(
   return unflatten(x_opt), ineq_dual, stats
 
 
+# NOTE: These are unused and should probably be removed.
 def solve_optimization_simplex(
     problem: ConstrainedOptimizationProblem[Parameters, Variables],
     parameters: Parameters,
@@ -1032,6 +1034,17 @@ solve_feasibility_simplex = as_feasibility_solver(solve_optimization_simplex)
 
 simplex_static_argnames = ('max_steps', 'expected_dtype')
 
+def jitted_simplex_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_simplex, problem)
+  return jax_utils.jit(solver, static_argnames=simplex_static_argnames)
+
+def vmap1_simplex_feasibility_solver(
+    problem: FeasibilityProblem[Parameters, Variables],
+):
+  solver = jax_utils.partial(solve_feasibility_simplex, problem)
+  return jax_utils.vmap1(solver, static_argnames=simplex_static_argnames)
 
 def solve_lp_linrax(
     c: jax.Array,
@@ -1101,20 +1114,6 @@ def solve_optimization_linrax_with_extras(
       primal_tol=primal_tol, dual_tol=dual_tol,
       expected_dtype=dtype)
   return unflatten(x_opt), ineq_dual, stats
-
-
-def jitted_simplex_feasibility_solver(
-    problem: FeasibilityProblem[Parameters, Variables],
-):
-  solver = jax_utils.partial(solve_feasibility_simplex, problem)
-  return jax_utils.jit(solver, static_argnames=simplex_static_argnames)
-
-
-def vmap1_simplex_feasibility_solver(
-    problem: FeasibilityProblem[Parameters, Variables],
-):
-  solver = jax_utils.partial(solve_feasibility_simplex, problem)
-  return jax_utils.vmap1(solver, static_argnames=simplex_static_argnames)
 
 
 def solve_lp_mpax(
