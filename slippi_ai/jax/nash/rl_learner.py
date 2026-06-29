@@ -598,7 +598,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_vs_nash = payoffs(nash_probs, nash_probs)
     nash_value_error = jnp.sqrt(jnp.square(nash_vs_nash - nash_values).mean(keepdims=True))
     nash_value_error_max = jnp.max(jnp.abs(nash_vs_nash - nash_values), keepdims=True)
-    vs_nash = -jnp.vecmat(nash_probs, p12_matrices)  # [T, B, 2, S]
+    vs_nash = jnp.matvec(p12_matrices, jnp.flip(nash_probs, axis=-2))  # [T, B, 2, S]
     best_vs_nash = jnp.max(vs_nash, axis=-1)  # [T, B, 2]
     nash_suboptimality = best_vs_nash - nash_vs_nash
     nash_suboptimality_max = jnp.max(nash_suboptimality, keepdims=True)
@@ -715,18 +715,21 @@ class Learner(nnx.Module, tp.Generic[Action]):
       np1_vs_p2_qs, p1_vs_np2_qs = jnp.unstack(q_values, axis=0)  # [T, B], [T, B]
       return jnp.stack([np1_vs_p2_qs, -p1_vs_np2_qs], axis=-1)  # [T, B, 2]
 
+    # nash_policy vs nash distribution over sampled actions
     nash_policy_qs = jax_utils.lax_map(  # [S, T, B, 2]
         compute_nash_policy_q_vs, actions,
         batch_size=nash_policy_mbs,
     )
     nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
-    nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
-    optimality_gap = nash_values - nash_policy_qs
+    nash_policy_vs_nash = jnp.vecdot(nash_policy_qs, jnp.flip(nash_probs, axis=-2))  # [T, B, 2]
+    optimality_gap = nash_values - nash_policy_vs_nash
 
     mean_vs_nash = -jnp.flip(nash_vs_mean, axis=-1)
-    nash_policy_advantage = nash_policy_qs - mean_vs_nash
+    nash_policy_advantage = nash_policy_vs_nash - mean_vs_nash
 
     metrics.update(
+        nash_policy_vs_mean=nash_policy_qs.mean(axis=-1),
+        nash_policy_vs_nash=nash_policy_vs_nash,
         optimality_gap=optimality_gap,  # nash-vs-nash - nash_policy-vs-nash
         nash_policy_advantage=nash_policy_advantage,  # nash_policy-vs-nash - mean-vs-nash
     )
@@ -759,7 +762,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     metrics.update(
         nash_cross_entropy=nash_cross_entropy,
-        nash_policy_qs=nash_policy_qs,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
         teacher_kl=teacher_kl,
