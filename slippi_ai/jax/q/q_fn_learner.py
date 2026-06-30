@@ -47,8 +47,9 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    self.discount = rl_lib.discount_from_halflife(
-      config.reward_halflife, frame_skip=self.q_function.frame_skip)
+    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.fs_discount = rl_lib.discount_from_halflife(
+        config.reward_halflife, frame_skip=self.q_function.frame_skip)
 
     jax_utils.replicate_module(self, mesh)
 
@@ -119,7 +120,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       unroll_batch_size = frames.reward.shape[0]
 
     q_outputs, final_state = q_function.loss_batched(
-        frames, initial_state, self.discount, unroll_batch_size,
+        frames, initial_state, self.fs_discount, unroll_batch_size,
         lambda_=lambda_)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
@@ -133,7 +134,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       initial_state: RecurrentState,
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
-    frames = batch.to_frames(self.q_function.frame_skip)
+    frames = batch.to_frames(self.q_function.frame_skip, discount=self.discount)
     frames = self._encode_frames(frames)
 
     if train:
