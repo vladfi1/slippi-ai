@@ -239,16 +239,16 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         lambda_=lambda_,
     )
 
-    for lambda_ in eval_lambdas:
+    for eval_lambda in eval_lambdas:
       eval_outputs = self._get_outputs(
           frames=frames,
           values=values,
           q_values=q_values,
           last_value=last_value,
           discount=discount,
-          lambda_=lambda_,
+          lambda_=eval_lambda,
       )
-      outputs.metrics[f'lambda_{lambda_:.1f}'] = eval_outputs.metrics
+      outputs.metrics[f'lambda_{eval_lambda:.1f}'] = eval_outputs.metrics
 
     return outputs, final_state
 
