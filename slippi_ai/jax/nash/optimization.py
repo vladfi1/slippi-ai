@@ -8,8 +8,6 @@ import numpy as np
 
 from slippi_ai.jax import jax_utils
 
-from linrax.optim import linprog
-
 Parameters = tp.TypeVar('Parameters')
 Variables = tp.TypeVar('Variables')
 
@@ -1060,6 +1058,8 @@ def solve_lp_linrax(
   Returns (x_opt, ineq_dual, stats) where ineq_dual[i] is the dual variable
   for constraint i (shadow price of G[i,:] x <= h[i]).
   """
+  from linrax.optim import linprog
+
   m, n = G.shape
   if expected_dtype is not None:
     assert G.dtype == expected_dtype, f'Expected dtype {expected_dtype}, got {G.dtype}'
