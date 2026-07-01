@@ -34,6 +34,7 @@ def default_config():
   q_fn.embed.items.type = embed.ItemsType.FLAT
   q_fn.embed.with_fod = True
   q_fn.embed.with_randall = True
+  q_fn.head.hidden_size = 1024
 
   config.dataset.mirror = False
   config.dataset.allowed_characters = 'fox'
@@ -65,7 +66,7 @@ if __name__ == '__main__':
   )
   ACTION_NET = ff.DEFINE_dict(
       'action_net',
-      hidden_size=ff.Integer(256),
+      hidden_size=ff.Integer(512),
       num_layers=ff.Integer(1),
       ffw_multiplier=ff.Integer(2),
       recurrent_layer=ff.String('lstm'),
@@ -129,6 +130,8 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
+        parts = ['nq', char, f'd{config.delay}']
+
         def net_str(net_config: dict):
           n = net_config['num_layers']
           h = net_config['hidden_size']
@@ -136,8 +139,8 @@ if __name__ == '__main__':
 
         core_str = net_str(CORE_NET.value)
         action_str = net_str(ACTION_NET.value)
-
         head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
+        parts.extend(['c' + core_str, 'a' + action_str, 'qv' + head_str])
 
         if imitation_config is not None:
           fs = imitation_config.policy.frame_skip
@@ -146,13 +149,23 @@ if __name__ == '__main__':
 
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
+        parts.extend([f'rfs{fs}', f'um{um}', f'rh{rh}'])
 
-        gae = f"gae{config.learner.gae_lambda:.1f}"
+        gae = config.learner.gae_lambda
+        if gae != 0:
+          parts.append(f'gae{gae:.1f}')
 
-        config.tag = f"nq_{char}_d{config.delay}_c{core_str}_a{action_str}_qv{head_str}_rfs{fs}_um{um}_rh{rh}_{gae}"
+        lr = config.learner.learning_rate
+        if lr != 1e-4:
+          parts.append(f'lr{lr:.0e}')
+
+        if EMBED.value['name'] == 'enhanced' and EMBED.value['enhanced']['use_controller_rnn']:
+          parts.append('crnn')
 
         if TAG_SUFFIX.value is not None:
-          config.tag += f"_{TAG_SUFFIX.value}"
+          parts.append(TAG_SUFFIX.value)
+
+        config.tag = '_'.join(parts)
 
     config.dataset.allowed_characters = char
 
