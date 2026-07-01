@@ -26,6 +26,7 @@ from slippi_ai import (
 from slippi_ai.nash import data as nash_data
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
+    rl_lib,
     saving,
     train_lib,
     jax_utils,
@@ -301,6 +302,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         source=source,
         name_map=name_map,
         frame_skip=frame_skip,
+        discount=rl_lib.discount_from_halflife(config.learner.reward_halflife),
     )
     exit_stack.callback(nash_source.shutdown)
     return nash_source
