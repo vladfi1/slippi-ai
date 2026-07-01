@@ -37,15 +37,39 @@ from slippi_ai.mirror import mirror_game
 from slippi_db import utils as file_utils
 from slippi_db.utils import is_remote, FsspecFile
 
+type RatingFn = Callable[[str], tp.Optional[float]]
+
 class PlayerMeta(NamedTuple):
   character: int
   name: str
 
+  has_rating: bool = False
+  rating: float = 0
+
   @classmethod
-  def from_metadata(cls, player_meta: dict, raw: str) -> 'PlayerMeta':
+  def from_metadata(
+    cls,
+    player_meta: dict, raw: str,
+    ratings: tp.Optional[RatingFn] = None,
+  ) -> tp.Self:
+    name = nametags.name_from_metadata(player_meta, raw=raw)
+    normalized_name = nametags.normalize_name(name)
+
+    if ratings is not None:
+      rating = ratings(normalized_name)
+      has_rating = rating is not None
+      rating = rating or 0
+    else:
+      has_rating = False
+      rating = 0
+
     return cls(
         character=player_meta['character'],
-        name=nametags.name_from_metadata(player_meta, raw=raw))
+        name=name,
+        has_rating=has_rating,
+        rating=rating,
+    )
+
 
 class ReplayMeta(NamedTuple):
   p0: PlayerMeta
@@ -55,11 +79,15 @@ class ReplayMeta(NamedTuple):
   zlib: bool
 
   @classmethod
-  def from_metadata(cls, metadata: dict) -> 'ReplayMeta':
+  def from_metadata(
+    cls,
+    metadata: dict,
+    ratings: tp.Optional[RatingFn] = None,
+  ) -> tp.Self:
     raw = metadata['raw']
     return cls(
-        p0=PlayerMeta.from_metadata(metadata['players'][0], raw),
-        p1=PlayerMeta.from_metadata(metadata['players'][1], raw),
+        p0=PlayerMeta.from_metadata(metadata['players'][0], raw, ratings),
+        p1=PlayerMeta.from_metadata(metadata['players'][1], raw, ratings),
         stage=metadata['stage'],
         slp_md5=metadata['slp_md5'],
         zlib=metadata['compression'] == 'zlib',
@@ -181,6 +209,7 @@ class ChunkMeta(NamedTuple):
 class Batch(NamedTuple, tp.Generic[S]):
   game: Game[S]
   name: Int32Array[S]
+  rating: FloatArray[S]
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
 
@@ -199,13 +228,19 @@ NONE = 'none'
 # Within a dataset archive
 GAMES_DIR = 'games'
 META_PATH = 'meta.json'
+RATINGS_PATH = 'ratings.json'
 
 @dataclasses.dataclass
 class DatasetConfig:
   data_dir: Optional[str] = None  # required
   meta_path: Optional[str] = None
+  ratings_path: Optional[str] = None
   archive: Optional[str] = None
   dataset_path: Optional[str] = None
+
+  with_ratings: bool = False
+  missing_rating_value: tp.Optional[float] = None
+  rating_stddev: float = 50
 
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
@@ -229,6 +264,7 @@ class DatasetConfig:
     return [
         'allowed_characters', 'allowed_opponents', 'swap',
         'allowed_names', 'banned_names', 'filter_opponent_name',
+        'with_ratings', 'missing_rating_value', 'rating_stddev',
     ]
 
   def copy_characteristics_from(self, other: tp.Self):
@@ -241,6 +277,7 @@ class DatasetConfig:
         logging.warning("dataset_path specified, ignoring data_dir, meta_path, and archive.")
       self.data_dir = self.dataset_path.rstrip('/') + '/' + GAMES_DIR
       self.meta_path = self.dataset_path.rstrip('/') + '/' + META_PATH
+      self.ratings_path = self.dataset_path.rstrip('/') + '/' + RATINGS_PATH
     elif self.archive is not None:
       if not self.archive.endswith('.zip'):
         raise ValueError(f"Archive must be a .zip file, got: {self.archive}")
@@ -256,22 +293,53 @@ class DatasetConfig:
       if self.meta_path is None:
         raise ValueError("Missing meta_path.")
 
+    if self.with_ratings and self.ratings_path is None:
+      raise ValueError("Missing ratings_path.")
+
+  def load_ratings(self) -> tp.Optional[dict[str, float]]:
+    if self.ratings_path is None:
+      return None
+
+    if is_remote(self.ratings_path):
+      return json.loads(FsspecFile(self.ratings_path).read().decode('utf-8'))
+    else:
+      with open(self.ratings_path) as f:
+        return json.load(f)
+
+  def get_ratings_fn(self) -> RatingFn:
+    ratings = self.load_ratings()
+    ratings = ratings or {}
+    ratings.update(nametags.FIXED_RATINGS)
+
+    rng = random.Random(self.seed)
+
+    def ratings_fn(name: str) -> tp.Optional[float]:
+      rating = ratings.get(name)
+      if rating is None:
+        if self.missing_rating_value is None:
+          return None
+        rating = self.missing_rating_value
+
+      if self.rating_stddev > 0:
+        rating = rng.gauss(rating, self.rating_stddev)
+
+      return rating
+
+    return ratings_fn
+
   def read_meta(self) -> list[dict[str, Any]]:
-    if self.dataset_path is not None:
-      meta_uri = self.dataset_path.rstrip('/') + '/' + META_PATH
-      if is_remote(self.dataset_path):
-        return json.loads(FsspecFile(meta_uri).read().decode('utf-8'))
+    if self.meta_path is not None:
+      if is_remote(self.meta_path):
+        return json.loads(FsspecFile(self.meta_path).read().decode('utf-8'))
       else:
-        with open(meta_uri) as f:
+        with open(self.meta_path) as f:
           return json.load(f)
 
     if self.archive is not None:
       meta_file = file_utils.ZipFile(self.archive, META_PATH)
       return json.loads(meta_file.read().decode('utf-8'))
 
-    assert self.meta_path is not None
-    with open(self.meta_path) as f:
-      return json.load(f)
+    raise ValueError("Missing meta_path.")
 
   def get_replay(self, slp_md5: str) -> str | file_utils.LocalFile:
     if self.dataset_path is not None:
@@ -331,8 +399,15 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
 
   banned_counts = collections.Counter()
 
+  ratings_fn = config.get_ratings_fn()
+  if config.with_ratings and ratings_fn is None:
+    raise ValueError("Missing ratings.")
+
+  missing_ratings = collections.Counter()
+  num_without_ratings = 0
+
   for row in tqdm.tqdm(meta_rows, desc="Loading Replay Metadata"):
-    replay_meta = ReplayMeta.from_metadata(row)
+    replay_meta = ReplayMeta.from_metadata(row, ratings_fn)
 
     if not config.swap:
       is_banned = False
@@ -347,6 +422,18 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
       if (replay_meta.p0.character not in allowed_characters
           or replay_meta.p1.character not in allowed_opponents):
         continue
+
+      if config.with_ratings:
+        drop = False
+        for player in [replay_meta.p0, replay_meta.p1]:
+          if not player.has_rating:
+            missing_ratings[player.name] += 1
+            drop = True
+            break
+
+        if drop:
+          num_without_ratings += 1
+          continue
 
       replay_path = config.get_replay(replay_meta.slp_md5)
       replays.append(ReplayInfo.init(replay_path, False, replay_meta))
@@ -371,11 +458,20 @@ def replays_from_meta(config: DatasetConfig) -> List[ReplayInfo]:
         banned_counts[p1.name] += 1
         continue
 
+      if config.with_ratings and not p0.has_rating:
+        missing_ratings[p0.name] += 1
+        num_without_ratings += 1
+        continue
+
       replay_path = config.get_replay(replay_meta.slp_md5)
       replays.append(ReplayInfo.init(replay_path, swap, replay_meta))
 
   if banned_counts:
     print('Banned names:', banned_counts)
+
+  if missing_ratings:
+    print('Missing ratings:', missing_ratings.most_common(10))
+    print(f'{num_without_ratings} ({num_without_ratings / len(replays) * 100:.1f}%) replays without ratings')
 
   return replays
 
@@ -569,6 +665,9 @@ class TrajectoryManager:
     self.info = info
     # self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
     self.name_code = self.encode_name(info.main_player.name)
+
+    self.name_chunk = np.full([self.unroll_length], self.name_code, np.int32)
+    self.rating_chunk = np.full([self.unroll_length], self.info.main_player.rating, np.float32)
     self.needs_game = False
 
   def grab_chunk(self) -> tuple[list[np.ndarray], ChunkMeta]:
@@ -589,12 +688,16 @@ class TrajectoryManager:
 
     # Rewards could be deferred to the learner.
     rewards = self.reward[start:end - 1]
-    name = np.full([self.unroll_length], self.name_code, np.int32)
     is_resetting = np.full([self.unroll_length], False)
     is_resetting[0] = needs_reset
 
     flat_batch = flat_game
-    flat_batch.extend([name, is_resetting, rewards])
+    flat_batch.extend([
+        self.name_chunk,
+        self.rating_chunk,
+        is_resetting,
+        rewards,
+    ])
 
     meta = ChunkMeta(start=start, end=end, meta=self.info.meta)
 
@@ -970,6 +1073,7 @@ class TimeBatchedDataSource(AbstractDataSource):
         batch=Batch(
             game=utils.cached_map_nt(Game)(slice, batch.game),
             name=slice(batch.name),
+            rating=slice(batch.rating),
             is_resetting=slice(batch.is_resetting),
             reward=batch.reward[:, start:end - 1],
         ),

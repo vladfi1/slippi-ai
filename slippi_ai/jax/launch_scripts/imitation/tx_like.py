@@ -60,6 +60,7 @@ def default_config():
   config.dataset.mirror = False
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
+  config.dataset.dataset_path = os.environ.get("DATASET_PATH")
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.data.wds.cache_dir = './wds-cache'

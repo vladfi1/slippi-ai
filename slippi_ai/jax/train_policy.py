@@ -99,6 +99,7 @@ class TrainManager:
         state=batch.game,
         action=batch.game.p0.controller,
         name=batch.name,
+        rating=batch.rating,
     )
     state_action = self._encode_state_action(state_action)
 
@@ -290,6 +291,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   # Randomize windows to improve data diversity across epochs.
   config.data.random_offset = config.observation.frame_skip.skip
+  config.dataset.with_ratings = config.embed.with_rating
 
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 

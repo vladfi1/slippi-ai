@@ -251,19 +251,22 @@ class InvalidGameError(Exception):
 
 Action = TypeVar('Action')
 
-NAME_DTYPE = np.int32
+type NAME_DTYPE = np.int32
 
 class StateAction(NamedTuple, Generic[S, Action]):
   state: Game[S]
   # The action could actually be an "encoded" action type,
   # which might discretize certain components of the controller
-  # such as the sticks and shoulder. Unfortunately NamedTuples can't be
-  # generic. We could use a dataclass instead, but TF can't trace them.
+  # such as the sticks and shoulder.
   # Note that this is the action taken on the _previous_ frame.
   action: Action
 
-  # Encoded name
+  # Extras; these should probably go in a dictionary.
+
+  # Encoded name. TODO: make this an Optional too?
   name: np.ndarray[S, np.dtype[NAME_DTYPE]]
+
+  rating: FloatArray[S]  # will be zeros if not present
 
 class Frames(NamedTuple, Generic[S, Action]):
   state_action: StateAction[S, Action]

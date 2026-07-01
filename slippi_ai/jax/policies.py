@@ -135,6 +135,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
             action=jax.tree.map(
                 lambda t: t[self._delay:], state_action.action),
             name=state_action.name[self._delay:],
+            rating=state_action.rating[self._delay:],
         ),
         is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.

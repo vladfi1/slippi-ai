@@ -754,6 +754,7 @@ class Embeddings(tp.NamedTuple, tp.Generic[Action]):
         embed_game=embed_game,
         embed_action=embed_action,
         num_names=num_names,
+        with_rating=config.with_rating,
     )
     return cls(
         config=config,
@@ -1230,7 +1231,11 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
         items_embed = item_embed.reshape(*item_embed.shape[:-2], -1)
       parts.append(items_embed)
 
-    parts.append(tp.cast(Array, default_state_action_embed.name))
+    if isinstance(default_state_action_embed.name, jax.Array):
+      parts.append(default_state_action_embed.name)
+
+    if isinstance(default_state_action_embed.rating, jax.Array):
+      parts.append(default_state_action_embed.rating)
 
     if self._use_controller_rnn:
       parts.append(self._controller_rnn(state_action.action))

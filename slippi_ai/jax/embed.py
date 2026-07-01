@@ -48,7 +48,7 @@ class Embedding(Generic[In, Out], abc.ABC):
 
   def from_state(self, state: In) -> Out:
     """Encodes a parsed state."""
-    return self.dtype(state)
+    return np.astype(state, self.dtype)
 
   @abc.abstractmethod
   def __call__(self, x: Out) -> Array:
@@ -379,6 +379,20 @@ def ordered_struct_embedding(
       getter=getattr,
   )
 
+def _get_dict_value(d: dict[str, Any], k: str) -> Any:
+  return d[k]
+
+def make_dict_embedding(
+    name: str,
+    embedding: Sequence[Tuple[str, Embedding]],
+) -> StructEmbedding[dict[str, Any]]:
+  return StructEmbedding(
+      name=name,
+      embedding=embedding,
+      builder=dict,
+      getter=_get_dict_value,
+  )
+
 # NOTE: embedding dtypes need to match parse_libmelee.py so that dummy()
 # returns the same types as dolphin; this is necessary for arg packing to work.
 # TODO: Both should match the types in types.py and this should be automated.
@@ -682,6 +696,7 @@ class EmbedConfig(tp.Generic[Action]):
   with_randall: bool = True
   with_fod: bool = True
   items: ItemsConfig = utils.field(ItemsConfig)
+  with_rating: bool = False
 
   def make_item_embedding(self):
     return make_item_embedding(xy_scale=self.player.xy_scale)
@@ -741,21 +756,29 @@ class EmbedConfig(tp.Generic[Action]):
         embed_game=self.make_game_embedding(),
         embed_action=self.make_controller_embedding(),
         num_names=num_names,
+        with_rating=self.with_rating,
     )
 
 NAME_DTYPE = np.int32
 
+embed_rating = FloatEmbedding("rating", scale=1e-3)
+
 def get_state_action_embedding(
-  embed_game: Embedding[Game, Any],
-  embed_action: Embedding[Controller, Action],
-  num_names: int,
+    embed_game: Embedding[Game, Any],
+    embed_action: Embedding[Controller, Action],
+    num_names: int,
+    with_rating: bool = False,
 ) -> Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]:
-  embedding = StateAction(
-      state=embed_game,
-      action=embed_action,
-      name=OneHotEmbedding(
-          'name', num_names,
-          dtype=NAME_DTYPE,
-          one_hot_policy=OneHotPolicy.EMPTY),
-  )
-  return struct_embedding_from_nt("state_action", embedding)
+  embedders = [
+      ('state', embed_game),
+      ('action', embed_action),
+  ]
+  if num_names > 0:
+    embedders.append(('name', OneHotEmbedding(
+        'name', num_names,
+        dtype=NAME_DTYPE,
+        one_hot_policy=OneHotPolicy.EMPTY),
+    ))
+  if with_rating:
+    embedders.append(('rating', embed_rating))
+  return ordered_struct_embedding("state_action", embedders, StateAction)

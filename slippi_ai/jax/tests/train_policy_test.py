@@ -21,9 +21,7 @@ network_config['tx_like'].update(
 
 DEFAULT_CONFIG = train_policy.Config(
     dataset=data_lib.DatasetConfig(
-        data_dir=str(paths.TOY_DATA_DIR),
-        meta_path=str(paths.TOY_META_PATH),
-        test_ratio=0.5,
+        dataset_path=str(paths.TOY_DATASET),
     ),
     data=data_lib.DataConfig(
         balance_characters=True,

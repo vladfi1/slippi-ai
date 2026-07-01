@@ -195,3 +195,11 @@ def name_map_from_counts(name_counts: collections.Counter, max_names: int) -> di
 
 for name, _ in PLAYER_MAINS:
   assert name in KNOWN_PLAYERS, name
+
+FIXED_RATINGS = {
+    # Names from Fizzi's ranked dumps
+    # See https://discord.com/channels/328261477372919811/417153423918497793/1395499979061334077
+    'Platinum Player': 1750,
+    'Diamond Player': 2000,
+    'Master Player': 2150,
+}
