@@ -24,12 +24,18 @@ def default_config():
   config.policy.delay = 21
   config.data.batch_size=512
   config.data.unroll_length=84
-  config.data.damage_ratio=0.01
   config.data.num_workers=1
   config.data.unroll_chunks=4
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
+
+  # Match RL reward config
   config.learner.reward_halflife=4
+  config.reward.damage_ratio = 0.01
+  config.reward.ledge_grab_penalty = 0.02
+  config.reward.stalling_penalty = 0.1
+  config.reward.stalling_threshold = 50
+  config.reward.approaching_factor = 1e-3
   config.learner.bf16 = True
   config.embed.controller.type = 'custom_v1'
   config.embed.controller.default.axis_spacing=32

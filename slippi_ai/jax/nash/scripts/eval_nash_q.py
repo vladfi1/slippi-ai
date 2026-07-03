@@ -24,9 +24,15 @@ def default_config():
 
   config.data.batch_size = 256
   config.data.unroll_length = 84
-  config.data.damage_ratio = 0.01
   config.data.num_workers = 1
   config.data.unroll_chunks = 4
+
+  # Match Nash RL reward config
+  config.reward.damage_ratio = 0.01
+  config.reward.ledge_grab_penalty = 0.02
+  config.reward.stalling_penalty = 0.1
+  config.reward.stalling_threshold = 50
+  config.reward.approaching_factor = 1e-3
 
   config.learner.num_samples = 3
   config.learner.sample_policy_dtype = DType.FP16
