@@ -751,7 +751,7 @@ class WebDataSource(AbstractDataSource):
       unroll_length: int,
       extra_frames: int = 1,
       random_offset: int = 0,
-      damage_ratio: float = 0.01,
+      reward_kwargs: dict = {},
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
       num_workers: int = 0,
@@ -856,7 +856,7 @@ class WebDataSource(AbstractDataSource):
             overlap=extra_frames,
             random_offset=random_offset,
             observation_filter=build_observation_filter(),
-            reward_kwargs=dict(damage_ratio=damage_ratio),
+            reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
         ) for _ in range(batch_size)
     ]
@@ -890,7 +890,7 @@ class DataSource(AbstractDataSource):
       unroll_length: int = 64,
       extra_frames: int = 1,
       random_offset: int = 0,
-      damage_ratio: float = 0.01,
+      reward_kwargs: dict = {},
       balance_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
@@ -901,7 +901,7 @@ class DataSource(AbstractDataSource):
     self._batch_size = batch_size
     self.unroll_length = unroll_length
     self.chunk_size = unroll_length + extra_frames
-    self.damage_ratio = damage_ratio
+    self.reward_kwargs = reward_kwargs
 
     self.balance_characters = balance_characters
 
@@ -933,7 +933,7 @@ class DataSource(AbstractDataSource):
             overlap=extra_frames,
             random_offset=random_offset,
             observation_filter=build_observation_filter(),
-            reward_kwargs=dict(damage_ratio=damage_ratio),
+            reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
         ) for _ in range(batch_size)
     ]
@@ -1064,7 +1064,6 @@ class CachedDataSource(AbstractDataSource):
 class DataConfig:
   batch_size: int = 32
   unroll_length: int = 64
-  damage_ratio: float = 0.01
   num_workers: int = 0
   buffer: int = 16  # DataSourceMP buffer size
   balance_characters: bool = False
