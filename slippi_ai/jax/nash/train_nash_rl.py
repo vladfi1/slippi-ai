@@ -188,7 +188,10 @@ class LearnerManager(tp.Generic[Action]):
     rewards = reward_lib.compute_rewards(
         trajectory.states,
         **dataclasses.asdict(self._config.reward))
-    rewards = rewards.reshape((-1, self.frame_skip, self.batch_size, 2)).sum(axis=1)
+    rewards = rewards.reshape((-1, self.frame_skip, self.batch_size, 2))
+    discounts = self._learner.discount ** np.arange(self.frame_skip)
+
+    rewards = np.sum(rewards * np.expand_dims(discounts, axis=[1, 2]), axis=1)
 
     fs_trajectory = FrameSkipTrajectory(
         states=state,

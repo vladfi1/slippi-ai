@@ -151,7 +151,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     self._controller_embedding = self.policy.controller_head.controller_embedding
 
-    self.discount = rl_lib.discount_from_halflife(
+    # within-frame discount
+    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    # across-frame discount
+    self.fs_discount = rl_lib.discount_from_halflife(
       config.reward_halflife, frame_skip=q_function.frame_skip)
 
     learning_rate = config.learning_rate
@@ -453,7 +456,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
   ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
 
     q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
-        frames, initial_states, self.discount, lambda_=lambda_)
+        frames, initial_states, self.fs_discount, lambda_=lambda_)
 
     actions = policy_samples
     if self.config.include_action_taken_in_samples:
