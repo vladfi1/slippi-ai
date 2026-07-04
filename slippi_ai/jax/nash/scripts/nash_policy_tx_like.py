@@ -10,10 +10,10 @@ from absl import app, flags
 import wandb
 import fancyflags as ff
 
-import melee
 from slippi_ai import flag_utils, paths
 from slippi_ai.jax import saving, train_lib
 from slippi_ai.jax.nash import train_nash_policy
+from slippi_ai.jax.agents import DType
 
 NET_NAME = 'tx_like'
 
@@ -34,6 +34,9 @@ def default_config():
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
   config.runtime.num_evals_per_epoch = 8
+
+  config.learner.sample_policy_dtype = DType.FP16
+  config.learner.nash_policy_dtype = DType.BF16
 
   return config
 
