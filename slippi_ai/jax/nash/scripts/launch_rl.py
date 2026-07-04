@@ -84,6 +84,8 @@ if __name__ == '__main__':
 
   KLW = flags.DEFINE_float('klw', 0, 'Weight on KL teacher loss')
 
+  TAG_SUFFIX = flags.DEFINE_string('tag_suffix', None, 'Suffix to add to the tag')
+
   WANDB_FLAG = ff.DEFINE_dict(
       'wandb',
       project=ff.String('slippi-ai'),
@@ -132,25 +134,31 @@ if __name__ == '__main__':
     config.learner.reverse_kl_teacher_weight = klw
 
     if config.runtime.tag is None:
+      parts = ['nrl', char_str, f'd{delay}']
+
+      if klw > 0:
+        parts.append(f'klw{klw:.0e}')
+
       fs = imitation_config.policy.frame_skip
       ns = config.learner.num_samples
       if config.learner.include_action_taken_in_samples:
         ns += 1
 
-      if klw > 0:
-        klw_str = f"_klw{klw:.0e}"
-      else:
-        klw_str = ""
+      parts.append(f'rfs{fs}')
+      parts.append(f'ns{ns}')
+
+      if config.learner.subsample:
+        parts.append(f'sub{config.learner.subsample}')
 
       ep = config.learner.epoch_length
+      parts.append(f'ep{ep}')
+      if config.learner.weight_by_advantage:
+        parts.append('wba')
 
-      sub = ""
-      if config.learner.subsample:
-        sub = f"_sub{config.learner.subsample}"
+      if TAG_SUFFIX.value is not None:
+        parts.append(TAG_SUFFIX.value)
 
-      wba = f"_wba" if config.learner.weight_by_advantage else ""
-
-      config.runtime.tag = f"nrl_{char_str}_d{delay}{klw_str}_rfs{fs}_ns{ns}{sub}_ep{ep}{wba}"
+      config.runtime.tag = '_'.join(parts)
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
