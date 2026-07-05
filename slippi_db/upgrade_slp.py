@@ -555,10 +555,12 @@ def _monitor_results(
 
     pbar.update(1)
 
+    success_rate = successful_conversions / non_skipped if non_skipped > 0 else 1
+
+    pbar.set_postfix({'success_rate': f'{success_rate:.2%}'})
+
     if time.time() - last_log_time > log_interval:
       last_log_time = time.time()
-      success_rate = successful_conversions / non_skipped if non_skipped > 0 else 1
-      logging.info(f'Success rate: {success_rate:.2%}')
       if last_error is not None:
         logging.error(f'Last error: {last_error}')
         last_error = None
@@ -694,7 +696,6 @@ def upgrade_archive(
     raise MemoryError(f'Not enough free space to write output archive: {total_size / (2 ** 30):.2f} GB required, {output_space / (2 ** 30):.2f} GB available')
 
   if dry_run:
-    logging.info('Dry run complete, not processing files')
     return []
 
   if in_memory:
@@ -1143,7 +1144,6 @@ def update_slp_metadata_in_archive(
     return []
 
   if dry_run:
-    print('Dry run mode, not modifying files')
     return []
 
   tmpdir = utils.get_tmp_dir(in_memory=True)
