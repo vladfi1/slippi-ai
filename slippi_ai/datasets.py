@@ -137,6 +137,17 @@ class MapIter[T, U](Dataset[U]):
   def stop(self):
     self.dataset.stop()
 
+class _WorkerError:
+  """Wraps an exception raised by map_fn so it can cross the process boundary.
+
+  Without this, a worker that raises simply dies after dequeuing an item but
+  before ever responding on its output queue, and the consumer's next() call
+  for that item blocks forever.
+  """
+
+  def __init__(self, exc: BaseException):
+    self.exc = exc
+
 def _mp_map_worker[T, U](
     map_fn: tp.Callable[[T], U],
     input_queue: mp.Queue,
@@ -154,7 +165,10 @@ def _mp_map_worker[T, U](
           if stop_event.is_set():
             return
 
-      result = map_fn(item)
+      try:
+        result = map_fn(item)
+      except Exception as e:
+        result = _WorkerError(e)
 
       while True:
         try:
@@ -201,18 +215,25 @@ class MPMap[T, U](Dataset[U]):
 
     self._iterator = self._iter()
 
+  def _get(self, output_queue: mp.Queue) -> U:
+    result = output_queue.get()
+    if isinstance(result, _WorkerError):
+      raise result.exc
+    return result
+
   def _iter(self) -> tp.Iterator[U]:
     queue_iter = itertools.cycle(self.queues)
 
     for item in self.dataset:
       input_queue, output_queue = next(queue_iter)
       input_queue.put(item)
-      yield output_queue.get()
+      yield self._get(output_queue)
 
     # Drain remaining items from output queues
     for _ in range(self.buffer_size):
-      for _, output_queue in queue_iter:
-        yield output_queue.get()
+      for _ in range(len(self.queues)):
+        _, output_queue = next(queue_iter)
+        yield self._get(output_queue)
 
   def __next__(self) -> U:
     return next(self._iterator)
@@ -311,7 +332,9 @@ class ZipDataset[T](Dataset[tuple[T, ...]]):
     self.datasets = datasets
 
   def __next__(self) -> tuple[T, ...]:
-    return tuple(next(dataset) for dataset in self.datasets)
+    # A generator expression here would let PEP 479 turn a StopIteration
+    # from an exhausted child dataset into a RuntimeError instead.
+    return tuple([next(dataset) for dataset in self.datasets])
 
   def stop(self):
     for dataset in self.datasets:
