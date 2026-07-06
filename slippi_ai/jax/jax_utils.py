@@ -1537,14 +1537,14 @@ def shard_map_loss_fn_with_rngs(
         state: State,
         rngs: nnx.Rngs,
         *inputs: P.args,
-        **kwargs: P.kwargs,
+        # No kwargs because shard_map doesn't support them
     ) -> tuple[AuxT, State, *Outputs]:
       map_update(lambda x: x[0], rngs)  # go from [1] to []
       loss_and_outputs = loss_fn(module, data, state, rngs, *inputs, **kwargs)
       map_update(lambda x: x[None], rngs)  # go back to [1] for shard_map
       return loss_and_outputs[1:]
 
-    return sharded_loss_fn(module, data, state, rngs, *args, **kwargs)
+    return sharded_loss_fn(module, data, state, rngs, *args)
 
   return cached_partial(loss_fn_wrapper, module, rngs)
 
