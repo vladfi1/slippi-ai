@@ -35,6 +35,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       delay: int,
       mesh: jax.sharding.Mesh,
       data_sharding: jax.sharding.NamedSharding,
+      rngs: tp.Optional[nnx.Rngs] = None,
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
   ):
@@ -60,16 +61,21 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         smap_optimizer=smap_optimizer,
     )
 
-    self.train_q_function = jax_utils.data_parallel_train(
+    if rngs is None:
+      rngs = nnx.Rngs(0)
+
+    self.train_q_function = jax_utils.data_parallel_train_with_rngs(
         module=self.q_function,
         optimizer=self.q_function_optimizer,
+        rngs=rngs.fork(),
         loss_fn=self._unroll_q_function,
         **sharding_kwargs,
         static_argnames=['unroll_batch_size'],
     )
 
-    self.run_q_function = jax_utils.shard_map_loss_fn(
+    self.run_q_function = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.q_function,
+        rngs=rngs.fork(),
         loss_fn=self._unroll_q_function,
         mesh=mesh,
         static_argnames=['unroll_batch_size'],
@@ -109,6 +115,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       q_function: q_lib.QFunction[embed.Action],
       bm_frames: Frames[Rank2, embed.Action],  # [B, T]
       initial_state: RecurrentState,  # [B]
+      rngs: nnx.Rngs,
       *,
       unroll_batch_size: tp.Optional[int] = None,
       lambda_: float = 1.0,
@@ -121,7 +128,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     q_outputs, final_state = q_function.loss_batched(
         frames, initial_state, self.fs_discount, unroll_batch_size,
-        lambda_=lambda_)
+        lambda_=lambda_, rngs=rngs)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
     bm_metrics = jax.tree.map(jax_utils.swap_axes, q_outputs.metrics)

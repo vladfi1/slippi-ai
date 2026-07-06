@@ -8,6 +8,7 @@ import fancyflags as ff
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
 from slippi_ai.jax import networks, embed as embed_lib
+from slippi_ai.jax import epinet as epinet_lib
 from slippi_ai.jax.q import train_q_fn
 from slippi_ai.jax.q import q_function as q_lib
 
@@ -48,6 +49,12 @@ DEFAULT_CONFIG = train_q_fn.Config(
         head=q_lib.HeadConfig(
             num_layers=1,
             hidden_size=1,
+            epinet=epinet_lib.EpinetConfig(
+                enabled=True,
+                index_dim=2,
+                num_layers=1,
+                hidden_size=2,
+            ),
         ),
     ),
     test_unroll_multiplier=2,
