@@ -18,6 +18,8 @@ from slippi_ai import nametags
 ROOT = flags.DEFINE_string('root', None, 'root directory', required=True)
 WINNER_ONLY = flags.DEFINE_boolean(
   'winner_only', True, 'only keep games that have a winner')
+ONLY_KNOWN_PLAYERS = flags.DEFINE_boolean(
+  'only_known_players', True, 'only keep games that have known players')
 
 MAKE_TAR = flags.DEFINE_boolean('tar', False, 'Create dataset tar archive')
 
@@ -32,7 +34,11 @@ def total_damage(row: dict) -> Optional[int]:
     total += damage
   return total
 
-def check_replay(row: dict, winner_only: bool = True) -> Optional[str]:
+def check_replay(
+    row: dict,
+    winner_only: bool = True,
+    only_known_players: bool = True,
+) -> Optional[str]:
   if not row['valid']:
     return 'invalid'
 
@@ -45,11 +51,12 @@ def check_replay(row: dict, winner_only: bool = True) -> Optional[str]:
       return 'vs weak phillip'
 
     # Only train on replays vs good players.
-    for player in row['players']:
-      # One of the players is always `Phillip AI` who is "known".
-      name = nametags.name_from_metadata(player)
-      if not nametags.is_known_player(name):
-        return 'unknown player vs phillip'
+    if only_known_players:
+      for player in row['players']:
+        # One of the players is always `Phillip AI` who is "known".
+        name = nametags.name_from_metadata(player)
+        if not nametags.is_known_player(name):
+          return 'unknown player vs phillip'
 
   damage = total_damage(row)
   if damage is not None:
@@ -70,7 +77,11 @@ def main(_):
   valid = []
 
   for row in tqdm.tqdm(rows, smoothing=0, unit='slp'):
-    reason = check_replay(row, winner_only=WINNER_ONLY.value)
+    reason = check_replay(
+        row,
+        winner_only=WINNER_ONLY.value,
+        only_known_players=ONLY_KNOWN_PLAYERS.value,
+    )
     if reason is not None:
       reasons[reason] += 1
       continue
