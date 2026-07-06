@@ -200,6 +200,43 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         batch_size=batch_size,
     )
 
+  def multi_index_q_values_from_action_state(
+      self,
+      values: jax.Array,  # [T, B]
+      action_init_state: networks.RecurrentState,  # [T, B, H]
+      actions: list[Action],  # frame_skip x [S, T, B]
+      zs: jax.Array,  # [N, B, D_Z]
+      batch_size: int = 0,  # 0 is equivalent to vmap
+  ) -> jax.Array:  # [N, S, T, B]
+    """Like multi_q_values_from_action_state, but with multiple epistemic indices.
+
+    The action_net is unrolled once per action sample; only the q-head is
+    evaluated once per epistemic index.
+    """
+    embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, E]
+    action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, E]
+
+    multi_index_head = nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, None, 0))
+
+    def process_one_sample(
+        q_function: QFunction[Action],
+        embedded_fs: jax.Array,  # [FS, T, B, E]
+    ) -> jax.Array:
+      reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
+      outputs, _ = q_function.action_net.unroll(
+          embedded_fs, reset, action_init_state)
+      return multi_index_head(q_function, outputs[-1], values, zs)  # [N, T, B]
+
+    process_all_samples = jax_utils.lax_map_fn(
+        process_one_sample,
+        microbatch_size=batch_size,
+        input_batch_dims=(None, 0),
+    )
+
+    q_values = process_all_samples(self, action_inputs)  # [S, N, T, B]
+    return jnp.swapaxes(q_values, 0, 1)
+
   def unroll(
       self,
       state_action: data.StateAction[Rank2, Action],  # [T, B]
