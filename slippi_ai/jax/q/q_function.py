@@ -264,15 +264,11 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
     # Epistemic indices are sampled once per batch element and shared across
     # the whole unroll, including the bootstrap value, so that each index
-    # regresses to its own self-consistent targets. Index 0 is pinned to z=0,
-    # which recovers the base heads exactly; its loss is not trained on and is
-    # reported under the 'z0' metrics.
+    # regresses to its own self-consistent targets.
     zs = None
     if rngs is not None:
       zs = self.sample_index(
           rngs, (num_index_samples, frames.reward.shape[1]))
-      if zs is not None:
-        zs = jnp.concatenate([jnp.zeros_like(zs[:1]), zs], axis=0)
 
     time_axis = 0 if zs is None else 1
 
@@ -286,7 +282,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     unroll_outputs, final_state = scan_fn(
         self, state_action, is_resetting, next_actions, initial_state, zs)
 
-    # Reshape outputs back to [T, B] (or [N + 1, T, B])
+    # Reshape outputs back to [T, B] (or [N, T, B])
     def to_unbatched(x: jax.Array) -> jax.Array:
       assert x.shape[time_axis] == num_batches
       assert x.shape[time_axis + 1] == batch_size
@@ -308,7 +304,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     else:
       last_value = nnx.vmap(
           QFunction._values_from_outputs, in_axes=(None, None, 0),
-      )(self, last_output, zs)  # [N + 1, B]
+      )(self, last_output, zs)  # [N, B]
       get_outputs = nnx.vmap(
           QFunction[Action]._get_outputs,
           in_axes=(None, None, 0, 0, 0, None, None))
@@ -318,17 +314,18 @@ class QFunction(nnx.Module, tp.Generic[Action]):
           self, frames, values, q_values, last_value, discount, lambda_)
       if zs is None:
         return outputs
-      # The loss and metrics are averaged over the sampled indices. The
-      # returns/advantages/values/q_values are those of the base (z=0) heads.
+      # The loss and metrics are averaged over the sampled indices, while the
+      # mean prediction over indices is evaluated as an ensemble; its metrics
+      # (not trained on) are reported under 'ensemble'. The returned
+      # returns/advantages/values/q_values are the ensemble's.
+      ensemble_outputs = self._get_outputs(
+          frames, jnp.mean(values, axis=0), jnp.mean(q_values, axis=0),
+          jnp.mean(last_value, axis=0), discount, lambda_)
       metrics = jax.tree.map(
-          lambda x: jnp.mean(x[1:], axis=0), outputs.metrics)
-      metrics['z0'] = jax.tree.map(lambda x: x[0], outputs.metrics)
-      return QOutputs(
-          returns=outputs.returns[0],
-          advantages=outputs.advantages[0],
-          values=outputs.values[0],
-          q_values=outputs.q_values[0],
-          loss=jnp.mean(outputs.loss[1:], axis=0),
+          lambda x: jnp.mean(x, axis=0), outputs.metrics)
+      metrics['ensemble'] = ensemble_outputs.metrics
+      return ensemble_outputs._replace(
+          loss=jnp.mean(outputs.loss, axis=0),
           metrics=metrics,
       )
 
