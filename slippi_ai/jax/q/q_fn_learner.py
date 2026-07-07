@@ -21,6 +21,10 @@ class LearnerConfig:
 
   unroll_batch_size: tp.Optional[int] = None
 
+  # Number of epistemic indices per trajectory to train on when the
+  # q_function has an epinet.
+  num_index_samples: int = 1
+
 Loss = jax.Array
 Rank2 = tuple[int, int]
 
@@ -43,6 +47,8 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.q_function = q_function
     self.delay = delay
     assert delay == 0
+    if config.num_index_samples < 1:
+      raise ValueError('num_index_samples must be at least 1')
 
     learning_rate = config.learning_rate
     self.q_function_optimizer = nnx.Optimizer(
@@ -128,7 +134,8 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     q_outputs, final_state = q_function.loss_batched(
         frames, initial_state, self.fs_discount, unroll_batch_size,
-        lambda_=lambda_, rngs=rngs)
+        lambda_=lambda_, rngs=rngs,
+        num_index_samples=self.config.num_index_samples)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
     bm_metrics = jax.tree.map(jax_utils.swap_axes, q_outputs.metrics)

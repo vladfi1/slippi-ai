@@ -206,14 +206,32 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       is_resetting: jax.Array,  # [T, B]
       next_actions: list[Action],  # frame_skip x [T, B]
       initial_state: RecurrentState,  # [B]
-      z: tp.Optional[jax.Array] = None,  # [B, D_Z]
+      zs: tp.Optional[jax.Array] = None,  # [N, B, D_Z]
   ) -> tuple[UnrollOutputs, RecurrentState]:
+    """Outputs have shape [T, B], or [N, T, B] if epistemic indices are given."""
     core_outputs, final_state = self.core_net.unroll(
         state_action, is_resetting, initial_state)
-    values = self._values_from_outputs(core_outputs, z)
 
-    q_values = self.q_values_from_core_outputs(
-        values, core_outputs, next_actions, z)
+    if zs is None:
+      values = self._values_from_outputs(core_outputs)
+      q_values = self.q_values_from_core_outputs(
+          values, core_outputs, next_actions)
+      return UnrollOutputs(values=values, q_values=q_values), final_state
+
+    # The core_net and action_net don't depend on the epistemic index, so they
+    # are unrolled once; only the heads are evaluated per index.
+    values = nnx.vmap(
+        QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, core_outputs, zs)  # [N, T, B]
+
+    init_state = self._action_net_initial_state(core_outputs)
+    embedded = [self._embed_action(a) for a in next_actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, T, B, E]
+    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)
+    action_outputs, _ = self.action_net.unroll(stacked, reset, init_state)
+    q_values = nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0),
+    )(self, action_outputs[-1], values, zs)  # [N, T, B]
 
     return UnrollOutputs(values=values, q_values=q_values), final_state
 
@@ -226,6 +244,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       lambda_: float = 1.0,
       eval_lambdas: list[float] = [0],
       rngs: tp.Optional[nnx.Rngs] = None,  # for sampling epistemic indices
+      num_index_samples: int = 1,
   ) -> tp.Tuple[QOutputs, RecurrentState]:
     total_unroll_length = frames.reward.shape[0]  # T
     num_batches, r = divmod(total_unroll_length, batch_size)
@@ -243,26 +262,37 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         lambda x: to_batched(x[1:]),
         frames.state_action.action)
 
-    # A single epistemic index is shared across the whole unroll.
-    z = None
+    # Epistemic indices are sampled once per batch element and shared across
+    # the whole unroll, including the bootstrap value, so that each index
+    # regresses to its own self-consistent targets. Index 0 is pinned to z=0,
+    # which recovers the base heads exactly; its loss is not trained on and is
+    # reported under the 'z0' metrics.
+    zs = None
     if rngs is not None:
-      z = self.sample_index(rngs, (frames.reward.shape[1],))
+      zs = self.sample_index(
+          rngs, (num_index_samples, frames.reward.shape[1]))
+      if zs is not None:
+        zs = jnp.concatenate([jnp.zeros_like(zs[:1]), zs], axis=0)
+
+    time_axis = 0 if zs is None else 1
 
     # nnx will complain about trace levels if we use jax.lax.scan
     scan_fn = nnx.scan(
         nnx.remat(QFunction[Action].unroll),
         in_axes=(None, 0, 0, 0, nnx.Carry, None),
-        out_axes=(0, nnx.Carry),
+        out_axes=(time_axis, nnx.Carry),
     )
 
     unroll_outputs, final_state = scan_fn(
-        self, state_action, is_resetting, next_actions, initial_state, z)
+        self, state_action, is_resetting, next_actions, initial_state, zs)
 
-    # Reshape outputs back to [T, B]
+    # Reshape outputs back to [T, B] (or [N + 1, T, B])
     def to_unbatched(x: jax.Array) -> jax.Array:
-      assert x.shape[0] == num_batches
-      assert x.shape[1] == batch_size
-      return x.reshape((total_unroll_length,) + x.shape[2:])
+      assert x.shape[time_axis] == num_batches
+      assert x.shape[time_axis + 1] == batch_size
+      return x.reshape(
+          x.shape[:time_axis] + (total_unroll_length,)
+          + x.shape[time_axis + 2:])
 
     unroll_outputs = utils.map_nt(to_unbatched, unroll_outputs)
     values, q_values = unroll_outputs
@@ -272,26 +302,39 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     last_output, _ = self.core_net.step_with_reset(
         last_state_action, last_is_resetting, final_state)
 
-    last_value = self._values_from_outputs(last_output, z)
+    if zs is None:
+      last_value = self._values_from_outputs(last_output)
+      get_outputs = QFunction[Action]._get_outputs
+    else:
+      last_value = nnx.vmap(
+          QFunction._values_from_outputs, in_axes=(None, None, 0),
+      )(self, last_output, zs)  # [N + 1, B]
+      get_outputs = nnx.vmap(
+          QFunction[Action]._get_outputs,
+          in_axes=(None, None, 0, 0, 0, None, None))
 
-    outputs = self._get_outputs(
-        frames=frames,
-        values=values,
-        q_values=q_values,
-        last_value=last_value,
-        discount=discount,
-        lambda_=lambda_,
-    )
-
-    for eval_lambda in eval_lambdas:
-      eval_outputs = self._get_outputs(
-          frames=frames,
-          values=values,
-          q_values=q_values,
-          last_value=last_value,
-          discount=discount,
-          lambda_=eval_lambda,
+    def combined_outputs(lambda_: float) -> QOutputs:
+      outputs = get_outputs(
+          self, frames, values, q_values, last_value, discount, lambda_)
+      if zs is None:
+        return outputs
+      # The loss and metrics are averaged over the sampled indices. The
+      # returns/advantages/values/q_values are those of the base (z=0) heads.
+      metrics = jax.tree.map(
+          lambda x: jnp.mean(x[1:], axis=0), outputs.metrics)
+      metrics['z0'] = jax.tree.map(lambda x: x[0], outputs.metrics)
+      return QOutputs(
+          returns=outputs.returns[0],
+          advantages=outputs.advantages[0],
+          values=outputs.values[0],
+          q_values=outputs.q_values[0],
+          loss=jnp.mean(outputs.loss[1:], axis=0),
+          metrics=metrics,
       )
+
+    outputs = combined_outputs(lambda_)
+    for eval_lambda in eval_lambdas:
+      eval_outputs = combined_outputs(eval_lambda)
       outputs.metrics[f'lambda_{eval_lambda:.1f}'] = eval_outputs.metrics
 
     return outputs, final_state
