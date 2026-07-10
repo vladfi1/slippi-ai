@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS replays (
     is_teams INTEGER,
     num_players INTEGER,
     winner INTEGER,
+    is_frozen_ps INTEGER,
     valid INTEGER NOT NULL,
     is_training INTEGER,
     not_training_reason TEXT,
@@ -100,7 +101,8 @@ CREATE TABLE IF NOT EXISTS replays (
 PARSED_COLUMNS = [
     'name', 'raw', 'slp_md5', 'slp_size', 'start_at', 'played_on',
     'last_frame', 'slippi_version', 'stage', 'timer', 'is_teams',
-    'num_players', 'winner', 'valid', 'is_training', 'not_training_reason',
+    'num_players', 'winner', 'is_frozen_ps',
+    'valid', 'is_training', 'not_training_reason',
     'parse_error', 'pq_size', 'compression',
     'match_id', 'match_game', 'match_tiebreaker',
     'p0_port', 'p0_character', 'p0_type', 'p0_name_tag',
@@ -113,6 +115,14 @@ PARSED_INSERT_SQL = f"""
 INSERT OR REPLACE INTO replays ({', '.join(PARSED_COLUMNS)})
 VALUES ({', '.join('?' * len(PARSED_COLUMNS))})
 """
+
+
+def _migrate_parsed_schema(conn: sqlite3.Connection):
+  """Add columns missing from databases created before they were introduced."""
+  existing = {row[1] for row in conn.execute('PRAGMA table_info(replays)')}
+  for column, decl in [('is_frozen_ps', 'INTEGER')]:
+    if column not in existing:
+      conn.execute(f'ALTER TABLE replays ADD COLUMN {column} {decl}')
 
 
 def _format_version(version: tuple | list | None) -> str | None:
@@ -154,6 +164,7 @@ def result_to_tuple(row: dict) -> tuple:
     'is_teams': row.get('is_teams'),
     'num_players': row.get('num_players'),
     'winner': row.get('winner'),
+    'is_frozen_ps': row.get('is_frozen_ps'),
     'valid': row.get('valid'),
     'is_training': row.get('is_training'),
     'not_training_reason': row.get('not_training_reason'),
@@ -245,6 +256,8 @@ def sqlite_row_to_dict(row: dict) -> dict[str, Any]:
     result['num_players'] = row['num_players']
   if row.get('winner') is not None:
     result['winner'] = row['winner']
+  if row.get('is_frozen_ps') is not None:
+    result['is_frozen_ps'] = bool(row['is_frozen_ps'])
 
   if row.get('is_training') is not None:
     result['is_training'] = bool(row['is_training'])
@@ -607,6 +620,46 @@ def _query_missing_parsed(
   return by_archive
 
 
+# Slippi/peppi external stage id for Pokemon Stadium, as stored in the `stage`
+# column (start.stage). Note melee's *internal* id (Stage.POKEMON_STADIUM) differs.
+POKEMON_STADIUM_STAGE = 3
+
+
+def _query_missing_frozen_ps(parsed_db_path: str) -> dict[str, list[str]]:
+  """Query parsed.sqlite for Pokemon Stadium replays missing is_frozen_ps.
+
+  Returns {raw_archive: [base_name, ...]} for files to re-parse.
+  """
+  if not os.path.exists(parsed_db_path):
+    return {}
+
+  conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
+  # Databases created before is_frozen_ps was added lack the column entirely;
+  # in that case every Pokemon Stadium replay is missing it.
+  has_column = any(
+      row[1] == 'is_frozen_ps'
+      for row in conn.execute('PRAGMA table_info(replays)'))
+  missing_cond = 'AND is_frozen_ps IS NULL' if has_column else ''
+  cursor = conn.execute(f"""
+    SELECT name, raw FROM replays
+    WHERE valid = 1
+      AND stage = ?
+      {missing_cond}
+  """, (POKEMON_STADIUM_STAGE,))
+  rows = cursor.fetchall()
+  conn.close()
+
+  if not rows:
+    return {}
+
+  by_archive: dict[str, list[str]] = {}
+  for name, raw in rows:
+    base_name = name.removesuffix('.slp')
+    by_archive.setdefault(raw, []).append(base_name)
+
+  return by_archive
+
+
 def _query_missing_netplay(parsed_db_path: str) -> dict[str, list[str]]:
   """Query parsed.sqlite for valid replays missing netplay info.
 
@@ -648,6 +701,7 @@ def run_parsing(
     reprocess: bool = False,
     reparse_missing_netplay: bool = False,
     reparse_missing_parsed: bool = False,
+    reparse_missing_frozen_ps: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
     debug: bool = False,
@@ -715,6 +769,30 @@ def run_parsing(
             f"from {len(missing)} archives.")
     else:
       print("No files missing netplay info.")
+
+    for raw, base_names in missing.items():
+      raw_path = os.path.join(raw_dir, raw)
+      all_files = utils.traverse_slp_files_zip(raw_path)
+      if db_conn is not None:
+        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
+      need = set(base_names)
+      selected = [f for f in all_files if f.base_name in need]
+      slp_files.extend(selected)
+      raw_names.extend([raw] * len(selected))
+
+  # Re-parse Pokemon Stadium replays that don't yet have is_frozen_ps recorded.
+  if reparse_missing_frozen_ps:
+    parsed_db_path = os.path.join(root, 'parsed.sqlite')
+    missing = _query_missing_frozen_ps(parsed_db_path)
+    # Exclude archives we're already fully reprocessing.
+    to_process_set = set(to_process)
+    missing = {k: v for k, v in missing.items() if k not in to_process_set}
+    if missing:
+      total_files = sum(len(v) for v in missing.values())
+      print(f"Re-parsing {total_files} Pokemon Stadium files missing "
+            f"is_frozen_ps from {len(missing)} archives.")
+    else:
+      print("No Pokemon Stadium files missing is_frozen_ps.")
 
     for raw, base_names in missing.items():
       raw_path = os.path.join(raw_dir, raw)
@@ -798,6 +876,7 @@ def run_parsing(
   parsed_db_path = os.path.join(root, 'parsed.sqlite')
   parsed_conn = sqlite3.connect(parsed_db_path)
   parsed_conn.executescript(PARSED_SCHEMA)
+  _migrate_parsed_schema(parsed_conn)
 
   tuples = [result_to_tuple(r) for r in results]
   parsed_conn.executemany(PARSED_INSERT_SQL, tuples)
@@ -830,6 +909,9 @@ if __name__ == '__main__':
   REPARSE_MISSING_PARSED = flags.DEFINE_bool(
       'reparse_missing_parsed', False,
       'Re-parse training replays whose parquet file is missing from Parsed/.')
+  REPARSE_MISSING_FROZEN_PS = flags.DEFINE_bool(
+      'reparse_missing_frozen_ps', False,
+      'Re-parse Pokemon Stadium replays that are missing is_frozen_ps.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
   DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
@@ -846,6 +928,7 @@ if __name__ == '__main__':
         reprocess=REPROCESS.value,
         reparse_missing_netplay=REPARSE_MISSING_NETPLAY.value,
         reparse_missing_parsed=REPARSE_MISSING_PARSED.value,
+        reparse_missing_frozen_ps=REPARSE_MISSING_FROZEN_PS.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
         debug=DEBUG.value,

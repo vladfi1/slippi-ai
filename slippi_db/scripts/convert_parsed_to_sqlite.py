@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS replays (
     is_teams INTEGER,
     num_players INTEGER,
     winner INTEGER,
+    is_frozen_ps INTEGER,  -- Pokemon Stadium: 1=frozen, 0=unfrozen, NULL=n/a
 
     -- Filtering fields
     valid INTEGER NOT NULL,
@@ -77,7 +78,8 @@ CREATE INDEX IF NOT EXISTS idx_replays_valid ON replays(valid);
 COLUMNS = [
     'name', 'raw', 'slp_md5', 'slp_size', 'start_at', 'played_on',
     'last_frame', 'slippi_version', 'stage', 'timer', 'is_teams',
-    'num_players', 'winner', 'valid', 'is_training', 'not_training_reason',
+    'num_players', 'winner', 'is_frozen_ps',
+    'valid', 'is_training', 'not_training_reason',
     'parse_error', 'pq_size', 'compression',
     'match_id', 'match_game', 'match_tiebreaker',
     'p0_port', 'p0_character', 'p0_type', 'p0_name_tag',
@@ -132,6 +134,7 @@ def row_to_tuple(row: dict) -> tuple:
         'is_teams': row.get('is_teams'),
         'num_players': row.get('num_players'),
         'winner': row.get('winner'),
+        'is_frozen_ps': row.get('is_frozen_ps'),
         'valid': row.get('valid'),
         'is_training': row.get('is_training'),
         'not_training_reason': row.get('not_training_reason'),

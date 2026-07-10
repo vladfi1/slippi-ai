@@ -173,10 +173,10 @@ def is_online(game: peppi_py.game.Game) -> bool:
   # NOTE: This probably won't work properly for upgraded replays,
   # but that's ok because upgraded PS games will already have stage events.
 
-  if game.metadata:
-    players = game.metadata['players'].values()
-    player = next(iter(players))
-    return 'netplay' in player['names']
+  players = (game.metadata or {}).get('players', {})
+  player = next(iter(players.values()), None)
+  if player is not None:
+    return 'netplay' in (player.get('names') or {})
 
   if game.start.scene is not None:
     return game.start.scene.major == 8

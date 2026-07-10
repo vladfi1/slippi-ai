@@ -6,11 +6,12 @@ import typing
 import numpy as np
 import tree
 
-from melee import enums, Character
+from melee import enums, Character, Stage
 import peppi_py
 
 from slippi_db import parse_libmelee
 from slippi_db import parse_peppi
+from slippi_db import upgrade_slp
 from slippi_ai import types
 
 def assert_same_parse(game_path: str):
@@ -140,6 +141,59 @@ def get_dict(obj: object, *keys: str) -> dict:
     result[key] = getattr(obj, key)
   return result
 
+# Pokemon Stadium performs its first transformation around this frame. Games
+# that end earlier show no transformation events even when unfrozen, so we can't
+# conclude they are frozen. (Empirically, unfrozen games with events had length
+# >= ~3768 and the first "Initialize" event appeared around frame 3573.)
+_FIRST_PS_TRANSFORMATION_FRAME = 3600
+
+
+def _num_stadium_transformations(game: peppi_py.Game) -> int:
+  """Number of Pokemon Stadium transformation sub-events (0 if none/absent)."""
+  # The stadium_transformation frame column only exists for Slippi >= 3.18.
+  transformations = game.frames.stadium_transformation
+  if transformations is None:
+    return 0
+  return len(transformations.event.values)
+
+
+def is_frozen_ps(game: peppi_py.Game) -> Optional[bool]:
+  """Whether a Pokemon Stadium game had its transformations frozen.
+
+  Determined from the stage transformation events in the game itself, falling
+  back to the `is_frozen_ps` start flag and finally an online/offline heuristic
+  where those aren't conclusive. Returns None for non-Pokemon-Stadium games.
+  """
+  stage = enums.to_internal_stage(game.start.stage)
+  if stage is not Stage.POKEMON_STADIUM:
+    return None
+
+  # Transformation events (Slippi >= 3.18, including upgraded replays) are
+  # definitive when present: if the stage transformed, it wasn't frozen.
+  if _num_stadium_transformations(game) > 0:
+    return False
+
+  version = game.start.slippi.version
+
+  # From 3.19.0 the `is_frozen_ps` start flag is reliable again (it was
+  # deprecated for a while and re-enabled in 3.19.0). It also correctly handles
+  # games that ended before the stage would have transformed.
+  if version >= (3, 19, 0):
+    return game.start.is_frozen_ps
+
+  # For 3.18 <= version < 3.19 the flag is unreliable, but a game long enough to
+  # have transformed yet showing no events must be frozen.
+  if version >= (3, 18, 0):
+    last_frame = game.frames.id[-1].as_py()
+    if last_frame >= _FIRST_PS_TRANSFORMATION_FRAME:
+      return True
+    # Otherwise the game was too short to have transformed; fall through.
+
+  # No usable stage events (older replays, or a game too short to have
+  # transformed): assume offline games were unfrozen and online games frozen.
+  return upgrade_slp.is_online(game)
+
+
 def get_metadata(game: peppi_py.Game) -> dict:
   result = {}
 
@@ -212,6 +266,8 @@ def get_metadata(game: peppi_py.Game) -> dict:
 
   # compute winner
   result['winner'] = compute_winner(game)
+
+  result['is_frozen_ps'] = is_frozen_ps(game)
 
   return result
 
