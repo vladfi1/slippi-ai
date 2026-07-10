@@ -145,8 +145,8 @@ def _extract_player(player: dict, prefix: str) -> dict[str, Any]:
   }
 
 
-def result_to_tuple(row: dict) -> tuple:
-  """Convert a parse result dict to a tuple for SQLite insertion."""
+def _result_to_flat(row: dict) -> dict:
+  """Flatten a parse result dict into one value per PARSED_COLUMNS entry."""
   match = row.get('match') or {}
   players = row.get('players') or []
 
@@ -186,7 +186,26 @@ def result_to_tuple(row: dict) -> tuple:
   else:
     flat.update(_extract_player({}, 'p1'))
 
+  return flat
+
+
+def result_to_tuple(row: dict) -> tuple:
+  """Convert a parse result dict to a tuple for SQLite insertion."""
+  flat = _result_to_flat(row)
   return tuple(flat[col] for col in PARSED_COLUMNS)
+
+
+# Columns refreshed by a metadata-only reparse: everything derived from the
+# replay metadata, excluding the primary key, the parquet/file-identity columns,
+# and the training/validity flags (which must stay consistent with the existing
+# on-disk parquet output).
+_METADATA_ONLY_SKIP = frozenset({
+    'name', 'raw',
+    'slp_md5', 'slp_size', 'pq_size', 'compression',
+    'valid', 'is_training', 'not_training_reason', 'parse_error',
+})
+METADATA_UPDATE_COLUMNS = [
+    c for c in PARSED_COLUMNS if c not in _METADATA_ONLY_SKIP]
 
 # Utilities for converting sqlite back to pickle
 def _parse_version(version_str: str | None) -> list[int] | None:
@@ -692,6 +711,130 @@ def _query_missing_netplay(parsed_db_path: str) -> dict[str, list[str]]:
   return by_archive
 
 
+def _collect_missing_files(
+    missing: dict[str, list[str]],
+    to_process: set[str],
+    raw_dir: str,
+    upgraded_dir: str,
+    db_conn: Optional[sqlite3.Connection],
+    description: str,
+    resolve: bool = True,
+) -> list[tuple[utils.LocalFile, str]]:
+  """Print a count and resolve a {archive: [base_name]} mapping to (file, raw).
+
+  Archives already scheduled for a full reprocess (in `to_process`) are skipped.
+  When `resolve` is False only the count is printed (no archive traversal) and an
+  empty list is returned -- useful for dry runs.
+  """
+  missing = {k: v for k, v in missing.items() if k not in to_process}
+  total = sum(len(v) for v in missing.values())
+  if total:
+    print(f"Re-parsing {total} {description} from {len(missing)} archives.")
+  else:
+    print(f"No {description}.")
+
+  if not resolve:
+    return []
+
+  specs: list[tuple[utils.LocalFile, str]] = []
+  for raw, base_names in missing.items():
+    all_files = utils.traverse_slp_files_zip(os.path.join(raw_dir, raw))
+    if db_conn is not None:
+      _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
+    need = set(base_names)
+    specs.extend((f, raw) for f in all_files if f.base_name in need)
+  return specs
+
+
+def _metadata_for_file(
+    file: utils.LocalFile,
+    raw: str,
+    tmpdir: Optional[str],
+    debug: bool = False,
+) -> tuple[str, str, Optional[list], Optional[str]]:
+  """Compute metadata columns for one replay.
+
+  Returns (name, raw, values, error) where `values` is aligned with
+  METADATA_UPDATE_COLUMNS (or None on error).
+  """
+  try:
+    slp_bytes = file.read()
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_parent:
+      path = os.path.join(tmp_parent, 'game.slp')
+      with open(path, 'wb') as f:
+        f.write(slp_bytes)
+      del slp_bytes
+      game = parse_peppi.read_slippi(path)
+      metadata = preprocessing.get_metadata(game)
+    flat = _result_to_flat(metadata)
+    values = [flat[c] for c in METADATA_UPDATE_COLUMNS]
+    return file.name, raw, values, None
+  except KeyboardInterrupt:
+    raise
+  except BaseException as e:
+    if debug:
+      raise
+    return file.name, raw, None, repr(e)
+
+
+def _update_metadata(
+    specs: list[tuple[utils.LocalFile, str]],
+    parsed_db_path: str,
+    num_threads: int = 1,
+    tmpdir: Optional[str] = None,
+    debug: bool = False,
+    commit_interval: int = 1000,
+) -> None:
+  """Recompute metadata for the given files and UPDATE their parsed.sqlite rows.
+
+  Only the metadata columns (METADATA_UPDATE_COLUMNS) are written; parquet output
+  and the training/validity flags are left untouched.
+  """
+  if not specs:
+    print("No files to update.")
+    return
+
+  conn = sqlite3.connect(parsed_db_path)
+  _migrate_parsed_schema(conn)
+  conn.commit()
+  set_clause = ', '.join(f'{c} = ?' for c in METADATA_UPDATE_COLUMNS)
+  update_sql = f'UPDATE replays SET {set_clause} WHERE name = ? AND raw = ?'
+
+  n_updated = 0
+  n_errors = 0
+
+  def record(result):
+    nonlocal n_updated, n_errors
+    name, raw, values, error = result
+    if error is not None:
+      n_errors += 1
+      logging.warning('metadata update failed for %s (%s): %s', name, raw, error)
+      return
+    conn.execute(update_sql, (*values, name, raw))
+    n_updated += 1
+    if n_updated % commit_interval == 0:
+      conn.commit()
+
+  try:
+    if num_threads == 1:
+      for file, raw in tqdm.tqdm(specs, desc='metadata'):
+        record(_metadata_for_file(file, raw, tmpdir, debug=debug))
+    else:
+      with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
+        futures = [
+            pool.submit(_metadata_for_file, f, raw, tmpdir, debug)
+            for f, raw in specs]
+        for future in tqdm.tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures), desc='metadata'):
+          record(future.result())
+  finally:
+    conn.commit()
+    conn.close()
+
+  print(f"Updated metadata for {n_updated} files ({n_errors} errors).")
+
+
 def run_parsing(
     root: str,
     num_threads: int = 1,
@@ -702,6 +845,7 @@ def run_parsing(
     reparse_missing_netplay: bool = False,
     reparse_missing_parsed: bool = False,
     reparse_missing_frozen_ps: bool = False,
+    metadata_only: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
     debug: bool = False,
@@ -756,80 +900,46 @@ def run_parsing(
     slp_files.extend(files)
     raw_names.extend([raw] * len(files))
 
-  # Re-parse files missing netplay info from already-processed archives.
-  if reparse_missing_netplay:
-    parsed_db_path = os.path.join(root, 'parsed.sqlite')
-    missing = _query_missing_netplay(parsed_db_path)
-    # Exclude archives we're already fully reprocessing.
-    to_process_set = set(to_process)
-    missing = {k: v for k, v in missing.items() if k not in to_process_set}
-    if missing:
-      total_files = sum(len(v) for v in missing.values())
-      print(f"Re-parsing {total_files} files missing netplay info "
-            f"from {len(missing)} archives.")
-    else:
-      print("No files missing netplay info.")
-
-    for raw, base_names in missing.items():
-      raw_path = os.path.join(raw_dir, raw)
-      all_files = utils.traverse_slp_files_zip(raw_path)
-      if db_conn is not None:
-        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
-      need = set(base_names)
-      selected = [f for f in all_files if f.base_name in need]
-      slp_files.extend(selected)
-      raw_names.extend([raw] * len(selected))
-
-  # Re-parse Pokemon Stadium replays that don't yet have is_frozen_ps recorded.
-  if reparse_missing_frozen_ps:
-    parsed_db_path = os.path.join(root, 'parsed.sqlite')
-    missing = _query_missing_frozen_ps(parsed_db_path)
-    # Exclude archives we're already fully reprocessing.
-    to_process_set = set(to_process)
-    missing = {k: v for k, v in missing.items() if k not in to_process_set}
-    if missing:
-      total_files = sum(len(v) for v in missing.values())
-      print(f"Re-parsing {total_files} Pokemon Stadium files missing "
-            f"is_frozen_ps from {len(missing)} archives.")
-    else:
-      print("No Pokemon Stadium files missing is_frozen_ps.")
-
-    for raw, base_names in missing.items():
-      raw_path = os.path.join(raw_dir, raw)
-      all_files = utils.traverse_slp_files_zip(raw_path)
-      if db_conn is not None:
-        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
-      need = set(base_names)
-      selected = [f for f in all_files if f.base_name in need]
-      slp_files.extend(selected)
-      raw_names.extend([raw] * len(selected))
-
   output_dir = os.path.join(root, 'Parsed')
   os.makedirs(output_dir, exist_ok=True)
 
-  # Re-parse training replays whose parquet file is missing from Parsed/.
-  if reparse_missing_parsed:
-    parsed_db_path = os.path.join(root, 'parsed.sqlite')
-    missing = _query_missing_parsed(parsed_db_path, output_dir)
-    # Exclude archives we're already fully reprocessing.
-    to_process_set = set(to_process)
-    missing = {k: v for k, v in missing.items() if k not in to_process_set}
-    if missing:
-      total_files = sum(len(v) for v in missing.values())
-      print(f"Re-parsing {total_files} files missing from Parsed/ "
-            f"across {len(missing)} archives.")
-    else:
-      print("No files missing from Parsed/.")
+  parsed_db_path = os.path.join(root, 'parsed.sqlite')
+  to_process_set = set(to_process)
 
-    for raw, base_names in missing.items():
-      raw_path = os.path.join(raw_dir, raw)
-      all_files = utils.traverse_slp_files_zip(raw_path)
-      if db_conn is not None:
-        _swap_upgraded_files(all_files, raw, upgraded_dir, db_conn)
-      need = set(base_names)
-      selected = [f for f in all_files if f.base_name in need]
-      slp_files.extend(selected)
-      raw_names.extend([raw] * len(selected))
+  # Frozen-ps only needs metadata, so selecting it implies metadata-only mode.
+  metadata_only = metadata_only or reparse_missing_frozen_ps
+  # On a dry run we only want the counts, so skip the (slow) archive traversal.
+  resolve = not dry_run
+
+  # Selection: gather already-processed files to re-parse.
+  reparse_specs: list[tuple[utils.LocalFile, str]] = []
+  if reparse_missing_netplay:
+    reparse_specs += _collect_missing_files(
+        _query_missing_netplay(parsed_db_path), to_process_set,
+        raw_dir, upgraded_dir, db_conn, 'files missing netplay info', resolve)
+  if reparse_missing_frozen_ps:
+    reparse_specs += _collect_missing_files(
+        _query_missing_frozen_ps(parsed_db_path), to_process_set,
+        raw_dir, upgraded_dir, db_conn,
+        'Pokemon Stadium files missing is_frozen_ps', resolve)
+  if reparse_missing_parsed:
+    reparse_specs += _collect_missing_files(
+        _query_missing_parsed(parsed_db_path, output_dir), to_process_set,
+        raw_dir, upgraded_dir, db_conn, 'files missing from Parsed/', resolve)
+
+  if metadata_only:
+    # Refresh metadata in place (no parquet output) for the selected files.
+    if not dry_run:
+      _update_metadata(
+          reparse_specs, parsed_db_path,
+          num_threads=num_threads, tmpdir=tmpdir, debug=debug)
+    if db_conn is not None:
+      db_conn.close()
+    return
+
+  # Full re-parse: fold the selected files in with the newly-found ones.
+  slp_files.extend(f for f, _ in reparse_specs)
+  raw_names.extend(raw for _, raw in reparse_specs)
 
   if dry_run:
     return
@@ -912,6 +1022,10 @@ if __name__ == '__main__':
   REPARSE_MISSING_FROZEN_PS = flags.DEFINE_bool(
       'reparse_missing_frozen_ps', False,
       'Re-parse Pokemon Stadium replays that are missing is_frozen_ps.')
+  METADATA_ONLY = flags.DEFINE_bool(
+      'metadata_only', False,
+      'For re-parsed files, refresh metadata in parsed.sqlite without rewriting '
+      'parquet output. Implied by --reparse_missing_frozen_ps.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
   DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
@@ -929,6 +1043,7 @@ if __name__ == '__main__':
         reparse_missing_netplay=REPARSE_MISSING_NETPLAY.value,
         reparse_missing_parsed=REPARSE_MISSING_PARSED.value,
         reparse_missing_frozen_ps=REPARSE_MISSING_FROZEN_PS.value,
+        metadata_only=METADATA_ONLY.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
         debug=DEBUG.value,
