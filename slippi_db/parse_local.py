@@ -195,10 +195,11 @@ def result_to_tuple(row: dict) -> tuple:
   return tuple(flat[col] for col in PARSED_COLUMNS)
 
 
-# Columns refreshed by a metadata-only reparse: everything derived from the
-# replay metadata, excluding the primary key, the parquet/file-identity columns,
-# and the training/validity flags (which must stay consistent with the existing
-# on-disk parquet output).
+# Columns refreshed unconditionally by a metadata-only reparse. The rest are
+# handled specially: name/raw are the primary key; valid, is_training,
+# not_training_reason and parse_error are set from the parse outcome; and the
+# file/parquet columns (slp_md5, slp_size, pq_size, compression) are only
+# written when the parquet output itself is (re)generated or deleted.
 _METADATA_ONLY_SKIP = frozenset({
     'name', 'raw',
     'slp_md5', 'slp_size', 'pq_size', 'compression',
@@ -750,15 +751,25 @@ def _metadata_for_file(
     file: utils.LocalFile,
     raw: str,
     tmpdir: Optional[str],
+    output_dir: str,
+    compression_options: dict = {},
+    old_is_training: Optional[bool] = None,
+    old_slp_md5: Optional[str] = None,
     debug: bool = False,
-) -> tuple[str, str, Optional[list], Optional[str]]:
-  """Compute metadata columns for one replay.
+) -> tuple[str, str, dict, Optional[str]]:
+  """Recompute metadata for one replay, reconciling parquet output.
 
-  Returns (name, raw, values, error) where `values` is aligned with
-  METADATA_UPDATE_COLUMNS (or None on error).
+  Returns (name, raw, updates, error) where `updates` maps column names to new
+  values. If the replay's training status changed, the parquet file in
+  output_dir is written or deleted to match. An existing parquet file for a
+  still-training replay is kept as-is, along with the columns describing it
+  (slp_md5/slp_size/pq_size/compression), so that the row keeps pointing at
+  the file that was actually written.
   """
   try:
     slp_bytes = file.read()
+    md5 = utils.md5(slp_bytes)
+    slp_size = len(slp_bytes)
     with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_parent:
       path = os.path.join(tmp_parent, 'game.slp')
       with open(path, 'wb') as f:
@@ -766,29 +777,70 @@ def _metadata_for_file(
       del slp_bytes
       game = parse_peppi.read_slippi(path)
       metadata = preprocessing.get_metadata(game)
-    flat = _result_to_flat(metadata)
-    values = [flat[c] for c in METADATA_UPDATE_COLUMNS]
-    return file.name, raw, values, None
+      is_training, reason = preprocessing.is_training_replay(metadata)
+
+      flat = _result_to_flat(metadata)
+      updates = {c: flat[c] for c in METADATA_UPDATE_COLUMNS}
+      updates.update(
+          valid=True,
+          is_training=is_training,
+          not_training_reason=reason,
+          parse_error=None,
+      )
+
+      old_pq_path = (
+          os.path.join(output_dir, old_slp_md5) if old_slp_md5 else None)
+      if is_training:
+        # Keep an existing parquet file; otherwise (re)generate it.
+        if not (old_is_training and old_pq_path
+                and os.path.exists(old_pq_path)):
+          game = parse_peppi.from_peppi(game)
+          compression = compression_options.get(
+              'compression', CompressionType.NONE)
+          game_bytes = parsing_utils.convert_game(
+              game, compression=compression,
+              compression_level=compression_options.get('compression_level'))
+          with open(os.path.join(output_dir, md5), 'wb') as f:
+            f.write(game_bytes)
+          updates.update(
+              slp_md5=md5,
+              slp_size=slp_size,
+              pq_size=len(game_bytes),
+              compression=compression.value,
+          )
+      else:
+        # No longer a training replay: remove the stale parquet file.
+        if old_pq_path:
+          try:
+            os.remove(old_pq_path)
+          except FileNotFoundError:
+            pass
+        updates.update(pq_size=None, compression=None)
+
+    return file.name, raw, updates, None
   except KeyboardInterrupt:
     raise
   except BaseException as e:
     if debug:
       raise
-    return file.name, raw, None, repr(e)
+    return file.name, raw, dict(valid=False, parse_error=repr(e)), repr(e)
 
 
 def _update_metadata(
     specs: list[tuple[utils.LocalFile, str]],
     parsed_db_path: str,
+    output_dir: str,
     num_threads: int = 1,
     tmpdir: Optional[str] = None,
+    compression_options: dict = {},
     debug: bool = False,
     commit_interval: int = 1000,
 ) -> None:
   """Recompute metadata for the given files and UPDATE their parsed.sqlite rows.
 
-  Only the metadata columns (METADATA_UPDATE_COLUMNS) are written; parquet output
-  and the training/validity flags are left untouched.
+  Metadata and training/validity columns are refreshed in place. Parquet output
+  is only written or deleted when a replay's training status changed (or its
+  parquet file is missing); otherwise it is left untouched.
   """
   if not specs:
     print("No files to update.")
@@ -797,32 +849,45 @@ def _update_metadata(
   conn = sqlite3.connect(parsed_db_path)
   _migrate_parsed_schema(conn)
   conn.commit()
-  set_clause = ', '.join(f'{c} = ?' for c in METADATA_UPDATE_COLUMNS)
-  update_sql = f'UPDATE replays SET {set_clause} WHERE name = ? AND raw = ?'
+
+  # Previous training status and parquet pointer, for reconciliation.
+  old_state = {
+      (name, raw): (is_training, slp_md5)
+      for name, raw, is_training, slp_md5 in conn.execute(
+          'SELECT name, raw, is_training, slp_md5 FROM replays')
+  }
 
   n_updated = 0
   n_errors = 0
 
   def record(result):
     nonlocal n_updated, n_errors
-    name, raw, values, error = result
+    name, raw, updates, error = result
     if error is not None:
       n_errors += 1
       logging.warning('metadata update failed for %s (%s): %s', name, raw, error)
-      return
-    conn.execute(update_sql, (*values, name, raw))
-    n_updated += 1
-    if n_updated % commit_interval == 0:
+    else:
+      n_updated += 1
+    set_clause = ', '.join(f'{c} = ?' for c in updates)
+    conn.execute(
+        f'UPDATE replays SET {set_clause} WHERE name = ? AND raw = ?',
+        (*updates.values(), name, raw))
+    if (n_updated + n_errors) % commit_interval == 0:
       conn.commit()
+
+  def worker_args(file: utils.LocalFile, raw: str) -> tuple:
+    old_is_training, old_slp_md5 = old_state.get((file.name, raw), (None, None))
+    return (file, raw, tmpdir, output_dir, compression_options,
+            old_is_training, old_slp_md5, debug)
 
   try:
     if num_threads == 1:
       for file, raw in tqdm.tqdm(specs, desc='metadata'):
-        record(_metadata_for_file(file, raw, tmpdir, debug=debug))
+        record(_metadata_for_file(*worker_args(file, raw)))
     else:
       with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
         futures = [
-            pool.submit(_metadata_for_file, f, raw, tmpdir, debug)
+            pool.submit(_metadata_for_file, *worker_args(f, raw))
             for f, raw in specs]
         for future in tqdm.tqdm(
             concurrent.futures.as_completed(futures),
@@ -928,11 +993,13 @@ def run_parsing(
         raw_dir, upgraded_dir, db_conn, 'files missing from Parsed/', resolve)
 
   if metadata_only:
-    # Refresh metadata in place (no parquet output) for the selected files.
+    # Refresh metadata in place for the selected files; parquet output is only
+    # touched when a replay's training status changed.
     if not dry_run:
       _update_metadata(
-          reparse_specs, parsed_db_path,
-          num_threads=num_threads, tmpdir=tmpdir, debug=debug)
+          reparse_specs, parsed_db_path, output_dir,
+          num_threads=num_threads, tmpdir=tmpdir,
+          compression_options=compression_options, debug=debug)
     if db_conn is not None:
       db_conn.close()
     return
@@ -1024,8 +1091,9 @@ if __name__ == '__main__':
       'Re-parse Pokemon Stadium replays that are missing is_frozen_ps.')
   METADATA_ONLY = flags.DEFINE_bool(
       'metadata_only', False,
-      'For re-parsed files, refresh metadata in parsed.sqlite without rewriting '
-      'parquet output. Implied by --reparse_missing_frozen_ps.')
+      'For re-parsed files, refresh metadata in parsed.sqlite in place, only '
+      'writing/deleting parquet output if a replay\'s training status changed. '
+      'Implied by --reparse_missing_frozen_ps.')
   DRY_RUN = flags.DEFINE_bool('dry_run', False, 'dry run')
   DEBUG = flags.DEFINE_bool('debug', False, 'debug mode (no exception catching)')
 
