@@ -1,5 +1,7 @@
 """Preprocessing of .slp files."""
 
+import dataclasses
+import os
 from typing import List, Optional
 import typing
 
@@ -144,6 +146,19 @@ def get_dict(obj: object, *keys: str) -> dict:
   for key in keys:
     result[key] = getattr(obj, key)
   return result
+
+def assert_peppi_compatible():
+  """Fail fast if the installed peppi_py lacks features we depend on.
+
+  Better than erroring on individual replays partway through a run.
+  """
+  fields = {f.name for f in dataclasses.fields(peppi_py.frame.Frame)}
+  if 'stadium_transformation' not in fields:
+    raise RuntimeError(
+        f'peppi_py (at {os.path.dirname(peppi_py.__file__)}) does not expose '
+        'Frame.stadium_transformation, which is_frozen_ps needs. Update and '
+        'reinstall peppi-py.')
+
 
 # Pokemon Stadium performs its first transformation around this frame. Games
 # that end earlier show no transformation events even when unfrozen, so we can't

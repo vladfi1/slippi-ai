@@ -878,7 +878,10 @@ def _metadata_for_file(
   except BaseException as e:
     if debug:
       raise
-    return file.name, raw, dict(valid=False, parse_error=repr(e)), repr(e)
+    # Leave the row unchanged: unlike a full parse, the replay was already
+    # parsed successfully once, so a failure here is more likely environmental
+    # (and the row will be re-selected by missing-column queries).
+    return file.name, raw, None, repr(e)
 
 
 def _update_metadata(
@@ -895,7 +898,8 @@ def _update_metadata(
 
   Metadata and training/validity columns are refreshed in place. Parquet output
   is only written or deleted when a replay's training status changed (or its
-  parquet file is missing); otherwise it is left untouched.
+  parquet file is missing); otherwise it is left untouched. Files that fail to
+  process are logged and their rows left unchanged.
   """
   if not specs:
     print("No files to update.")
@@ -921,13 +925,13 @@ def _update_metadata(
     if error is not None:
       n_errors += 1
       logging.warning('metadata update failed for %s (%s): %s', name, raw, error)
-    else:
-      n_updated += 1
+      return
+    n_updated += 1
     set_clause = ', '.join(f'{c} = ?' for c in updates)
     conn.execute(
         f'UPDATE replays SET {set_clause} WHERE name = ? AND raw = ?',
         (*updates.values(), name, raw))
-    if (n_updated + n_errors) % commit_interval == 0:
+    if n_updated % commit_interval == 0:
       conn.commit()
 
   def worker_args(file: utils.LocalFile, raw: str) -> tuple:
@@ -941,13 +945,18 @@ def _update_metadata(
         record(_metadata_for_file(*worker_args(file, raw)))
     else:
       with concurrent.futures.ProcessPoolExecutor(num_threads) as pool:
-        futures = [
-            pool.submit(_metadata_for_file, *worker_args(f, raw))
-            for f, raw in specs]
-        for future in tqdm.tqdm(
-            concurrent.futures.as_completed(futures),
-            total=len(futures), desc='metadata'):
-          record(future.result())
+        try:
+          futures = [
+              pool.submit(_metadata_for_file, *worker_args(f, raw))
+              for f, raw in tqdm.tqdm(specs, desc='Submitting', unit='slp')]
+          for future in tqdm.tqdm(
+              concurrent.futures.as_completed(futures),
+              total=len(futures), desc='metadata'):
+            record(future.result())
+        except KeyboardInterrupt:
+          print('KeyboardInterrupt, shutting down')
+          pool.shutdown(cancel_futures=True)
+          raise
   finally:
     conn.commit()
     conn.close()
@@ -971,6 +980,10 @@ def run_parsing(
     log_interval: int = 30,
     debug: bool = False,
 ):
+  # Fail fast on an incompatible peppi_py instead of erroring on every
+  # replay partway into the run.
+  preprocessing.assert_peppi_compatible()
+
   # Cache tmp dir once
   tmpdir = utils.get_tmp_dir(in_memory=in_memory)
 
