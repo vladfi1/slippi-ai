@@ -78,6 +78,10 @@ class Metadata(typing.NamedTuple):
 
   match: Optional[dict] = None
 
+  # Whether Pokemon Stadium transformations were frozen; None if not PS or
+  # undetermined. See is_frozen_ps().
+  is_frozen_ps: Optional[bool] = None
+
   @staticmethod
   def from_dict(d: dict) -> 'Metadata':
     players = [PlayerMeta(**p) for p in d['players']]
