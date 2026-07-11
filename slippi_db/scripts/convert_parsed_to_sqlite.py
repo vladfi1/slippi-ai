@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS replays (
     is_training INTEGER,
     not_training_reason TEXT,
     parse_error TEXT,  -- error message if valid=False
+    data_ok INTEGER,   -- embedding bounds check: 1=passed, 0=failed, NULL=unchecked
+    data_error TEXT,   -- error message if data_ok=0
 
     -- Parsed output fields
     pq_size INTEGER,
@@ -80,7 +82,7 @@ COLUMNS = [
     'last_frame', 'slippi_version', 'stage', 'timer', 'is_teams',
     'num_players', 'winner', 'is_frozen_ps',
     'valid', 'is_training', 'not_training_reason',
-    'parse_error', 'pq_size', 'compression',
+    'parse_error', 'data_ok', 'data_error', 'pq_size', 'compression',
     'match_id', 'match_game', 'match_tiebreaker',
     'p0_port', 'p0_character', 'p0_type', 'p0_name_tag',
     'p0_netplay_name', 'p0_netplay_code', 'p0_netplay_suid', 'p0_damage_taken',
@@ -139,6 +141,8 @@ def row_to_tuple(row: dict) -> tuple:
         'is_training': row.get('is_training'),
         'not_training_reason': row.get('not_training_reason'),
         'parse_error': row.get('reason'),  # error message for invalid replays
+        'data_ok': row.get('data_ok'),
+        'data_error': row.get('data_error'),
         'pq_size': row.get('pq_size'),
         'compression': row.get('compression'),
         'match_id': match.get('id'),

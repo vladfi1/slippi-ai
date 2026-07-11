@@ -332,3 +332,74 @@ def is_training_replay(meta_dict: dict) -> tuple[bool, str]:
       return False, 'invalid character'
 
   return True, ''
+
+
+# Bounds assumed by the game embeddings; must stay in sync with
+# slippi_ai/jax/embed.py, whose OneHotPolicy.ERROR fields raise on
+# out-of-bounds values (crashing training).
+MAX_CHARACTER = 0x21  # one larger than SANDBAG
+MAX_JUMPS_LEFT = 7  # puff and kirby have 6 jumps
+MAX_STAGE = 64
+
+# Physical sanity bounds. Blast-zones are within about +/-250, and shields
+# regenerate to at most 60.
+MAX_ABS_POSITION = 500.0
+MAX_SHIELD_STRENGTH = 60.0
+
+
+def _check_player_data(errors: list[str], name: str, player) -> None:
+  """Bounds-check a Player or Nana, appending violations to `errors`."""
+  # One-hot embedded fields (unsigned, so only the upper bound can fail).
+  for field, limit in [
+      ('character', MAX_CHARACTER),
+      ('jumps_left', MAX_JUMPS_LEFT),
+  ]:
+    max_value = getattr(player, field).max()
+    if max_value >= limit:
+      errors.append(f'{name}.{field}: {max_value} >= {limit}')
+
+  for field in ['x', 'y']:
+    values = getattr(player, field)
+    if not np.isfinite(values).all():
+      errors.append(f'{name}.{field}: not finite')
+    else:
+      max_abs = np.abs(values).max()
+      if max_abs > MAX_ABS_POSITION:
+        errors.append(f'{name}.{field}: |{max_abs:.1f}| > {MAX_ABS_POSITION}')
+
+  shield = player.shield_strength
+  if not np.isfinite(shield).all():
+    errors.append(f'{name}.shield_strength: not finite')
+  elif shield.min() < 0 or shield.max() > MAX_SHIELD_STRENGTH:
+    errors.append(
+        f'{name}.shield_strength: [{shield.min():.1f}, {shield.max():.1f}] '
+        f'outside [0, {MAX_SHIELD_STRENGTH}]')
+
+
+def check_game_nt(game_nt: types.Game) -> Optional[str]:
+  """Sanity-check a parsed game (as numpy arrays).
+
+  Returns a description of all bounds violations, or None if the data is ok.
+  """
+  if len(game_nt.stage) == 0:
+    return 'empty game'
+
+  errors: list[str] = []
+
+  for name in ['p0', 'p1']:
+    player = getattr(game_nt, name)
+    _check_player_data(errors, name, player)
+    # Nana fields are zeroed on frames where she doesn't exist, and the
+    # embeddings consume them unconditionally, so check them the same way.
+    _check_player_data(errors, f'{name}.nana', player.nana)
+
+  max_stage = game_nt.stage.max()
+  if max_stage >= MAX_STAGE:
+    errors.append(f'stage: {max_stage} >= {MAX_STAGE}')
+
+  return '; '.join(errors) or None
+
+
+def check_game_data(game: types.GAME_TYPE) -> Optional[str]:
+  """Sanity-check parsed game data (as a pyarrow StructArray)."""
+  return check_game_nt(types.game_array_to_nt(game))

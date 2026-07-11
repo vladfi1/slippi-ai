@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS replays (
     is_training INTEGER,
     not_training_reason TEXT,
     parse_error TEXT,
+    data_ok INTEGER,
+    data_error TEXT,
     pq_size INTEGER,
     compression TEXT,
     match_id TEXT,
@@ -103,7 +105,7 @@ PARSED_COLUMNS = [
     'last_frame', 'slippi_version', 'stage', 'timer', 'is_teams',
     'num_players', 'winner', 'is_frozen_ps',
     'valid', 'is_training', 'not_training_reason',
-    'parse_error', 'pq_size', 'compression',
+    'parse_error', 'data_ok', 'data_error', 'pq_size', 'compression',
     'match_id', 'match_game', 'match_tiebreaker',
     'p0_port', 'p0_character', 'p0_type', 'p0_name_tag',
     'p0_netplay_name', 'p0_netplay_code', 'p0_netplay_suid', 'p0_damage_taken',
@@ -120,7 +122,11 @@ VALUES ({', '.join('?' * len(PARSED_COLUMNS))})
 def _migrate_parsed_schema(conn: sqlite3.Connection):
   """Add columns missing from databases created before they were introduced."""
   existing = {row[1] for row in conn.execute('PRAGMA table_info(replays)')}
-  for column, decl in [('is_frozen_ps', 'INTEGER')]:
+  for column, decl in [
+      ('is_frozen_ps', 'INTEGER'),
+      ('data_ok', 'INTEGER'),
+      ('data_error', 'TEXT'),
+  ]:
     if column not in existing:
       conn.execute(f'ALTER TABLE replays ADD COLUMN {column} {decl}')
 
@@ -169,6 +175,8 @@ def _result_to_flat(row: dict) -> dict:
     'is_training': row.get('is_training'),
     'not_training_reason': row.get('not_training_reason'),
     'parse_error': row.get('reason'),
+    'data_ok': row.get('data_ok'),
+    'data_error': row.get('data_error'),
     'pq_size': row.get('pq_size'),
     'compression': row.get('compression'),
     'match_id': match.get('id'),
@@ -204,6 +212,7 @@ _METADATA_ONLY_SKIP = frozenset({
     'name', 'raw',
     'slp_md5', 'slp_size', 'pq_size', 'compression',
     'valid', 'is_training', 'not_training_reason', 'parse_error',
+    'data_ok', 'data_error',
 })
 METADATA_UPDATE_COLUMNS = [
     c for c in PARSED_COLUMNS if c not in _METADATA_ONLY_SKIP]
@@ -283,6 +292,10 @@ def sqlite_row_to_dict(row: dict) -> dict[str, Any]:
     result['is_training'] = bool(row['is_training'])
   if row.get('not_training_reason') is not None:
     result['not_training_reason'] = row['not_training_reason']
+  if row.get('data_ok') is not None:
+    result['data_ok'] = bool(row['data_ok'])
+  if row.get('data_error') is not None:
+    result['data_error'] = row['data_error']
 
   if row.get('pq_size') is not None:
     result['pq_size'] = row['pq_size']
@@ -362,9 +375,12 @@ def parse_slp(
 
     if is_training:
       game = parse_peppi.from_peppi(game)
+      data_error = preprocessing.check_game_data(game)
       game_bytes = parsing_utils.convert_game(
         game, compression=compression, compression_level=compression_level)
       result.update(
+          data_ok=data_error is None,
+          data_error=data_error,
           pq_size=len(game_bytes),
           compression=compression.value,
       )
@@ -645,6 +661,11 @@ def _query_missing_parsed(
 POKEMON_STADIUM_STAGE = 3
 
 
+def _has_column(conn: sqlite3.Connection, column: str) -> bool:
+  return any(
+      row[1] == column for row in conn.execute('PRAGMA table_info(replays)'))
+
+
 def _query_missing_frozen_ps(parsed_db_path: str) -> dict[str, list[str]]:
   """Query parsed.sqlite for Pokemon Stadium replays missing is_frozen_ps.
 
@@ -656,16 +677,46 @@ def _query_missing_frozen_ps(parsed_db_path: str) -> dict[str, list[str]]:
   conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
   # Databases created before is_frozen_ps was added lack the column entirely;
   # in that case every Pokemon Stadium replay is missing it.
-  has_column = any(
-      row[1] == 'is_frozen_ps'
-      for row in conn.execute('PRAGMA table_info(replays)'))
-  missing_cond = 'AND is_frozen_ps IS NULL' if has_column else ''
+  missing_cond = (
+      'AND is_frozen_ps IS NULL' if _has_column(conn, 'is_frozen_ps') else '')
   cursor = conn.execute(f"""
     SELECT name, raw FROM replays
     WHERE valid = 1
       AND stage = ?
       {missing_cond}
   """, (POKEMON_STADIUM_STAGE,))
+  rows = cursor.fetchall()
+  conn.close()
+
+  if not rows:
+    return {}
+
+  by_archive: dict[str, list[str]] = {}
+  for name, raw in rows:
+    base_name = name.removesuffix('.slp')
+    by_archive.setdefault(raw, []).append(base_name)
+
+  return by_archive
+
+
+def _query_missing_data_check(parsed_db_path: str) -> dict[str, list[str]]:
+  """Query parsed.sqlite for training replays whose data hasn't been checked.
+
+  Returns {raw_archive: [base_name, ...]} for files to re-parse.
+  """
+  if not os.path.exists(parsed_db_path):
+    return {}
+
+  conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
+  # Databases created before data_ok was added lack the column entirely; in
+  # that case every training replay is missing the check.
+  missing_cond = 'AND data_ok IS NULL' if _has_column(conn, 'data_ok') else ''
+  cursor = conn.execute(f"""
+    SELECT name, raw FROM replays
+    WHERE valid = 1
+      AND is_training = 1
+      {missing_cond}
+  """)
   rows = cursor.fetchall()
   conn.close()
 
@@ -791,10 +842,13 @@ def _metadata_for_file(
       old_pq_path = (
           os.path.join(output_dir, old_slp_md5) if old_slp_md5 else None)
       if is_training:
+        game = parse_peppi.from_peppi(game)
+        data_error = preprocessing.check_game_data(game)
+        updates.update(data_ok=data_error is None, data_error=data_error)
+
         # Keep an existing parquet file; otherwise (re)generate it.
         if not (old_is_training and old_pq_path
                 and os.path.exists(old_pq_path)):
-          game = parse_peppi.from_peppi(game)
           compression = compression_options.get(
               'compression', CompressionType.NONE)
           game_bytes = parsing_utils.convert_game(
@@ -815,7 +869,8 @@ def _metadata_for_file(
             os.remove(old_pq_path)
           except FileNotFoundError:
             pass
-        updates.update(pq_size=None, compression=None)
+        updates.update(
+            pq_size=None, compression=None, data_ok=None, data_error=None)
 
     return file.name, raw, updates, None
   except KeyboardInterrupt:
@@ -910,6 +965,7 @@ def run_parsing(
     reparse_missing_netplay: bool = False,
     reparse_missing_parsed: bool = False,
     reparse_missing_frozen_ps: bool = False,
+    reparse_missing_data_check: bool = False,
     metadata_only: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
@@ -971,8 +1027,10 @@ def run_parsing(
   parsed_db_path = os.path.join(root, 'parsed.sqlite')
   to_process_set = set(to_process)
 
-  # Frozen-ps only needs metadata, so selecting it implies metadata-only mode.
-  metadata_only = metadata_only or reparse_missing_frozen_ps
+  # These selections only need metadata updates, so they imply metadata-only
+  # mode (which also runs the data check and fills in missing parquet files).
+  metadata_only = (
+      metadata_only or reparse_missing_frozen_ps or reparse_missing_data_check)
   # On a dry run we only want the counts, so skip the (slow) archive traversal.
   resolve = not dry_run
 
@@ -987,6 +1045,11 @@ def run_parsing(
         _query_missing_frozen_ps(parsed_db_path), to_process_set,
         raw_dir, upgraded_dir, db_conn,
         'Pokemon Stadium files missing is_frozen_ps', resolve)
+  if reparse_missing_data_check:
+    reparse_specs += _collect_missing_files(
+        _query_missing_data_check(parsed_db_path), to_process_set,
+        raw_dir, upgraded_dir, db_conn,
+        'training replays missing the data check', resolve)
   if reparse_missing_parsed:
     reparse_specs += _collect_missing_files(
         _query_missing_parsed(parsed_db_path, output_dir), to_process_set,
@@ -1089,6 +1152,10 @@ if __name__ == '__main__':
   REPARSE_MISSING_FROZEN_PS = flags.DEFINE_bool(
       'reparse_missing_frozen_ps', False,
       'Re-parse Pokemon Stadium replays that are missing is_frozen_ps.')
+  REPARSE_MISSING_DATA_CHECK = flags.DEFINE_bool(
+      'reparse_missing_data_check', False,
+      'Re-parse training replays whose data has not been sanity checked '
+      '(data_ok is NULL).')
   METADATA_ONLY = flags.DEFINE_bool(
       'metadata_only', False,
       'For re-parsed files, refresh metadata in parsed.sqlite in place, only '
@@ -1111,6 +1178,7 @@ if __name__ == '__main__':
         reparse_missing_netplay=REPARSE_MISSING_NETPLAY.value,
         reparse_missing_parsed=REPARSE_MISSING_PARSED.value,
         reparse_missing_frozen_ps=REPARSE_MISSING_FROZEN_PS.value,
+        reparse_missing_data_check=REPARSE_MISSING_DATA_CHECK.value,
         metadata_only=METADATA_ONLY.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,
