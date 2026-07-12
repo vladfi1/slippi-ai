@@ -22,8 +22,26 @@ ONLY_KNOWN_PLAYERS = flags.DEFINE_boolean(
   'only_known_players', True, 'only keep games that have known players')
 
 MAKE_TAR = flags.DEFINE_boolean('tar', False, 'Create dataset tar archive')
+FORCE = flags.DEFINE_boolean(
+  'force', False, 'Proceed even if parsed.pkl is older than parsed.sqlite.')
 
 MIN_DAMAGE = 100
+
+def check_pkl_fresh(root: str):
+  """Guard against reading a parsed.pkl that predates parsed.sqlite updates.
+
+  Reparse runs (e.g. --reparse_missing_data_check) only update parsed.sqlite;
+  the pkl must be regenerated afterwards or we'd silently use stale metadata.
+  """
+  pkl_path = os.path.join(root, 'parsed.pkl')
+  sqlite_path = os.path.join(root, 'parsed.sqlite')
+  if not os.path.exists(sqlite_path):
+    return
+  if os.path.getmtime(sqlite_path) > os.path.getmtime(pkl_path):
+    raise app.UsageError(
+        f'{pkl_path} is older than {sqlite_path}; regenerate it with\n'
+        f'  python -m slippi_db.scripts.convert_sqlite_to_parsed --root={root}\n'
+        'or pass --force to use the stale pkl anyway.')
 
 def total_damage(row: dict) -> Optional[int]:
   total = 0
@@ -73,6 +91,9 @@ def check_replay(
   return None
 
 def main(_):
+  if not FORCE.value:
+    check_pkl_fresh(ROOT.value)
+
   with open(os.path.join(ROOT.value, 'parsed.pkl'), 'rb') as f:
     rows = pickle.load(f)
 
