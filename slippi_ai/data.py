@@ -857,6 +857,31 @@ class DataSource(AbstractDataSource):
     self.encode_name = nametags.name_encoder(self.name_map)
     self.observation_config = observation_config
 
+    if self.balance_characters:
+      # TODO: balance by opponent (i.e. matchup) too?
+      by_character = collections.defaultdict(list)
+      for replay in self.replays:
+        by_character[replay.main_player.character].append(replay)
+
+      num_per_character = {
+          melee.Character(c).name: len(vs)
+          for c, vs in by_character.items()
+      }
+
+      logging.info(f'Character balance: {num_per_character}')
+
+      self.epoch_size = min(num_per_character.values()) * len(by_character)
+
+      if len(by_character) > 1:
+        iterators = [itertools.cycle(replays) for replays in by_character.values()]
+        self.replay_info_iter = utils.interleave(*iterators)
+      else:
+        logging.info("Only one character present, balancing not needed.")
+        self.replay_info_iter = utils.cycle_iterable(self.replays)
+    else:
+      self.epoch_size = len(self.replays)
+      self.replay_info_iter = utils.cycle_iterable(self.replays)
+
     self.replay_counter = 0
     replay_iter = self.iter_replay_infos()
 
@@ -890,29 +915,7 @@ class DataSource(AbstractDataSource):
     self.replay_ds.stop()
 
   def iter_replay_infos(self) -> Iterator[ReplayInfo]:
-    replay_iter = utils.cycle_iterable(self.replays)
-
-    if self.balance_characters:
-      # TODO: balance by opponent (i.e. matchup) too?
-      by_character = collections.defaultdict(list)
-      for replay in self.replays:
-        by_character[replay.main_player.character].append(replay)
-
-      num_per_character = {
-          melee.Character(c).name: len(vs)
-          for c, vs in by_character.items()
-      }
-
-      logging.info(f'Character balance: {num_per_character}')
-
-      if len(by_character) > 1:
-        iterators = [itertools.cycle(replays) for replays in by_character.values()]
-        balanced_iterator = utils.interleave(*iterators)
-        replay_iter = utils.interleave(balanced_iterator, replay_iter)
-      else:
-        logging.info("Only one character present, balancing not needed.")
-
-    for replay in replay_iter:
+    for replay in self.replay_info_iter:
       self.replay_counter += 1
       yield replay
 
@@ -925,8 +928,7 @@ class DataSource(AbstractDataSource):
     meta = utils.cached_zip_map_nt(ChunkMeta)(np.stack, metas)
     batch_with_meta = BatchWithMeta(batch=batch, meta=meta)
 
-    # TODO: the epoch isn't quite correct if we are balancing replays
-    epoch = self.replay_counter / len(self.replays)
+    epoch = self.replay_counter / self.epoch_size
     assert batch.game.stage.shape[-1] == self.chunk_size
     assert batch.reward.shape[-1] == self.chunk_size - 1
     return batch_with_meta, epoch
