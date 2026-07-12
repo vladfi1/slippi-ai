@@ -357,13 +357,13 @@ MAX_CHARACTER = 0x21  # one larger than SANDBAG
 MAX_JUMPS_LEFT = 7  # puff and kirby have 6 jumps
 MAX_STAGE = 64
 
-# Physical sanity bounds. Blast-zones are within about +/-250, but players
-# can legitimately go well past them: the top blast-zone only kills in
-# hitstun, and star-KO/death animations overshoot it. Legit games have been
-# observed up to |y| ~ 850 (e.g. Luigi cyclone above the blast-zone), while
-# glitched (ICs/Kirby freeze) and modded (infinite jumps) games show
-# |y| >= 1400. Shields regenerate to at most 60.
-MAX_ABS_POSITION = 1200.0
+# Physical sanity bounds. Blast-zones are within about +/-250, and players
+# can exceed them slightly while alive (the top blast-zone only kills in
+# hitstun). Empirically, an audit of ~2M replays found just 14 games with
+# |y| > 500, all degenerate: modded infinite-jump flight, the Kirby-vs-ICs
+# up-throw freeze glitch (rising while in FALLING), or Luigi-ladder goofing
+# (topping out around |y| ~ 850). Shields regenerate to at most 60.
+MAX_ABS_POSITION = 500.0
 MAX_SHIELD_STRENGTH = 60.0
 
 

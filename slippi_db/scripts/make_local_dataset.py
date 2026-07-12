@@ -45,6 +45,11 @@ def check_replay(
   if not row['is_training']:
     return row['not_training_reason']
 
+  # Filters replays whose data is out of bounds (data_ok=False) as well as
+  # ones that haven't been checked at all (data_ok missing).
+  if not row.get('data_ok'):
+    return 'failed data sanity check'
+
   if row['raw'].startswith('Phillip/'):
     model: str = row['name'].split('/')[0]
     if model.startswith('basic-') or 'imitation' in model:
