@@ -95,7 +95,7 @@ if __name__ == '__main__':
       ),
   )
 
-  NO_VF = flags.DEFINE_bool('no_vf', False, 'Use a toy value function for quick testing')
+  WITH_VF = flags.DEFINE_bool('with_vf', False, 'Train a value function')
   TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
 
   CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
@@ -184,9 +184,9 @@ if __name__ == '__main__':
         **wandb_kwargs,
     )
 
-    if NO_VF.value:
-      train_policy.train(config)
-    else:
+    if WITH_VF.value:
       train_lib.train(config)
+    else:
+      train_policy.train(config)
 
   app.run(main)
