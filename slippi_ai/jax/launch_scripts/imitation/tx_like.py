@@ -29,6 +29,7 @@ def default_config():
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
   config.learner.reward_halflife=4
+  config.learner.bf16 = True
   config.embed.controller.type = 'custom_v1'
   config.embed.controller.default.axis_spacing=32
   config.embed.controller.default.shoulder_spacing=10
