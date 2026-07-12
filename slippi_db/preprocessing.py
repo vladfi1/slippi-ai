@@ -258,14 +258,15 @@ def get_metadata(game: peppi_py.Game) -> dict:
     if player.netplay is not None:
       netplay = get_dict(player.netplay, 'name', 'code', 'suid')
 
-    # Older replays have netplay info in metadata
+    # Older replays have netplay info in metadata. Note that spectated
+    # replays record only 'characters' in their player metadata, with no
+    # 'names' key.
     port_str = str(player.port.value)
-    if port_str in player_meta_dict:
-      names = player_meta_dict[port_str]['names']
-      if 'code' in names:
-        netplay['code'] = names['code']
-      if 'netplay' in names:
-        netplay['name'] = names['netplay']
+    names = player_meta_dict.get(port_str, {}).get('names', {})
+    if 'code' in names:
+      netplay['code'] = names['code']
+    if 'netplay' in names:
+      netplay['name'] = names['netplay']
 
     player_metas.append(dict(
         port=player.port.value,
