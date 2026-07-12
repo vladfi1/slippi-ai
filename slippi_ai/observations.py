@@ -160,7 +160,13 @@ def mask_tech_action(char: int, action: ActionDType, frame: int) -> ActionDType:
 class AnimationFilter(ObservationFilter):
   """Obscures tech animations that look the same for the first N frames."""
 
-  def __init__(self):
+  def __init__(
+    self,
+    fast: bool = True,
+    tech_mask_window: int = DEFAULT_TECH_MASK_WINDOW,
+  ):
+    self.fast = fast
+    self.tech_mask_window = tech_mask_window
     self.reset()
 
   def reset(self):
@@ -174,10 +180,18 @@ class AnimationFilter(ObservationFilter):
       self.count = 0
       self.prev_action = action
 
-    return mask_tech_action(char, action, self.count)
+    if not self.fast:
+      return mask_tech_action(char, action, self.count)
+
+    is_tech_action = action in TECH_ACTIONS
+    should_mask = is_tech_action and (self.count <= self.tech_mask_window)
+    if should_mask:
+      return TECH_ACTIONS[0]
+
+    return action
 
   def filter(self, game: Game0) -> Game0:
-    masked_action = self.update(game.p1.character, game.p1.action)
+    masked_action = self.update(game.p1.character[0], game.p1.action[0])
     if masked_action != game.p1.action:
       return utils.replace_nt(game, ['p1', 'action'], masked_action)
     return game
@@ -191,9 +205,12 @@ class AnimationFilter(ObservationFilter):
     action_frames = cumsum - reset_values
     self.count = action_frames[-1]
 
+    if not self.fast:
+      raise NotImplementedError('Non-fast mode not implemented')
+
     # TODO: re-enable per-character masking
     is_tech_action = np.isin(game.p1.action, TECH_ACTIONS)
-    should_mask = is_tech_action & (action_frames <= DEFAULT_TECH_MASK_WINDOW)
+    should_mask = is_tech_action & (action_frames <= self.tech_mask_window)
 
     masked_actions = np.where(
         should_mask, TECH_ACTIONS[0], game.p1.action)
@@ -237,6 +254,7 @@ field = lambda x: dataclasses.field(default_factory=x)
 @dataclasses.dataclass
 class AnimationConfig:
   mask: bool = True
+  tech_mask_window: int = DEFAULT_TECH_MASK_WINDOW
 
 @dataclasses.dataclass
 class FrameSkipConfig:
@@ -258,7 +276,7 @@ def build_observation_filter(
 ) -> ObservationFilter:
   filters = []
   if config.animation.mask:
-    filters.append(AnimationFilter())
+    filters.append(AnimationFilter(tech_mask_window=config.animation.tech_mask_window))
   if config.frame_skip.skip > 1:
     filters.append(FrameSkipFilter(skip=config.frame_skip.skip))
   return ChainObservationFilter(filters)
