@@ -436,6 +436,13 @@ Outputs = tp.TypeVarTuple('Outputs')
 Loss = Array
 Grads = tp.Any
 
+def hide_bound_method(f: tp.Callable[P, T]) -> tp.Callable[P, T]:
+  """Hides bound method from nnx transformations to prevent trace errors."""
+  @functools.wraps(f)
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    return f(*args, **kwargs)
+  return wrapped
+
 def no_loss(
     loss_fn: tp.Callable[P, tuple[Loss, *Outputs]],
 ) -> tp.Callable[P, tuple[*Outputs]]:
@@ -520,6 +527,7 @@ def loss_fn_with_mean(
       if data_axis is None:
         raise ValueError('data_axis must be specified when take_pmean is True.')
 
+      # TODO: explain why we need to expand the loss dimension here.
       loss = jax.lax.pmean(jnp.expand_dims(loss, axis=0), axis_name=data_axis)[0]
 
     return loss, aux
@@ -1347,49 +1355,52 @@ def data_parallel_train(
 
   return cached_partial(jit_train, module, optimizer)
 
-# TODO: share code with data_parallel_train?
-def data_parallel_train_with_rngs(
-    module: ModT,
-    optimizer: nnx.Optimizer[ModT],
-    rngs: nnx.Rngs,
-    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tuple[Loss, AuxT, State, *Outputs]],
-    mesh: jax.sharding.Mesh,
-    data_axis: int = 0,
-    data_axis_name: str = DATA_AXIS,
-    extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
-    extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
-    static_argnames: tp.Optional[tp.Iterable[str]] = None,
-    explicit_pmean: bool = False,
-    smap_optimizer: bool = True,
-) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+type Axis = int | None | PS
+
+def sharded_train_with_rngs(
+  loss_fn: tp.Callable[tp.Concatenate[ModT, nnx.Rngs, P], tuple[Loss, *Outputs]],
+  mesh: jax.sharding.Mesh,
+  data_axis_name: str = DATA_AXIS,
+  in_specs: tp.Sequence[Axis] = (),
+  out_specs: tp.Sequence[Axis] = (),
+  explicit_pmean: bool = False,
+  smap_optimizer: bool = True,
+) -> tp.Callable[tp.Concatenate[ModT, nnx.Optimizer[ModT], nnx.Rngs, P], tuple[*Outputs]]:
   if data_axis_name not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
-  # Shard the Rngs across devices.
   num_shards: int = mesh.shape[data_axis_name]
-  rngs = rngs.fork(split=num_shards)
-  shard_module(rngs, data_sharding(mesh, data_axis_name))
 
-  @nnx.jit(
-      donate_argnums=(0, 1, 2, 4),
-      static_argnames=static_argnames,
-  )
+  def _axis_to_spec(axis: Axis) -> PS:
+    if axis is None:
+      return PS()
+    elif isinstance(axis, int):
+      return data_spec(axis, name=data_axis_name)
+    elif isinstance(axis, PS):
+      return axis
+
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
-      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
-  ) -> tuple[AuxT, State, *Outputs]:
+      *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[*Outputs]:
 
-    if extra_in_specs is None:
-      _extra_in_specs = tuple(PS() for _ in args)
-    else:
-      if len(extra_in_specs) != len(args):
-        raise ValueError(f'Length of extra_in_specs {len(extra_in_specs)} does not match number of inputs {len(args)}.')
-      _extra_in_specs = tuple(extra_in_specs)
+    # Shard the Rngs across devices.
+    forked_rngs = rngs.fork(split=num_shards)
+    rng_spec = _axis_to_spec(0)
 
-    if extra_out_specs is None:
-      _extra_out_specs = tuple()
-    else:
-      _extra_out_specs = tuple(extra_out_specs)
+    if len(in_specs) != len(args):
+      raise ValueError(f'Length of in_specs {len(in_specs)} does not match number of inputs {len(args)}.')
+    _in_specs = tuple(map(_axis_to_spec, in_specs))
+
+    # Bind kwargs via partial so that static (concrete) kwargs aren't
+    # abstracted by eval_shape, e.g. ints used in shape computations.
+    dummy_outputs = nnx.eval_shape(
+        functools.partial(loss_fn, **kwargs), module, rngs, *args)
+    num_outputs = len(dummy_outputs) - 1  # -1 for the loss
+
+    if len(out_specs) != num_outputs:
+      raise ValueError(f'Length of out_specs {len(out_specs)} does not match number of outputs {num_outputs}.')
+    _out_specs = tuple(map(_axis_to_spec, out_specs))
 
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
@@ -1404,30 +1415,161 @@ def data_parallel_train_with_rngs(
     sharded_grads_fn = sharded_grads(
         loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis_name)
 
-    DS = data_spec(data_axis, name=data_axis_name)
-
     @nnx.shard_map(
-        in_specs=(PS(), PS(), DS, DS, DS) + _extra_in_specs,
-        out_specs=(DS, DS) + _extra_out_specs,
+        in_specs=(PS(), PS(), rng_spec) + _in_specs,
+        out_specs=_out_specs,
         mesh=mesh,
     )
     def update_fn(
         module: ModT,
         optimizer: nnx.Optimizer[ModT],
-        data: Data,
-        state: State,
         rngs: nnx.Rngs,  # shape [1]
         *args: P.args,
         # No kwargs because shard_map doesn't support them
-    ) -> tuple[AuxT, State, *Outputs]:
+    ) -> tuple[*Outputs]:
       map_update(lambda x: x[0], rngs)  # remove the extra leading axis from rngs
-      grads_and_outputs = sharded_grads_fn(module, data, state, rngs, *args, **kwargs)
-      map_update(lambda x: x[None], rngs)  # add back leading axis to rngs for next step
+      grads_and_outputs = sharded_grads_fn(module, rngs, *args, **kwargs)
+      map_update(lambda x: x[None], rngs)  # add back leading axis to rngs to make shard_map happy
       grads = grads_and_outputs[0]
       optimizer.update(module, grads)
       return grads_and_outputs[1:]
 
-    return update_fn(module, optimizer, data, state, rngs, *args)
+    return update_fn(module, optimizer, forked_rngs, *args)
+
+  return train
+
+def sharded_run_with_rngs(
+  fn: tp.Callable[tp.Concatenate[ModT, nnx.Rngs, P], tuple[*Outputs]],
+  mesh: jax.sharding.Mesh,
+  data_axis_name: str = DATA_AXIS,
+  in_specs: tp.Sequence[Axis] = (),
+  out_specs: tp.Sequence[Axis] = (),
+) -> tp.Callable[tp.Concatenate[ModT, nnx.Rngs, P], tuple[*Outputs]]:
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
+
+  num_shards: int = mesh.shape[data_axis_name]
+
+  def _axis_to_spec(axis: Axis) -> PS:
+    if axis is None:
+      return PS()
+    elif isinstance(axis, int):
+      return data_spec(axis, name=data_axis_name)
+    elif isinstance(axis, PS):
+      return axis
+
+  def run(
+      module: ModT, rngs: nnx.Rngs,
+      *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[*Outputs]:
+
+    # Shard the Rngs across devices.
+    forked_rngs = rngs.fork(split=num_shards)
+    rng_spec = _axis_to_spec(0)
+
+    if len(in_specs) != len(args):
+      raise ValueError(f'Length of in_specs {len(in_specs)} does not match number of inputs {len(args)}.')
+    _in_specs = tuple(map(_axis_to_spec, in_specs))
+
+    # See sharded_train_with_rngs for why kwargs are bound via partial.
+    dummy_outputs = nnx.eval_shape(
+        functools.partial(fn, **kwargs), module, rngs, *args)
+    num_outputs = len(dummy_outputs)
+
+    if len(out_specs) != num_outputs:
+      raise ValueError(f'Length of out_specs {len(out_specs)} does not match number of outputs {num_outputs}.')
+    _out_specs = tuple(map(_axis_to_spec, out_specs))
+
+    @nnx.shard_map(
+        in_specs=(PS(), rng_spec) + _in_specs,
+        out_specs=_out_specs,
+        mesh=mesh,
+    )
+    def run_fn(
+        module: ModT,
+        rngs: nnx.Rngs,  # shape [1]
+        *args: P.args,
+    ) -> tuple[*Outputs]:
+      map_update(lambda x: x[0], rngs)  # remove the extra leading axis from rngs
+      outputs = fn(module, rngs, *args, **kwargs)
+      map_update(lambda x: x[None], rngs)  # add back leading axis to rngs to make shard_map happy
+      return outputs
+
+    return run_fn(module, forked_rngs, *args)
+
+  return run
+
+# TODO: share code with data_parallel_train?
+def data_parallel_train_with_rngs(
+    module: ModT,
+    optimizer: nnx.Optimizer[ModT],
+    rngs: nnx.Rngs,
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tuple[Loss, AuxT, State, *Outputs]],
+    mesh: jax.sharding.Mesh,
+    data_axis: int = 0,  # axis for data, state, and aux
+    data_axis_name: str = DATA_AXIS,
+    extra_in_specs: tp.Optional[tp.Sequence[Axis]] = None,
+    extra_out_specs: tp.Optional[tp.Sequence[Axis]] = None,
+    static_argnames: tp.Optional[tp.Iterable[str]] = None,
+    explicit_pmean: bool = False,
+    smap_optimizer: bool = True,
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+
+  # move rngs to start of args
+  def compat_loss_fn(
+      module: ModT,
+      rngs: nnx.Rngs,
+      data: Data,
+      state: State,
+      *args: P.args,
+      **kwargs: P.kwargs,
+  ) -> tuple[Loss, AuxT, State, *Outputs]:
+    return loss_fn(module, data, state, rngs, *args, **kwargs)
+
+  in_specs = (data_axis, data_axis)  # data, state
+  out_specs = (data_axis, data_axis)  # aux, state
+
+  @nnx.jit(
+      donate_argnums=(0, 1, 2, 4),
+      static_argnames=static_argnames,
+  )
+  def train(
+      module: ModT, optimizer: nnx.Optimizer[ModT], rngs: nnx.Rngs,
+      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[AuxT, State, *Outputs]:
+
+    if extra_in_specs is None:
+      _extra_in_specs = tuple(data_axis for _ in args)
+    else:
+      if len(extra_in_specs) != len(args):
+        raise ValueError(f'Length of extra_in_specs {len(extra_in_specs)} does not match number of inputs {len(args)}.')
+      _extra_in_specs = tuple(extra_in_specs)
+
+    # See sharded_train_with_rngs for why kwargs are bound via partial.
+    dummy_outputs = nnx.eval_shape(
+        functools.partial(compat_loss_fn, **kwargs),
+        module, rngs, data, state, *args)
+    # Outputs beyond (loss, aux, state), which already have specs.
+    num_extra_outputs = len(dummy_outputs) - 3
+
+    if extra_out_specs is None:
+      _extra_out_specs = tuple(data_axis for _ in range(num_extra_outputs))
+    else:
+      if len(extra_out_specs) != num_extra_outputs:
+        raise ValueError(f'Length of extra_out_specs {len(extra_out_specs)} does not match number of extra outputs {num_extra_outputs}.')
+      _extra_out_specs = tuple(extra_out_specs)
+
+    sharded_train_fn = sharded_train_with_rngs(
+        loss_fn=compat_loss_fn,
+        mesh=mesh,
+        data_axis_name=data_axis_name,
+        in_specs=in_specs + _extra_in_specs,
+        out_specs=out_specs + _extra_out_specs,
+        explicit_pmean=explicit_pmean,
+        smap_optimizer=smap_optimizer,
+    )
+
+    return sharded_train_fn(module, optimizer, rngs, data, state, *args, **kwargs)
 
   return cached_partial(train, module, optimizer, rngs)
 
