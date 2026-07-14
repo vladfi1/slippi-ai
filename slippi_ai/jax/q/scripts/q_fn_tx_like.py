@@ -72,7 +72,7 @@ if __name__ == '__main__':
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
-          use_controller_rnn=ff.Boolean(False),
+          use_controller_rnn=ff.Boolean(True),
       ),
   )
 
