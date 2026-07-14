@@ -50,7 +50,6 @@ DEFAULT_CONFIG = train_q_fn.Config(
             num_layers=1,
             hidden_size=1,
             epinet=epinet_lib.EpinetConfig(
-                enabled=True,
                 index_dim=2,
                 num_layers=1,
                 hidden_size=2,

@@ -22,6 +22,7 @@ from slippi_ai.jax import jax_utils
 
 @dataclasses.dataclass
 class EpinetConfig:
+  # Unused; kept so that configs from old checkpoints still parse.
   enabled: bool = False
   index_dim: int = 8
   num_layers: int = 2
