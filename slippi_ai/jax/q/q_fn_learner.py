@@ -21,8 +21,7 @@ class LearnerConfig:
 
   unroll_batch_size: tp.Optional[int] = None
 
-  # Number of epistemic indices per trajectory to train on when the
-  # q_function has an epinet.
+  # Number of epistemic indices per trajectory to train on.
   num_index_samples: int = 1
   # Number of epistemic indices to evaluate with (also as an ensemble);
   # defaults to num_index_samples.

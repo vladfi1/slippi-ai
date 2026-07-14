@@ -22,9 +22,8 @@ class LearnerConfig:
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap
   include_action_taken_in_samples: bool = True
 
-  # Number of epistemic indices to sample when the q_function has an epinet.
-  # The q_policy regresses to the uniform distribution over the per-index
-  # argmax actions.
+  # Number of epistemic indices to sample. The q_policy regresses to the
+  # uniform distribution over the per-index argmax actions.
   num_index_samples: int = 1
 
   q_policy_argmax_weight: float = 1
@@ -274,27 +273,18 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     zs = q_function.sample_index(
         rngs, (self.config.num_index_samples, frames.reward.shape[1]))
 
-    if zs is None:
-      q_values = q_function.multi_q_values_from_action_state(
-          values=q_outputs.values,
-          action_init_state=action_init_state,
-          actions=actions,
-          batch_size=self.config.sample_batch_size,
-      )  # [S, T, B]
-      indexed_q_values = jnp.expand_dims(q_values, 0)  # [1, S, T, B]
-    else:
-      # Prepend z=0, which recovers the base head exactly, so that we get the
-      # base q-values from the same action_net unroll.
-      zs = jnp.concatenate([jnp.zeros_like(zs[:1]), zs], axis=0)
-      all_q_values = q_function.multi_index_q_values_from_action_state(
-          values=q_outputs.values,
-          action_init_state=action_init_state,
-          actions=actions,
-          zs=zs,
-          batch_size=self.config.sample_batch_size,
-      )  # [N + 1, S, T, B]
-      q_values = all_q_values[0]
-      indexed_q_values = all_q_values[1:]
+    # Prepend z=0, which recovers the base head exactly, so that we get the
+    # base q-values from the same action_net unroll.
+    zs = jnp.concatenate([jnp.zeros_like(zs[:1]), zs], axis=0)
+    all_q_values = q_function.multi_index_q_values_from_action_state(
+        values=q_outputs.values,
+        action_init_state=action_init_state,
+        actions=actions,
+        zs=zs,
+        batch_size=self.config.sample_batch_size,
+    )  # [N + 1, S, T, B]
+    q_values = all_q_values[0]
+    indexed_q_values = all_q_values[1:]
 
     # Just the policy samples, without the action taken.
     sample_q_values = q_values[:self.num_samples]

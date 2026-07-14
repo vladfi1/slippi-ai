@@ -39,7 +39,6 @@ def default_config():
   q_fn.embed.with_fod = True
   q_fn.embed.with_randall = True
 
-  q_fn.head.epinet.enabled = True
   config.learner.num_index_samples = 4
   config.learner.eval_num_index_samples = 64
 
@@ -158,9 +157,8 @@ if __name__ == '__main__':
         if lr != 1e-4:
           parts.append(f'lr{lr:.0e}')
 
-        if config.q_function.head.epinet.enabled:
-          parts.append('epi')
-          parts.append(f'ps{config.q_function.head.epinet.prior_scale:.1f}')
+        parts.append('epi')
+        parts.append(f'ps{config.q_function.head.epinet.prior_scale:.1f}')
 
         if TAG_SUFFIX.value is not None:
           parts.append(TAG_SUFFIX.value)
