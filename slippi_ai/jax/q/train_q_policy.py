@@ -91,6 +91,8 @@ class Config:
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 
+  remat: bool = True
+
   expt_root: str = 'experiments/q_policy'
   expt_dir: tp.Optional[str] = None
   tag: tp.Optional[str] = None
@@ -271,6 +273,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   assert name_map is not None
 
+  if config.remat:
+    q_policy.enable_remat()
 
   # Initialize q_function
   if restored:
@@ -307,6 +311,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       if q_fn_name_map[name] != code:
         raise ValueError(f'Name map mismatch for name {name}: {q_fn_name_map[name]} vs {code}')
 
+    del q_fn_state
   else:
     raise ValueError('Must initialize q_function from a checkpoint.')
 
@@ -383,6 +388,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     replicated_state = jax_utils.device_put(
         restored_state['state'], jax_utils.replicate_sharding(mesh))
     jax_utils.set_module_state(learner, replicated_state)
+    # The restored state may be in a different dtype (e.g. from an fp32
+    # checkpoint saved before the dtype configs were changed).
+    learner.cast_module_dtypes()
     print_losses('post-restore', train_manager.step()[0])
     del restored_state, replicated_state
 
