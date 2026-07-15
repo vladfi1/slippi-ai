@@ -17,7 +17,7 @@ from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 @dataclasses.dataclass
 class LearnerConfig:
   learning_rate: float = 1e-4
-  reward_halflife: float = 4
+  reward_halflife: float = 4  # only used for computing q_function metrics
 
   num_samples: int = 1
   sample_batch_size: int = 0  # 0 means full batch size, i.e. vmap

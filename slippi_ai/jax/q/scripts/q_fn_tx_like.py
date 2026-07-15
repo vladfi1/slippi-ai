@@ -24,13 +24,7 @@ def default_config():
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
 
-  # Match Q RL reward config
   config.learner.reward_halflife = 4
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
 
   q_fn = config.q_function
   q_fn.embed.controller.type = embed.ControllerType.CUSTOM_V1.value

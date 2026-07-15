@@ -87,7 +87,7 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
-  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
 

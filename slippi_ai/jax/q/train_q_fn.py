@@ -54,7 +54,7 @@ class Config:
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
-  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
   # Optionally use longer unroll length for less biased evaluation.
   test_unroll_multiplier: int = 1
