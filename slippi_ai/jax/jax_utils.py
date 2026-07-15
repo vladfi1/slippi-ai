@@ -93,11 +93,13 @@ def cast_floats_to_dtype(struct: T, dtype: jnp.dtype) -> T:
 
 ModT = tp.TypeVar('ModT', bound=nnx.Module)
 
-def cast_params_to_dtype(module: ModT, dtype) -> ModT:
-  """Cast nnx.Param variables to given dtype."""
-  graphdef, state = nnx.split(module, nnx.Param)
-  new_state = cast_floats_to_dtype(state, dtype)
-  return nnx.merge(graphdef, new_state)
+def cast_params_to_dtype(module: ModT, dtype: jnp.dtype) -> ModT:
+  """Returns a copy of the module with all floating-point state cast to dtype.
+
+  Unlike cast_module_state_to_dtype, this doesn't mutate the module.
+  """
+  graphdef, state = nnx.split(module)
+  return nnx.merge(graphdef, cast_floats_to_dtype(state, dtype))
 
 def with_compute_dtype(
     loss_fn: tp.Callable[tp.Concatenate[ModT, P], T],
