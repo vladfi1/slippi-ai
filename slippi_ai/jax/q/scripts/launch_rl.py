@@ -46,7 +46,8 @@ if __name__ == '__main__':
   CONFIG.learner.learning_rate = 3e-5
   CONFIG.learner.q_fn_learning_rate = 1e-4
   CONFIG.learner.reward_halflife = 4
-  CONFIG.learner.num_samples = 4
+  CONFIG.learner.num_samples = 3  # 4 total
+  CONFIG.learner.num_index_samples = 16
   # CONFIG.learner.sample_batch_size = 1
 
   CONFIG.learner.sample_policy_dtype = DType.FP16
