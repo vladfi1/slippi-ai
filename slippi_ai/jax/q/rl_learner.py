@@ -57,7 +57,7 @@ class LearnerConfig:
   reverse_kl_teacher_weight: float = 0
   actor_kl_weight: float = 0
   # Weight the argmax-distillation loss by the advantage of the best action.
-  weight_by_advantage: bool = False
+  weight_by_advantage: bool = True
 
   max_actor_kl: tp.Optional[float] = None
 
