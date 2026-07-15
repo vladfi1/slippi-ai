@@ -384,7 +384,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         restored_state['state'], jax_utils.replicate_sharding(mesh))
     jax_utils.set_module_state(learner, replicated_state)
     print_losses('post-restore', train_manager.step()[0])
-    del restored_state
+    del restored_state, replicated_state
 
   # TODO: use orbax instead?
   def save(eval_loss=None):
