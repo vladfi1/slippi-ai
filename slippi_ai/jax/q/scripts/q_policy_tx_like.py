@@ -28,18 +28,11 @@ def default_config():
   config.data.unroll_chunks = 4
   config.learner.learning_rate = 1e-4
 
+  config.learner.num_samples = 3  # 4 total
   config.learner.num_index_samples = 16
 
   config.learner.sample_policy_dtype = DType.FP16
   config.learner.q_policy_dtype = DType.BF16
-
-  # Match Q RL reward config
-  config.learner.reward_halflife = 8
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
 
   config.dataset.mirror = True
   config.dataset.allowed_opponents='all'
