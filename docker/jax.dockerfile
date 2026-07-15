@@ -4,15 +4,20 @@
 # RUN apt update && apt install -y python3 python3-pip
 
 # FROM nvcr.io/nvidia/jax:25.10-py3
-FROM nvcr.io/nvidia/jax:26.01-py3
+# FROM nvcr.io/nvidia/jax:26.01-py3
+FROM ubuntu:24.04
+
+RUN apt update
+RUN apt install -y python3 python3-venv htop git
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir s3cmd s3fs speedtest-cli ipdb ipython
 
-RUN apt update && apt install -y htop
-
 WORKDIR /root
-RUN git clone https://github.com/vladfi1/slippi-ai.git --branch jax
+RUN git clone https://github.com/vladfi1/slippi-ai.git --branch nash-rebase
 
 WORKDIR /root/slippi-ai
 
