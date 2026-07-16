@@ -413,15 +413,21 @@ class Learner(nnx.Module, tp.Generic[Action]):
           [samples, jnp.expand_dims(action_taken[1:], axis=_SAMPLE_AXIS)], axis=_SAMPLE_AXIS),
         policy_samples, frames.state_action.action)  # frame_skip x [S + 1, T, B]
 
-    indexed_q_values = q_function.multi_index_q_values_from_core_outputs(
+    indexed_vs, indexed_qs = q_function.multi_index_q_values_from_core_outputs(
         core_outputs=core_outputs,
         actions=actions,
         rngs=rngs,
         num_index_samples=self.config.num_index_samples,
         batch_size=self.config.sample_batch_size,
     )  # [N, S, T, B]
+    indexed_advantages = indexed_qs - indexed_vs
+    # Other metrics are computed in the q_function itself, but only here we
+    # have qs from multiple actions for the same state.
+    epistemic_std = jnp.std(indexed_advantages, axis=0, ddof=1)  # [S, T, B]
+    per_state_epistemic_std_std = jnp.std(epistemic_std, axis=0, ddof=1)  # [T, B]
+
     # The ensemble (mean over indices) is the point estimate of the q-values.
-    mean_q_values = jnp.mean(indexed_q_values, axis=0)  # [S, T, B]
+    mean_q_values = jnp.mean(indexed_qs, axis=0)  # [S, T, B]
 
     # Just the policy samples, without the action taken.
     mean_sample_q_values = mean_q_values[:self.num_samples]
@@ -436,7 +442,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         mean_sample_q_values, axis=_SAMPLE_AXIS)
     sample_policy_advantages = sample_policy_expected_return - mean_taken_q_value
 
-    argmaxes = jnp.argmax(indexed_q_values, axis=1)  # [N, T, B]
+    argmaxes = jnp.argmax(indexed_qs, axis=1)  # [N, T, B]
     one_hots = jax.nn.one_hot(argmaxes, num_samples, axis=1)  # [N, S, T, B]
     distribution = jnp.mean(one_hots, axis=0)  # [S, T, B]
 
@@ -456,6 +462,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         optimal_advantage_log_std=optimal_advantage_log_std,
         q_bias=q_bias,
         entropy=entropy,
+        per_state_epistemic_std_std=per_state_epistemic_std_std,
     )
     bm_metrics = jax.tree.map(lambda x: jnp.mean(x, axis=0), metrics)
 
