@@ -21,8 +21,10 @@ class LearnerConfig:
 
   unroll_batch_size: tp.Optional[int] = None
 
-  # Number of epistemic indices per trajectory to train on.
-  num_index_samples: int = 1
+  # Number of epistemic indices per trajectory to train on. The loss is linear
+  # in the expectation over indices, so this only affects gradient variance;
+  # it needs to be at least 2 for the epistemic metrics to be defined.
+  num_index_samples: int = 4
   # Number of epistemic indices to evaluate with (also as an ensemble);
   # defaults to num_index_samples.
   eval_num_index_samples: tp.Optional[int] = None

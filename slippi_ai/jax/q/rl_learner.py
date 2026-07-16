@@ -48,8 +48,9 @@ class LearnerConfig:
   epoch_length: int = 100
 
   # Number of epistemic indices to sample; their mean q-value is the
-  # ensemble point estimate.
-  num_index_samples: int = 1
+  # ensemble point estimate. Needs to be at least 2 for the epistemic metrics
+  # to be defined.
+  num_index_samples: int = 4
 
   # Weight on the argmax-distillation loss (regress q_policy toward best action).
   argmax_weight: float = 1
