@@ -331,7 +331,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         policy_samples, frames.state_action.action)  # frame_skip x [S + 1, T, B]
 
     # TODO: don't recompute q-values for the action taken?
-    indexed_q_values = q_function.multi_index_q_values_from_core_outputs(
+    _, indexed_q_values = q_function.multi_index_q_values_from_core_outputs(
         core_outputs=core_outputs,
         actions=actions,
         rngs=rngs,

@@ -176,7 +176,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       rngs: nnx.Rngs,
       num_index_samples: int,
       batch_size: int = 0,  # 0 is equivalent to vmap
-  ) -> jax.Array:  # [N, S, T, B]
+  ) -> tuple[jax.Array, jax.Array]:  # [N, T, B], [N, S, T, B]
     """Per-index q-values for multiple sampled action sequences."""
 
     zs = self.sample_index(
@@ -208,7 +208,7 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         output_batch_dims=1,
     )
 
-    return process_all_samples(self, action_inputs)  # [N, S, T, B]
+    return values, process_all_samples(self, action_inputs)  # [N, S, T, B]
 
   def unroll(
       self,
@@ -377,25 +377,42 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       discount: float,
       lambda_: float,
   ) -> QOutputs:
-    """Combines per-index predictions into ensemble QOutputs.
+    """Merges ensemble metrics with indexed metrics.
 
-    The loss and metrics are averaged over the sampled indices, while the
-    mean prediction over indices is evaluated as an ensemble; its metrics
-    (not trained on) are reported under 'ensemble'. The returned
-    returns/advantages/values/q_values are per-index.
+    The "regular" metrics are ensembled over the indices to be comparable
+    with previous non-epinet runs. The qs/vs/etc. are returned indexed. The
+    loss is also indexed, although it is averaged over the indices to maintain
+    the correct shape (note: this is not the ensemble loss).
     """
     outputs = nnx.vmap(
         QFunction[Action]._get_outputs,
         in_axes=(None, None, 0, 0, 0, None, None),
     )(self, frames, values, q_values, last_value, discount, lambda_)
+    indexed_metrics = jax.tree.map(
+        lambda x: jnp.mean(x, axis=0), outputs.metrics)
+
     ensemble_outputs = self._get_outputs(
         frames, jnp.mean(values, axis=0), jnp.mean(q_values, axis=0),
         jnp.mean(last_value, axis=0), discount, lambda_)
-    metrics = jax.tree.map(
-        lambda x: jnp.mean(x, axis=0), outputs.metrics)
-    metrics['ensemble'] = ensemble_outputs.metrics
+    metrics = ensemble_outputs.metrics
+
+    for name, vs in [('v', values), ('q', q_values)]:
+      std = jnp.std(vs, axis=0, ddof=1)  # [T, B]
+      indexed_metrics[name]['epistemic_std'] = std
+      std_std = jnp.broadcast_to(jnp.std(std), std.shape)
+      indexed_metrics[name]['epistemic_std_std'] = std_std
+
+    advantages = q_values - values
+    advantage_std = jnp.std(advantages, axis=0, ddof=1)
+    indexed_metrics['advantage'] = dict(
+        mean=jnp.mean(advantages, axis=0),
+        epistemic_std=advantage_std,
+        epistemic_std_std=jnp.broadcast_to(jnp.std(advantage_std), advantage_std.shape),
+    )
+
+    metrics['indexed'] = indexed_metrics
     return outputs._replace(
-        loss=jnp.mean(outputs.loss, axis=0),
+        loss=jnp.mean(outputs.loss, axis=0),  # [T, B]
         metrics=metrics,
     )
 
