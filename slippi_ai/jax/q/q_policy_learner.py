@@ -24,8 +24,9 @@ class LearnerConfig:
   include_action_taken_in_samples: bool = True
 
   # Number of epistemic indices to sample. The q_policy regresses to the
-  # uniform distribution over the per-index argmax actions.
-  num_index_samples: int = 1
+  # uniform distribution over the per-index argmax actions, whose resolution
+  # is limited to 1/num_index_samples.
+  num_index_samples: int = 4
 
   q_policy_argmax_weight: float = 1
   q_policy_imitation_weight: float = 0
