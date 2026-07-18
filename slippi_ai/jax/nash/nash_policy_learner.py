@@ -438,8 +438,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
     assert ps.shape == (num_indices, t, b, 2, s1)
     ps = ps / jnp.sum(ps, axis=-1, keepdims=True)  # re-normalize for numerical stability
 
+    # The mass-coverage and entropy statistics are computed on the mixture over
+    # epistemic indices, which is the distribution the nash_policy regresses
+    # to. The per-index disagreement metrics are computed in the nash_policy
+    # unroll.
+    mixture_ps = jnp.mean(ps, axis=0)  # [T, B, 2, S]
+
     ps_stats = {}
-    sorted_ps = jnp.sort(ps, descending=True, axis=-1)
+    sorted_ps = jnp.sort(mixture_ps, descending=True, axis=-1)
     cumsum_ps = jnp.cumsum(sorted_ps, axis=-1)
 
     for count in range(1, min(s1 + 1, 6)):
@@ -454,24 +460,26 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
       ps_stats[count] = count_stats
 
-    nm_metrics['ps'] = ps_stats
+    mixture_metrics = {'ps': ps_stats}
 
-    # Per-index nash entropy; the mixture-based epistemic metrics are computed
-    # in the nash_policy unroll.
-    nash_entropy = jax_utils.entropy(ps, axis=-1)  # [N, T, B, 2]
-    nm_metrics['entropy'] = nash_entropy
+    nash_entropy = jax_utils.entropy(mixture_ps, axis=-1)  # [T, B, 2]
+    mixture_metrics['entropy'] = nash_entropy
     entropy_stats = {}
 
     for cutoff in [0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 1.4, 2]:
       # Mean will be taken later
       entropy_stats[cutoff] = nash_entropy > cutoff
 
-    nm_metrics['entropy_above'] = entropy_stats
+    mixture_metrics['entropy_above'] = entropy_stats
 
     # Batch-major metrics; keep index and time dims so we can take max over
     # num_steps.
     bm_metrics = utils.map_single_structure(
         lambda x: jnp.moveaxis(x, 2, 0), nm_metrics)  # [B, N, T, ...]
+
+    # The mixture metrics have no index axis.
+    bm_metrics.update(utils.map_single_structure(
+        lambda x: jnp.moveaxis(x, 1, 0), mixture_metrics))  # [B, T, ...]
 
     # First epistemic index, first timestep.
     bm_metrics['sample_payoff_matrix'] = payoff_matrices[0, 0].astype(jnp.float32)  # [B, S1, S2]
