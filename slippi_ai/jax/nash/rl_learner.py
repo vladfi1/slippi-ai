@@ -489,9 +489,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
 
-    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [N, S, S, T, B]
-    payoff_matrices = jnp.moveaxis(
-        (p1_qs - p2_qs) / 2, (1, 2), (-2, -1))  # [N, T, B, S, S]
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
 
     metrics = dict(
         q_outputs.metrics,
@@ -511,10 +509,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     num_indices, s1, s2, t, b, n = q_values.shape
     assert n == 2
 
-    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [N, S, S, T, B]
-    mixed_values = (p1_qs - p2_qs) / 2  # [N, S, S, T, B]
-
-    payoff_matrices = jnp.moveaxis(mixed_values, (1, 2), (-2, -1))  # [N, T, B, S, S]
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
 
     # Use separate vmaps over T and B to avoid an XLA SPMD partitioner
     # bug triggered by vmapping over the merged T*B sharded dimension.
@@ -580,33 +575,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
 
     # The regression target is the mixture over epistemic indices.
-    mixture_probs = index_mean(nash_probs)  # [T, B, 2, S]
-
-    # Mixture entropy alone conflates a genuinely mixed nash (all indices
-    # agree on a high-entropy strategy) with epistemic disagreement. The
-    # mutual information I(action; index) = H(mixture) - E_index[H(nash)]
-    # isolates the disagreement: it is 0 iff all indices give the same
-    # distribution, however mixed. Note it is estimated from N index samples
-    # and can only underestimate the true MI (by concavity of entropy).
-    index_entropy = index_mean(jax_utils.entropy(nash_probs, axis=-1))  # [T, B, 2]
-    mixture_entropy = jax_utils.entropy(mixture_probs, axis=-1)  # [T, B, 2]
-    metrics['nash_entropy'] = mixture_entropy
-    metrics['nash_index_entropy'] = index_entropy
-    metrics['nash_index_mi'] = mixture_entropy - index_entropy
-
-    # Conjugate-prior style dispersion: moment-match a Dirichlet to the
-    # per-index nash strategies. For Dirichlet(alpha) with precision
-    # alpha0 = sum(alpha), Var(p_s) = pbar_s (1 - pbar_s) / (alpha0 + 1), so
-    # alpha0 = sum_s pbar_s (1 - pbar_s) / sum_s Var(p_s) - 1. High precision
-    # means the indices agree tightly; logged on a log scale as the precision
-    # diverges when the variance vanishes.
-    nash_index_var = jnp.sum(
-        jnp.var(nash_probs, axis=0, ddof=1), axis=-1)  # [T, B, 2]
-    allocated_var = jnp.sum(mixture_probs * (1 - mixture_probs), axis=-1)
-    dirichlet_precision = allocated_var / (nash_index_var + 1e-8) - 1
-    metrics['nash_index_var'] = nash_index_var
-    metrics['nash_dirichlet_log_precision'] = jnp.log1p(
-        jnp.maximum(dirichlet_precision, 0))
+    mixture_probs, indexed_metrics = nash_utils.indexed_nash_metrics(nash_probs)
+    metrics.update(indexed_metrics)
 
     if self.config.include_action_taken_in_samples:
       metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
@@ -616,63 +586,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
         nash_solution.p1_nash_value, -nash_solution.p1_nash_value
     ], axis=-1)  # [N, T, B, 2]
 
-    # Disagreement between indices about the value of the game.
-    metrics['nash_value_epistemic_std'] = jnp.std(
-        nash_values, axis=0, ddof=1)  # [T, B, 2]
-
-    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [N, S, S, T, B]
-    mixed_values = (p1_qs - p2_qs) / 2  # [N, S, S, T, B]
-    payoff_matrices = jnp.moveaxis(mixed_values, (1, 2), (-2, -1))  # [N, T, B, S, S]
-    p12_matrices = jnp.stack([
-        payoff_matrices,
-        -payoff_matrices.swapaxes(-1, -2)],
-    axis=-3)  # [N, T, B, 2, S, S]
-
-    def payoffs(
-      p: jax.Array,  # [N, T, B, 2, S]
-      q: jax.Array,  # [N, T, B, 2, S]
-    ) -> jax.Array:  # [N, T, B, 2]
-      """Compute payoffs of policy p vs policy q, per epistemic index."""
-      return jnp.vecdot(p, jnp.matvec(p12_matrices, jnp.flip(q, axis=-2)))
-
-    vs_mean = p12_matrices.mean(axis=-1)  # [N, T, B, 2, S]
-    argmax_policy = jnp.argmax(vs_mean, axis=-1)  # [N, T, B, 2]
-    argmax_policy_probs = jax.nn.one_hot(argmax_policy, num_classes=num_samples)  # [N, T, B, 2, S]
-    argmax_vs_mean = jnp.max(vs_mean, axis=-1)  # [N, T, B, 2]
-
-    nash_vs_mean = jnp.vecdot(nash_probs, vs_mean)  # [N, T, B, 2]
-    argmax_advantage = argmax_vs_mean - nash_vs_mean
-
-    nash_vs_argmax = payoffs(nash_probs, argmax_policy_probs)
-    nash_vs_argmax_advantage = nash_vs_argmax - nash_values
-
-    # Ensemble (index-mean) advantage; also used for advantage weighting.
-    nash_advantage = index_mean(nash_vs_mean - nash_values)  # [T, B, 2]
-    nash_advantage_std = jnp.std(nash_advantage, keepdims=True)
-    nash_advantage_variation = nash_advantage_std / jnp.mean(nash_advantage)
-    nash_advantantage_min = jnp.min(nash_advantage, keepdims=True)
-
-    # Test nash solutions; should maybe go in the nash computation itself
-    nash_vs_nash = payoffs(nash_probs, nash_probs)  # [N, T, B, 2]
-    nash_value_error = jnp.sqrt(jnp.square(nash_vs_nash - nash_values).mean(keepdims=True))
-    nash_value_error_max = jnp.max(jnp.abs(nash_vs_nash - nash_values), keepdims=True)
-    vs_nash = jnp.matvec(p12_matrices, jnp.flip(nash_probs, axis=-2))  # [N, T, B, 2, S]
-    best_vs_nash = jnp.max(vs_nash, axis=-1)  # [N, T, B, 2]
-    nash_suboptimality = best_vs_nash - nash_vs_nash
-    nash_suboptimality_max = jnp.max(nash_suboptimality, keepdims=True)
-
-    metrics.update(
-        nash_advantage=nash_advantage,  # nash-vs-mean - nash-vs-nash
-        nash_advantage_std=nash_advantage_std,
-        nash_advantage_variation=nash_advantage_variation,
-        nash_advantantage_min=nash_advantantage_min,
-        argmax_advantage=index_mean(argmax_advantage),  # argmax-vs-mean - nash-vs-mean
-        nash_vs_argmax_advantage=index_mean(nash_vs_argmax_advantage),  # nash-vs-argmax - nash-vs-nash
-        nash_value_error=nash_value_error,
-        nash_value_error_max=nash_value_error_max,
-        nash_suboptimality=index_mean(nash_suboptimality),
-        nash_suboptimality_max=nash_suboptimality_max,
-    )
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
+    diagnostics = nash_utils.nash_payoff_diagnostics(
+        payoff_matrices, nash_probs, nash_values)
+    metrics.update(diagnostics.metrics)
+    nash_advantage = diagnostics.nash_advantage  # [T, B, 2]
 
     nash_policy_mbs = self.config.sample_batch_size
 
@@ -800,7 +718,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_vs_nash = jnp.vecdot(nash_policy_qs, jnp.flip(nash_probs, axis=-2))  # [N, T, B, 2]
     optimality_gap = nash_values - nash_policy_vs_nash
 
-    mean_vs_nash = -jnp.flip(nash_vs_mean, axis=-1)  # [N, T, B, 2]
+    mean_vs_nash = -jnp.flip(diagnostics.nash_vs_mean, axis=-1)  # [N, T, B, 2]
     nash_policy_advantage = nash_policy_vs_nash - mean_vs_nash
 
     metrics.update(

@@ -21,6 +21,7 @@ def default_config():
   config.runtime.max_step = 0
   config.runtime.verbose_eval = True
   config.runtime.run_single_eval = True
+  config.runtime.max_eval_steps = 50
 
   config.data.batch_size = 256
   config.data.unroll_length = 84
@@ -34,7 +35,9 @@ def default_config():
   config.reward.stalling_threshold = 50
   config.reward.approaching_factor = 1e-3
 
-  config.learner.num_samples = 3
+  config.learner.num_samples = 7
+  config.learner.eval_num_index_samples = 64
+
   config.learner.sample_policy_dtype = DType.FP16
   config.learner.nash_policy_dtype = DType.FP16
 
@@ -91,7 +94,10 @@ if __name__ == '__main__':
         q_fn_name = os.path.basename(config.initialize_q_function_from)
         if q_fn_name == 'latest.pkl':
           q_fn_name = os.path.basename(os.path.dirname(config.initialize_q_function_from))
-        config.tag = f"{q_fn_name}_ns{config.learner.num_samples}_eval"
+        ns = config.learner.num_samples
+        if config.learner.include_action_taken_in_samples:
+          ns += 1
+        config.tag = f"{q_fn_name}_ns{ns}_eval"
 
     config.dataset.allowed_characters = char
 
