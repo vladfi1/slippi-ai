@@ -45,7 +45,7 @@ class LearnerConfig:
   num_index_samples: int = 4
 
   nash_weight: float = 1
-  weight_by_advantage: bool = False
+  weight_by_advantage: bool = True
 
   kl_weight_lr: float = 1e-2
   target_teacher_kl: float = 0.05
