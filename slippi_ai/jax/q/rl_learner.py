@@ -114,22 +114,8 @@ class QFunctionOutputs(tp.NamedTuple):
   # Max ensemble q-value over the sampled actions.
   best_values: jax.Array  # [T, B]
 
-def inv_softplus(x: jax.Array | float) -> jax.Array:
-  return jnp.log(jnp.expm1(x))
-
-class PositiveWeight(nnx.Module):
-
-  def __init__(self, initial_value: float = 0.1):
-    self.raw_weight = nnx.Param(inv_softplus(initial_value))
-
-  def __call__(self) -> jax.Array:
-    return jax.nn.softplus(self.raw_weight[...])
-
-class KLTeacherWeights(nnx.Module):
-
-  def __init__(self, initial_value: float = 0.1):
-    self.fwd_weight = PositiveWeight(initial_value)
-    self.bwd_weight = PositiveWeight(initial_value)
+# Moved to jax_utils to be shared with the nash rl_learner.
+KLTeacherWeights = jax_utils.KLTeacherWeights
 
 class Learner(nnx.Module, tp.Generic[Action]):
 

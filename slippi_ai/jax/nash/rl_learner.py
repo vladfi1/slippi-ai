@@ -11,7 +11,7 @@ import optax
 
 from slippi_ai import utils
 from slippi_ai.types import S, Frames, Action, StateAction
-from slippi_ai.jax.policies import Policy, RecurrentState, DistanceOutputs
+from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax import embed, rl_lib, jax_utils, saving
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
 from slippi_ai.jax.agents import DType
@@ -46,8 +46,10 @@ class LearnerConfig:
 
   nash_weight: float = 1
   weight_by_advantage: bool = False
-  kl_teacher_weight: float = 0
-  reverse_kl_teacher_weight: float = 0
+
+  kl_weight_lr: float = 1e-2
+  target_teacher_kl: float = 0.05
+  target_reverse_teacher_kl: float = 0.05
 
   value_burnin_steps: int = 0
 
@@ -178,6 +180,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(q_fn_learning_rate), wrt=nnx.Param)
 
+    kl_weight_schedule = warmup_schedule(
+        config.value_burnin_steps, config.kl_weight_lr)
+    self.kl_teacher_weights = jax_utils.KLTeacherWeights()
+    self.kl_teacher_weights_optimizer = nnx.Optimizer(
+      self.kl_teacher_weights, optax.sgd(kl_weight_schedule), wrt=nnx.Param)
+
     # NOTE: some jax_utils functions expect jax arrays inside modules.
     jax_utils.set_module_state(self, utils.map_nt(jnp.asarray, state))
 
@@ -296,9 +304,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
         teacher: Policy[Action],
         frames: Frames[nash_data.Rank3, Action], /,
         initial_states: RecurrentState,  # [B, 2]
-    ) -> tuple[list[DistanceOutputs[Action]], RecurrentState]:
-      teacher_outputs = teacher.unroll(frames, initial_states)
-      return teacher_outputs.distances, teacher_outputs.final_state
+    ) -> tuple[jax.Array, RecurrentState]:
+      # Only compute the core network outputs; the controller head is applied
+      # in _unroll_nash_policy where the teacher's logits are evaluated on
+      # actions sampled from the teacher and nash_policy.
+      inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
+      outputs, final_state = teacher.network.unroll(
+          inputs, frames.is_resetting[:-1], initial_states)
+      return outputs, final_state
 
     jax_utils.cast_module_state_to_dtype(
       self.teacher, config.teacher_dtype.dtype)
@@ -322,16 +335,18 @@ class Learner(nnx.Module, tp.Generic[Action]):
     train_nash_policy = jax_utils.train_fn(unroll_nash_policy)
 
     self.train_nash_policy = jax_utils.cached_partial(
-        jax_utils.nnx_jit(train_nash_policy, donate_argnums=(0, 1, 2, 3, 5)),
+        jax_utils.nnx_jit(train_nash_policy, donate_argnums=(0, 1, 2, 3, 4, 5, 7)),
         self.nash_policy, self.policy_optimizer, rngs, self.q_function,
+        self.teacher, self.kl_teacher_weights,
     )
 
     self.run_nash_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             jax_utils.no_loss(unroll_nash_policy),
-            donate_argnums=(0, 1, 2, 4),
+            donate_argnums=(0, 1, 2, 3, 4, 6),
         ),
-        self.nash_policy, rngs, self.q_function,
+        self.nash_policy, rngs, self.q_function, self.teacher,
+        self.kl_teacher_weights,
     )
 
     def post_update(
@@ -360,6 +375,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.post_update = jax_utils.cached_partial(
         jax_utils.nnx_jit(post_update),
         self.nash_policy,
+    )
+
+    train_kl_teacher_weights = jax_utils.nnx_jit(
+        jax_utils.train_fn(self._unroll_kl_teacher_weights),
+        donate_argnums=(0, 1),
+    )
+    self.train_kl_teacher_weights = jax_utils.cached_partial(
+        train_kl_teacher_weights,
+        self.kl_teacher_weights, self.kl_teacher_weights_optimizer,
     )
 
     @nnx.jit(donate_argnums=(0, 1))
@@ -538,6 +562,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       nash_policy: Policy[Action],
       rngs: nnx.Rngs,
       q_function: q_lib.QFunction[Action],
+      teacher: Policy[Action],
+      kl_teacher_weights: jax_utils.KLTeacherWeights,
       frames: Frames[nash_data.Rank3, Action],  # [T, B, 2]
       initial_states: RecurrentState,  # [B, 2]
       policy_samples: list[Action],  # FS x [S, T, B, 2]
@@ -546,7 +572,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_values: jax.Array,  # [N, S, S, T, B, 2]
       zs: jax.Array,  # [N, B, 1, D_Z]
       nash_solution: nash.NashVariables,  # [N, T, B]
-      teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
+      teacher_core_outputs: jax.Array,  # [T, B, 2, O]
       fs_actor_logits: list[Action],  # FS x [T, B, 2]
   ) -> tuple[Loss, dict, RecurrentState]:
 
@@ -658,12 +684,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
       nash_cross_entropy *= nash_advantage / nash_advantage.mean()
 
     # Estimate nash_policy vs computed nash
+    nash_policy_sample_outputs = nash_policy.controller_head.sample(
+        rngs=rngs,
+        inputs=nash_policy_outputs.outputs,
+        prev_controller_state=prev_action)
     nash_policy_samples = [  # list[Controller[T, B, 2]]
-        so.controller_state
-        for so in nash_policy.controller_head.sample(
-            rngs=rngs,
-            inputs=nash_policy_outputs.outputs,
-            prev_controller_state=prev_action)]
+        so.controller_state for so in nash_policy_sample_outputs]
 
     q_function = jax_utils.cast_params_to_dtype(
         q_function, self.config.q_fn_dtype.dtype)
@@ -731,17 +757,53 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_logits = batch_fs([
         do.logits for do in nash_policy_outputs.distances])
 
-    teacher_logits = batch_fs([
-        do.logits for do in teacher_outputs
-    ])
-
     actor_logits = batch_fs(fs_actor_logits)
     actor_logits = utils.map_nt(lambda x: x[1:], actor_logits)
 
-    teacher_kl = self._compute_kl(nash_policy_logits, teacher_logits)  # [T, FS, B, 2]
-    reverse_teacher_kl = self._compute_kl(teacher_logits, nash_policy_logits)  # [T, FS, B, 2]
+    # The exact KL between autoregressive policies is intractable because
+    # later action components condition on earlier sampled ones. Instead we
+    # sample actions from the "P" policy, condition both policies on them,
+    # and take the analytic per-component KL, which is an unbiased
+    # (Rao-Blackwellized) estimate of the true KL.
+
+    # KL(nash_policy || teacher), sampling from the nash_policy.
+    nash_policy_sample_logits = batch_fs(
+        [so.logits for so in nash_policy_sample_outputs])
+    teacher_on_nash_policy_samples = teacher.controller_head.distance_outputs(
+        inputs=teacher_core_outputs,
+        prev_controller_state=prev_action,
+        target_controller_state=nash_policy_samples,
+    )
+    teacher_logits_on_nash_policy_samples = batch_fs(
+        [do.logits for do in teacher_on_nash_policy_samples])
+    teacher_kl = self._compute_kl(
+        nash_policy_sample_logits, teacher_logits_on_nash_policy_samples)  # [T, FS, B, 2]
+
+    # KL(teacher || nash_policy), sampling from the teacher.
+    teacher_sample_outputs = teacher.controller_head.sample(
+        rngs=rngs,
+        inputs=teacher_core_outputs,
+        prev_controller_state=prev_action)
+    teacher_samples = [so.controller_state for so in teacher_sample_outputs]
+    teacher_sample_logits = batch_fs(
+        [so.logits for so in teacher_sample_outputs])
+    nash_policy_on_teacher_samples = nash_policy.controller_head.distance_outputs(
+        inputs=nash_policy_outputs.outputs,
+        prev_controller_state=prev_action,
+        target_controller_state=teacher_samples,
+    )
+    nash_policy_logits_on_teacher_samples = batch_fs(
+        [do.logits for do in nash_policy_on_teacher_samples])
+    reverse_teacher_kl = self._compute_kl(
+        teacher_sample_logits, nash_policy_logits_on_teacher_samples)
+
+    # The actor_kl is already such an estimate: the trajectory actions were
+    # sampled from the actor, whose logits were recorded at sampling time, and
+    # the nash_policy is teacher-forced on those same actions.
     actor_kl = self._compute_kl(actor_logits, nash_policy_logits)  # [T, FS, B, 2]
-    entropy = self._compute_entropy(nash_policy_logits)  # [T, FS, B, 2]
+    # Like the KLs, the entropy conditions on prefixes sampled from the
+    # nash_policy itself.
+    entropy = self._compute_entropy(nash_policy_sample_logits)  # [T, FS, B, 2]
 
     def fs_mean(x: jax.Array) -> jax.Array:
       assert x.shape[1] == self.frame_skip
@@ -749,8 +811,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     losses = [
         self.config.nash_weight * nash_cross_entropy,
-        self.config.kl_teacher_weight * fs_mean(teacher_kl),
-        self.config.reverse_kl_teacher_weight * fs_mean(reverse_teacher_kl),
+        kl_teacher_weights.fwd_weight() * fs_mean(teacher_kl),
+        kl_teacher_weights.bwd_weight() * fs_mean(reverse_teacher_kl),
     ]
     nash_policy_total_loss = jax_utils.add_n(losses)
 
@@ -769,6 +831,30 @@ class Learner(nnx.Module, tp.Generic[Action]):
       lambda x: jnp.mean(x, axis=0), metrics)
 
     return bm_loss, bm_metrics, nash_policy_outputs.final_state
+
+  def _unroll_kl_teacher_weights(
+    self,
+    kl_teacher_weights: jax_utils.KLTeacherWeights,
+    teacher_kl: jax.Array,
+    reverse_teacher_kl: jax.Array,
+  ):
+    fwd_weight = kl_teacher_weights.fwd_weight()
+    bwd_weight = kl_teacher_weights.bwd_weight()
+
+    # High weight lowers the KL, so if the KL is high, we want to increase the weight.
+    fwd_loss = -fwd_weight * (jnp.mean(teacher_kl) - self.config.target_teacher_kl)
+    bwd_loss = -bwd_weight * (jnp.mean(reverse_teacher_kl) - self.config.target_reverse_teacher_kl)
+    total_loss = fwd_loss + bwd_loss
+
+    metrics = dict(
+        fwd_weight=fwd_weight,
+        bwd_weight=bwd_weight,
+        fwd_loss=fwd_loss,
+        bwd_loss=bwd_loss,
+        total_loss=total_loss,
+    )
+
+    return total_loss, metrics
 
   @jax_utils.annotate_function
   def step_sample_policy(
@@ -801,7 +887,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_values: jax.Array,  # [N, S, S, T, B, 2]
       zs: jax.Array,  # [N, B, 1, D_Z]
       nash_solution: nash.NashVariables,  # [N, T, B]
-      teacher_outputs: list[DistanceOutputs[Action]],  # FS x [T, B, 2]
+      teacher_core_outputs: jax.Array,  # [T, B, 2, O]
       actor_logits: list[Action],  # FS x [T, B, 2]
       train: bool = True,
   ):
@@ -809,7 +895,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return fn(
         tm_frames, initial_state, policy_samples, values, q_action_init_state,
-        q_values, zs, nash_solution, teacher_outputs, actor_logits,
+        q_values, zs, nash_solution, teacher_core_outputs, actor_logits,
     )
 
   def step(
@@ -851,7 +937,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     ) = self.compute_nash(q_values)
 
     (
-      teacher_outputs,
+      teacher_core_outputs,
       final_states[TEACHER],
     ) = self.run_teacher(frames, initial_states[TEACHER])
 
@@ -863,7 +949,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         frames, initial_states[NASH_POLICY], policy_samples, values,
-        q_action_init_state, q_values, zs, nash_variables, teacher_outputs,
+        q_action_init_state, q_values, zs, nash_variables, teacher_core_outputs,
         actor_logits, train=train)
 
     post_update_metrics = self.post_update(
@@ -873,6 +959,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     for path, value in jax.tree.leaves_with_path(jax.device_get(post_update_metrics)):
       if np.any(np.isnan(value)):
         raise ValueError(f'NaN in post_update_metrics at {path}')
+
+    if train:
+      metrics['kl_teacher_weights'] = self.train_kl_teacher_weights(
+          teacher_kl=metrics[NASH_POLICY]['teacher_kl'],
+          reverse_teacher_kl=metrics[NASH_POLICY]['reverse_teacher_kl'],
+      )[0]
 
     if train and step % self.config.epoch_length == 0:
       self._update_policy()

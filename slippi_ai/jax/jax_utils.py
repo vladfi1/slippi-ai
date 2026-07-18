@@ -266,6 +266,23 @@ class MLP(nnx.Module):
       x = layer(x)
     return x
 
+def inv_softplus(x: jax.Array | float) -> jax.Array:
+  return jnp.log(jnp.expm1(x))
+
+class PositiveWeight(nnx.Module):
+
+  def __init__(self, initial_value: float = 0.1):
+    self.raw_weight = nnx.Param(inv_softplus(initial_value))
+
+  def __call__(self) -> jax.Array:
+    return jax.nn.softplus(self.raw_weight[...])
+
+class KLTeacherWeights(nnx.Module):
+
+  def __init__(self, initial_value: float = 0.1):
+    self.fwd_weight = PositiveWeight(initial_value)
+    self.bwd_weight = PositiveWeight(initial_value)
+
 def remat_method(
     method: tp.Callable[P, T],
     **remat_kwargs,
