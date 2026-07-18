@@ -22,6 +22,7 @@ PLAYER_MAINS = {
     ('Franz', melee.Character.DOC),
     ('CookBook', melee.Character.POPO),
     ('Cody', melee.Character.FOX),
+    ('Zain', melee.Character.MARTH),
     ('Hax', melee.Character.FOX),
 }
 
@@ -70,7 +71,7 @@ NAME_GROUPS = [
   ('BBB', 'BBB#960'),  # 3.6K replays
   ('Kodorin', 'KOD#0', '8#9'),  # 21K replays
   ('SFAT', 'SFAT#9', 'OHMA#175', 'SFAT#99', 'SFAT#783'),  # 10K replays
-  ('Solobattle', '666#666', 'SOLO#735'),  # 19K replays
+  ('Solobattle', '666#666', 'SOLO#735', '💲⚽👢⚽🅱🅰🌴🌴👢🎗'),  # 19K replays
   ('Frenzy', 'FRNZ#141'),  # 20K replays
   ('Gosu', 'WIZZ#310'),  # 18K replays
   # Most Franz games are local with no name; for those we assume any Dr. Mario is Franz.
