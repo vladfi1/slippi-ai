@@ -30,6 +30,51 @@ class EpinetConfig:
   prior_scale: float = 1.0
 
 
+def epistemic_metrics(vs: jax.Array) -> dict:
+  """Epistemic uncertainty statistics for per-index predictions [N, ...].
+
+  Requires at least 2 indices; with fewer the statistics are NaN.
+
+  The per-state std is a noisy estimate of the true sigma, with a sampling std
+  of its own of ~sigma/sqrt(2(N-1)). Summaries of how it varies across states
+  are therefore dominated by that noise floor unless N is large, which makes
+  them incomparable between runs (or between train and eval) that use different
+  numbers of indices. The summaries below instead work on the variance scale,
+  where the chi-squared sampling moments are exact, and subtract the noise off.
+
+  `epistemic_fraction` is then flat in N. `dispersion` still reads low at small
+  N (~7% at N=4, exact by N=16) because the sqrt of a noisy unbiased estimate
+  is biased down; it is comparable across N only for N >~ 16.
+  """
+  n = vs.shape[0]
+
+  # Unbiased per-state epistemic variance: E[var | sigma] = sigma^2.
+  var = jnp.var(vs, axis=0, ddof=1)  # [...]
+  mean_var = jnp.mean(var)  # unbiased for E_s[sigma^2]
+
+  # Since E[var^2 | sigma] = sigma^4 (n+1)/(n-1), this is unbiased for the
+  # across-state variance of the true epistemic variance, Var_s(sigma^2).
+  across_var = (
+      (n - 1) / (n + 1) * jnp.mean(jnp.square(var)) - jnp.square(mean_var))
+  # Normalized by the mean so as to be dimensionless: the q-value scale drifts
+  # over training, but this does not.
+  dispersion = jnp.sqrt(jnp.maximum(across_var, 0)) / (mean_var + 1e-8)
+
+  # Law of total variance: Var_{s,z}[q] = E_s[Var_z q] + Var_s[E_z q], i.e.
+  # epistemic uncertainty plus genuine discrimination between states. The
+  # empirical variance of the ensemble mean overstates the latter by exactly
+  # E_s[sigma^2]/n, since the mean over n indices is itself noisy.
+  between_var = jnp.maximum(jnp.var(jnp.mean(vs, axis=0)) - mean_var / n, 0)
+  epistemic_fraction = mean_var / (mean_var + between_var + 1e-8)
+
+  broadcast = lambda x: jnp.broadcast_to(x, var.shape)
+  return dict(
+      epistemic_std=jnp.sqrt(var),
+      dispersion=broadcast(dispersion),
+      epistemic_fraction=broadcast(epistemic_fraction),
+  )
+
+
 class PriorParam(nnx.Variable):
   """Parameter of a prior network; not an nnx.Param, so never trained."""
 
