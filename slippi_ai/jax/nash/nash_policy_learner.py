@@ -33,6 +33,12 @@ class LearnerConfig:
   # Only train on the highest probability subsample.
   subsample: tp.Optional[int] = None
 
+  # Number of epistemic indices to sample. The nash is solved once per index,
+  # and the nash_policy regresses to the mixture of the per-index nash
+  # distributions. Needs to be at least 2 for the epistemic metrics.
+  num_index_samples: int = 4
+  eval_num_index_samples: tp.Optional[int] = None
+
   nash_error: float = 1e-3
 
   nash_weight: float = 1
@@ -57,9 +63,10 @@ QFunctionOutputs = tuple[
     Loss,  # [B]
     Metrics,  # [B]
     RecurrentState,  # final state [B]
-    Values,  # [T, B, 2]
+    Values,  # [N, T, B, 2] per epistemic index
     RecurrentState,  # action_init_state [T, B, 2, H]
-    QValues,  # [S, S, T, B, 2]
+    QValues,  # [N, S, S, T, B, 2] per epistemic index
+    jax.Array,  # zs [N, B, 1, D_Z] epistemic indices
 ]
 
 
@@ -151,11 +158,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     tms_specs.insert(_SAMPLE_AXIS, None)
     TMSS = PS(*tms_specs)  # time-major SxS
 
+    # Per-epistemic-index arrays carry a leading index axis N.
+    NTM = PS(None, None, DATA_AXIS)  # [N, T, B, ...]
+    NTMSS = PS(None, None, None, None, DATA_AXIS)  # [N, S, S, T, B, ...]
+    NB = PS(None, DATA_AXIS)  # [N, B, ...]
+
     policy_samples = TMS
-    vs = TM
+    vs = NTM  # values [N, T, B, 2]
     q_action_init = TM
-    qs = TMSS
-    nash_solution = TM
+    qs = NTMSS  # [N, S, S, T, B, 2]
+    zs_spec = NB  # [N, B, 1, D_Z]
+    nash_solution = NTM  # [N, T, B]
     metrics = BM
 
     sample_policy_specs = ShardingSpecs(
@@ -176,7 +189,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     q_function_specs = ShardingSpecs(
         extra_in_specs=(policy_samples,),
-        extra_out_specs=(vs, q_action_init, qs),
+        extra_out_specs=(vs, q_action_init, qs, zs_spec),
     )
 
     # Keep q_function in fp32 so we can distinguish small differences in
@@ -185,11 +198,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # if config.bf16:
     #   unroll_q_function = jax_utils.with_bf16_compute(unroll_q_function)
 
-    self.run_q_function = jax_utils.shard_map_loss_fn(
+    self.run_q_function = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.q_function,
+        rngs=rngs,
         loss_fn=unroll_q_function,
         mesh=mesh,
         **q_function_specs,
+        static_argnames=('num_index_samples',),
     )
 
     # We can't shard_map the qpax solver because of vma issues with while_loop.
@@ -212,7 +227,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.compute_nash = jax.profiler.annotate_function(self.compute_nash)
 
     nash_policy_specs = ShardingSpecs(
-        extra_in_specs=(policy_samples, vs, q_action_init, nash_solution),
+        extra_in_specs=(
+            policy_samples, vs, q_action_init, qs, zs_spec, nash_solution),
         extra_out_specs=None,
     )
     unroll_nash_policy = jax_utils.with_compute_dtype(
@@ -318,13 +334,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_function: q_lib.QFunction[Action],
       bm_frames: Frames[nash_data.Rank3, Action],
       initial_states: RecurrentState,
+      rngs: nnx.Rngs,
       policy_samples: list[Action],
-  ) -> tuple[Loss, Metrics, RecurrentState, Values, RecurrentState, QValues]:
+      *,
+      num_index_samples: int,
+  ) -> QFunctionOutputs:
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
 
-    q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
-        frames, initial_states, self.discount)
+    q_outputs, action_init_state, final_state, zs = q_function.loss_and_action_state(
+        frames, initial_states, self.discount, rngs=rngs,
+        num_index_samples=num_index_samples)
 
     actions = policy_samples
     if self.config.include_action_taken_in_samples:
@@ -335,11 +355,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     del policy_samples
 
     assert _SAMPLE_AXIS == 0
-     # [S, S, T, B, 2]
-    sample_q_values = q_function.multi_q_values_from_action_state(
+    # [N, S, S, T, B, 2]
+    sample_q_values = q_function.multi_index_q_values_from_action_state(
         values=q_outputs.values,
         action_init_state=action_init_state,
         actions=actions,
+        zs=zs,
         batch_size=self.config.sample_batch_size,
     )
 
@@ -347,28 +368,28 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
 
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
+
     metrics = dict(
         q_outputs.metrics,
-        information_fraction=nash_utils.information_fraction(q_values),
+        information_fraction=jnp.mean(
+            nash_utils.information_fraction(payoff_matrices), axis=0),  # [T, B]
     )
 
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0), metrics)
 
-    return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values
+    return bm_loss, bm_metrics, final_state, q_outputs.values, action_init_state, q_values, zs
 
   def _compute_nash(
       self,
-      q_values: jax.Array,  # [S, S, T, B, 2]
+      q_values: jax.Array,  # [N, S, S, T, B, 2]
   ) -> tuple[nash.NashVariables, Metrics]:
-    s1, s2, t, b, n = q_values.shape
+    num_indices, s1, s2, t, b, n = q_values.shape
     assert s1 == s2
     assert n == 2
 
-    p1_qs, p2_qs = jnp.unstack(q_values, axis=-1)  # [S, S, T, B]
-    mixed_values = (p1_qs - p2_qs) / 2  # [S, S, T, B]
-
-    payoff_matrices = jnp.moveaxis(mixed_values, (0, 1), (-2, -1))  # [T, B, S, S]
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
 
     with contextlib.ExitStack() as stack:
       is_ip_solver = self.config.nash_solver in ['qpax', 'qpax_fast', 'ippd']
@@ -404,16 +425,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
       def solve_one(pm: nash.PayoffMatrix):
         return solver(pm, **solver_kwargs)
 
-      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[0, 1])
+      solve_vmap = jax_utils.multi_vmap(solve_one, axes=[0, 1, 2])
 
-      nash_variables, tm_metrics = solve_vmap(payoff_matrices)
+      # One nash solution per epistemic index; leaves are [N, T, B, ...].
+      nash_variables, nm_metrics = solve_vmap(payoff_matrices)
       assert isinstance(nash_variables, nash.NashVariables)
 
     nash_variables = utils.map_single_structure(
         lambda x: x.astype(jnp.float32), nash_variables)
 
-    ps = jnp.stack([nash_variables.p1, nash_variables.p2], axis=-2)  # [T, B, 2, S]
-    assert ps.shape == (t, b, 2, s1)
+    ps = jnp.stack([nash_variables.p1, nash_variables.p2], axis=-2)  # [N, T, B, 2, S]
+    assert ps.shape == (num_indices, t, b, 2, s1)
     ps = ps / jnp.sum(ps, axis=-1, keepdims=True)  # re-normalize for numerical stability
 
     ps_stats = {}
@@ -432,23 +454,27 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
       ps_stats[count] = count_stats
 
-    tm_metrics['ps'] = ps_stats
+    nm_metrics['ps'] = ps_stats
 
-    nash_entropy = jax_utils.entropy(ps, axis=-1)  # [T, B, 2]
-    tm_metrics['entropy'] = nash_entropy
+    # Per-index nash entropy; the mixture-based epistemic metrics are computed
+    # in the nash_policy unroll.
+    nash_entropy = jax_utils.entropy(ps, axis=-1)  # [N, T, B, 2]
+    nm_metrics['entropy'] = nash_entropy
     entropy_stats = {}
 
     for cutoff in [0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 1.4, 2]:
       # Mean will be taken later
       entropy_stats[cutoff] = nash_entropy > cutoff
 
-    tm_metrics['entropy_above'] = entropy_stats
+    nm_metrics['entropy_above'] = entropy_stats
 
-    # Keep time dim so we can take max over num_steps
+    # Batch-major metrics; keep index and time dims so we can take max over
+    # num_steps.
     bm_metrics = utils.map_single_structure(
-        lambda x: jnp.swapaxes(x, 0, 1), tm_metrics)
+        lambda x: jnp.moveaxis(x, 2, 0), nm_metrics)  # [B, N, T, ...]
 
-    bm_metrics['sample_payoff_matrix'] = payoff_matrices[0].astype(jnp.float32)  # [B, S1, S2]
+    # First epistemic index, first timestep.
+    bm_metrics['sample_payoff_matrix'] = payoff_matrices[0, 0].astype(jnp.float32)  # [B, S1, S2]
 
     return nash_variables, bm_metrics
 
@@ -460,12 +486,18 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_states: RecurrentState,
       rngs: nnx.Rngs,
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
-      values: jax.Array,  # [T, B, 2]
+      values: jax.Array,  # [N, T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
-      nash_solution: nash.NashVariables,  # [T, B]
+      q_values: jax.Array,  # [N, S, S, T, B, 2]
+      zs: jax.Array,  # [N, B, 1, D_Z]
+      nash_solution: nash.NashVariables,  # [N, T, B]
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self._get_delayed_frames(frames)
+
+    # Diagnostics are computed per epistemic index and averaged; the loss
+    # regresses to the mixture of the per-index nash distributions.
+    index_mean = lambda x: jnp.mean(x, axis=0)
 
     action = frames.state_action.action
     prev_action = utils.map_single_structure(lambda t: t[:-1], action)
@@ -483,9 +515,26 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # TODO: this could belong in the sample policy unroll
     unique_fraction = nash_utils.compute_unique_fraction(actions)
 
-    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [T, B, 2, S]
+    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [N, T, B, 2, S]
     nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
-    nash_entropy = jax_utils.entropy(nash_probs, axis=-1)  # [T, B, 2]
+
+    # The regression target is the mixture over epistemic indices.
+    mixture_probs, indexed_metrics = nash_utils.indexed_nash_metrics(nash_probs)
+
+    nash_values = jnp.stack([
+        nash_solution.p1_nash_value, -nash_solution.p1_nash_value
+    ], axis=-1)  # [N, T, B, 2]
+
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T, B, S, S]
+    diagnostics = nash_utils.nash_payoff_diagnostics(
+        payoff_matrices, nash_probs, nash_values)
+
+    # Computed before any subsampling reorders the sample axis: the action
+    # taken is the last sample.
+    action_taken_nash_prob = None
+    if self.config.include_action_taken_in_samples:
+      action_taken_nash_prob = jax.lax.index_in_dim(
+          mixture_probs, index=-1, axis=-1, keepdims=False)  # [T, B, 2]
 
     nash_policy_mbs = self.config.sample_batch_size
 
@@ -494,10 +543,16 @@ class Learner(nnx.Module, tp.Generic[Action]):
       if self.config.subsample > num_samples:
         raise ValueError(f'subsample {self.config.subsample} is greater than num_samples {num_samples}')
 
+      # Select by mixture probability; subset the per-index distributions with
+      # the same indices so the diagnostics below stay consistent.
       indices = jnp.argsort(
-          nash_probs, axis=-1, descending=True)[..., :self.config.subsample]
-      nash_probs = jnp.take_along_axis(nash_probs, indices, axis=-1)
-      nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize
+          mixture_probs, axis=-1, descending=True)[..., :self.config.subsample]
+      mixture_probs = jnp.take_along_axis(mixture_probs, indices, axis=-1)
+      mixture_probs = mixture_probs / jnp.sum(mixture_probs, axis=-1, keepdims=True)  # re-normalize
+
+      nash_probs = jnp.take_along_axis(
+          nash_probs, jnp.expand_dims(indices, 0), axis=-1)  # [N, T, B, 2, K]
+      nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)
 
       indices = jnp.moveaxis(indices, -1, _SAMPLE_AXIS)
       actions = utils.map_nt(
@@ -538,7 +593,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     nash_policy_log_probs = -batch_distance_fn(nash_policy, actions)
     nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T, B, 2, S]
-    nash_cross_entropy = -jnp.vecdot(nash_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
+    # Cross-entropy to the mixture over epistemic indices of the per-index
+    # nash distributions.
+    nash_cross_entropy = -jnp.vecdot(mixture_probs, nash_policy_log_probs, axis=-1)  # [T, B, 2]
 
     losses = [
         self.config.nash_weight * nash_cross_entropy,
@@ -547,12 +604,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_total_loss = jax_utils.add_n(losses)
 
     metrics = dict(
-        nash_entropy=nash_entropy,
+        indexed_metrics,
         nash_cross_entropy=nash_cross_entropy,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
         unique_fraction=unique_fraction,
     )
+    metrics.update(diagnostics.metrics)
 
     if self.config.compute_nash_policy_qs:
       # Estimate nash_policy vs computed nash
@@ -586,30 +644,47 @@ class Learner(nnx.Module, tp.Generic[Action]):
           merge, nash_policy_samples, opponent_actions)
 
         def q_fn(actions: list[Action]):
-          two_player_qs = q_function.q_values_from_action_state(
+          two_player_qs = q_function.indexed_q_values_from_action_state(
             values=values,
             action_init_state=q_action_init_state,
             actions=actions,
-          )
-          return p1_averaged_qs(two_player_qs)  # [T, B]
+            zs=zs,
+          )  # [N, T, B, 2]
+          return p1_averaged_qs(two_player_qs)  # [N, T, B]
 
-        q_values = jax.vmap(q_fn, in_axes=0, out_axes=0)(merged_actions)  # [2, T, B]
+        merged_qs = jax.vmap(q_fn, in_axes=0, out_axes=0)(merged_actions)  # [2, N, T, B]
 
-        np1_vs_p2_qs, p1_vs_np2_qs = jnp.unstack(q_values, axis=0)  # [T, B], [T, B]
-        return jnp.stack([np1_vs_p2_qs, -p1_vs_np2_qs], axis=-1)  # [T, B, 2]
+        np1_vs_p2_qs, p1_vs_np2_qs = jnp.unstack(merged_qs, axis=0)  # [N, T, B]
+        return jnp.stack([np1_vs_p2_qs, -p1_vs_np2_qs], axis=-1)  # [N, T, B, 2]
 
-      nash_policy_qs = jax_utils.lax_map(  # [S, T, B, 2]
+      # nash_policy vs the per-index nash distributions over sampled actions,
+      # each evaluated under its own index's q-function. Unlike in rl_learner,
+      # q_function here is closed-over (non-traced) state rather than a loss
+      # argument, so nnx-aware maps cannot lift it; we use raw jax transforms,
+      # which is fine since indexed_q_values_from_action_state is plain
+      # broadcasting with no nnx transforms inside.
+      nash_policy_qs = jax_utils.lax_map(  # [S, N, T, B, 2]
           compute_nash_policy_q_vs, actions,
           batch_size=nash_policy_mbs,
       )
-      nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [T, B, 2, S]
-      nash_policy_qs = jnp.vecdot(nash_policy_qs, nash_probs)  # [T, B, 2]
+      nash_policy_qs = jnp.moveaxis(nash_policy_qs, 0, -1)  # [N, T, B, 2, S]
+      # Evaluated against the opponent's nash distribution.
+      nash_policy_vs_nash = jnp.vecdot(
+          nash_policy_qs, jnp.flip(nash_probs, axis=-2))  # [N, T, B, 2]
+      optimality_gap = nash_values - nash_policy_vs_nash
 
-      metrics['nash_policy_qs'] = nash_policy_qs
+      mean_vs_nash = -jnp.flip(diagnostics.nash_vs_mean, axis=-1)  # [N, T, B, 2]
+      nash_policy_advantage = nash_policy_vs_nash - mean_vs_nash
 
-    if self.config.include_action_taken_in_samples:
-      metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
-        nash_probs, index=-1, axis=-1, keepdims=False)  # [T, B, 2]
+      metrics.update(
+          nash_policy_vs_mean=index_mean(nash_policy_qs.mean(axis=-1)),
+          nash_policy_vs_nash=index_mean(nash_policy_vs_nash),
+          optimality_gap=index_mean(optimality_gap),  # nash-vs-nash - nash_policy-vs-nash
+          nash_policy_advantage=index_mean(nash_policy_advantage),  # nash_policy-vs-nash - mean-vs-nash
+      )
+
+    if action_taken_nash_prob is not None:
+      metrics['action_taken_nash_prob'] = action_taken_nash_prob
 
     bm_loss = jnp.mean(nash_policy_total_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
@@ -637,6 +712,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
       policy_samples: list[Action],
+      train: bool = True,
   ):
     frames = Frames[nash_data.Rank3, Action](
         state_action=self.q_function.core_net.encode(zipped_frames.state_action),
@@ -644,7 +720,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
         reward=zipped_frames.reward,
     )
 
-    return self.run_q_function(frames, initial_state, policy_samples)
+    num_index_samples = self.config.num_index_samples
+    if not train:
+      num_index_samples = self.config.eval_num_index_samples or num_index_samples
+
+    return self.run_q_function(frames, initial_state, policy_samples, num_index_samples=num_index_samples)
 
   @jax.profiler.annotate_function
   def step_nash_policy(
@@ -652,9 +732,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,
       policy_samples: list[Action],  # frame_skip x [S, T, B, 2]
-      values: jax.Array,  # [T, B, 2]
+      values: jax.Array,  # [N, T, B, 2]
       q_action_init_state: RecurrentState,  # [T, B, 2, H]
-      nash_solution: nash.NashVariables,  # [T, B]
+      q_values: jax.Array,  # [N, S, S, T, B, 2]
+      zs: jax.Array,  # [N, B, 1, D_Z]
+      nash_solution: nash.NashVariables,  # [N, T, B]
       train: bool = True,
   ):
     frames = Frames[nash_data.Rank3, Action](
@@ -666,7 +748,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     fn = self.train_nash_policy if train else self.run_nash_policy
     return fn(
         frames, initial_state, policy_samples,
-        values, q_action_init_state, nash_solution,
+        values, q_action_init_state, q_values, zs, nash_solution,
     )
 
   def step(
@@ -694,6 +776,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       values,
       q_action_init_state,
       q_values,
+      zs,
     ) = self.step_q_function(
         zipped_frames, initial_states[Q_FUNCTION], policy_samples)
 
@@ -707,6 +790,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[NASH_POLICY],
     ) = self.step_nash_policy(
         zipped_frames, initial_states[NASH_POLICY], policy_samples,
-        values, q_action_init_state, nash_variables, train=train)
+        values, q_action_init_state, q_values, zs, nash_variables, train=train)
 
     return metrics, final_states
