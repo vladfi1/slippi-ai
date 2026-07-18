@@ -602,6 +602,7 @@ In2 = tp.TypeVar('In2')
 In3 = tp.TypeVar('In3')
 In4 = tp.TypeVar('In4')
 In5 = tp.TypeVar('In5')
+In6 = tp.TypeVar('In6')
 
 @tp.overload
 def partial(
@@ -652,6 +653,12 @@ def cached_partial(
 def cached_partial(
     func: tp.Callable[tp.Concatenate[In1, In2, In3, In4, In5, P], T],
     arg1: In1, arg2: In2, arg3: In3, arg4: In4, arg5: In5,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def cached_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, In4, In5, In6, P], T],
+    arg1: In1, arg2: In2, arg3: In3, arg4: In4, arg5: In5, arg6: In6,
 ) -> tp.Callable[P, T]: ...
 
 

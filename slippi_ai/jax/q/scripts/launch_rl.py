@@ -74,7 +74,7 @@ if __name__ == '__main__':
       'config',
       **flag_utils.get_flags_from_default(CONFIG))
 
-  KLW = flags.DEFINE_float('klw', 0, 'Weight on KL teacher loss')
+  KL = flags.DEFINE_float('kl', 0.1, 'Target KL divergence for teacher')
 
   WANDB_FLAG = ff.DEFINE_dict(
       'wandb',
@@ -127,9 +127,9 @@ if __name__ == '__main__':
       config.actor.num_env_steps = 0
       config.agent.batch_steps = 0
 
-    klw = KLW.value
-    config.learner.kl_teacher_weight = klw
-    config.learner.reverse_kl_teacher_weight = klw
+    klt = KL.value
+    config.learner.target_teacher_kl = klt
+    config.learner.target_reverse_teacher_kl = klt
 
     if config.runtime.tag is None:
       parts = ['qrl', char_str, f'd{delay}']
@@ -151,8 +151,7 @@ if __name__ == '__main__':
         raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
       parts.append(opp)
 
-      if klw > 0:
-        parts.append(f"klw{klw:.0e}")
+      parts.append(f"klt{klt:.0e}")
 
       ns = config.learner.num_samples
       if config.learner.include_action_taken_in_samples:

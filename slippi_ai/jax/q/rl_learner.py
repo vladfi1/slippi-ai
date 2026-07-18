@@ -54,11 +54,13 @@ class LearnerConfig:
 
   # Weight on the argmax-distillation loss (regress q_policy toward best action).
   argmax_weight: float = 1
-  kl_teacher_weight: float = 0
-  reverse_kl_teacher_weight: float = 0
   actor_kl_weight: float = 0
   # Weight the argmax-distillation loss by the advantage of the best action.
   weight_by_advantage: bool = True
+
+  kl_weight_lr: float = 1e-2
+  target_teacher_kl: float = 0.05
+  target_reverse_teacher_kl: float = 0.05
 
   max_actor_kl: tp.Optional[float] = None
 
@@ -112,6 +114,23 @@ class QFunctionOutputs(tp.NamedTuple):
   # Max ensemble q-value over the sampled actions.
   best_values: jax.Array  # [T, B]
 
+def inv_softplus(x: jax.Array | float) -> jax.Array:
+  return jnp.log(jnp.expm1(x))
+
+class PositiveWeight(nnx.Module):
+
+  def __init__(self, initial_value: float = 0.1):
+    self.raw_weight = nnx.Param(inv_softplus(initial_value))
+
+  def __call__(self) -> jax.Array:
+    return jax.nn.softplus(self.raw_weight[...])
+
+class KLTeacherWeights(nnx.Module):
+
+  def __init__(self, initial_value: float = 0.1):
+    self.fwd_weight = PositiveWeight(initial_value)
+    self.bwd_weight = PositiveWeight(initial_value)
+
 class Learner(nnx.Module, tp.Generic[Action]):
 
   def __init__(
@@ -153,6 +172,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_fn_learning_rate = config.q_fn_learning_rate or learning_rate
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(q_fn_learning_rate), wrt=nnx.Param)
+
+    kl_weight_schedule = warmup_schedule(
+        config.value_burnin_steps, config.kl_weight_lr)
+    self.kl_teacher_weights = KLTeacherWeights()
+    self.kl_teacher_weights_optimizer = nnx.Optimizer(
+      self.kl_teacher_weights, optax.sgd(kl_weight_schedule), wrt=nnx.Param)
 
     # NOTE: some jax_utils functions expect jax arrays inside modules.
     jax_utils.set_module_state(self, utils.map_nt(jnp.asarray, state))
@@ -228,6 +253,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     BM = 0
     _Q_FUNCTION_AXIS = None
     _TEACHER_AXIS = None
+    _KL_TEACHER_WEIGHTS_AXIS = None
     _RNG_AXIS = nnx.StateAxes({...: nnx.Carry})
     _FRAMES_AXIS = TM
     _STATE_AXIS = BM
@@ -240,7 +266,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     _METRICS_AXIS = BM
 
     q_policy_input_batch_dims = (
-        _Q_FUNCTION_AXIS, _TEACHER_AXIS, _RNG_AXIS, _FRAMES_AXIS, _STATE_AXIS,
+        _Q_FUNCTION_AXIS, _TEACHER_AXIS, _KL_TEACHER_WEIGHTS_AXIS, _RNG_AXIS,
+        _FRAMES_AXIS, _STATE_AXIS,
         _Q_FUNCTION_OUTPUTS_AXIS, _POLICY_SAMPLES_AXIS, _DISTRIBUTION_AXIS,
         _TEACHER_CORE_OUTPUTS_AXIS, _ACTOR_LOGITS_AXIS,
     )
@@ -262,12 +289,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     )
     jit_train_q_policy = jax_utils.nnx_jit(
         train_q_policy_mb,
-        donate_argnums=(0, 1, 2, 3, 4, 6),
+        donate_argnums=(0, 1, 2, 3, 4, 5, 7),
     )
     self.train_q_policy = jax_utils.cached_partial(
         jit_train_q_policy,
         self.q_policy, self.policy_optimizer, self.q_function, self.teacher,
-        rngs,
+        self.kl_teacher_weights, rngs,
     )
 
     run_q_policy_mb = jax_utils.microbatch_module(
@@ -277,9 +304,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.run_q_policy = jax_utils.cached_partial(
         jax_utils.nnx_jit(
             run_q_policy_mb,
-            donate_argnums=(0, 1, 2, 3, 5),
+            donate_argnums=(0, 1, 2, 3, 4, 6),
         ),
-        self.q_policy, self.q_function, self.teacher, rngs,
+        self.q_policy, self.q_function, self.teacher, self.kl_teacher_weights, rngs,
     )
 
     def post_update(
@@ -309,6 +336,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.post_update = jax_utils.cached_partial(
         jax_utils.nnx_jit(post_update),
         self.q_policy,
+    )
+
+    train_kl_teacher_weights = jax_utils.nnx_jit(
+        jax_utils.train_fn(self._unroll_kl_teacher_weights),
+        donate_argnums=(0, 1),
+    )
+    self.train_kl_teacher_weights = jax_utils.cached_partial(
+        train_kl_teacher_weights,
+        self.kl_teacher_weights, self.kl_teacher_weights_optimizer,
     )
 
     @nnx.jit(donate_argnums=(0, 1))
@@ -428,7 +464,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         num_index_samples=self.config.num_index_samples,
         batch_size=self.config.sample_batch_size,
     )  # [N, S, T, B]
-    indexed_advantages = indexed_qs - indexed_vs
+    indexed_advantages = indexed_qs - jnp.expand_dims(indexed_vs, axis=1)
     # Other metrics are computed in the q_function itself, but only here we
     # have qs from multiple actions for the same state.
     epistemic_std = jnp.std(indexed_advantages, axis=0, ddof=1)  # [S, T, B]
@@ -487,6 +523,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       q_policy: Policy[Action],
       q_function: q_lib.QFunction[Action],
       teacher: Policy[Action],
+      kl_teacher_weights: KLTeacherWeights,
       rngs: nnx.Rngs,
       frames: Frames[Rank2, Action],  # [T, B]
       initial_states: RecurrentState,  # [B]
@@ -609,8 +646,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     losses = [
         self.config.argmax_weight * q_policy_argmax_loss,
-        self.config.kl_teacher_weight * fs_mean(teacher_kl),
-        self.config.reverse_kl_teacher_weight * fs_mean(reverse_teacher_kl),
+        kl_teacher_weights.fwd_weight() * fs_mean(teacher_kl),
+        kl_teacher_weights.bwd_weight() * fs_mean(reverse_teacher_kl),
         self.config.actor_kl_weight * fs_mean(actor_kl),
     ]
     q_policy_total_loss = jax_utils.add_n(losses)
@@ -632,6 +669,30 @@ class Learner(nnx.Module, tp.Generic[Action]):
       lambda x: jnp.mean(x, axis=0), metrics)
 
     return bm_loss, bm_metrics, q_policy_outputs.final_state
+
+  def _unroll_kl_teacher_weights(
+    self,
+    kl_teacher_weights: KLTeacherWeights,
+    teacher_kl: jax.Array,
+    reverse_teacher_kl: jax.Array,
+  ):
+    fwd_weight = kl_teacher_weights.fwd_weight()
+    bwd_weight = kl_teacher_weights.bwd_weight()
+
+    # High weight lowers the KL, so if the KL is high, we want to increase the weight.
+    fwd_loss = -fwd_weight * (jnp.mean(teacher_kl) - self.config.target_teacher_kl)
+    bwd_loss = -bwd_weight * (jnp.mean(reverse_teacher_kl) - self.config.target_reverse_teacher_kl)
+    total_loss = fwd_loss + bwd_loss
+
+    metrics = dict(
+        fwd_weight=fwd_weight,
+        bwd_weight=bwd_weight,
+        fwd_loss=fwd_loss,
+        bwd_loss=bwd_loss,
+        total_loss=total_loss,
+    )
+
+    return total_loss, metrics
 
   def step_sample_policy(self, tm_frames, initial_state):
     return self.run_sample_policy(tm_frames, initial_state)
@@ -673,7 +734,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
       final_states[TEACHER],
     ) = self.run_teacher(frames, initial_states[TEACHER])
 
-
     step_q_policy = self.train_q_policy if train else self.run_q_policy
     actor_logits = [so.logits for so in trajectory.actions]
     # Need a copy since the original gets donated by the q_policy update.
@@ -692,6 +752,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     mean_actor_kl = jax.device_get(post_update_metrics['post_update_actor_kl']['mean'])
     if self.config.max_actor_kl is not None and mean_actor_kl > self.config.max_actor_kl:
       raise ValueError(f"Mean actor KL after Q-policy update is too high: {mean_actor_kl}")
+
+    if train:
+      metrics['kl_teacher_weights'] = self.train_kl_teacher_weights(
+          teacher_kl=metrics[Q_POLICY]['teacher_kl'],
+          reverse_teacher_kl=metrics[Q_POLICY]['reverse_teacher_kl'],
+      )[0]
 
     if train and step % self.config.epoch_length == 0:
       self._update_policy()
