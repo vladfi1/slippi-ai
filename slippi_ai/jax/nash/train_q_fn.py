@@ -265,6 +265,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       delay=config.delay,
       mesh=mesh,
       data_sharding=data_sharding,
+      rngs=rngs,
   )
   jax_utils.replicate_module(learner, mesh)
 

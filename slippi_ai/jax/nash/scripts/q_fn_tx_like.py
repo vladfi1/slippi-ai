@@ -42,6 +42,10 @@ def default_config():
   q_fn.embed.with_randall = True
   q_fn.head.hidden_size = 1024
 
+  q_fn.head.epinet.prior_scale = 0.2
+  config.learner.num_index_samples = 4
+  config.learner.eval_num_index_samples = 64
+
   config.dataset.mirror = False
   config.dataset.allowed_characters = 'fox'
   config.dataset.data_dir = os.environ.get("DATA_DIR")
@@ -83,7 +87,7 @@ if __name__ == '__main__':
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
-          use_controller_rnn=ff.Boolean(False),
+          use_controller_rnn=ff.Boolean(True),
       ),
   )
 
@@ -167,6 +171,9 @@ if __name__ == '__main__':
 
         if EMBED.value['name'] == 'enhanced' and EMBED.value['enhanced']['use_controller_rnn']:
           parts.append('crnn')
+
+        parts.append('epi')
+        parts.append(f'ps{config.q_function.head.epinet.prior_scale:.1f}')
 
         if TAG_SUFFIX.value is not None:
           parts.append(TAG_SUFFIX.value)

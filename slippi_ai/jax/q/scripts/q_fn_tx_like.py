@@ -33,6 +33,7 @@ def default_config():
   q_fn.embed.with_fod = True
   q_fn.embed.with_randall = True
 
+  q_fn.head.epinet.prior_scale = 0.2
   config.learner.num_index_samples = 4
   config.learner.eval_num_index_samples = 64
 
