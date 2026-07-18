@@ -373,7 +373,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         post_update, config.nash_policy_dtype.dtype)
 
     self.post_update = jax_utils.cached_partial(
-        jax_utils.nnx_jit(post_update),
+        jax_utils.nnx_jit(post_update, donate_argnums=0),
         self.nash_policy,
     )
 
