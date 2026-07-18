@@ -151,7 +151,12 @@ class Epinet(nnx.Module):
       z: jax.Array,  # [..., index_dim], broadcastable against x
   ) -> jax.Array:  # [..., output_size]
     x = jax.lax.stop_gradient(x)
-    z = jnp.broadcast_to(z, x.shape[:-1] + z.shape[-1:]).astype(x.dtype)
+    # x and z broadcast against each other; z may carry extra leading axes
+    # (e.g. an epistemic-index axis) that x lacks, in which case the output
+    # gains those axes.
+    batch_shape = jnp.broadcast_shapes(x.shape[:-1], z.shape[:-1])
+    x = jnp.broadcast_to(x, batch_shape + x.shape[-1:])
+    z = jnp.broadcast_to(z, batch_shape + z.shape[-1:]).astype(x.dtype)
     xz = jnp.concatenate([x, z], axis=-1)
 
     def project(out: jax.Array) -> jax.Array:
