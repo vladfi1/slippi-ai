@@ -101,7 +101,7 @@ class VFLearner(nnx.Module):
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
     state_action = StateAction(
-        batch.game, batch.game.p0.controller, batch.name)
+        batch.game, batch.game.p0.controller, batch.name, batch.rating)
     frames = Frames(
         state_action=self.value_function.network.encode(state_action),
         is_resetting=batch.is_resetting,
