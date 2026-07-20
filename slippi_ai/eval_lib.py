@@ -599,7 +599,7 @@ BATCH_AGENT_FLAGS = dict(
         pack_args=ff.Boolean(False, 'Whether to pack arguments for JAX agents.'),
         functionalize=ff.Boolean(False, 'Whether to functionalize the sample function for JAX agents.'),
         # TODO: get from jax/agents.py
-        dtype=ff.Enum('float32', ['float32', 'float16', 'bfloat16']),
+        dtype=ff.Enum('float16', ['float32', 'float16', 'bfloat16']),
     ),
 )
 
