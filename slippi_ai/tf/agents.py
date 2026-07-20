@@ -63,6 +63,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
             state=game,
             action=prev_action,
             name=self._name_code,
+            rating=(),
         )
         next_action, hidden_state = base_sample(
             state_action, hidden_state, needs_reset)
@@ -189,6 +190,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         state=self._policy.network.encode_game(game),
         action=self._prev_controller,
         name=self._name_code,
+        rating=(),
     )
 
     # Keep hidden state and prev_controller on device.

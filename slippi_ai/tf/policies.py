@@ -205,6 +205,7 @@ class Policy(snt.Module, policies.Policy[ControllerType, RecurrentState]):
             action=tf.nest.map_structure(
                 lambda t: t[self.delay:], state_action.action),
             name=state_action.name[self.delay:],
+            rating=state_action.rating[self.delay:],
         ),
         is_resetting=frames.is_resetting[:unroll_length],
         # Only use rewards that follow actions.

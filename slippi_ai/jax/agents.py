@@ -37,6 +37,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       policy: policies.Policy[ControllerType],
       batch_size: int,
       name_code: tp.Union[int, tp.Sequence[int]],
+      rating: float = 0,  # TODO: detect when actually needed
       rngs: tp.Optional[nnx.Rngs] = None,
       seed: int = 0,
       sample_kwargs: dict = {},
@@ -49,6 +50,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     self._policy = policy
     self._batch_size = batch_size
     self.set_name_code(name_code)
+    self._rating = rating
     self._compile = compile
 
     if run_on_cpu:
@@ -78,6 +80,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
           state=game,
           action=prev_action,
           name=name_code,
+          rating=jnp.full([self._batch_size], self._rating),
       )
       return policy.sample(
           rngs, state_action, prev_state, needs_reset, **sample_kwargs)

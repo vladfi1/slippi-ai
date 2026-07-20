@@ -699,15 +699,15 @@ def get_state_action_embedding(
   embed_action: Embedding[Action, Any],
   num_names: int,
 ) -> StructEmbedding[StateAction]:
-  embedding = StateAction(
-      state=embed_game,
-      action=embed_action,
-      name=OneHotEmbedding(
+  embedders = [
+      ('state', embed_game),
+      ('action', embed_action),
+      ('name', OneHotEmbedding(
           'name', num_names,
           dtype=NAME_DTYPE,
-          one_hot_policy=OneHotPolicy.EMPTY),
-  )
-  return struct_embedding_from_nt("state_action", embedding)
+          one_hot_policy=OneHotPolicy.EMPTY)),
+  ]
+  return ordered_struct_embedding("state_action", embedders, StateAction)
 
 def _stick_to_str(stick):
   return f'({stick[0].item():.2f}, {stick[1].item():.2f})'

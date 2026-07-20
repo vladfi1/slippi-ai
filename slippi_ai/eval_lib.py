@@ -406,6 +406,7 @@ def build_delayed_agent(
     state: dict,
     console_delay: int,
     name: tp.Optional[tp.Union[str, list[str]]] = None,
+    rating: tp.Optional[float] = None,
     async_inference: bool = False,
     sample_temperature: float = 1.0,
     platform: tp.Optional[policies.Platform] = None,
@@ -446,6 +447,14 @@ def build_delayed_agent(
 
   name_code = get_name_codes(state, name)
 
+  extra_kwargs = {}
+  if imitation_config['embed'].get('with_rating', False):
+    if rating is None:
+      raise ValueError('Must specify a rating.')
+    extra_kwargs['rating'] = rating
+  elif rating is not None:
+    logging.warning(f'Rating set to {rating} but is not used.')
+
   # Stick the observation_config into the agent for future use.
   observation_config = flag_utils.dataclass_from_dict(
           observations.ObservationConfig, imitation_config['observation'])
@@ -457,6 +466,7 @@ def build_delayed_agent(
       name_code=name_code,
       console_delay=console_delay,
       sample_kwargs=dict(temperature=sample_temperature),
+      **extra_kwargs,
       **agent_kwargs,
   )
 
@@ -589,6 +599,7 @@ BATCH_AGENT_FLAGS = dict(
     sample_temperature=ff.Float(1.0, 'Change sampling temperature at run-time.'),
     compile=ff.Boolean(True, 'Compile the sample function.'),
     name=ff.String(nametags.DEFAULT_NAME, 'Name of the agent.'),
+    rating=ff.Float(None, 'Rating of the agent.'),
     # arg to build_delayed_agent
     async_inference=ff.Boolean(False, 'run agent asynchronously'),
     fake=ff.Boolean(False, 'Use fake agents.'),
