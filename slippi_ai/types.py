@@ -251,7 +251,7 @@ class InvalidGameError(Exception):
 
 Action = TypeVar('Action')
 
-type NAME_DTYPE = np.int32
+NAME_DTYPE = np.int32
 
 class StateAction(NamedTuple, Generic[S, Action]):
   state: Game[S]
