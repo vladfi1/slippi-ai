@@ -47,7 +47,6 @@ if __name__ == '__main__':
   CONFIG.learner.q_fn_learning_rate=1e-4
   CONFIG.learner.reward_halflife=4
   CONFIG.learner.num_samples = 7
-  CONFIG.learner.sample_batch_size = 1
 
   # Policies have lower KL to fp32 in fp16 than bf16.
   # However, KL-based training is more stable in bf16 (whereas PPO prefers fp16 + loss scaling).
