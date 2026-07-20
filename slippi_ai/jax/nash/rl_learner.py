@@ -49,7 +49,8 @@ class LearnerConfig:
   nash_weight: float = 1
   weight_by_advantage: bool = True
 
-  kl_weight_lr: float = 1e-2
+  initial_kl_weight: float = 3e-1
+  kl_weight_lr: float = 3e-2
   target_teacher_kl: float = 0.05
   target_reverse_teacher_kl: float = 0.05
 
@@ -188,7 +189,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     kl_weight_schedule = warmup_schedule(
         config.value_burnin_steps, config.kl_weight_lr)
-    self.kl_teacher_weights = jax_utils.KLTeacherWeights()
+    self.kl_teacher_weights = jax_utils.KLTeacherWeights(config.initial_kl_weight)
     self.kl_teacher_weights_optimizer = nnx.Optimizer(
       self.kl_teacher_weights, optax.sgd(kl_weight_schedule), wrt=nnx.Param)
 
