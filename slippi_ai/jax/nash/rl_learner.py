@@ -39,6 +39,8 @@ class LearnerConfig:
   subsample: tp.Optional[int] = None
   epoch_length: int = 100
 
+  remat: bool = True
+
   # Number of epistemic indices to sample. The nash is solved once per index,
   # and the nash_policy regresses to the mixture of the per-index nash
   # distributions. Needs to be at least 2 for the epistemic metrics.
@@ -156,6 +158,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
     self.nash_policy: Policy[Action] = saving.policy_from_config_dict(policy_config)
     self.teacher: Policy[Action] = saving.policy_from_config_dict(policy_config)
+
+    if config.remat:
+      # Only the nash_policy is trained.
+      self.nash_policy.enable_remat()
 
     self._controller_embedding = self.policy.controller_head.controller_embedding
 
