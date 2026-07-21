@@ -6,6 +6,7 @@
 if __name__ == '__main__':
   __spec__ = None  # https://github.com/python/cpython/issues/87115
 
+  import logging
   import os
 
   from absl import app, flags
@@ -18,6 +19,7 @@ if __name__ == '__main__':
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
   from slippi_ai.jax.rl import run_lib
+  from slippi_ai.jax.agents import DType
 
   PP="Platinum Player"
   DP="Diamond Player"
@@ -65,6 +67,12 @@ if __name__ == '__main__':
   CONFIG.learner.optimizer_burnin_epochs=8
   CONFIG.learner.value_burnin_epochs=8
 
+  # Optimal dtypes
+  CONFIG.agent.jax.dtype = DType.FP16
+  CONFIG.learner.teacher_dtype = DType.FP16
+  CONFIG.learner.value_dtype = DType.BF16
+  CONFIG.learner.policy_dtype = DType.FP16
+
   CONFIG_FLAG = ff.DEFINE_dict(
       'config',
       **flag_utils.get_flags_from_default(CONFIG))
@@ -102,6 +110,7 @@ if __name__ == '__main__':
       if config.agent.char is None:
         assert chars is not None
         config.agent.char = chars
+        logging.info(f"Using teacher's allowed characters: {chars}")
       elif chars is not None:
         for char in config.agent.char:
           if char not in chars:
