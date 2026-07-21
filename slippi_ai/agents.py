@@ -33,6 +33,11 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
     raise NotImplementedError()
 
+  @property
+  def rating(self) -> float:
+    """The rating used by this agent, broadcast across the batch."""
+    return 0.0
+
   def warmup(self):
     """Warm up the agent so that step is fast."""
 

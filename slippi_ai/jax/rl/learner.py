@@ -83,6 +83,7 @@ def get_frames(trajectory: Trajectory) -> data.Frames:
       state=trajectory.states,
       action=trajectory.actions.controller_state,
       name=trajectory.name,
+      rating=trajectory.rating,
   )
   return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
@@ -115,6 +116,7 @@ def get_delayed_frames(trajectory: Trajectory) -> data.Frames:
       state=trajectory.states,
       action=actions,
       name=trajectory.name,
+      rating=trajectory.rating,
   )
   return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
@@ -361,6 +363,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
             state=jax.tree.map(remove_last, trajectory.states),
             action=jax.tree.map(remove_first, trajectory.actions.controller_state),
             name=remove_last(trajectory.name),
+            rating=remove_last(trajectory.rating),
         ),
         is_resetting=remove_last(trajectory.is_resetting),
         reward=remove_first(trajectory.rewards),

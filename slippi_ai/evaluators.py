@@ -34,6 +34,7 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
   # The [T+1, ...] arrays overlap in time by 1.
   states: Game[Rank2]  # [T+1, B]
   name: np.ndarray[Rank2, np.dtype[np.int32]]  # [T+1, B]
+  rating: FloatArray[Rank2]  # [T+1, B]
   actions: SampleOutputs[CT]  # [T+1, B]
   rewards: FloatArray[Rank2]  # [T, B]
   is_resetting: BoolArray[Rank2]  # [T+1, B]
@@ -53,6 +54,7 @@ class Trajectory(tp.NamedTuple, tp.Generic[CT, RS]):
     return cls(
         states=1,
         name=1,
+        rating=1,
         actions=1,
         rewards=1,
         is_resetting=1,
@@ -343,6 +345,10 @@ class RolloutWorker(AbstractRolloutWorker):
               [num_steps + 1, self._num_envs],
               agent.name_code,
               dtype=NAME_DTYPE),
+          rating=np.full(
+              [num_steps + 1, self._num_envs],
+              agent.rating,
+              dtype=np.float32),
           actions=utils.batch_nest_nt(sample_outputs[port]),
           rewards=reward.compute_rewards(states, self._damage_ratio),
           is_resetting=is_resetting,

@@ -71,6 +71,9 @@ class AgentConfig:
   path: tp.Optional[str] = None  # Only used for static opponents
   compile: bool = True
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
+  # Rating to condition the agent on. Required when the teacher was trained
+  # with ratings (embed.with_rating); ignored otherwise.
+  rating: tp.Optional[float] = None
   char: tp.Optional[list[melee.Character]] = None
   batch_steps: int = 0
   async_inference: bool = False
@@ -87,6 +90,7 @@ class AgentConfig:
         compile=self.compile,
         batch_steps=self.batch_steps,
         async_inference=self.async_inference,
+        rating=self.rating,
         jax=dataclasses.asdict(self.jax),
     )
     if self.path:

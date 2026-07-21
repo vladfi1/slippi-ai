@@ -30,6 +30,7 @@ def make_dummy_frames(
       state=dummy_state,
       action=dummy_action,
       name=np.zeros(shape, dtype=np.int32),
+      rating=np.zeros(shape, dtype=np.float32),
   )
 
   frames = data_lib.Frames(

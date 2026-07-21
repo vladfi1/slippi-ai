@@ -183,6 +183,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   def name_code(self) -> np.ndarray[tuple[int], np.dtype[data.NAME_DTYPE]]:
     return self._name_code
 
+  @property
+  def rating(self) -> float:
+    return self._rating
+
   def warmup(self):
     """Warm up the agent by running a dummy step."""
     game = self._policy.network.dummy((self._batch_size,)).state

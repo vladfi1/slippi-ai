@@ -280,6 +280,7 @@ def dummy_trajectory(
   return evaluators.Trajectory(
       states=dummy_state_action.state,
       name=dummy_state_action.name,
+      rating=np.zeros(shape, dtype=np.float32),
       actions=policy.controller_head.dummy_sample_outputs(shape),
       rewards=np.full([unroll_length, batch_size], 0, dtype=np.float32),
       is_resetting=np.full(shape, False),

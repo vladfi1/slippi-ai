@@ -411,6 +411,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
             name=np.broadcast_to(
                 agent.name_code,
                 [num_steps + 1, env_slice.stop - env_slice.start]),
+            rating=np.full(
+                [num_steps + 1, env_slice.stop - env_slice.start],
+                agent.rating, dtype=np.float32),
             actions=actions,
             rewards=rewards[:, env_slice].astype(np.float32),
             is_resetting=states.needs_reset,
@@ -434,6 +437,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
               name=np.broadcast_to(
                   agent.name_code[agent_to_port_slice],
                   [num_steps + 1, batch_size]),
+              rating=np.full(
+                  [num_steps + 1, batch_size],
+                  agent.rating, dtype=np.float32),
               actions=slice_map((slice(None), agent_to_port_slice), actions),
               rewards=rewards[:, env_to_port_slice].astype(np.float32),
               is_resetting=states.needs_reset,

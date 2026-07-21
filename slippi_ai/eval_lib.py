@@ -170,6 +170,10 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def name_code(self):
     return self._agent.name_code
 
+  @property
+  def rating(self) -> float:
+    return self._agent.rating
+
   def step(
       self,
       game: Game,
@@ -315,6 +319,10 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   def name_code(self):
     return self._agent.name_code
 
+  @property
+  def rating(self) -> float:
+    return self._agent.rating
+
   def decode_controller(self, controller: ControllerType) -> Controller:
     return self.policy.controller_head.decode_controller(controller)
 
@@ -365,7 +373,6 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 def get_name_code(state: dict, name: str) -> int:
   name_map: dict[str, int] = state['name_map']
   if not name_map:
-    logging.info('Empty name map, using default name code 0.')
     return 0
   if name not in name_map:
     raise ValueError(f'Nametag must be one of {name_map.keys()}.')
