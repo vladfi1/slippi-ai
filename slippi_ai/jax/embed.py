@@ -48,7 +48,9 @@ class Embedding(Generic[In, Out], abc.ABC):
 
   def from_state(self, state: In) -> Out:
     """Encodes a parsed state."""
-    return np.astype(state, self.dtype)
+    # copy=False passes same-dtype fields through as-is instead of
+    # materializing a fresh array for every leaf.
+    return np.astype(state, self.dtype, copy=False)
 
   @abc.abstractmethod
   def __call__(self, x: Out) -> Array:
@@ -233,7 +235,7 @@ class OneHotEmbedding(Embedding[int, T]):
     # For EMPTY, jax.nn.one_hot already does the right thing of setting everything
     # to 0 for invalid inputs, so we don't need to do anything here.
 
-    return state.astype(self.dtype)
+    return state.astype(self.dtype, copy=False)
 
   def __call__(self, t: Array, residual=False, **_):
     one_hot = jax.nn.one_hot(t, self.size)
