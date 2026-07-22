@@ -224,6 +224,12 @@ class GameBatchBuffer:
     self.num_envs, r = divmod(num_players, 2)
     assert r == 0
 
+    # The sim doesn't support Ice Climbers, so nana fields are never filled;
+    # zero them once rather than serving uninitialized memory.
+    for player in (self.game.p0, self.game.p1):
+      for leaf in jax.tree.leaves(player.nana):
+        leaf[:] = 0
+
   def fill(
       self,
       frame: FrameView,
