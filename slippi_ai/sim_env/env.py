@@ -247,21 +247,20 @@ class SimBatchedEnvironment:
     ids = np.arange(self._num_envs, dtype=np.int64) if env_ids is None else np.asarray(env_ids, dtype=np.int64)
     if np.any(ids < 0) or np.any(ids >= self._num_envs):
       raise ValueError('env_ids contains an out-of-range env index')
-    self._ensure_cursor_room()
-    reset_mask = self._env.current_reset_mask
-    reset_mask[:] = 0
-    reset_mask[ids] = 1
-    self._env.reset_masked()
-    reset_mask[ids] = 0
+    self._env.reset_matches(ids)
+    self._finish_reset(ids)
+    needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
+    needs_reset[ids] = True
+    return needs_reset
+
+  def _finish_reset(self, ids: np.ndarray):
+    """Episode bookkeeping for envs whose matches were just reset."""
     self._episode_ids[ids] += 1
     if ids.size:
       neutral = neutral_controllers(ids.size)
       for port in self._ports:
         _copy_controller_slice(
             self._last_controllers[port], neutral, ids)
-    needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
-    needs_reset[ids] = True
-    return needs_reset
 
   @property
   def buffers(self):
@@ -300,9 +299,7 @@ class SimBatchedEnvironment:
     ]
 
   def advance(self, controllers: Controllers):
-    self._ensure_cursor_room()
-
-    action = self._env.current_action_frame
+    action = self._env.begin_step()
     for player_index, port in enumerate(self._ports):
       controller = controllers[port]
       player = action['players'][:, int(player_index)]
@@ -323,12 +320,13 @@ class SimBatchedEnvironment:
       return needs_reset
 
     step_t = self._env.t
-    self._env.step()
-    needs_reset = self._env.done_at(step_t).astype(np.bool_, copy=True)
+    needs_reset = self._env.step_and_reset().astype(np.bool_, copy=True)
     terminal = self._env.terminal_at(step_t).copy()
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
-    self._record_completed_games(terminal, self._env.current_frame)
-    self._reset_finished_lanes_for_next_observation(needs_reset)
+    self._record_completed_games(terminal, self._env.final_gamestate_view)
+    ids = np.flatnonzero(needs_reset)
+    if ids.size:
+      self._finish_reset(ids)
     return needs_reset
 
   def _record_completed_games(self, terminal: np.ndarray, frame: np.ndarray):
@@ -365,15 +363,6 @@ class SimBatchedEnvironment:
           'stockout': bool(terminal_row['stockout']),
           'max_frame_reached': bool(terminal_row['max_frame_reached']),
       })
-
-  def _ensure_cursor_room(self):
-    # Native frame ring size. Cursor wrap does not reset the match.
-    if self._env.t >= self._frame_buffer_length:
-      self._env.reset_cursor()
-
-  def _reset_finished_lanes_for_next_observation(self, needs_reset: np.ndarray):
-    if np.any(needs_reset):
-      self.reset(np.flatnonzero(needs_reset))
 
 class CompatSimBatchedEnvironment(SimBatchedEnvironment):
   """Presents an interface compatible with slippi_ai.envs.BatchedEnvironment"""
