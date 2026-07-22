@@ -7,7 +7,7 @@ import numpy as np
 from slippi_ai import dolphin
 from slippi_ai import sim_env
 from slippi_ai.sim_env import observations
-from slippi_ai.types import Buttons, Controller, Items, Stick
+from slippi_ai.types import Items
 
 
 class SimEnvTest(unittest.TestCase):
@@ -248,7 +248,7 @@ class SimEnvTest(unittest.TestCase):
     finally:
       env.stop()
 
-  def test_packed_state_and_encoded_step(self):
+  def test_packed_state_and_step(self):
     env = self._sim_env(
         num_envs=2,
         players={
@@ -278,19 +278,18 @@ class SimEnvTest(unittest.TestCase):
           melee.Character.FOX.value,
       ])
 
-      encoded = _neutral_encoded_controller(batch_size=4)
-      needs_reset = env.step_encoded(
-          encoded,
-          axis_spacing=32,
-          shoulder_spacing=4,
-      )
-      self.assertEqual(needs_reset.shape, (2,))
-      next_state = _game_batch(env, needs_reset)
+      controllers = {
+          1: sim_env.neutral_controllers(2),
+          2: sim_env.neutral_controllers(2),
+      }
+      output = env.step(controllers)
+      self.assertEqual(output.needs_reset.shape, (2,))
+      next_state = _game_batch(env, output.needs_reset)
       self.assertEqual(next_state.game.p0.x.shape, (4,))
     finally:
       env.stop()
 
-  def test_multiprocess_env_matches_single_process_encoded_steps(self):
+  def test_multiprocess_env_matches_single_process_steps(self):
     players = [
         {
             1: dolphin.AI(melee.Character.FOX),
@@ -315,7 +314,7 @@ class SimEnvTest(unittest.TestCase):
         melee.Stage.YOSHIS_STORY,
         melee.Stage.POKEMON_STADIUM,
     ]
-    single = self._sim_env(
+    single = sim_env.AsyncSimBatchedEnvironment(
         num_envs=4,
         players=players,
         stage=stages,
@@ -329,19 +328,22 @@ class SimEnvTest(unittest.TestCase):
         frame_buffer_length=16,
     )
     try:
-      encoded = _neutral_encoded_controller(batch_size=8)
-      encoded.main_stick.x[:] = [16, 20, 12, 16, 16, 12, 20, 16]
-      encoded.buttons.A[:] = [False, True, False, True, True, False, True, False]
+      # Distinct per-env and per-port inputs so the two backends can't agree
+      # by symmetry.
+      controllers = {
+          1: sim_env.neutral_controllers(4),
+          2: sim_env.neutral_controllers(4),
+      }
+      controllers[1].main_stick.x[:] = [0.5, 0.625, 0.375, 0.5]
+      controllers[1].buttons.A[:] = [False, True, False, True]
+      controllers[2].main_stick.x[:] = [0.5, 0.375, 0.625, 0.5]
+      controllers[2].buttons.A[:] = [True, False, True, False]
+
+      _assert_game_batch_equal(multi.pop(), single.pop())
       for _ in range(4):
-        single_reset = single.step_encoded(
-            encoded, axis_spacing=32, shoulder_spacing=4)
-        multi_reset = multi.step_encoded(
-            encoded, axis_spacing=32, shoulder_spacing=4)
-        np.testing.assert_array_equal(multi_reset, single_reset)
-        _assert_game_batch_equal(
-            _game_batch(multi, multi_reset),
-            _game_batch(single, single_reset),
-        )
+        single.push(controllers)
+        multi.push(controllers)
+        _assert_game_batch_equal(multi.pop(), single.pop())
     finally:
       single.stop()
       multi.stop()
@@ -462,24 +464,6 @@ class SimEnvTest(unittest.TestCase):
     self.assertEqual(out.item_2.type.tolist(), [54])
     self.assertEqual(out.item_2.x.tolist(), [-32.0])
     self.assertFalse(out.item_3.exists[0])
-
-def _neutral_encoded_controller(batch_size: int):
-  shape = (batch_size,)
-  return Controller(
-      main_stick=Stick(
-          x=np.full(shape, 16, dtype=np.uint8),
-          y=np.full(shape, 16, dtype=np.uint8),
-      ),
-      c_stick=Stick(
-          x=np.full(shape, 16, dtype=np.uint8),
-          y=np.full(shape, 16, dtype=np.uint8),
-      ),
-      shoulder=np.zeros(shape, dtype=np.uint8),
-      buttons=Buttons(**{
-          name: np.zeros(shape, dtype=np.bool_)
-          for name in Buttons._fields
-      }),
-  )
 
 def _check_arrays(path, x, y):
   np.testing.assert_array_equal(x, y, err_msg=str(path))
