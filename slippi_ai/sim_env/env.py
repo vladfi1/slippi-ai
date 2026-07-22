@@ -59,7 +59,7 @@ class SimStepInfo(tp.NamedTuple):
   step_t: int
 
 
-PlayerConfigs = tp.Mapping[int, dolphin.Player]
+PlayerConfigs = tp.Mapping[int, dolphin.AI]
 CharacterPool = str | tp.Sequence[melee.Character | str | int]
 
 
@@ -162,6 +162,7 @@ class SimBatchedEnvironment:
                 melee_sim.PlayerConfig(character=int(char_pair[0].value)),
                 melee_sim.PlayerConfig(character=int(char_pair[1].value)),
             ),
+            max_frame=self._max_frame_id,
         )
         for stage, char_pair in zip(self._stage_by_env, character_assignments)
     ]
@@ -297,7 +298,7 @@ class SimBatchedEnvironment:
     action = self._env.current_action_frame
     for player_index, port in enumerate(self._ports):
       controller = controllers[port]
-      player = action['p'][:, int(player_index)]
+      player = action['players'][:, int(player_index)]
       player['main_stick_x'][:] = controller.main_stick.x
       player['main_stick_y'][:] = controller.main_stick.y
       player['c_stick_x'][:] = controller.c_stick.x
@@ -315,7 +316,7 @@ class SimBatchedEnvironment:
       return needs_reset
 
     step_t = self._env.t
-    self._env.step(max_frame_id=self._max_frame_id)
+    self._env.step()
     needs_reset = self._env.done_at(step_t).astype(np.bool_, copy=True)
     terminal = self._env.terminal_at(step_t).copy()
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)

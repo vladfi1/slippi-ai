@@ -140,7 +140,7 @@ class SimEnvTest(unittest.TestCase):
       controllers[1].main_stick.x[:] = [0.0, 0.25, 1.0]
       controllers[1].buttons.B[:] = [True, False, True]
       env.step(controllers)
-      action = env.buffers.controller_action_view[0]['p'][:, 0]
+      action = env.buffers.controller_action_view[0]['players'][:, 0]
       self.assertTrue(np.allclose(action['main_stick_x'], [0.0, 0.25, 1.0]))
       self.assertEqual(action['buttons']['B'].tolist(), [1, 0, 1])
 
