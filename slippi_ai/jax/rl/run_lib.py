@@ -736,8 +736,8 @@ def run(config: Config):
       logger.record(get_log_data(trajectories, metrics))
       maybe_flush(step)
 
-      maybe_save(step)
       step += 1
+      maybe_save(step)
 
     save(step)
 
