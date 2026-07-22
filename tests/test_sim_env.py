@@ -314,11 +314,16 @@ class SimEnvTest(unittest.TestCase):
         melee.Stage.YOSHIS_STORY,
         melee.Stage.POKEMON_STADIUM,
     ]
+    # max_frame_id=0 ends every game after 123 steps, so the run covers a
+    # synchronized auto-reset. The long horizon also covers stage-item RNG,
+    # which only matches across shardings because match seeds are derived from
+    # global env indices.
     single = sim_env.AsyncSimBatchedEnvironment(
         num_envs=4,
         players=players,
         stage=stages,
         frame_buffer_length=16,
+        max_frame_id=0,
     )
     multi = sim_env.MultiprocessSimEnvironment(
         num_envs=4,
@@ -326,6 +331,7 @@ class SimEnvTest(unittest.TestCase):
         players=players,
         stage=stages,
         frame_buffer_length=16,
+        max_frame_id=0,
     )
     try:
       # Distinct per-env and per-port inputs so the two backends can't agree
@@ -339,11 +345,22 @@ class SimEnvTest(unittest.TestCase):
       controllers[2].main_stick.x[:] = [0.5, 0.375, 0.625, 0.5]
       controllers[2].buttons.A[:] = [True, False, True, False]
 
-      _assert_game_batch_equal(multi.pop(), single.pop())
-      for _ in range(4):
+      # Compare copies: the popped batches are views into buffers that stop()
+      # unlinks, which segfaults pytest's failure reporting.
+      snap = lambda batch: jax.tree.map(np.copy, batch)
+
+      _assert_game_batch_equal(snap(multi.pop()), snap(single.pop()))
+      reset_steps = 0
+      for _ in range(125):
         single.push(controllers)
         multi.push(controllers)
-        _assert_game_batch_equal(multi.pop(), single.pop())
+        single_batch = snap(single.pop())
+        _assert_game_batch_equal(snap(multi.pop()), single_batch)
+        if np.any(single_batch.needs_reset):
+          reset_steps += 1
+      self.assertEqual(reset_steps, 1)
+      self.assertEqual(len(single.pop_completed_games()), 4)
+      self.assertEqual(len(multi.pop_completed_games()), 4)
     finally:
       single.stop()
       multi.stop()

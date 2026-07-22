@@ -411,6 +411,8 @@ def _worker_main(
         max_frame_id=max_frame_id,
         data_dir=data_dir,
         fake=fake,
+        # Seed matches by global env index so sharding doesn't change games.
+        seed_offset=offset,
     )
     del frame_buffer_length  # don't confuse with env runahead
     env_slice = slice(offset, offset + batch_size)

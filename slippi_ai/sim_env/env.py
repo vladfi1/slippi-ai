@@ -83,6 +83,7 @@ class SimBatchedEnvironment:
       max_frame_id: int = -1,
       data_dir: str | None = None,
       fake: bool = False,
+      seed_offset: int = 0,
   ):
     self._num_envs = num_envs
     self._frame_buffer_length = frame_buffer_length
@@ -155,6 +156,10 @@ class SimBatchedEnvironment:
       character_assignments = tuple(
           matrix[i % len(matrix)] for i in range(self._num_envs))
 
+    # Seed with the global env index so a process-sharded batch plays out
+    # identically to a single-process batch with the same configs. (Without an
+    # explicit seed the native env seeds each match with its local lane index,
+    # which differs across shardings.)
     match_configs = [
         melee_sim.MatchConfig(
             stage=_MELEE_TO_SIM_STAGE[stage],
@@ -163,8 +168,10 @@ class SimBatchedEnvironment:
                 melee_sim.PlayerConfig(character=int(char_pair[1].value)),
             ),
             max_frame=self._max_frame_id,
+            seed=seed_offset + i,
         )
-        for stage, char_pair in zip(self._stage_by_env, character_assignments)
+        for i, (stage, char_pair) in enumerate(
+            zip(self._stage_by_env, character_assignments))
     ]
 
     # EnvBatch owns and binds its native rollout ring. Python keeps views into
