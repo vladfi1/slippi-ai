@@ -140,8 +140,10 @@ if __name__ == '__main__':
     if LEARNER_PERF.value:
       config.runtime.save_interval = -1
       config.runtime.log_interval = 20
-      config.actor.use_sim_envs = False
-      config.actor.use_fake_envs = True
+      config.learner.optimizer_burnin_epochs = 0
+      config.learner.value_burnin_epochs = 0
+      # config.actor.use_sim_envs = False
+      # config.actor.use_fake_envs = True
       wandb_kwargs['mode'] = 'disabled'
       config.agent
 
