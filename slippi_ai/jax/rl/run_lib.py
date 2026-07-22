@@ -77,7 +77,7 @@ class AgentConfig:
   jax: JaxAgentConfig = field(JaxAgentConfig)
 
   def __post_init__(self):
-    if self.char is not None and len(self.char) != len(self.name):
+    if self.char is not None and len(self.char) != len(self.name) and len(self.name) > 1:
       raise ValueError(
           f'Number of characters {len(self.char)} does not match '
           f'number of names {len(self.name)}')
