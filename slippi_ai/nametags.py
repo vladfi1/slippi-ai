@@ -54,6 +54,9 @@ def name_from_metadata(player_meta: dict, raw: Optional[str] = None) -> str:
 # TODO: we could scrape code -> ELO from the slippi website?
 
 # TODO: put this in a json?
+# TODO: auto-merge codes that share a slippi account (majority suid, as in
+# slippi_db.player_ratings.code_alias_groups) so that name normalization
+# doesn't rely solely on this hand-curated list.
 NAME_GROUPS = [
   ('Zain', 'zain', 'DontTestMe', 'ZAIN#0', 'DTM#664'),  # 13K replays
   ('Cody', 'iBDW', 'cody', 'IBDW#0', 'IBDW#734', 'JBDW#120'),  # 52K replays

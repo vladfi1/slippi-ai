@@ -11,6 +11,11 @@ ordinal (1100) even for accounts that have never played a ranked game.
 Legacy cache entries (from the player_ratings notebook) only stored a
 max_rating with no update counts; they are refetched by default.
 
+Connect codes that demonstrably share a slippi account (via the suid metadata
+in parsed.sqlite; see player_ratings.code_alias_groups) share the account's
+rating. In particular a renamed account's old code, which no longer resolves
+on the slippi API, inherits the rating of its current code.
+
 Usage:
   python slippi_db/scripts/fetch_player_ratings.py --root=$REPLAYS
 """
@@ -81,7 +86,12 @@ def collect_code_counts(root: str) -> collections.Counter:
         counts[name] += 1
   return counts
 
-def write_ratings(entries: list[dict], output: str, min_updates: int):
+def write_ratings(
+    entries: list[dict],
+    output: str,
+    min_updates: int,
+    alias_groups: list[list[str]],
+):
   """Write normalized name -> max rating, preserving manual entries."""
   existing = {}
   if os.path.isfile(output):
@@ -95,6 +105,22 @@ def write_ratings(entries: list[dict], output: str, min_updates: int):
     rating = player_ratings.rating_from_entry(entry, min_updates)
     if rating is not None:
       ratings[name] = max(rating, ratings.get(name, rating))
+
+  # Codes that share a slippi account share its rating, e.g. when the account
+  # was renamed and the old code no longer resolves on the slippi API.
+  aliased = 0
+  for group in alias_groups:
+    names = {nametags.normalize_name(code) for code in group}
+    group_rating = max(
+        (ratings[name] for name in names if name in ratings), default=None)
+    if group_rating is None:
+      continue
+    for name in names:
+      if name not in ratings:
+        aliased += 1
+      derived_names.add(name)
+      ratings[name] = group_rating
+  print(f'Assigned ratings to {aliased} unrated codes via suid aliases.')
 
   # Keep entries that didn't come from a cached code (e.g. manual additions),
   # but drop names whose codes are now known to be unrated.
@@ -118,7 +144,9 @@ def main(_):
 
   print('Collecting connect codes from the dataset...')
   code_counts = collect_code_counts(root)
-  print(f'Found {len(code_counts)} distinct connect codes.')
+  alias_groups = player_ratings.code_alias_groups(root)
+  print(f'Found {len(code_counts)} distinct connect codes,'
+        f' {len(alias_groups)} multi-code accounts.')
 
   db = tinydb.TinyDB(DB.value or os.path.join(root, 'ranks.json'))
   code_query = tinydb.Query().code
@@ -184,7 +212,8 @@ def main(_):
     print('Interrupted; writing ratings from cache so far.')
   finally:
     db.close()
-    write_ratings(list(entries.values()), output, MIN_RATING_UPDATES.value)
+    write_ratings(
+        list(entries.values()), output, MIN_RATING_UPDATES.value, alias_groups)
 
   legacy = sum(1 for e in entries.values() if 'seasons' not in e)
   if legacy:
