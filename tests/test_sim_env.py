@@ -1,4 +1,6 @@
+import time
 import unittest
+from unittest import mock
 
 import jax
 import melee
@@ -6,7 +8,7 @@ import numpy as np
 
 from slippi_ai import dolphin
 from slippi_ai import sim_env
-from slippi_ai.sim_env import observations
+from slippi_ai.sim_env import multiprocess_env, observations
 from slippi_ai.types import Items
 
 
@@ -363,6 +365,61 @@ class SimEnvTest(unittest.TestCase):
       self.assertEqual(len(multi.pop_completed_games()), 4)
     finally:
       single.stop()
+      multi.stop()
+
+  def test_multiprocess_peek_waits_for_worker_observations(self):
+    # Regression test: peek used to return the shared obs slot without waiting
+    # on the workers' obs-written events. Workers run up to `runahead` steps
+    # behind the pushed actions, so a lagging worker left its shard of the
+    # peeked slot stale — this corrupted the T+1 frame of RL trajectories.
+    #
+    # We simulate the lagging worker by clearing its obs-written event rather
+    # than SIGSTOPping the process: Event.set() blocks until all waiters of
+    # the underlying Condition acknowledge, so a worker frozen inside
+    # `action_event.wait()` deadlocks the parent's push().
+    multi = sim_env.MultiprocessSimEnvironment(
+        num_envs=2,
+        inner_batch_size=1,
+        players=[
+            {
+                1: dolphin.AI(melee.Character.FOX),
+                2: dolphin.AI(melee.Character.FALCO),
+            },
+        ] * 2,
+        stage=[melee.Stage.FINAL_DESTINATION] * 2,
+        frame_buffer_length=16,
+    )
+    try:
+      multi.pop()
+      controllers = {
+          1: sim_env.neutral_controllers(2),
+          2: sim_env.neutral_controllers(2),
+      }
+      multi.push(controllers)
+
+      # Wait until both workers have stepped and published their shards.
+      obs_events = multi._obs_written_events[multi._obs_index]
+      deadline = time.monotonic() + 60.0
+      while not all(event.is_set() for event in obs_events):
+        if time.monotonic() > deadline:
+          self.fail('workers did not publish observations in time')
+        time.sleep(0.05)
+
+      # Pretend worker 1 is still `runahead` steps behind: its shard of the
+      # slot is unwritten, so peek must not serve it.
+      obs_events[1].clear()
+      with mock.patch.object(multiprocess_env, '_BARRIER_TIMEOUT_S', 2.0):
+        with self.assertRaisesRegex(RuntimeError, 'timed out'):
+          multi.peek()
+
+      # Safe: workers only ever wait on action events, so there is no waiter
+      # to acknowledge this set().
+      obs_events[1].set()
+
+      # Once the worker has caught up, peek and pop complete normally.
+      peeked = jax.tree.map(np.copy, multi.peek())
+      _assert_game_batch_equal(jax.tree.map(np.copy, multi.pop()), peeked)
+    finally:
       multi.stop()
 
   def test_game_batch_matches_port_state_observation_conventions(self):
