@@ -17,14 +17,22 @@ FIXED_RATINGS = {
     'Master Player': 2150,
 }
 
+# Manual overrides by normalized name, for players whose slippi ranked
+# rating misrepresents their skill (e.g. top players who rarely play ranked).
+RATING_OVERRIDES: dict[str, float] = {
+    'Zain': 3200,
+}
+
 def ratings_path(root: str) -> str:
   return os.path.join(root, 'ratings.json')
 
 def load_ratings(path: str, with_fixed: bool = True) -> dict[str, float]:
+  """Load ratings.json; with_fixed also applies manual ratings/overrides."""
   with open(path) as f:
     ratings = json.load(f)
   if with_fixed:
     ratings.update(FIXED_RATINGS)
+    ratings.update(RATING_OVERRIDES)
   return ratings
 
 def rows_from_sqlite(
