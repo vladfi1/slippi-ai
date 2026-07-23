@@ -296,6 +296,21 @@ class MultiprocessSimEnvironment:
   # def game_batch_buffer(self) -> GameBatchBuffer:
   #   return self._trajectory_buffers.slots[self._current_index]
 
+  def _wait_obs_written(self, index: int, *, clear: bool):
+    """Wait until all workers have written their observation shard.
+
+    Workers run up to `runahead` steps behind the pushed actions, so a slot
+    may not have been written yet even though its action has been consumed.
+    """
+    # TODO: is there a more efficient way to do this? A semaphore could work
+    # but it doesn't allow you to acquire N at once.
+    for event in self._obs_written_events[index]:
+      if not event.wait(timeout=_BARRIER_TIMEOUT_S):
+        self._check_worker_errors()
+        raise RuntimeError('timed out waiting for worker observations')
+      if clear:
+        event.clear()
+
   def pop(self) -> GameBatch:
     self._check_worker_errors()
 
@@ -303,12 +318,7 @@ class MultiprocessSimEnvironment:
     if self._pushed_minus_popped < 0:
       raise RuntimeError('not enough actions pushed')
 
-    # Wait until all workers have written their observations
-    # TODO: is there a more efficient way to do this? A semaphore could work
-    # but it doesn't allow you to acquire N at once.
-    for event in self._obs_written_events[self._obs_index]:
-      event.wait(timeout=_BARRIER_TIMEOUT_S)
-      event.clear()
+    self._wait_obs_written(self._obs_index, clear=True)
 
     game_batch = self._obs_buffer.slots[self._obs_index]
     self._obs_index = (self._obs_index + 1) % self._env_runahead
@@ -335,6 +345,8 @@ class MultiprocessSimEnvironment:
   def peek(self) -> GameBatch:
     if not (self._pushed_minus_popped > 0):
       raise RuntimeError('no observations available')
+    # Don't clear the events so that a subsequent pop() also completes.
+    self._wait_obs_written(self._obs_index, clear=False)
     return self._obs_buffer.slots[self._obs_index]
 
   def active_games(self) -> list[dict[str, int | str]]:
