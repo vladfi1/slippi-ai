@@ -242,11 +242,20 @@ class SimEnvTest(unittest.TestCase):
       for _ in range(123):
         output = env.step(controllers)
       self.assertIsNotNone(output)
-      self.assertTrue(np.all(output.needs_reset))
+      # The terminal frame is published first, without a reset flag, so the
+      # game-ending transition stays observable.
+      self.assertFalse(np.any(output.needs_reset))
       terminal = env.last_step_info.terminal
       self.assertTrue(np.all(terminal['done'] == 1))
       self.assertTrue(np.all(terminal['max_frame_reached'] == 1))
       self.assertTrue(np.all(terminal['match_ended'] == 0))
+
+      # The deferred reset lands on the next step as the entry frame.
+      output = env.step(controllers)
+      self.assertTrue(np.all(output.needs_reset))
+      self.assertTrue(np.all(env.last_step_info.terminal['done'] == 0))
+      self.assertTrue(
+          np.all(env.buffers.gamestate_view[env.cursor]['frame_id'] == -123))
     finally:
       env.stop()
 

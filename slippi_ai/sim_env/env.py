@@ -320,14 +320,17 @@ class SimBatchedEnvironment:
       return needs_reset
 
     step_t = self._env.t
-    needs_reset = self._env.step_and_reset().astype(np.bool_, copy=True)
+    # Resets are deferred by one step: a finishing lane publishes its terminal
+    # frame (with the game-ending reward intact), then resets on the next
+    # advance, publishing the new episode's entry frame flagged is_resetting.
+    is_resetting, _ = self._env.step_and_reset()
     terminal = self._env.terminal_at(step_t).copy()
     self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
-    self._record_completed_games(terminal, self._env.final_gamestate_view)
-    ids = np.flatnonzero(needs_reset)
+    self._record_completed_games(terminal, self._env.current_frame)
+    ids = np.flatnonzero(is_resetting)
     if ids.size:
       self._finish_reset(ids)
-    return needs_reset
+    return is_resetting
 
   def _record_completed_games(self, terminal: np.ndarray, frame: np.ndarray):
     done_ids = np.flatnonzero(terminal['done'])
