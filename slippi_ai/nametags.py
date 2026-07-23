@@ -98,6 +98,7 @@ NAME_GROUPS = [
   ('Magi', 'MAGI#732'),  # 4K replays
   ('Nez', 'NEZ#125'),  # Yoshi main, 1K replays
   ('Moky', 'MOKY#475'),  # 3K replays
+  ('Jmook', 'JM#0', 'JMO#192'),
 
   # Ice Climbers
   ('CookBook', 'COOK#671'),  # 20K replays
