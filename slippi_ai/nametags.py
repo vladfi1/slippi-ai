@@ -98,6 +98,7 @@ NAME_GROUPS = [
   ('Nez', 'NEZ#125'),  # Yoshi main, 1K replays
   ('Moky', 'MOKY#475'),  # 3K replays
   ('Jmook', 'JM#0', 'JMO#192'),
+  ('Ossify', 'OSSIFY#0'),  # 1K replays
 
   # Ice Climbers
   ('CookBook', 'COOK#671'),  # 20K replays
@@ -112,7 +113,6 @@ NAME_GROUPS = [
   ('RapM', 'RAPM#151'),  # 700 replays
 
   # Don't have permission from these players yet.
-  ('Ossify', 'OSSIFY#0'),  # 1K replays
   ('Plup', 'PLUB#754'),
   ('Medz', 'MEDZ#841'),
 
@@ -153,7 +153,7 @@ BANNED_NAMES = {
     'Mang0', 'Wizzrobe', 'Hungrybox', 'M2K',
 
     # Haven't asked yet, so don't train on for now.
-    'Ossify', 'Plup', 'Medz',
+    'Plup', 'Medz',
 
     'Phillip AI',  # This is us!
 }
