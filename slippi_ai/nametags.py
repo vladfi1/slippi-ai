@@ -112,6 +112,9 @@ NAME_GROUPS = [
   ('JahRidin', 'JAH#516'),  # 1K replays
   ('RapM', 'RAPM#151'),  # 700 replays
 
+  # Ness
+  ('MP3', 'MP#3', 'MP#435'),  # 30K replays
+
   # Don't have permission from these players yet.
   ('Plup', 'PLUB#754'),
   ('Medz', 'MEDZ#841'),
