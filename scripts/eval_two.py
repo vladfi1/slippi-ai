@@ -109,8 +109,13 @@ def main(_):
         for agent in agents:
           agent.step(gamestate)
 
-      if gamestate.frame > 0 and gamestate.frame % (15 * 60) == 0:
-        logging.info(f'step_time: {step_timer.mean_time():.3f}')
+      if gamestate.frame > 0 and gamestate.frame % (30 * 60) == 15 * 60:
+        step_time = step_timer.mean_time()
+        logging.info(f'step_time: {step_time:.3f}')
+        if step_time > 0.016:
+          logging.error('running too slow to keep up with the game!')
+        elif step_time > 0.012:
+          logging.warning('running slow, performance may be degraded')
   finally:
     for agent in agents:
       agent.stop()
