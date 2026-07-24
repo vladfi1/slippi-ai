@@ -933,6 +933,23 @@ class WebDataSource(AbstractDataSource):
     assert batch.reward.shape[-1] == self.chunk_size - 1
     return batch_with_meta, epoch
 
+
+def character_groups():
+  singles = [
+      'FOX', 'FALCO', 'MARTH', 'CPTFALCON', 'JIGGLYPUFF', 'PEACH', 'POPO',
+      'LUIGI', 'SAMUS', 'PIKACHU', 'YOSHI', 'GANONDORF', 'DK', 'NESS']
+  groups = [
+      ['SHEIK', 'ZELDA'],
+      ['DOC', 'MARIO'],
+      ['LINK', 'YLINK'],
+      # the rest
+      ['MEWTWO', 'GAMEANDWATCH', 'ROY', 'KIRBY', 'PICHU', 'BOWSER']
+  ]
+  for char in singles:
+      groups.append([char])
+
+  return groups
+
 class DataSource(AbstractDataSource):
   def __init__(
       self,
@@ -943,6 +960,7 @@ class DataSource(AbstractDataSource):
       random_offset: int = 0,
       reward_kwargs: dict = {},
       balance_characters: bool = False,
+      group_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
       num_workers: int = 0,
@@ -955,6 +973,7 @@ class DataSource(AbstractDataSource):
     self.reward_kwargs = reward_kwargs
 
     self.balance_characters = balance_characters
+    self.group_characters = group_characters
 
     def build_observation_filter():
       if observation_config is None:
@@ -965,20 +984,48 @@ class DataSource(AbstractDataSource):
     self.encode_name = nametags.name_encoder(self.name_map)
     self.observation_config = observation_config
 
-    if self.balance_characters:
-      # TODO: balance by opponent (i.e. matchup) too?
-      by_character = collections.defaultdict(list)
+    by_character = collections.defaultdict(list)
+    for replay in self.replays:
+      by_character[replay.main_player.character].append(replay)
+
+    num_per_character = {
+        melee.Character(c).name: len(vs)
+        for c, vs in by_character.items()
+    }
+
+    logging.info(f'Character balance: {num_per_character}')
+
+    if self.group_characters:
+      groups = character_groups()
+
+      by_group: dict[str, list[ReplayInfo]] = {}
+      char_to_group: dict[int, str] = {}
+      for group in groups:
+        group_name = ','.join(group)
+        by_group[group_name] = []
+        for char in group:
+          char_id = name_to_character[char.lower()].value
+          char_to_group[char_id] = group_name
+
       for replay in self.replays:
-        by_character[replay.main_player.character].append(replay)
+        by_group[char_to_group[replay.main_player.character]].append(replay)
 
-      num_per_character = {
-          melee.Character(c).name: len(vs)
-          for c, vs in by_character.items()
+      num_per_group = {
+        group_name: len(replays)
+        for group_name, replays in by_group.items()
       }
+      logging.info(f'Group balance: {num_per_group}')
 
-      logging.info(f'Character balance: {num_per_character}')
+      self.epoch_size = min(num_per_group.values()) * len(by_group)
+      logging.info(f'Epoch size: {self.epoch_size}')
 
+      iterators = [itertools.cycle(replays) for replays in by_group.values()]
+      self.replay_info_iter = utils.interleave(*iterators)
+
+    elif self.balance_characters:
+      # TODO: balance by opponent (i.e. matchup) too?
       self.epoch_size = min(num_per_character.values()) * len(by_character)
+      logging.info(f'Epoch size: {self.epoch_size}')
 
       if len(by_character) > 1:
         iterators = [itertools.cycle(replays) for replays in by_character.values()]
@@ -1121,6 +1168,7 @@ class DataConfig:
   num_workers: int = 0
   buffer: int = 16  # DataSourceMP buffer size
   balance_characters: bool = False
+  group_characters: bool = False
   cached: bool = False
   unroll_chunks: int = 0
   burnin: int = 5  # get rid of early-game correlations
