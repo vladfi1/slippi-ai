@@ -34,6 +34,7 @@ from slippi_ai.types import (
 )
 from slippi_ai.mirror import mirror_game
 
+from slippi_db import player_ratings
 from slippi_db import utils as file_utils
 from slippi_db.utils import is_remote, FsspecFile
 
@@ -300,16 +301,11 @@ class DatasetConfig:
     if self.ratings_path is None:
       return None
 
-    if is_remote(self.ratings_path):
-      return json.loads(FsspecFile(self.ratings_path).read().decode('utf-8'))
-    else:
-      with open(self.ratings_path) as f:
-        return json.load(f)
+    return player_ratings.load_ratings(self.ratings_path)
 
   def get_ratings_fn(self) -> RatingFn:
     ratings = self.load_ratings()
     ratings = ratings or {}
-    ratings.update(nametags.FIXED_RATINGS)
 
     rng = random.Random(self.seed)
 

@@ -10,7 +10,10 @@ import os
 import sqlite3
 from typing import Iterator, Optional
 
+from slippi_db.utils import is_remote, FsspecFile
+
 # Ratings for the anonymized names in Fizzi's ranked dumps.
+# See https://discord.com/channels/328261477372919811/417153423918497793/1395499979061334077
 FIXED_RATINGS = {
     'Platinum Player': 1750,
     'Diamond Player': 2000,
@@ -28,8 +31,12 @@ def ratings_path(root: str) -> str:
 
 def load_ratings(path: str, with_fixed: bool = True) -> dict[str, float]:
   """Load ratings.json; with_fixed also applies manual ratings/overrides."""
-  with open(path) as f:
-    ratings = json.load(f)
+  if is_remote(path):
+    ratings = json.loads(FsspecFile(path).read().decode('utf-8'))
+  else:
+    with open(path) as f:
+      ratings = json.load(f)
+
   if with_fixed:
     ratings.update(FIXED_RATINGS)
     ratings.update(RATING_OVERRIDES)
