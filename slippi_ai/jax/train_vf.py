@@ -84,6 +84,7 @@ class Config:
     self.observation = policy_config.observation
     self.max_names = policy_config.max_names
     self.dataset.copy_characteristics_from(policy_config.dataset)
+    self.data.copy_characteristics_from(policy_config.data)
 
 
 def check_compatibility(vf_state: dict, policy_state: dict) -> list[str]:

@@ -1176,6 +1176,13 @@ class DataConfig:
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
+  def characteristic_keys(self):
+    return ['balance_characters', 'group_characters']
+
+  def copy_characteristics_from(self, other: tp.Self):
+    self.balance_characters = other.balance_characters
+    self.group_characters = other.group_characters
+
 def _make_source(
     cached: bool = False,
     burnin: int = 5,
