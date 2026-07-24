@@ -1,9 +1,11 @@
 """Grab N replays per character on each legal stage, from a character pool.
 
-Given a list of characters, for each character finds up to N replays on each
-legal stage where that character is played and the opponent's character is
-also drawn from the same list (this includes dittos, where the opponent
-plays the same character). Candidates are chosen uniformly at random
+Given a list of characters, for each character finds up to N training-quality
+replays (as determined at parse time, e.g. excluding games that are too
+short) on each legal stage where that character is played and the opponent's
+character is drawn from --allowed_opponents (by default the same list; this
+includes dittos, where the opponent plays the same character). Candidates
+are chosen uniformly at random
 (subject to a minimum Slippi version and a seed, for reproducibility)
 rather than e.g. picking the longest game, to avoid biasing towards
 outliers. Matched .slp files are copied directly out of their source Raw
@@ -39,6 +41,10 @@ CHARACTERS = flags.DEFINE_string(
     'characters', None,
     'Comma-separated character names (e.g. "fox,falco,marth").',
     required=True)
+ALLOWED_OPPONENTS = flags.DEFINE_string(
+    'allowed_opponents', None,
+    'Optional comma-separated character names the opponent may play. '
+    'Defaults to the same list as --characters.')
 NUM_REPLAYS = flags.DEFINE_integer(
     'num_replays', 1,
     'Number of replays to pick for each (character, stage) pair.')
@@ -79,11 +85,14 @@ def character_name(char_id: int) -> str:
 def find_candidates(
     parsed_db_path: str,
     character_ids: tp.Set[int],
+    opponent_ids: tp.Set[int],
     min_version: tuple[int, ...],
 ) -> list[sqlite3.Row]:
-  """Finds valid replays where both players' characters are in character_ids."""
+  """Finds training replays pairing a character_ids player vs. an opponent_ids one."""
   char_list = list(character_ids)
-  placeholders = ', '.join('?' * len(char_list))
+  opp_list = list(opponent_ids)
+  char_placeholders = ', '.join('?' * len(char_list))
+  opp_placeholders = ', '.join('?' * len(opp_list))
 
   conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
   conn.row_factory = sqlite3.Row
@@ -94,11 +103,14 @@ def find_candidates(
                p0_character, p1_character
         FROM replays
         WHERE valid = 1
-          AND p0_character IN ({placeholders})
-          AND p1_character IN ({placeholders})
+          AND is_training = 1
+          AND ((p0_character IN ({char_placeholders})
+                AND p1_character IN ({opp_placeholders}))
+               OR (p1_character IN ({char_placeholders})
+                   AND p0_character IN ({opp_placeholders})))
         ORDER BY raw, name
         """,
-        char_list + char_list)
+        char_list + opp_list + char_list + opp_list)
     rows = cursor.fetchall()
   finally:
     conn.close()
@@ -118,6 +130,7 @@ def find_candidates(
 def select_replays(
     candidates: list[sqlite3.Row],
     character_ids: tp.Set[int],
+    opponent_ids: tp.Set[int],
     num_replays: int,
     seed: int,
 ) -> dict[tuple[int, enums.Stage], list[sqlite3.Row]]:
@@ -125,13 +138,17 @@ def select_replays(
 
   A single replay can satisfy the quota of both characters involved (e.g. a
   Fox vs. Falco game counts as a candidate for both Fox's and Falco's bucket
-  on that stage).
+  on that stage). A character's bucket only counts games whose opponent is
+  in opponent_ids.
   """
   by_bucket: dict[tuple[int, enums.Stage], list[sqlite3.Row]] = (
       collections.defaultdict(list))
   for row in candidates:
     stage = enums.to_internal_stage(row['stage'])
-    row_characters = {row['p0_character'], row['p1_character']} & character_ids
+    p0, p1 = row['p0_character'], row['p1_character']
+    row_characters = {
+        char for char, opp in ((p0, p1), (p1, p0))
+        if char in character_ids and opp in opponent_ids}
     for char_id in row_characters:
       by_bucket[(char_id, stage)].append(row)
 
@@ -161,18 +178,29 @@ def main(_):
   if not character_ids:
     raise ValueError(f'No characters specified: {CHARACTERS.value!r}')
 
+  if ALLOWED_OPPONENTS.value:
+    opponent_ids = characters.parse_characters(ALLOWED_OPPONENTS.value)
+    if not opponent_ids:
+      raise ValueError(
+          f'No opponents specified: {ALLOWED_OPPONENTS.value!r}')
+  else:
+    opponent_ids = character_ids
+
   min_version = parse_version(MIN_VERSION.value)
   num_replays = NUM_REPLAYS.value
 
   char_names = sorted(character_name(c) for c in character_ids)
+  opponent_names = sorted(character_name(c) for c in opponent_ids)
   print(f'Searching for replays among {", ".join(char_names)} '
+        f'vs {", ".join(opponent_names)} '
         f'(slippi_version >= {MIN_VERSION.value})')
 
-  candidates = find_candidates(str(parsed_db_path), character_ids, min_version)
+  candidates = find_candidates(
+      str(parsed_db_path), character_ids, opponent_ids, min_version)
   print(f'Found {len(candidates)} candidate replay(s).')
 
   selected_by_bucket = select_replays(
-      candidates, character_ids, num_replays, SEED.value)
+      candidates, character_ids, opponent_ids, num_replays, SEED.value)
 
   # Dedup replays selected for multiple (character, stage) buckets.
   chosen_rows: dict[tuple[str, str], sqlite3.Row] = {}
