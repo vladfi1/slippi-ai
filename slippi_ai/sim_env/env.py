@@ -299,7 +299,7 @@ class SimBatchedEnvironment:
     ]
 
   def advance(self, controllers: Controllers):
-    action = self._env.begin_step()
+    action = self._env.current_action_frame
     for player_index, port in enumerate(self._ports):
       controller = controllers[port]
       player = action['players'][:, int(player_index)]
@@ -319,13 +319,12 @@ class SimBatchedEnvironment:
       needs_reset = np.zeros(self._num_envs, dtype=np.bool_)
       return needs_reset
 
-    step_t = self._env.t
     # Resets are deferred by one step: a finishing lane publishes its terminal
     # frame (with the game-ending reward intact), then resets on the next
     # advance, publishing the new episode's entry frame flagged is_resetting.
-    is_resetting, _ = self._env.step_and_reset()
-    terminal = self._env.terminal_at(step_t).copy()
-    self._last_step_info = SimStepInfo(terminal=terminal, step_t=step_t)
+    is_resetting, terminal = self._env.step_and_reset()
+    terminal = terminal.copy()
+    self._last_step_info = SimStepInfo(terminal=terminal, step_t=self._env.t - 1)
     self._record_completed_games(terminal, self._env.current_frame)
     ids = np.flatnonzero(is_resetting)
     if ids.size:
