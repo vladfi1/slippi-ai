@@ -514,9 +514,18 @@ def train_test_split(
 
 name_to_character = {c.name.lower(): c for c in melee.Character}
 
+_legal_character_names = [
+    'fox', 'falco', 'marth', 'cptfalcon', 'jigglypuff', 'peach', 'popo',
+    'luigi', 'samus', 'pikachu', 'yoshi', 'ganondorf', 'dk', 'ness',
+    'sheik', 'zelda', 'doc', 'mario', 'link', 'ylink',
+    'mewtwo', 'gameandwatch', 'roy', 'kirby', 'pichu', 'bowser'
+]
+assert len(set(_legal_character_names)) == len(_legal_character_names) == 26
+LEGAL_CHARACTERS = [name_to_character[c] for c in _legal_character_names]
+
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   if chars == ALL:
-    return None
+    return LEGAL_CHARACTERS
   return [name_to_character[c] for c in chars.split(',')]
 
 def _replay_info_to_wds(info: ReplayInfo) -> dict:
