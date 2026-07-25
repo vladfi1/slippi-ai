@@ -131,8 +131,7 @@ if __name__ == '__main__':
 
 
     if TOY_DATA.value:
-      config.dataset.data_dir = str(paths.TOY_DATA_DIR)
-      config.dataset.meta_path = str(paths.TOY_META_PATH)
+      config.dataset.dataset_path = str(paths.TOY_DATASET)
       config.dataset.test_ratio = 0.5
       char = 'all'
       config.data.cached = True
@@ -148,12 +147,12 @@ if __name__ == '__main__':
         n = config.network[net]['num_layers']
         h = net_config['hidden_size']
 
-        if config.learner.bf16:
-          bf16 = '_bf16'
-        else:
-          bf16 = ''
+        parts = [char, f'd{delay}', f'tx{n}x{h}']
 
-        config.tag = f"{char}_d{delay}_{net}_{n}x{h}{bf16}"
+        if config.embed.with_rating:
+          parts.append('rating')
+
+        config.tag = "_".join(parts)
 
     config.dataset.allowed_characters = char
 
