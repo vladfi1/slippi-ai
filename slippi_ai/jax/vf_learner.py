@@ -22,6 +22,7 @@ class VFLearnerConfig:
   reward_halflife: float = 4
   explicit_pmean: bool = False
   smap_optimizer: bool = True
+  bf16: bool = False
 
 
 def value_loss_fn(
@@ -62,21 +63,28 @@ class VFLearner(nnx.Module):
         smap_optimizer=config.smap_optimizer,
     )
 
+    unroll_vf = self._unroll_value_function
+    if config.bf16:
+      unroll_vf = jax_utils.with_bf16_compute(unroll_vf)
+
     self.train_vf = jax_utils.data_parallel_train(
         module=self.value_function,
         optimizer=self.value_optimizer,
-        loss_fn=self._unroll_value_function,
+        loss_fn=unroll_vf,
         **sharding_kwargs,
     )
 
     self.run_vf = jax_utils.shard_map_loss_fn(
         module=self.value_function,
-        loss_fn=self._unroll_value_function,
+        loss_fn=unroll_vf,
         mesh=mesh,
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    return self.value_function.initial_state(batch_size, rngs)
+    state = self.value_function.initial_state(batch_size, rngs)
+    if self.config.bf16:
+      state = jax_utils.cast_floats_to_dtype(state, jnp.bfloat16)
+    return state
 
   def _unroll_value_function(
       self,

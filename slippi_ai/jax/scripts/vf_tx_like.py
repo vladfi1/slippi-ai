@@ -24,6 +24,7 @@ def default_config():
   config.data.unroll_chunks = 4
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
+  config.learner.bf16 = True
   config.learner.reward_halflife = 4
   config.embed.controller.type = 'custom_v1'
   config.embed.player.with_nana = True
@@ -72,8 +73,7 @@ if __name__ == '__main__':
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
     if TOY_DATA.value:
-      config.dataset.data_dir = str(paths.TOY_DATA_DIR)
-      config.dataset.meta_path = str(paths.TOY_META_PATH)
+      config.dataset.dataset_path = str(paths.TOY_DATASET)
       config.dataset.test_ratio = 0.5
       char = 'all'
       config.data.cached = True
