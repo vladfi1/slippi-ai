@@ -14,6 +14,7 @@ import peppi_py
 from slippi_db import parse_libmelee
 from slippi_db import parse_peppi
 from slippi_db import upgrade_slp
+from slippi_ai import reward as reward_lib
 from slippi_ai import types
 
 def assert_same_parse(game_path: str):
@@ -416,6 +417,23 @@ def check_game_nt(game_nt: types.Game) -> Optional[str]:
   max_stage = game_nt.stage.max()
   if max_stage >= MAX_STAGE:
     errors.append(f'stage: {max_stage} >= {MAX_STAGE}')
+
+  # Rewards outside MAX_ABS_REWARD trip compute_rewards' asserts at training
+  # time. Trainers use either the base RewardConfig (q/nash) or
+  # RewardConfig.default() (policy/vf/RL), so check both.
+  reward_configs = {
+      'base': reward_lib.RewardConfig(),
+      'default': reward_lib.RewardConfig.default(),
+  }
+  for config_name, config in reward_configs.items():
+    rewards = reward_lib.compute_rewards(
+        game_nt, check_bounds=False, **dataclasses.asdict(config))
+    max_abs_reward = np.abs(rewards).max(initial=0)
+    # Inverted comparison so that NaN rewards also count as errors.
+    if not max_abs_reward < reward_lib.MAX_ABS_REWARD:
+      errors.append(
+          f'reward[{config_name}]: max abs {max_abs_reward:.2f}'
+          f' >= {reward_lib.MAX_ABS_REWARD}')
 
   return '; '.join(errors) or None
 

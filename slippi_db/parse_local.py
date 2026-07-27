@@ -699,8 +699,12 @@ def _query_missing_frozen_ps(parsed_db_path: str) -> dict[str, list[str]]:
   return by_archive
 
 
-def _query_missing_data_check(parsed_db_path: str) -> dict[str, list[str]]:
+def _query_missing_data_check(
+    parsed_db_path: str, recheck: bool = False) -> dict[str, list[str]]:
   """Query parsed.sqlite for training replays whose data hasn't been checked.
+
+  With `recheck`, selects all training replays regardless of data_ok, e.g. to
+  apply a newly added check to already-checked replays.
 
   Returns {raw_archive: [base_name, ...]} for files to re-parse.
   """
@@ -710,7 +714,10 @@ def _query_missing_data_check(parsed_db_path: str) -> dict[str, list[str]]:
   conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
   # Databases created before data_ok was added lack the column entirely; in
   # that case every training replay is missing the check.
-  missing_cond = 'AND data_ok IS NULL' if _has_column(conn, 'data_ok') else ''
+  if recheck or not _has_column(conn, 'data_ok'):
+    missing_cond = ''
+  else:
+    missing_cond = 'AND data_ok IS NULL'
   cursor = conn.execute(f"""
     SELECT name, raw FROM replays
     WHERE valid = 1
@@ -975,6 +982,7 @@ def run_parsing(
     reparse_missing_parsed: bool = False,
     reparse_missing_frozen_ps: bool = False,
     reparse_missing_data_check: bool = False,
+    recheck_data: bool = False,
     metadata_only: bool = False,
     dry_run: bool = False,
     log_interval: int = 30,
@@ -1043,7 +1051,8 @@ def run_parsing(
   # These selections only need metadata updates, so they imply metadata-only
   # mode (which also runs the data check and fills in missing parquet files).
   metadata_only = (
-      metadata_only or reparse_missing_frozen_ps or reparse_missing_data_check)
+      metadata_only or reparse_missing_frozen_ps or reparse_missing_data_check
+      or recheck_data)
   # On a dry run we only want the counts, so skip the (slow) archive traversal.
   resolve = not dry_run
 
@@ -1058,11 +1067,12 @@ def run_parsing(
         _query_missing_frozen_ps(parsed_db_path), to_process_set,
         raw_dir, upgraded_dir, db_conn,
         'Pokemon Stadium files missing is_frozen_ps', resolve)
-  if reparse_missing_data_check:
+  if reparse_missing_data_check or recheck_data:
     reparse_specs += _collect_missing_files(
-        _query_missing_data_check(parsed_db_path), to_process_set,
-        raw_dir, upgraded_dir, db_conn,
-        'training replays missing the data check', resolve)
+        _query_missing_data_check(parsed_db_path, recheck=recheck_data),
+        to_process_set, raw_dir, upgraded_dir, db_conn,
+        'training replays to data-check' if recheck_data
+        else 'training replays missing the data check', resolve)
   if reparse_missing_parsed:
     reparse_specs += _collect_missing_files(
         _query_missing_parsed(parsed_db_path, output_dir), to_process_set,
@@ -1169,6 +1179,10 @@ if __name__ == '__main__':
       'reparse_missing_data_check', False,
       'Re-parse training replays whose data has not been sanity checked '
       '(data_ok is NULL).')
+  RECHECK_DATA = flags.DEFINE_bool(
+      'recheck_data', False,
+      'Re-run the data sanity check on all training replays, including ones '
+      'already checked. Use after adding a new check. Implies --metadata_only.')
   METADATA_ONLY = flags.DEFINE_bool(
       'metadata_only', False,
       'For re-parsed files, refresh metadata in parsed.sqlite in place, only '
@@ -1192,6 +1206,7 @@ if __name__ == '__main__':
         reparse_missing_parsed=REPARSE_MISSING_PARSED.value,
         reparse_missing_frozen_ps=REPARSE_MISSING_FROZEN_PS.value,
         reparse_missing_data_check=REPARSE_MISSING_DATA_CHECK.value,
+        recheck_data=RECHECK_DATA.value,
         metadata_only=METADATA_ONLY.value,
         dry_run=DRY_RUN.value,
         log_interval=LOG_INTERVAL.value,

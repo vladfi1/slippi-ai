@@ -126,6 +126,11 @@ class RewardConfig:
         nana_ratio=0.5,
     )
 
+# Sanity bound on per-frame rewards. Larger magnitudes indicate corrupt game
+# data (e.g. bogus percent jumps); slippi_db/preprocessing.py checks this at
+# parse time and records violations in the data_error column.
+MAX_ABS_REWARD = 2
+
 def ko_diff(game: Game[S]) -> np.ndarray[S, np.dtype[np.int32]]:
   """Compute the KO difference (p0 KOs - p1 KOs) per frame."""
   p0_deaths = process_deaths(game.p0.action).astype(np.int32)
@@ -141,11 +146,13 @@ def compute_rewards(
     stalling_penalty: float = 0,  # per second
     stalling_threshold: float = DEFAULT_STALLING_THRESHOLD,
     nana_ratio: float = 0.5,
+    check_bounds: bool = True,
 ) -> np.ndarray:
   '''
     Args:
       game: nest of np.arrays of length T, from make_dataset.py
       damage_ratio: How much damage (percent) counts relative to stocks
+      check_bounds: assert that rewards are within MAX_ABS_REWARD
     Returns:
       A length (T-1) np.array of rewards
   '''
@@ -177,8 +184,9 @@ def compute_rewards(
   rewards = player_reward(game.p0, game.p1) - player_reward(game.p1, game.p0)
 
   # sanity checks
-  assert np.all(rewards > -2)
-  assert np.all(rewards < 2)
+  if check_bounds:
+    assert np.all(rewards > -MAX_ABS_REWARD)
+    assert np.all(rewards < MAX_ABS_REWARD)
   assert rewards.dtype == np.float32
 
   return rewards
