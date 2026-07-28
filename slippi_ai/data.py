@@ -8,9 +8,12 @@ import json
 import logging
 import math
 import multiprocessing as mp
+from multiprocessing.synchronize import Event as EventMP
 import os
+import queue as queue_lib
 import random
 import shutil
+import traceback
 from typing import (
     Any, Callable, Iterable, List, Optional, Set, Tuple, Iterator, NamedTuple,
 )
@@ -25,7 +28,9 @@ import tqdm
 
 import melee
 
-from slippi_ai import reward, utils, nametags, paths, observations, datasets
+from slippi_ai import (
+    reward, utils, nametags, paths, observations, datasets, shared_arrays,
+)
 from slippi_ai.types import (
     S, Game, game_array_to_nt, array_from_nt,
     BoolArray, FloatArray, Int32Array, Rank1,
@@ -956,6 +961,65 @@ def character_groups():
 
   return groups
 
+def build_replay_iterator(
+    replays: List[ReplayInfo],
+    balance_characters: bool = False,
+    group_characters: bool = False,
+) -> tuple[Iterator[ReplayInfo], int]:
+  """Returns an infinite iterator over replays and the epoch size."""
+  by_character = collections.defaultdict(list)
+  for replay in replays:
+    by_character[replay.main_player.character].append(replay)
+
+  num_per_character = {
+      melee.Character(c).name: len(vs)
+      for c, vs in by_character.items()
+  }
+
+  logging.info(f'Character balance: {num_per_character}')
+
+  if group_characters:
+    groups = character_groups()
+
+    by_group: dict[str, list[ReplayInfo]] = {}
+    char_to_group: dict[int, str] = {}
+    for group in groups:
+      group_name = ','.join(group)
+      by_group[group_name] = []
+      for char in group:
+        char_id = name_to_character[char.lower()].value
+        char_to_group[char_id] = group_name
+
+    for replay in replays:
+      by_group[char_to_group[replay.main_player.character]].append(replay)
+
+    num_per_group = {
+      group_name: len(group_replays)
+      for group_name, group_replays in by_group.items()
+    }
+    logging.info(f'Group balance: {num_per_group}')
+
+    epoch_size = min(num_per_group.values()) * len(by_group)
+    logging.info(f'Epoch size: {epoch_size}')
+
+    iterators = [itertools.cycle(group_replays) for group_replays in by_group.values()]
+    return utils.interleave(*iterators), epoch_size
+
+  if balance_characters:
+    # TODO: balance by opponent (i.e. matchup) too?
+    epoch_size = min(num_per_character.values()) * len(by_character)
+    logging.info(f'Epoch size: {epoch_size}')
+
+    if len(by_character) > 1:
+      iterators = [itertools.cycle(char_replays) for char_replays in by_character.values()]
+      return utils.interleave(*iterators), epoch_size
+
+    logging.info("Only one character present, balancing not needed.")
+    return utils.cycle_iterable(replays), epoch_size
+
+  return utils.cycle_iterable(replays), len(replays)
+
+
 class DataSource(AbstractDataSource):
   def __init__(
       self,
@@ -990,58 +1054,11 @@ class DataSource(AbstractDataSource):
     self.encode_name = nametags.name_encoder(self.name_map)
     self.observation_config = observation_config
 
-    by_character = collections.defaultdict(list)
-    for replay in self.replays:
-      by_character[replay.main_player.character].append(replay)
-
-    num_per_character = {
-        melee.Character(c).name: len(vs)
-        for c, vs in by_character.items()
-    }
-
-    logging.info(f'Character balance: {num_per_character}')
-
-    if self.group_characters:
-      groups = character_groups()
-
-      by_group: dict[str, list[ReplayInfo]] = {}
-      char_to_group: dict[int, str] = {}
-      for group in groups:
-        group_name = ','.join(group)
-        by_group[group_name] = []
-        for char in group:
-          char_id = name_to_character[char.lower()].value
-          char_to_group[char_id] = group_name
-
-      for replay in self.replays:
-        by_group[char_to_group[replay.main_player.character]].append(replay)
-
-      num_per_group = {
-        group_name: len(replays)
-        for group_name, replays in by_group.items()
-      }
-      logging.info(f'Group balance: {num_per_group}')
-
-      self.epoch_size = min(num_per_group.values()) * len(by_group)
-      logging.info(f'Epoch size: {self.epoch_size}')
-
-      iterators = [itertools.cycle(replays) for replays in by_group.values()]
-      self.replay_info_iter = utils.interleave(*iterators)
-
-    elif self.balance_characters:
-      # TODO: balance by opponent (i.e. matchup) too?
-      self.epoch_size = min(num_per_character.values()) * len(by_character)
-      logging.info(f'Epoch size: {self.epoch_size}')
-
-      if len(by_character) > 1:
-        iterators = [itertools.cycle(replays) for replays in by_character.values()]
-        self.replay_info_iter = utils.interleave(*iterators)
-      else:
-        logging.info("Only one character present, balancing not needed.")
-        self.replay_info_iter = utils.cycle_iterable(self.replays)
-    else:
-      self.epoch_size = len(self.replays)
-      self.replay_info_iter = utils.cycle_iterable(self.replays)
+    self.replay_info_iter, self.epoch_size = build_replay_iterator(
+        replays,
+        balance_characters=balance_characters,
+        group_characters=group_characters,
+    )
 
     self.replay_counter = 0
     replay_iter = self.iter_replay_infos()
@@ -1093,6 +1110,349 @@ class DataSource(AbstractDataSource):
     assert batch.game.stage.shape[-1] == self.chunk_size
     assert batch.reward.shape[-1] == self.chunk_size - 1
     return batch_with_meta, epoch
+
+
+def _shared_batch_arrays(alloc: shared_arrays.Allocation[Batch]) -> list[np.ndarray]:
+  """Flat list of batch arrays from an allocation with uniform leaf shapes.
+
+  All leaves are allocated with time dimension chunk_size; the reward array
+  (which has chunk_size - 1 frames) is exposed as a view.
+  """
+  arrays: Batch = alloc.arrays
+  arrays = arrays._replace(reward=arrays.reward[..., :-1])
+  return utils.cached_flatten(Batch)(arrays)
+
+
+def _shared_memory_data_worker(
+    *,
+    worker_id: int,
+    replays: List[ReplayInfo],
+    specs: Batch,  # Batch of SharedArraySpec
+    misc_specs: tp.Sequence[shared_arrays.SharedArraySpec],
+    num_workers: int,
+    num_slots: int,
+    row_start: int,
+    num_rows: int,
+    chunk_size: int,
+    extra_frames: int,
+    random_offset: int,
+    damage_ratio: float,
+    balance_characters: bool,
+    group_characters: bool,
+    name_map: dict[str, int],
+    observation_config: Optional[observations.ObservationConfig],
+    written_events: list[EventMP],  # one per slot, owned by this worker
+    free_events: list[EventMP],  # one per slot, owned by this worker
+    stop_event: EventMP,
+    meta_queue: mp.Queue,
+    error_queue: mp.Queue,
+):
+  """Fills rows [row_start, row_start + num_rows) of each shared batch slot."""
+  # Ensure that workers don't all make the same random choices (e.g. the
+  # TrajectoryManager stagger offsets).
+  random.seed()
+
+  alloc = shared_arrays.alloc_from_specs(specs)
+  misc_attacher = shared_arrays.SharedArrayAttacher(misc_specs)
+  arrays = slot_bufs = counter = None
+  try:
+    # Each array has shape (num_slots, batch_size, chunk_size).
+    arrays = _shared_batch_arrays(alloc)
+    slot_bufs = [[array[slot] for array in arrays] for slot in range(num_slots)]
+
+    counter = misc_attacher.array((num_workers,), np.int64)
+
+    encode_name = nametags.name_encoder(name_map)
+
+    replay_iter, _ = build_replay_iterator(
+        replays,
+        balance_characters=balance_characters,
+        group_characters=group_characters,
+    )
+
+    def iter_replays() -> Iterator[Replay]:
+      count = 0
+      for info in replay_iter:
+        count += 1
+        counter[worker_id] = count
+        yield info.to_replay()
+
+    replay_source = iter_replays()
+
+    def build_observation_filter():
+      if observation_config is None:
+        return None
+      return observations.build_observation_filter(observation_config)
+
+    managers = [
+        TrajectoryManager(
+            replay_source,
+            unroll_length=chunk_size,
+            overlap=extra_frames,
+            random_offset=random_offset,
+            observation_filter=build_observation_filter(),
+            reward_kwargs=dict(damage_ratio=damage_ratio),
+            encode_name=encode_name,
+        ) for _ in range(num_rows)
+    ]
+
+    stack_metas = utils.cached_zip_map_nt(ChunkMeta)
+
+    validated = False
+    slot = 0
+    while not stop_event.is_set():
+      if not free_events[slot].wait(timeout=1):
+        continue
+      free_events[slot].clear()
+
+      metas = []
+      bufs = slot_bufs[slot]
+      for i, manager in enumerate(managers):
+        flat_chunk, meta = manager.grab_chunk()
+
+        if not validated:
+          # Guard against silent casting when writing into the shared arrays,
+          # in case the actual data doesn't match the reified Batch type.
+          for buf, x in zip(bufs, flat_chunk):
+            if buf.dtype != x.dtype or buf.shape[1:] != x.shape:
+              raise ValueError(
+                  f'chunk leaf mismatch: expected {buf.shape[1:]}/{buf.dtype},'
+                  f' got {x.shape}/{x.dtype}')
+          validated = True
+
+        row = row_start + i
+        for buf, x in zip(bufs, flat_chunk):
+          buf[row] = x
+        metas.append(meta)
+
+      meta_queue.put((slot, worker_id, stack_metas(np.stack, metas)))
+      written_events[slot].set()
+      slot = (slot + 1) % num_slots
+  except BaseException:
+    error_queue.put(traceback.format_exc())
+  finally:
+    meta_queue.cancel_join_thread()
+    del arrays, slot_bufs, counter
+    try:
+      alloc.close()
+      misc_attacher.close()
+    except BufferError:
+      pass
+
+
+class SharedMemoryDataSource(AbstractDataSource):
+  """Assembles batches in worker processes that write into shared memory.
+
+  Each worker owns batch_size / num_workers TrajectoryManagers (including
+  replay parsing and per-chunk assembly) and fills its rows of a shared
+  double-buffered batch, so the main process does no per-frame work.
+
+  Returned batches are views into shared memory; they are valid until the
+  following __next__ call (same contract as BatchAccumulator).
+  """
+
+  def __init__(
+      self,
+      replays: List[ReplayInfo],
+      batch_size: int = 64,
+      unroll_length: int = 64,
+      extra_frames: int = 1,
+      random_offset: int = 0,
+      damage_ratio: float = 0.01,
+      balance_characters: bool = False,
+      group_characters: bool = False,
+      name_map: Optional[dict[str, int]] = None,
+      observation_config: Optional[observations.ObservationConfig] = None,
+      num_workers: int = 1,
+      buffer: int = 2,
+  ):
+    num_slots = buffer
+
+    if num_workers < 0:
+      raise ValueError(f'num_workers must be positive, got {num_workers}')
+    elif num_workers == 0:
+      num_workers = 1
+
+    if batch_size % num_workers != 0:
+      raise ValueError(
+          f'batch_size {batch_size} must be divisible by num_workers {num_workers}')
+    if num_slots <= 0:
+      raise ValueError(f'num_slots must be positive, got {num_slots}')
+    elif num_slots == 1:
+      logging.warning('Using a single slot for shared-memory batch buffer. '
+                      'This is not recommended for performance.')
+
+    self._batch_size = batch_size
+    self.unroll_length = unroll_length
+    self.chunk_size = unroll_length + extra_frames
+    self.num_workers = num_workers
+    self.num_slots = num_slots
+    self.name_map = name_map or {}
+    self.encode_name = nametags.name_encoder(self.name_map)
+    self._closed = False
+
+    # If there are fewer replays than workers, each worker cycles the full
+    # list; otherwise shard the replays round-robin.
+    if len(replays) < num_workers:
+      shards = [replays] * num_workers
+    else:
+      shards = [replays[w::num_workers] for w in range(num_workers)]
+
+    # Epoch size is the sum over per-worker epoch sizes, matching the
+    # per-worker replay counters. This is only approximately equal to the
+    # epoch size of the unsharded replay list when balancing characters.
+    self.epoch_size = 0
+    for shard in shards:
+      _, shard_epoch_size = build_replay_iterator(
+          shard,
+          balance_characters=balance_characters,
+          group_characters=group_characters,
+      )
+      self.epoch_size += shard_epoch_size
+
+    self._alloc = shared_arrays.allocate(
+        Batch, (num_slots, batch_size, self.chunk_size))
+    arrays = _shared_batch_arrays(self._alloc)
+    self._slot_views = [
+        [array[slot] for array in arrays] for slot in range(num_slots)]
+
+    self._misc_owner = shared_arrays.SharedArrayOwner()
+    self._counters = self._misc_owner.array((num_workers,), np.int64)
+
+    context = mp.get_context('forkserver')
+    self._stop_event = context.Event()
+    self._meta_queue = context.Queue()
+    self._error_queue = context.Queue()
+
+    self._written_events = [
+        [context.Event() for _ in range(num_workers)]
+        for _ in range(num_slots)
+    ]
+    self._free_events = [
+        [context.Event() for _ in range(num_workers)]
+        for _ in range(num_slots)
+    ]
+    # All slots start out free.
+    for events in self._free_events:
+      for event in events:
+        event.set()
+
+    rows_per_worker = batch_size // num_workers
+    self._processes = []
+    for worker_id in range(num_workers):
+      process = context.Process(
+          target=_shared_memory_data_worker,
+          name=f'data-worker-{worker_id}',
+          kwargs=dict(
+              worker_id=worker_id,
+              replays=shards[worker_id],
+              specs=self._alloc.specs,
+              misc_specs=self._misc_owner.specs,
+              num_workers=num_workers,
+              num_slots=num_slots,
+              row_start=worker_id * rows_per_worker,
+              num_rows=rows_per_worker,
+              chunk_size=self.chunk_size,
+              extra_frames=extra_frames,
+              random_offset=random_offset,
+              damage_ratio=damage_ratio,
+              balance_characters=balance_characters,
+              group_characters=group_characters,
+              name_map=self.name_map,
+              observation_config=observation_config,
+              written_events=[
+                  events[worker_id] for events in self._written_events],
+              free_events=[
+                  events[worker_id] for events in self._free_events],
+              stop_event=self._stop_event,
+              meta_queue=self._meta_queue,
+              error_queue=self._error_queue,
+          ),
+          daemon=True,
+      )
+      process.start()
+      self._processes.append(process)
+
+    self._slot = 0
+    self._prev_slot: Optional[int] = None
+    self._pending_metas: dict[int, dict[int, ChunkMeta]] = {}
+
+  @property
+  def batch_size(self) -> int:
+    return self._batch_size
+
+  def _check_errors(self):
+    try:
+      error = self._error_queue.get_nowait()
+    except queue_lib.Empty:
+      return
+    raise RuntimeError(f'Data worker failed:\n{error}')
+
+  def _collect_metas(self, slot: int) -> list[ChunkMeta]:
+    pending = self._pending_metas.setdefault(slot, {})
+    while len(pending) < self.num_workers:
+      try:
+        s, worker_id, meta = self._meta_queue.get(timeout=60)
+      except queue_lib.Empty:
+        self._check_errors()
+        raise RuntimeError('Timed out waiting for batch metadata.')
+      self._pending_metas.setdefault(s, {})[worker_id] = meta
+    del self._pending_metas[slot]
+    return [pending[w] for w in range(self.num_workers)]
+
+  def __next__(self) -> Tuple[BatchWithMeta[Rank2], float]:
+    self._check_errors()
+
+    # Views of the previous slot become invalid now, per the class contract.
+    if self._prev_slot is not None:
+      for event in self._free_events[self._prev_slot]:
+        event.set()
+
+    slot = self._slot
+    for event in self._written_events[slot]:
+      while not event.wait(timeout=60):
+        self._check_errors()
+      event.clear()
+
+    metas = self._collect_metas(slot)
+    meta = utils.cached_zip_map_nt(ChunkMeta)(np.concatenate, metas)
+
+    assert self._slot_views is not None
+    batch = utils.cached_unflatten(Batch, self._slot_views[slot])
+    batch_with_meta = BatchWithMeta(batch=batch, meta=meta)
+
+    self._prev_slot = slot
+    self._slot = (slot + 1) % self.num_slots
+
+    assert self._counters is not None
+    epoch = float(np.sum(self._counters)) / self.epoch_size
+    assert batch.game.stage.shape[-1] == self.chunk_size
+    assert batch.reward.shape[-1] == self.chunk_size - 1
+    return batch_with_meta, epoch
+
+  def shutdown(self):
+    if self._closed:
+      return
+    self._closed = True
+    self._stop_event.set()
+    # Unblock workers waiting on free slots.
+    for events in self._free_events:
+      for event in events:
+        event.set()
+    for process in self._processes:
+      process.join(timeout=5)
+      process.terminate()
+      process.join(timeout=5)
+      process.close()
+    self._slot_views = None
+    self._counters = None
+    try:
+      self._alloc.close()
+      self._misc_owner.close()
+    except BufferError:
+      pass
+    self._alloc.unlink()
+    self._misc_owner.unlink()
 
 
 class TimeBatchedDataSource(AbstractDataSource):
@@ -1179,6 +1539,8 @@ class DataConfig:
   unroll_chunks: int = 0
   burnin: int = 5  # get rid of early-game correlations
   random_offset: int = 0  # improve data diversity for frameskip
+  # Assemble batches in worker processes via shared memory (non-wds only).
+  shared_memory: bool = True
 
   wds: WebDataConfig = dataclasses.field(default_factory=WebDataConfig)
 
@@ -1194,11 +1556,17 @@ def _make_source(
     burnin: int = 5,
     replays: Optional[List[ReplayInfo]] = None,
     wds_path: Optional[str] = None,
+    shared_memory: bool = True,
     **kwargs,
 ) -> AbstractDataSource:
   if replays is not None:
     del kwargs['wds']
-    source = DataSource(replays=replays, **kwargs)
+    if shared_memory:
+      kwargs.pop('buffer', None)  # only used by MPMap
+      source = SharedMemoryDataSource(
+          replays=replays, **kwargs)
+    else:
+      source = DataSource(replays=replays, **kwargs)
   elif wds_path is not None:
     del kwargs['balance_characters']  # not supported
     wds: dict = kwargs.pop('wds')  # already converted by dataclasses.asdict
