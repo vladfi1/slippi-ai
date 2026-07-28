@@ -444,8 +444,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   @utils.periodically(runtime.log_interval)
   def maybe_log(train_stats: dict):
     """Do a test step, then log both train and test stats."""
-    test_stats, _ = test_manager.step()
-
     elapsed_time = log_tracker.update(time.time())
     total_steps = step
     steps = step_tracker.update(total_steps)
@@ -470,7 +468,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     all_stats = dict(
         train=train_stats,
-        test=test_stats,
         timings=timings,
         num_frames=num_frames,
         total_frames=total_frames,
@@ -479,11 +476,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     log_stats(all_stats, total_steps)
 
     train_loss = _get_loss(train_stats)
-    test_loss = _get_loss(test_stats)
 
     print(f'step={total_steps} epoch={epoch:.3f}')
     print(f'sps={sps:.2f} mps={mps:.2f} eph={eph:.2e}')
-    print(f'losses: train={train_loss:.4f} test={test_loss:.4f}')
+    print(f'losses: train={train_loss:.4f}')
     print(f'timing:'
           f' data={data_time:.3f}'
           f' step={step_time:.3f}')
@@ -636,15 +632,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
 
+  train_stats = None
+
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:
+      prev_train_stats = train_stats
       train_stats, _ = train_manager.step()
 
     step += 1
     total_frames += FRAMES_PER_STEP
     train_time += train_profiler.last_time
 
-    maybe_log(train_stats)
+    if prev_train_stats is not None:
+      maybe_log(prev_train_stats)
+
     maybe_eval()
 
     if config.runtime.max_step is not None and step >= config.runtime.max_step:
