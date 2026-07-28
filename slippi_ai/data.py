@@ -642,6 +642,7 @@ class TrajectoryManager:
     self.encode_name = encode_name
 
     self.needs_game = True
+    self.first_game = True
 
   def find_game(self):
     while True:
@@ -663,7 +664,12 @@ class TrajectoryManager:
     self.flat_game = utils.cached_flatten(Game)(game)
     self.game_len = game_len(game)
     # TODO: make offset based on epoch instead of random
-    if self.random_offset > 0:
+    if self.first_game:
+      # Stagger managers within their first game so that they don't all
+      # exhaust their replays (and request new ones) at the same time.
+      self.frame = random.randint(0, self.game_len - self.unroll_length)
+      self.first_game = False
+    elif self.random_offset > 0:
       self.frame = random.randint(0, self.random_offset - 1)
     else:
       self.frame = 0
