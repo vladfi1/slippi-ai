@@ -169,15 +169,17 @@ class PolicyLearner(nnx.Module):
 
       loss_fn = (jax_utils.with_bf16_compute(_policy_loss_fn)
                  if config.bf16 else _policy_loss_fn)
+      train_dtype = jnp.bfloat16 if config.bf16 else None
 
       self.sharded_train = jax_utils.data_parallel_train(
           module=self.policy,
           optimizer=self.policy_optimizer,
-          loss_fn=loss_fn,
+          loss_fn=_policy_loss_fn,
           mesh=mesh,
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
           pack_data=config.pack_data,
+          dtype=train_dtype,
       )
 
       self.sharded_run = jax_utils.shard_map_loss_fn(

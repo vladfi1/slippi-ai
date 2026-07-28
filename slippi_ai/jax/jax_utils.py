@@ -485,6 +485,7 @@ def sharded_grads(
     loss_fn: tp.Callable[tp.Concatenate[ModT, P], tuple[Loss, *Outputs]],
     explicit_pmean: bool = True,
     data_axis: str = DATA_AXIS,
+    dtype: tp.Optional[jnp.dtype] = None,
 ):
 
   def compute_grads(
@@ -495,6 +496,14 @@ def sharded_grads(
     # TODO: make sure that no nnx objects are in kwargs. If they are, nnx will
     # complain with a trace level mismatch. This is why we pass *args through
     # the loss function and its gradient.
+
+    original_dtype = None
+    if dtype is not None:
+      original_dtype = module_dtype(module)
+      if original_dtype != jnp.float32:
+        logging.warning(f'Module is already in {original_dtype}')
+
+      module = cast_params_to_dtype(module, dtype)
 
     # TODO: merge with loss_fn_with_mean?
     def packed_loss_fn(module: ModT, *args: P.args):
@@ -518,6 +527,9 @@ def sharded_grads(
 
     if explicit_pmean:
       grads = jax.lax.pmean(grads, axis_name=data_axis)
+
+    if original_dtype is not None:
+      grads = cast_floats_to_dtype(grads, original_dtype)
 
     return (grads, *aux)
 
@@ -1142,6 +1154,7 @@ def data_parallel_train(
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
     pack_data: bool = False,
+    dtype: tp.Optional[jnp.dtype] = None,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
   if data_axis not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
@@ -1174,7 +1187,7 @@ def data_parallel_train(
       return aux, new_state
 
     sharded_grads_fn = sharded_grads(
-        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
+        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis, dtype=dtype)
 
     @nnx.shard_map(
         in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)) + _extra_in_specs,
