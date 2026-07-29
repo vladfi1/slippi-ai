@@ -12,6 +12,7 @@ import tqdm
 from typing import Optional
 
 from absl import app, flags
+from melee import enums
 
 from slippi_ai import nametags
 
@@ -20,12 +21,24 @@ WINNER_ONLY = flags.DEFINE_boolean(
   'winner_only', True, 'only keep games that have a winner')
 ONLY_KNOWN_PLAYERS = flags.DEFINE_boolean(
   'only_known_players', True, 'only keep games that have known players')
+ALLOW_UNFROZEN_PS = flags.DEFINE_boolean(
+  'allow_unfrozen_ps', False,
+  'Keep Pokemon Stadium games whose stage transformations were not frozen. '
+  'Transformations are not part of the observation (unlike Randall and the '
+  'FoD platforms), so on an unfrozen stadium the player reacts to terrain the '
+  'model cannot see. Games whose frozen status is unknown are also dropped '
+  'unless this is set.')
 
 MAKE_TAR = flags.DEFINE_boolean('tar', False, 'Create dataset tar archive')
 FORCE = flags.DEFINE_boolean(
   'force', False, 'Proceed even if parsed.pkl is older than parsed.sqlite.')
 
 MIN_DAMAGE = 100
+
+# External stage ids (as recorded in the metadata) for Pokemon Stadium.
+POKEMON_STADIUM_STAGES = frozenset(
+  stage_id for stage_id in range(256)
+  if enums.to_internal_stage(stage_id) is enums.Stage.POKEMON_STADIUM)
 
 def check_pkl_fresh(root: str):
   """Guard against reading a parsed.pkl that predates parsed.sqlite updates.
@@ -56,6 +69,7 @@ def check_replay(
     row: dict,
     winner_only: bool = True,
     only_known_players: bool = True,
+    allow_unfrozen_ps: bool = False,
 ) -> Optional[str]:
   if not row['valid']:
     return 'invalid'
@@ -67,6 +81,15 @@ def check_replay(
   # ones that haven't been checked at all (data_ok missing).
   if not row.get('data_ok'):
     return 'failed data sanity check'
+
+  if not allow_unfrozen_ps and row.get('stage') in POKEMON_STADIUM_STAGES:
+    # is_frozen_ps is absent for non-PS games, so it's only meaningful once
+    # we know the stage is Pokemon Stadium; absent here means undetermined.
+    is_frozen_ps = row.get('is_frozen_ps')
+    if is_frozen_ps is None:
+      return 'unknown stadium freeze state'
+    if not is_frozen_ps:
+      return 'unfrozen stadium'
 
   if row['raw'].startswith('Phillip/'):
     model: str = row['name'].split('/')[0]
@@ -107,6 +130,7 @@ def main(_):
         row,
         winner_only=WINNER_ONLY.value,
         only_known_players=ONLY_KNOWN_PLAYERS.value,
+        allow_unfrozen_ps=ALLOW_UNFROZEN_PS.value,
     )
     if reason is not None:
       reasons[reason] += 1

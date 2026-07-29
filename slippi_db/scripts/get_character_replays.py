@@ -4,8 +4,10 @@ Given a list of characters, for each character finds up to N training-quality
 replays (as determined at parse time, e.g. excluding games that are too
 short) on each legal stage where that character is played and the opponent's
 character is drawn from --allowed_opponents (by default the same list; this
-includes dittos, where the opponent plays the same character). Candidates
-are chosen uniformly at random
+includes dittos, where the opponent plays the same character). Note that the
+parse-time `is_training` flag does not consider stage transformations, so
+Pokemon Stadium games are additionally filtered to frozen ones unless
+--allow_unfrozen_ps is set. Candidates are chosen uniformly at random
 (subject to a minimum Slippi version and a seed, for reproducibility)
 rather than e.g. picking the longest game, to avoid biasing towards
 outliers. Matched .slp files are copied directly out of their source Raw
@@ -53,6 +55,11 @@ MIN_VERSION = flags.DEFINE_string(
     'Minimum Slippi version required (inclusive).')
 SEED = flags.DEFINE_integer(
     'seed', 0, 'Random seed used to sample replays.')
+ALLOW_UNFROZEN_PS = flags.DEFINE_bool(
+    'allow_unfrozen_ps', False,
+    'Whether to allow Pokemon Stadium games whose stage transformations were '
+    'not frozen. Games whose frozen status is unknown (e.g. a parsed.sqlite '
+    'predating the is_frozen_ps column) are treated as unfrozen.')
 OUTPUT = flags.DEFINE_string(
     'output', None,
     'Output zip path. Defaults to "<characters>_replays.zip" in the root dir.')
@@ -70,6 +77,11 @@ def _legal_stages() -> list[enums.Stage]:
 
 LEGAL_STAGES = _legal_stages()
 
+# External stage ids (as stored in parsed.sqlite) for Pokemon Stadium.
+POKEMON_STADIUM_STAGES = [
+    stage_id for stage_id in range(256)
+    if enums.to_internal_stage(stage_id) is enums.Stage.POKEMON_STADIUM]
+
 
 def parse_version(version_str: str) -> tuple[int, ...]:
   return tuple(int(v) for v in version_str.split('.'))
@@ -82,11 +94,17 @@ def character_name(char_id: int) -> str:
   return str(char_id)
 
 
+def _has_column(conn: sqlite3.Connection, column: str) -> bool:
+  return any(
+      row[1] == column for row in conn.execute('PRAGMA table_info(replays)'))
+
+
 def find_candidates(
     parsed_db_path: str,
     character_ids: tp.Set[int],
     opponent_ids: tp.Set[int],
     min_version: tuple[int, ...],
+    allow_unfrozen_ps: bool = False,
 ) -> list[sqlite3.Row]:
   """Finds training replays pairing a character_ids player vs. an opponent_ids one."""
   char_list = list(character_ids)
@@ -94,9 +112,26 @@ def find_candidates(
   char_placeholders = ', '.join('?' * len(char_list))
   opp_placeholders = ', '.join('?' * len(opp_list))
 
+  ps_placeholders = ', '.join('?' * len(POKEMON_STADIUM_STAGES))
+  ps_params = []
+
   conn = sqlite3.connect(f'file:{parsed_db_path}?mode=ro', uri=True)
   conn.row_factory = sqlite3.Row
   try:
+    if allow_unfrozen_ps:
+      frozen_ps_cond = ''
+    elif _has_column(conn, 'is_frozen_ps'):
+      # A NULL is_frozen_ps on a Pokemon Stadium game means undetermined, so
+      # require an explicit 1 (frozen).
+      frozen_ps_cond = (
+          f'AND (stage NOT IN ({ps_placeholders}) OR is_frozen_ps = 1)')
+      ps_params = POKEMON_STADIUM_STAGES
+    else:
+      print('WARNING: parsed.sqlite has no is_frozen_ps column; excluding all '
+            'Pokemon Stadium games. Pass --allow_unfrozen_ps to include them.')
+      frozen_ps_cond = f'AND stage NOT IN ({ps_placeholders})'
+      ps_params = POKEMON_STADIUM_STAGES
+
     cursor = conn.execute(
         f"""
         SELECT name, raw, stage, slippi_version, last_frame,
@@ -108,9 +143,10 @@ def find_candidates(
                 AND p1_character IN ({opp_placeholders}))
                OR (p1_character IN ({char_placeholders})
                    AND p0_character IN ({opp_placeholders})))
+          {frozen_ps_cond}
         ORDER BY raw, name
         """,
-        char_list + opp_list + char_list + opp_list)
+        char_list + opp_list + char_list + opp_list + list(ps_params))
     rows = cursor.fetchall()
   finally:
     conn.close()
@@ -193,10 +229,12 @@ def main(_):
   opponent_names = sorted(character_name(c) for c in opponent_ids)
   print(f'Searching for replays among {", ".join(char_names)} '
         f'vs {", ".join(opponent_names)} '
-        f'(slippi_version >= {MIN_VERSION.value})')
+        f'(slippi_version >= {MIN_VERSION.value}'
+        f'{"" if ALLOW_UNFROZEN_PS.value else ", excluding unfrozen stadium"})')
 
   candidates = find_candidates(
-      str(parsed_db_path), character_ids, opponent_ids, min_version)
+      str(parsed_db_path), character_ids, opponent_ids, min_version,
+      allow_unfrozen_ps=ALLOW_UNFROZEN_PS.value)
   print(f'Found {len(candidates)} candidate replay(s).')
 
   selected_by_bucket = select_replays(
