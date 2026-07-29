@@ -623,6 +623,17 @@ def write_wds_shards(
 def game_len(game: Game[Rank1]) -> int:
   return game.stage.shape[0]
 
+def row_rng(seed: Optional[int], row: int) -> random.Random:
+  """RNG for a single batch row.
+
+  Keying on the row (rather than using the global RNG) makes a row's random
+  offsets reproducible regardless of how the batch is assembled, in particular
+  across the process boundary in SharedMemoryDataSource.
+  """
+  if seed is None:
+    return random.Random()
+  return random.Random(seed * 2 ** 32 + row)
+
 class TrajectoryManager:
   # TODO: manage recurrent state? can also do it in the learner
 
@@ -636,11 +647,13 @@ class TrajectoryManager:
       game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
+      rng: Optional[random.Random] = None,
   ):
     self.source = source
     self.unroll_length = unroll_length
     self.overlap = overlap
     self.random_offset = random_offset
+    self.rng = random.Random() if rng is None else rng
     self.game_filter = game_filter or (lambda _: True)
     self.observation_filter = observation_filter
     self.reward_kwargs = reward_kwargs
@@ -672,10 +685,10 @@ class TrajectoryManager:
     if self.first_game:
       # Stagger managers within their first game so that they don't all
       # exhaust their replays (and request new ones) at the same time.
-      self.frame = random.randint(0, self.game_len - self.unroll_length)
+      self.frame = self.rng.randint(0, self.game_len - self.unroll_length)
       self.first_game = False
     elif self.random_offset > 0:
-      self.frame = random.randint(0, self.random_offset - 1)
+      self.frame = self.rng.randint(0, self.random_offset - 1)
     else:
       self.frame = 0
     self.info = info
@@ -823,6 +836,7 @@ class WebDataSource(AbstractDataSource):
       shuffle_buffer_size: int = 1000,
       cache_dir: Optional[str] = None,
       verbose: bool = True,
+      seed: Optional[int] = None,
   ):
     self.dataset_path = dataset_path
     self.split = split
@@ -920,7 +934,8 @@ class WebDataSource(AbstractDataSource):
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
-        ) for _ in range(batch_size)
+            rng=row_rng(seed, row),
+        ) for row in range(batch_size)
     ]
 
   def shutdown(self):
@@ -1035,6 +1050,7 @@ class DataSource(AbstractDataSource):
       observation_config: Optional[observations.ObservationConfig] = None,
       num_workers: int = 0,
       buffer: int = 16,
+      seed: Optional[int] = None,
   ):
     self.replays = replays
     self._batch_size = batch_size
@@ -1081,7 +1097,8 @@ class DataSource(AbstractDataSource):
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
-        ) for _ in range(batch_size)
+            rng=row_rng(seed, row),
+        ) for row in range(batch_size)
     ]
     self._accumulator = BatchAccumulator(batch_size)
 
@@ -1136,7 +1153,8 @@ def _shared_memory_data_worker(
     chunk_size: int,
     extra_frames: int,
     random_offset: int,
-    damage_ratio: float,
+    reward_kwargs: dict,
+    seed: Optional[int],
     balance_characters: bool,
     group_characters: bool,
     name_map: dict[str, int],
@@ -1147,11 +1165,12 @@ def _shared_memory_data_worker(
     meta_queue: mp.Queue,
     error_queue: mp.Queue,
 ):
-  """Fills rows [row_start, row_start + num_rows) of each shared batch slot."""
-  # Ensure that workers don't all make the same random choices (e.g. the
-  # TrajectoryManager stagger offsets).
-  random.seed()
+  """Fills rows [row_start, row_start + num_rows) of each shared batch slot.
 
+  Nothing here may use the global RNG: workers inherit the forkserver's RNG
+  state, so global draws would be identical across workers. Randomness comes
+  from the per-row RNGs built by row_rng.
+  """
   alloc = shared_arrays.alloc_from_specs(specs)
   misc_attacher = shared_arrays.SharedArrayAttacher(misc_specs)
   arrays = slot_bufs = counter = None
@@ -1191,9 +1210,10 @@ def _shared_memory_data_worker(
             overlap=extra_frames,
             random_offset=random_offset,
             observation_filter=build_observation_filter(),
-            reward_kwargs=dict(damage_ratio=damage_ratio),
+            reward_kwargs=reward_kwargs,
             encode_name=encode_name,
-        ) for _ in range(num_rows)
+            rng=row_rng(seed, row_start + i),
+        ) for i in range(num_rows)
     ]
 
     stack_metas = utils.cached_zip_map_nt(ChunkMeta)
@@ -1258,13 +1278,14 @@ class SharedMemoryDataSource(AbstractDataSource):
       unroll_length: int = 64,
       extra_frames: int = 1,
       random_offset: int = 0,
-      damage_ratio: float = 0.01,
+      reward_kwargs: dict = {},
       balance_characters: bool = False,
       group_characters: bool = False,
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
       num_workers: int = 1,
       buffer: int = 2,
+      seed: Optional[int] = None,
   ):
     num_slots = buffer
 
@@ -1355,7 +1376,8 @@ class SharedMemoryDataSource(AbstractDataSource):
               chunk_size=self.chunk_size,
               extra_frames=extra_frames,
               random_offset=random_offset,
-              damage_ratio=damage_ratio,
+              reward_kwargs=reward_kwargs,
+              seed=seed,
               balance_characters=balance_characters,
               group_characters=group_characters,
               name_map=self.name_map,
