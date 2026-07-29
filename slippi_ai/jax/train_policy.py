@@ -587,7 +587,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     loss = eval_stats['policy']['loss']
     assert loss.shape == (len(per_step_eval_stats), test_data.batch_size)
 
-    meta = utils.batch_nest_nt(metas)
+    meta = utils.batch_nest_nt(metas)  # [num eval steps, batch size]
 
     name = meta.meta.p0.name
     encoded_name: np.ndarray = batch_encode_name(name)
@@ -609,16 +609,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       characters = meta.meta.p0.character
       per_character_loss_sums = {}
       per_character_loss_counts = {}
+      per_character_loss_means = {}
       for character in allowed_characters:
         mask = character.value == characters
         name = character.name.lower()
         per_character_loss_sums[name] = np.sum(loss * mask)
         per_character_loss_counts[name] = np.sum(mask)
+        if per_character_loss_counts[name] > 0:
+          per_character_loss_means[name] = per_character_loss_sums[name] / per_character_loss_counts[name]
 
       losses, counts = zip(*loss_sums_and_counts)
       to_log['eval_characters'] = dict(
           losses=per_character_loss_sums,
           counts=per_character_loss_counts,
+          loss_means=per_character_loss_means,  # for wandb
       )
 
     log_stats(to_log, step, take_mean=False)
