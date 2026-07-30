@@ -40,6 +40,7 @@ def default_config():
 
   config.dataset.mirror = False
   config.dataset.allowed_opponents = 'all'
+  config.dataset.dataset_path = os.environ.get("DATASET_PATH")
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.data.wds.cache_dir = './wds-cache'
@@ -76,8 +77,8 @@ if __name__ == '__main__':
       config.dataset.dataset_path = str(paths.TOY_DATASET)
       config.dataset.test_ratio = 0.5
       char = 'all'
-      config.data.cached = True
-      config.data.num_workers = 0
+      # config.data.cached = True
+      # config.data.num_workers = 0
       config.runtime.log_interval = 15
       config.runtime.num_evals_per_epoch = 0
     else:
