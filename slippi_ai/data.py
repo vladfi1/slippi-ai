@@ -980,6 +980,7 @@ def build_replay_iterator(
     replays: List[ReplayInfo],
     balance_characters: bool = False,
     group_characters: bool = False,
+    verbose: bool = True,
 ) -> tuple[Iterator[ReplayInfo], int]:
   """Returns an infinite iterator over replays and the epoch size."""
   by_character = collections.defaultdict(list)
@@ -991,7 +992,8 @@ def build_replay_iterator(
       for c, vs in by_character.items()
   }
 
-  logging.info(f'Character balance: {num_per_character}')
+  if verbose:
+    logging.info(f'Character balance: {num_per_character}')
 
   if group_characters:
     groups = character_groups()
@@ -1012,10 +1014,12 @@ def build_replay_iterator(
       group_name: len(group_replays)
       for group_name, group_replays in by_group.items()
     }
-    logging.info(f'Group balance: {num_per_group}')
+    if verbose:
+      logging.info(f'Group balance: {num_per_group}')
 
     epoch_size = min(num_per_group.values()) * len(by_group)
-    logging.info(f'Epoch size: {epoch_size}')
+    if verbose:
+      logging.info(f'Epoch size: {epoch_size}')
 
     iterators = [itertools.cycle(group_replays) for group_replays in by_group.values()]
     return utils.interleave(*iterators), epoch_size
@@ -1023,7 +1027,8 @@ def build_replay_iterator(
   if balance_characters:
     # TODO: balance by opponent (i.e. matchup) too?
     epoch_size = min(num_per_character.values()) * len(by_character)
-    logging.info(f'Epoch size: {epoch_size}')
+    if verbose:
+      logging.info(f'Epoch size: {epoch_size}')
 
     if len(by_character) > 1:
       iterators = [itertools.cycle(char_replays) for char_replays in by_character.values()]
@@ -1187,6 +1192,7 @@ def _shared_memory_data_worker(
         replays,
         balance_characters=balance_characters,
         group_characters=group_characters,
+        verbose=False,
     )
 
     def iter_replays() -> Iterator[Replay]:
@@ -1330,6 +1336,8 @@ class SharedMemoryDataSource(AbstractDataSource):
           group_characters=group_characters,
       )
       self.epoch_size += shard_epoch_size
+    if len(shards) > 1:
+      logging.info('Total epoch size: %d (sum of per-worker epoch sizes)', self.epoch_size)
 
     self._alloc = shared_arrays.allocate(
         Batch, (num_slots, batch_size, self.chunk_size))
