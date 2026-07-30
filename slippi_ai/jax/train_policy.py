@@ -64,7 +64,7 @@ class TrainManager:
     self.step_profiler = utils.Profiler()
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
-    self.last_epoch = 0.
+    self.last_epoch = epoch_offset
 
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
@@ -490,7 +490,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if allowed_characters is None:
     allowed_characters = list(melee.Character)
 
-  last_train_epoch_evaluated = 0.
+  last_train_epoch_evaluated = train_epoch
   needs_initial_eval = runtime.eval_at_start
 
   def maybe_eval():
