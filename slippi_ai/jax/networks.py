@@ -1156,8 +1156,10 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     return self._embed_game.from_state(game)
 
   def _embed_player_or_nana(self, raw: PlayerOrNana, default: PlayerOrNana) -> Array:
+    dtype = jax_utils.module_dtype(self)
+
     if self._use_learned_action:
-      action = self._embed_action(raw.action)
+      action = self._embed_action(raw.action).astype(dtype)
       if self._use_char_action_joint:
         action = action + self._embed_char_action(raw.character, raw.action)
       if self._hybrid_embed:
@@ -1166,7 +1168,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       action = default.action
 
     if self._use_learned_char:
-      char = self._embed_char(raw.character)
+      char = self._embed_char(raw.character).astype(dtype)
       if self._hybrid_embed:
         char = jnp.concatenate([char, default.character], axis=-1)
     else:
@@ -1197,9 +1199,11 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
     return jnp.concatenate(parts, axis=-1)
 
   def __call__(self, state_action: StateAction[tp.Any, Action]) -> Array:
+    dtype = jax_utils.module_dtype(self)
+
     raw_game = state_action.state
     default_state_action_embed = self._embed_state_action.map(
-        lambda e, v: e(v), state_action)
+        lambda e, v: e(v).astype(dtype), state_action)
     default_game = default_state_action_embed.state
 
     parts = [
@@ -1220,7 +1224,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       # Process items as a batch
       stacked_items: Item = jax.tree.map(
         lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
-      item_embed = self._item_embedding(stacked_items)
+      item_embed = self._item_embedding(stacked_items).astype(dtype)
       assert item_embed.shape[-2:] == (len(raw_game.items), self._item_embedding.size)
       if self._use_item_sum:
         item_embed = self._item_mlp(item_embed)
