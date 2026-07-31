@@ -967,7 +967,6 @@ def microbatch_fn(
     input_batch_dims: int | tuple = 0,
     output_batch_dims: int | tuple = 0,
 ) -> tp.Callable[tp.Concatenate[ModT, P], T]:
-  mbs = microbatch_size
 
   if microbatch_size == 0:
     return f
@@ -976,6 +975,13 @@ def microbatch_fn(
       module: ModT, *args: P.args, **kwargs: P.kwargs,
   ) -> T:
     batch_size = get_batch_size(input_batch_dims, args)
+
+    if batch_size < microbatch_size:
+      mbs = batch_size
+      logging.info('Requested microbatch size %d is larger than batch size %d.',
+                   microbatch_size, batch_size)
+    else:
+      mbs = microbatch_size
 
     if batch_size % mbs != 0:
       raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
@@ -1011,7 +1017,6 @@ def microbatched_grads(
     fp32_grads: bool = True,
     loss_scale: tp.Optional[float] = None,
 ):
-  mbs = microbatch_size
   grad_fn = grad_with_aux_tuple(
       loss_fn, take_mean=take_mean,
       fp32_grads=fp32_grads, loss_scale=loss_scale)
@@ -1023,6 +1028,13 @@ def microbatched_grads(
       module: ModT, *args: P.args, **kwargs: P.kwargs,
   ) -> tuple[Grads, *Outputs]:
     batch_size = get_batch_size(input_batch_dims, args)
+
+    if batch_size < microbatch_size:
+      mbs = batch_size
+      logging.info('Requested microbatch size %d is larger than batch size %d.',
+                   microbatch_size, batch_size)
+    else:
+      mbs = microbatch_size
 
     num_microbatches, r = divmod(batch_size, mbs)
     if r != 0:
