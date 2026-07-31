@@ -631,11 +631,12 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
     # Revert if the policy moved too far from the actor.
     reverted = False
-    if final_metrics['actor_kl']['mean'] > self._config.ppo.max_mean_actor_kl:
+    final_actor_kl = np.asarray(final_metrics['actor_kl']['mean'])
+    if final_actor_kl > self._config.ppo.max_mean_actor_kl:
       # jax_utils.set_module_state(self.policy, checkpoint)
       # reverted = True
       # TODO: implement state reversion
-      raise ValueError(f"Mean actor KL after PPO update is too high: {final_metrics['actor_kl']['mean']}")
+      raise ValueError(f"Mean actor KL after PPO update is too high: {final_actor_kl}")
 
     metrics['reverted'] = reverted
 
