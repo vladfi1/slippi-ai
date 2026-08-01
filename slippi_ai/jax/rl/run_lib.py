@@ -61,6 +61,7 @@ class ActorConfig:
   gpu_inference: bool = True
   use_fake_envs: bool = False
   use_sim_envs: bool = False
+  keep_agent_outputs_on_device: bool = True
 
 @dataclasses.dataclass
 class JaxAgentConfig:
@@ -560,7 +561,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
           # no need to make a copy of the data. TODO: we could always avoid
           # the copy only on the last rollout.
           copy_data=config.learner.ppo.num_batches > 1,
-          keep_agent_outputs_on_device=True,
+          keep_agent_outputs_on_device=config.actor.keep_agent_outputs_on_device,
       )
 
   learner_manager = LearnerManager(

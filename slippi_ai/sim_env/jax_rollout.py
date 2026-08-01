@@ -42,11 +42,13 @@ class AgentInfo(tp.NamedTuple):
   agent_to_port_slices: tuple[slice, ...]
   # buffer: _TrajectoryStateBuffer
 
-@jit
 def jax_stack(list_of_trees: list[T]) -> T:
   """Stack a list of pytrees into a single pytree with an extra leading axis."""
   print('tracing jax_stack')
   return utils.map_nt(lambda *xs: jnp.stack(xs, axis=0), *list_of_trees)
+
+jax_stack_cpu = jit(jax_stack, backend='cpu')
+jax_stack_gpu = jit(jax_stack)
 
 class JaxSimRolloutWorker(AbstractRolloutWorker):
   """RolloutWorker-compatible adapter for JAX policies on one sim batch."""
@@ -284,7 +286,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       for port, port_slice in zip(agent_info.ports, agent_info.agent_to_port_slices):
         controllers[port] = slice_map(port_slice, decoded_controllers)
 
-      if timings:
+      if timings is not None:
         elapsed = time.perf_counter() - pop_start
         elapsed_per_port = elapsed / len(agent_info.ports)
         for port in agent_info.ports:
@@ -294,7 +296,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
     push_start = time.perf_counter()
     self._env.push(controllers)
-    if timings:
+    if timings is not None:
       timings['env_push'] += time.perf_counter() - push_start
 
   def rollout(
@@ -394,9 +396,10 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       env_slice = agent_info.env_slice
 
       actions = action_buffers[i]
-      if agent.policy.platform is Platform.JAX and self._keep_agent_outputs_on_device:
+      if agent.policy.platform is Platform.JAX:
         # Keep jax SampleOutputs on device for consumption by the learner.
-        actions = jax_stack(actions)
+        stack_fn = jax_stack_gpu if self._keep_agent_outputs_on_device else jax_stack_cpu
+        actions = stack_fn(actions)
       else:
         actions = fast_map(utils.stack, *actions)
 
