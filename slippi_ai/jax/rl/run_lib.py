@@ -1,5 +1,6 @@
 """JAX RL training loop — single-agent version."""
 
+import contextlib
 import dataclasses
 import enum
 import itertools
@@ -178,6 +179,7 @@ class LearnerManager:
       build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
       port: int,
       enemy_port: int,
+      exit_stack: tp.Optional[contextlib.ExitStack] = None,
   ):
     self._config = config
     self._learner = learner
@@ -204,6 +206,9 @@ class LearnerManager:
     with self.reset_profiler:
       self.actor = self._build_actor()
       self.actor.start()
+
+      if exit_stack is not None:
+        exit_stack.callback(self.actor.stop)
 
       for _ in range(self._burnin_steps_after_reset):
         self.unroll()
@@ -311,6 +316,10 @@ def reset_optimizer_steps(imitation_state: dict):
 
 
 def run(config: Config):
+  with contextlib.ExitStack() as exit_stack:
+    _run(config, exit_stack)
+
+def _run(config: Config, exit_stack: contextlib.ExitStack):
   tag = config.runtime.tag or train_lib.get_experiment_tag()
   expt_dir = config.runtime.expt_dir
   if expt_dir is None:
@@ -560,6 +569,7 @@ def run(config: Config):
       port=PORT,
       enemy_port=ENEMY_PORT,
       build_actor=build_actor,
+      exit_stack=exit_stack,
   )
 
   step_profiler = utils.Profiler()
@@ -717,33 +727,29 @@ def run(config: Config):
     logging.info('Sim envs, disabling env resets')
     reset_interval = None
 
-  try:
-    for i in range(config.runtime.max_step):
-      with step_profiler:
-        if i > 0 and reset_interval and i % reset_interval == 0:
-          logging.info('Resetting environments')
-          learner_manager.reset_env()
+  for i in range(config.runtime.max_step):
+    with step_profiler:
+      if i > 0 and reset_interval and i % reset_interval == 0:
+        logging.info('Resetting environments')
+        learner_manager.reset_env()
 
-        if step == config.learner.optimizer_burnin_epochs + config.learner.value_burnin_epochs:
-          logging.info('Burnin complete, starting policy updates')
-          # metrics change shape b/c ppo steps goes from 1 to 2
-          flush(step-1)
-        elif step == config.learner.value_burnin_epochs:
-          logging.info('Policy optimizer burnin')
-          # metrics change shape b/c ppo steps goes from 0 to 1
-          flush(step-1)
-        elif step == 0:
-          logging.info('Value function burnin')
+      if step == config.learner.optimizer_burnin_epochs + config.learner.value_burnin_epochs:
+        logging.info('Burnin complete, starting policy updates')
+        # metrics change shape b/c ppo steps goes from 1 to 2
+        flush(step-1)
+      elif step == config.learner.value_burnin_epochs:
+        logging.info('Policy optimizer burnin')
+        # metrics change shape b/c ppo steps goes from 0 to 1
+        flush(step-1)
+      elif step == 0:
+        logging.info('Value function burnin')
 
-        trajectories, metrics = learner_manager.step(step)
+      trajectories, metrics = learner_manager.step(step)
 
-      logger.record(get_log_data(trajectories, metrics))
-      maybe_flush(step)
+    logger.record(get_log_data(trajectories, metrics))
+    maybe_flush(step)
 
-      step += 1
-      maybe_save(step)
+    step += 1
+    maybe_save(step)
 
-    save(step)
-
-  finally:
-    learner_manager.actor.stop()
+  save(step)
