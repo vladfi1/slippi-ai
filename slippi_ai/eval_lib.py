@@ -183,7 +183,10 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     return delayed_controller
 
   # Present the same interface as the async agent.
-  def push(self, game: Game, needs_reset: np.ndarray):
+  def push(self, game: Game[Rank1], needs_reset: np.ndarray):
+    self._observation_filter.reset_batched(needs_reset)
+    self._observation_filter.filter_batched(game)
+
     if self._batch_steps == 0:
       with self.step_profiler:
         sampled_controller = self._agent.step(game, needs_reset)
@@ -194,8 +197,6 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 
     self._map_fn(np.copyto, input_buffer, (game, needs_reset))
     self._input_index += 1
-
-    self._observation_filter.filter_batched(input_buffer[0])
 
     if self._input_index == self._batch_steps:
       with self.step_profiler:
@@ -305,6 +306,9 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     self.pop = self._output_queue.get
     self.peek_n = self._output_queue.peek_n
 
+    self._observation_filter = observations.build_observation_filter(
+        observation_config, shape=(batch_size,))
+
   @property
   def batch_steps(self) -> int:
     return self._batch_steps or 1
@@ -353,7 +357,9 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     finally:
       self.stop()
 
-  def push(self, game: Game, needs_reset: np.ndarray):
+  def push(self, game: Game[Rank1], needs_reset: BoolArray[Rank1]):
+    self._observation_filter.reset_batched(needs_reset)
+    self._observation_filter.filter_batched(game)
     self._state_queue.put((game, needs_reset))
 
   def __del__(self):
@@ -364,7 +370,7 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       game: Game[Rank1],
       needs_reset: BoolArray[Rank1]
   ) -> SampleOutputs:
-    self._state_queue.put((game, needs_reset))
+    self.push(game, needs_reset)
     delayed_controller = self._output_queue.get()
     return delayed_controller
 
@@ -523,9 +529,6 @@ class Agent:
     self.start = self._agent.start
     self.stop = self._agent.stop
 
-    self._observation_filter = observations.build_observation_filter(
-        self._agent.observation_config)
-
   def set_ports(self, port: int, opponent_port: int):
     self.players = (port, opponent_port)
 
@@ -547,14 +550,12 @@ class Agent:
     new_game = gamestate.frame == -123
     if new_game:
       self.update_name()
-      self._observation_filter.reset()
       self._parser = Parser(ports=self.players)
 
     needs_reset = np.array([new_game])
     game = self._parser.get_game(gamestate)
     if self.mirror:
       game = mirror_lib.mirror_game(game)
-    game = self._observation_filter.filter(game)
     game = utils.map_single_structure(lambda x: np.expand_dims(x, 0), game)
     game = tp.cast(Game[Rank1], game)
 

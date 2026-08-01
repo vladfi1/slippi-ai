@@ -19,10 +19,6 @@ class ObservationFilter(abc.ABC, tp.Generic[S]):
     """Reset the filter state."""
     pass
 
-  def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
-    """Filter a batched game in-place."""
-    raise NotImplementedError()
-
   @abc.abstractmethod
   def filter(self, game: Game0) -> Game0:
     """Filter a single unbatched frame."""
@@ -30,6 +26,14 @@ class ObservationFilter(abc.ABC, tp.Generic[S]):
   @abc.abstractmethod
   def filter_time(self, game: Game1) -> Game1:
     """Filter a time-batched game."""
+
+  def reset_batched(self, needs_reset: BoolArray[S]):
+    """Reset the filter state for a batch of games."""
+    raise NotImplementedError()
+
+  def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
+    """Filter a batched game in-place."""
+    raise NotImplementedError()
 
 class ChainObservationFilter(ObservationFilter):
 
@@ -43,6 +47,10 @@ class ChainObservationFilter(ObservationFilter):
   def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
     for filter in self.filters:
       filter.filter_batched(game, env_slice)
+
+  def reset_batched(self, needs_reset: BoolArray[S]):
+    for filter in self.filters:
+      filter.reset_batched(needs_reset)
 
   def filter(self, game: Game0) -> Game0:
     for filter in self.filters:
@@ -184,6 +192,7 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
 
   def reset(self):
     self.prev_action = np.zeros(self.shape, dtype=ActionDType)
+    # Number of times the current action has been repeated.
     self.count = np.zeros(self.shape, dtype=int)
 
   def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
@@ -201,6 +210,10 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
 
     needs_mask = self.count < self.tech_mask_window & np.isin(actions, _TECH_ACTIONS_NP)
     actions[needs_mask] = _TECH_ACTIONS_NP[0]
+
+  def reset_batched(self, needs_reset: BoolArray[S]):
+    self.prev_action[needs_reset] = 0
+    self.count[needs_reset] = 0
 
   def update(self, char: int, action: ActionDType) -> ActionDType:
     if action == self.prev_action:

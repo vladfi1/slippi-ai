@@ -345,8 +345,6 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     for t in step_iter:
       env_pop_start = time.perf_counter()
       game_batch = self._env.pop()
-
-      record_state(game_batch, self._prev_agent_outputs.popleft(), t)
       timings['env_pop'] += time.perf_counter() - env_pop_start
 
       for agent_info in self._agents:
@@ -361,6 +359,8 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         # Note: game_batch contains mutable views: the agent should write these
         # into its own internal state if it needs to reference them later, e.g.
         # if it batches steps across time.
+        # The agent may mutate the state in-place based on its observation
+        # filter. We pick up the filtered state by recording after pushing.
         push_start = time.perf_counter()
         agent.push(agent_inputs.game, agent_inputs.needs_reset)
 
@@ -368,6 +368,10 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         elapsed_per_port = elapsed / len(agent_info.ports)
         for port in agent_info.ports:
           timings['agent_step'][port] += elapsed_per_port
+
+      record_start = time.perf_counter()
+      record_state(game_batch, self._prev_agent_outputs.popleft(), t)
+      timings['record_state'] += time.perf_counter() - record_start
 
       # Feed the actions from the agents into the environment.
       self._push_actions(timings)
