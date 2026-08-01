@@ -4,12 +4,11 @@ import typing as tp
 
 import numpy as np
 
-from slippi_ai.data import Game, NAME_DTYPE
+from slippi_ai.types import Game, Rank1, BoolArray
+from slippi_ai.data import NAME_DTYPE
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 
 RecurrentState = tp.TypeVar('RecurrentState')
-
-BoolArray = np.ndarray[tuple[int], np.dtype[np.bool]]
 
 # TODO: find a better place for this
 class Platform(enum.Enum):
@@ -27,7 +26,7 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
 
   @property
   @abc.abstractmethod
-  def name_code(self) -> np.ndarray[tuple[int], np.dtype[NAME_DTYPE]]:
+  def name_code(self) -> np.ndarray[Rank1, np.dtype[NAME_DTYPE]]:
     """The (possibly batched) player name code used by this agent."""
 
   def set_name_code(self, name_code: tp.Union[int, tp.Sequence[int]]):
@@ -52,14 +51,14 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   @abc.abstractmethod
   def step(
       self,
-      game: Game,
-      needs_reset: BoolArray,
+      game: Game[Rank1],
+      needs_reset: BoolArray[Rank1],
   ) -> SampleOutputs[ControllerType]:
     """Doesn't take into account delay."""
 
   @abc.abstractmethod
   def multi_step(
       self,
-      states: list[tuple[Game, BoolArray]],
+      states: list[tuple[Game[Rank1], BoolArray[Rank1]]],
   ) -> list[SampleOutputs[ControllerType]]:
     """Do multiple steps at once"""

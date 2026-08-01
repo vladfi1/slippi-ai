@@ -74,7 +74,7 @@ def mirror_item(item: types.Item) -> types.Item:
 def mirror_items(items: types.Items) -> types.Items:
   return types.Items(*map(mirror_item, items))
 
-def mirror_game(game: types.Game) -> types.Game:
+def mirror_game(game: types.Game[types.S]) -> types.Game[types.S]:
   return types.Game(
       p0=mirror_player(game.p0),
       p1=mirror_player(game.p1),

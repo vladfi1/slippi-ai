@@ -17,7 +17,7 @@ from slippi_ai import (
   observations, flag_utils, policies,
 )
 from slippi_ai.policies import RecurrentState
-from slippi_ai.types import Game, Controller, reify_tuple_type
+from slippi_ai.types import Game, Controller, reify_tuple_type, Rank1, BoolArray
 from slippi_ai.agents import BasicAgent, BoolArray
 
 import slippi_ai.mirror as mirror_lib
@@ -85,8 +85,6 @@ def build_basic_agent(
 
   return policy.build_agent(batch_size, **kwargs, **framework_kwargs)
 
-Rank1 = tuple[int]
-
 class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   """Wraps a BasicAgent with delay."""
 
@@ -107,7 +105,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
         for _ in range(batch_steps)
     ]
     self._input_buffers = tp.cast(
-        list[tuple[Game[Rank1], np.ndarray[Rank1, np.dtype[np.bool]]]],
+        list[tuple[Game[Rank1], BoolArray[Rank1]]],
         input_buffers)
     self._input_index = 0
 
@@ -176,7 +174,7 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 
   def step(
       self,
-      game: Game,
+      game: Game[Rank1],
       needs_reset: np.ndarray[tuple[int], np.dtype[np.bool]],
   ) -> SampleOutputs[ControllerType]:
     """Synchronous agent step."""
@@ -363,8 +361,8 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
 
   def step(
       self,
-      game: Game,
-      needs_reset: np.ndarray
+      game: Game[Rank1],
+      needs_reset: BoolArray[Rank1]
   ) -> SampleOutputs:
     self._state_queue.put((game, needs_reset))
     delayed_controller = self._output_queue.get()
@@ -558,6 +556,7 @@ class Agent:
       game = mirror_lib.mirror_game(game)
     game = self._observation_filter.filter(game)
     game = utils.map_single_structure(lambda x: np.expand_dims(x, 0), game)
+    game = tp.cast(Game[Rank1], game)
 
     sample_outputs = self._agent.step(game, needs_reset)
     # TODO: The agent interface should hide this behind a flag

@@ -7,13 +7,11 @@ import numpy as np
 import melee
 from melee.enums import Action
 
-from slippi_ai import types
+from slippi_ai.types import Game, Rank1, BoolArray, S, Player
 from slippi_ai import utils
 
-S = tp.TypeVar('S', bound=tuple[int, ...])
-
-Game0 = types.Game[tuple[()]]
-Game1 = types.Game[tuple[int]]
+Game0 = Game[tuple[()]]
+Game1 = Game[Rank1]
 
 class ObservationFilter(abc.ABC, tp.Generic[S]):
 
@@ -21,7 +19,7 @@ class ObservationFilter(abc.ABC, tp.Generic[S]):
     """Reset the filter state."""
     pass
 
-  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+  def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
     """Filter a batched game in-place."""
     raise NotImplementedError()
 
@@ -42,7 +40,7 @@ class ChainObservationFilter(ObservationFilter):
     for filter in self.filters:
       filter.reset()
 
-  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+  def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
     for filter in self.filters:
       filter.filter_batched(game, env_slice)
 
@@ -57,7 +55,7 @@ class ChainObservationFilter(ObservationFilter):
     return game
 
 ActionDType = np.uint16
-assert types.Player.__annotations__['action'].__args__[1].__args__[0] is ActionDType
+assert Player.__annotations__['action'].__args__[1].__args__[0] is ActionDType
 
 # TODO: what about missed tech?
 N_TECH, F_TECH, B_TECH = [
@@ -188,7 +186,7 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
     self.prev_action = np.zeros(self.shape, dtype=ActionDType)
     self.count = np.zeros(self.shape, dtype=int)
 
-  def filter_batched(self, game: types.Game[S], env_slice: tp.Optional[slice] = None):
+  def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
     """Updates in-place."""
     if env_slice is not None:
       actions = game.p0.action[env_slice]
@@ -266,7 +264,7 @@ class FrameSkipFilter(ObservationFilter):
   def reset(self):
     self.index = 0
 
-  def filter(self, game: types.Game) -> types.Game:
+  def filter(self, game: Game) -> Game:
 
     if self.index % self.skip == 0:
       self.last_state = game
@@ -277,7 +275,7 @@ class FrameSkipFilter(ObservationFilter):
     return utils.replace_nt(
         self.last_state, ['p0', 'controller'], game.p0.controller)
 
-  def filter_time(self, game: types.Game) -> types.Game:
+  def filter_time(self, game: Game) -> Game:
     game_len = len(game.stage)
     indices = floor_mod(np.arange(game_len), self.skip)
     frame_skipped = utils.map_nt(lambda arr: arr[indices], game)
