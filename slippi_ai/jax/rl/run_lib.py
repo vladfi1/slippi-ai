@@ -704,8 +704,12 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   def save(step: int):
     combined_state = dict(
         state=learner.get_state(),
-        config=teacher_state['config'],
-        name_map=teacher_state['name_map'],
+        # Must be rl_state's config, not the teacher's: the two differ when a
+        # separate value function is merged in (config.value_function), and
+        # saving the teacher's config would drop that override, breaking the
+        # next restore.
+        config=rl_state['config'],
+        name_map=rl_state['name_map'],
         step=step,
         rl_config=rl_config_dict,
     )
