@@ -334,6 +334,7 @@ class DolphinConfig:
 DOLPHIN_FLAGS = dict(
     path=ff.String(None, 'Path to folder containing the dolphin executable.'),
     iso=ff.String(None, 'Path to melee 1.02 iso.'),
+    user_json_path=ff.String(None, 'Path to Slippi user.json (required for netplay).'),
     stage=ff.EnumClass(melee.Stage.RANDOM_STAGE, melee.Stage, 'Which stage to play on.'),
     online_delay=ff.Integer(0, 'Simulate online delay.'),
     blocking_input=ff.Boolean(True, 'Have game wait for AIs to send inputs.'),

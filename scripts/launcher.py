@@ -662,6 +662,7 @@ class NetplayTab(ScriptTab):
     self.costume_var = tk.StringVar(value=initial.get('costume', ''))
     self.connect_var = tk.StringVar(value=initial.get('connect_code', ''))
     self.runtime_var = tk.StringVar(value=initial.get('runtime', ''))
+    self.user_json_var = tk.StringVar(value=initial.get('user_json_path', ''))
 
     grid = ttk.Frame(self)
     def row(label, widget, r):
@@ -673,12 +674,19 @@ class NetplayTab(ScriptTab):
     row('Costume (blank = default):', ttk.Entry(grid, textvariable=self.costume_var, width=6), 2)
     row('Connect code:', ttk.Entry(grid, textvariable=self.connect_var, width=16), 3)
     row('Runtime seconds (blank = forever):', ttk.Entry(grid, textvariable=self.runtime_var, width=8), 4)
+    row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=40), 5)
+    ttk.Button(grid, text='Browse…', command=self._pick_user_json).grid(row=5, column=2, padx=4)
     grid.pack(fill='x')
 
   def _pick_model(self):
     p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
     if p:
       self.model_var.set(p)
+
+  def _pick_user_json(self):
+    p = filedialog.askopenfilename(title='Select Slippi user.json', filetypes=[('JSON', '*.json'), ('All files', '*.*')])
+    if p:
+      self.user_json_var.set(p)
 
   def _values(self) -> dict:
     return {
@@ -687,6 +695,7 @@ class NetplayTab(ScriptTab):
         'costume': self.costume_var.get().strip(),
         'connect_code': self.connect_var.get().strip(),
         'runtime': self.runtime_var.get().strip(),
+        'user_json_path': self.user_json_var.get().strip(),
     }
 
   @staticmethod
@@ -699,6 +708,8 @@ class NetplayTab(ScriptTab):
     argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
     argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
     argv.append(f'--dolphin.connect_code={tab_values.get("connect_code", "")}')
+    if tab_values.get('user_json_path'):
+      argv.append(f'--dolphin.user_json_path={tab_values["user_json_path"]}')
     if tab_values.get('runtime'):
       argv.append(f'--runtime={tab_values["runtime"]}')
     return argv
@@ -716,6 +727,10 @@ class NetplayTab(ScriptTab):
       errors.append(f'Model path does not exist: {tab_values["model_path"]}')
     if not tab_values.get('connect_code'):
       errors.append('Connect code is required for netplay.')
+    if not tab_values.get('user_json_path'):
+      errors.append('Slippi user.json is required for netplay.')
+    elif not pathlib.Path(tab_values['user_json_path']).is_file():
+      errors.append(f'user.json does not exist: {tab_values["user_json_path"]}')
     return errors
 
 

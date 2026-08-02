@@ -239,7 +239,7 @@ class NetplayTest(unittest.TestCase):
         global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
         tab_values={
             'model_path': r'C:\M', 'char': 'FOX', 'costume': '',
-            'connect_code': 'ABCD#123', 'runtime': '',
+            'connect_code': 'ABCD#123', 'runtime': '', 'user_json_path': '',
         },
     )
     rest = argv[2:]
@@ -250,6 +250,7 @@ class NetplayTest(unittest.TestCase):
     self.assertIn('--dolphin.path=D', rest)
     self.assertFalse(any(a.startswith('--costume') for a in rest))
     self.assertFalse(any(a.startswith('--runtime') for a in rest))
+    self.assertFalse(any(a.startswith('--dolphin.user_json_path') for a in rest))
 
   def test_build_argv_with_optionals(self):
     argv = launcher.NetplayTab.build_argv(
@@ -257,18 +258,27 @@ class NetplayTest(unittest.TestCase):
         tab_values={
             'model_path': 'M', 'char': 'FALCO', 'costume': '2',
             'connect_code': 'X#1', 'runtime': '300',
+            'user_json_path': r'C:\Slippi\user.json',
         },
     )
     rest = argv[2:]
     self.assertIn('--costume=2', rest)
     self.assertIn('--runtime=300', rest)
+    self.assertIn(r'--dolphin.user_json_path=C:\Slippi\user.json', rest)
 
   def test_validate_requires_connect_code(self):
     errors = launcher.NetplayTab.validate(
         global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-        tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': '', 'runtime': ''},
+        tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': '', 'runtime': '', 'user_json_path': ''},
     )
     self.assertTrue(any('connect' in e.lower() for e in errors))
+
+  def test_validate_requires_user_json(self):
+    errors = launcher.NetplayTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': 'X#1', 'runtime': '', 'user_json_path': ''},
+    )
+    self.assertTrue(any('user.json' in e.lower() for e in errors))
 
 
 if __name__ == '__main__':
