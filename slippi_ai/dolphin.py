@@ -211,16 +211,21 @@ class Dolphin:
       ):
         logging.warning('Playing on unfrozen stadium')
 
-      # Check that we picked the desired characters
-      for controller, player in self._menuing_controllers:
-        gs_player = gamestate.players[controller.port]
-        desired_character = player.character
-        actual_character = gs_player.character
-        if actual_character != desired_character:
-          raise WrongCharacterSelected(
-            f'Port {controller.port}: expected character '
-            f'{desired_character.name}, got {actual_character.name}'
-          )
+      # Check that we picked the desired characters. Skip in online netplay:
+      # in-game port assignment there is variable (depends on who joined
+      # first) so `controller.port` (the local libmelee port, always 1 in
+      # single-agent runs) may not correspond to the bot's actual game port.
+      # netplay.py resolves the real port later via display-name matching.
+      if self._connect_code is None:
+        for controller, player in self._menuing_controllers:
+          gs_player = gamestate.players[controller.port]
+          desired_character = player.character
+          actual_character = gs_player.character
+          if actual_character != desired_character:
+            raise WrongCharacterSelected(
+              f'Port {controller.port}: expected character '
+              f'{desired_character.name}, got {actual_character.name}'
+            )
 
     return gamestate
 
