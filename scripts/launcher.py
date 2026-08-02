@@ -856,6 +856,153 @@ class NetplayTab(ScriptTab):
     return errors
 
 
+class DiscordTab(ttk.Frame):
+
+  TAB_KEY = 'discord'
+  LABEL = 'discord'
+
+  def __init__(self, parent, app):
+    super().__init__(parent)
+    self.app = app
+    self._bot: DiscordBotThread | None = None
+    initial = self.app.config.tabs.get(self.TAB_KEY, {})
+    self._error_label = ttk.Label(self, foreground='#c00000', wraplength=800, justify='left')
+
+    self.token_var = tk.StringVar(value=initial.get('token', ''))
+    self.channels_var = tk.StringVar(value=initial.get('allowed_channels', ''))
+    self.model_var = tk.StringVar(value=initial.get('model_path', ''))
+    self.user_json_var = tk.StringVar(value=initial.get('user_json_path', ''))
+    self.timeout_var = tk.StringVar(value=initial.get('connect_timeout_s', '600'))
+    initial_chars = set(initial.get('supported_characters', []))
+    self.char_vars: dict[str, tk.BooleanVar] = {
+        c: tk.BooleanVar(value=(c.lower() in initial_chars))
+        for c in CHARACTERS
+    }
+
+    grid = ttk.Frame(self)
+    def row(label, widget, r, browse=None):
+      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=4, pady=2)
+      widget.grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+      if browse is not None:
+        ttk.Button(grid, text='Browse…', command=browse).grid(row=r, column=2, padx=4)
+
+    row('Bot token:', ttk.Entry(grid, textvariable=self.token_var, show='*', width=50), 0)
+    row('Allowed channel IDs:', ttk.Entry(grid, textvariable=self.channels_var, width=50), 1)
+    row('Model path:', ttk.Entry(grid, textvariable=self.model_var, width=50), 2, browse=self._pick_model)
+    row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=50), 3, browse=self._pick_user_json)
+    row('Connect timeout (s):', ttk.Entry(grid, textvariable=self.timeout_var, width=8), 4)
+    grid.grid_columnconfigure(1, weight=1)
+    grid.pack(fill='x')
+
+    chars = ttk.LabelFrame(self, text='Supported characters (which your model can play)')
+    for i, c in enumerate(CHARACTERS):
+      ttk.Checkbutton(chars, text=c.lower(), variable=self.char_vars[c]).grid(
+          row=i // 6, column=i % 6, sticky='w', padx=6, pady=2)
+    chars.pack(fill='x', pady=4)
+
+    controls = ttk.Frame(self)
+    self.start_btn = ttk.Button(controls, text='Start bot', command=self._on_start)
+    self.stop_btn = ttk.Button(controls, text='Stop bot', command=self._on_stop, state='disabled')
+    self.status = ttk.Label(controls, text='stopped')
+    self.slot_label = ttk.Label(controls, text='match slot: idle', foreground='#666666')
+    self.start_btn.pack(side='left', padx=4)
+    self.stop_btn.pack(side='left', padx=4)
+    self.status.pack(side='left', padx=12)
+    self.slot_label.pack(side='left', padx=12)
+    controls.pack(fill='x', pady=(8, 4))
+    self._error_label.pack(fill='x', pady=(0, 4))
+
+  def _pick_model(self):
+    p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+    if p:
+      self.model_var.set(p)
+
+  def _pick_user_json(self):
+    p = filedialog.askopenfilename(title='Select Slippi user.json', filetypes=[('JSON', '*.json'), ('All files', '*.*')])
+    if p:
+      self.user_json_var.set(p)
+
+  def _values(self) -> dict:
+    checked = sorted(c.lower() for c, v in self.char_vars.items() if v.get())
+    return {
+        'token': self.token_var.get(),
+        'allowed_channels': self.channels_var.get().strip(),
+        'model_path': self.model_var.get(),
+        'user_json_path': self.user_json_var.get(),
+        'connect_timeout_s': self.timeout_var.get().strip() or '600',
+        'supported_characters': checked,
+    }
+
+  def _validate(self, values: dict) -> list[str]:
+    errors = []
+    if not values['token']:
+      errors.append('Bot token is required.')
+    channel_ids = self._parse_channel_ids(values['allowed_channels'])
+    if channel_ids is None:
+      errors.append('Allowed channel IDs must be comma-separated integers.')
+    elif not channel_ids:
+      errors.append('At least one allowed channel ID is required.')
+    if not values['model_path']:
+      errors.append('Model path is required.')
+    elif not pathlib.Path(values['model_path']).exists():
+      errors.append(f'Model path does not exist: {values["model_path"]}')
+    if not values['user_json_path']:
+      errors.append('Slippi user.json is required.')
+    elif not pathlib.Path(values['user_json_path']).is_file():
+      errors.append(f'user.json does not exist: {values["user_json_path"]}')
+    if not values['supported_characters']:
+      errors.append('At least one supported character must be checked.')
+    try:
+      t = int(values['connect_timeout_s'])
+      if t <= 0:
+        raise ValueError
+    except ValueError:
+      errors.append('Connect timeout must be a positive integer (seconds).')
+    return errors
+
+  @staticmethod
+  def _parse_channel_ids(text: str) -> 'list[int] | None':
+    if not text.strip():
+      return []
+    try:
+      return [int(x.strip()) for x in text.split(',') if x.strip()]
+    except ValueError:
+      return None
+
+  def _on_start(self):
+    values = self._values()
+    errors = self._validate(values)
+    if errors:
+      self._error_label.configure(text='\n'.join(errors))
+      return
+    self._error_label.configure(text='')
+    self.app.config.tabs[self.TAB_KEY] = values
+    self.app.config.save()
+    self._bot = DiscordBotThread(self.app, self._update_status)
+    self._bot.start(
+        token=values['token'],
+        allowed_channels=self._parse_channel_ids(values['allowed_channels']) or [],
+        model_path=values['model_path'],
+        user_json_path=values['user_json_path'],
+        character_choices=values['supported_characters'],
+    )
+    self.start_btn.configure(state='disabled')
+    self.stop_btn.configure(state='normal')
+    self._update_status('starting…')
+
+  def _on_stop(self):
+    if self._bot is not None:
+      self._bot.stop()
+    # Poll for actual shutdown (bot thread posts 'stopped' via status callback).
+    self.stop_btn.configure(state='disabled')
+
+  def _update_status(self, text: str) -> None:
+    self.status.configure(text=text)
+    if text == 'stopped':
+      self.start_btn.configure(state='normal')
+      self.stop_btn.configure(state='disabled')
+
+
 class LauncherApp:
 
   def __init__(self):
@@ -867,7 +1014,7 @@ class LauncherApp:
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
-    for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab, NetplayTab):
+    for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab, NetplayTab, DiscordTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
     if self.config.last_tab:
@@ -892,9 +1039,17 @@ class LauncherApp:
       # Re-poll every 200 ms until the process has exited.
       self.root.after(200, self._on_close)
       return
+    # Stop the Discord bot cleanly if any tab has one running.
+    for tab in self._discord_tabs():
+      if tab._bot is not None and tab._bot.is_running:
+        tab._bot.stop()
     self.config.global_ = self.global_paths.values()
     self.config.save()
     self.root.destroy()
+
+  def _discord_tabs(self):
+    return [t for t in (self.notebook.nametowidget(name) for name in self.notebook.tabs())
+            if isinstance(t, DiscordTab)]
 
   def run(self):
     self.root.mainloop()
