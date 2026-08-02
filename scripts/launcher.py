@@ -367,12 +367,7 @@ class DiscordBotThread:
     # Channel allowlist — silent drop.
     if channel.id not in self._allowed_channels:
       return
-    # Busy guard.
-    if self._active is not None:
-      await channel.send(
-          f'Bot busy — @{self._active.user_name} is playing vs `{self._active.connect_code}`.')
-      return
-    # Validate.
+    # Validate BEFORE preempting so a typo doesn't kill an in-flight match.
     if not validate_connect_code(code):
       await channel.send('Invalid code — expected `ABCD#123`.')
       return
@@ -380,6 +375,28 @@ class DiscordBotThread:
       await channel.send(
           f'Model does not support `{char}`. Options: {", ".join(self._character_choices)}')
       return
+    # Preempt any in-flight match so the new request can run.
+    if self._active is not None:
+      old = self._active
+      # Silence any lingering event handlers by tripping the idempotence
+      # guard before we tear things down.
+      self._active = None
+      if self._timeout_task is not None and not self._timeout_task.done():
+        self._timeout_task.cancel()
+      self._timeout_task = None
+      await channel.send(
+          f'Preempting current match (@{old.user_name} vs `{old.connect_code}`) '
+          f'for @{user.display_name}\'s request…')
+      # Kill netplay and wait for the process to fully exit before spawning
+      # the next one; two Dolphins on the same slippi_port would collide.
+      self._app.root.after(0, self._app.runner.stop)
+      for _ in range(50):  # up to 10 s
+        if not self._app.runner.is_running:
+          break
+        await asyncio.sleep(0.2)
+      # Also drop the log watcher so any late lines from the old process
+      # don't feed into the new request's marker handling.
+      self._app.root.after(0, self._clear_log_watcher)
     # Claim slot.
     request = MatchRequest(
         user_id=user.id,
@@ -1169,6 +1186,9 @@ def build_netplay_argv(global_paths: dict, tab_values: dict) -> list[str]:
     argv.append(f'--dolphin.user_json_path={tab_values["user_json_path"]}')
   if tab_values.get('runtime'):
     argv.append(f'--runtime={tab_values["runtime"]}')
+  # Bot plays best-of-3-style: fixed number of games per match request.
+  num_games = tab_values.get('num_games', 3)
+  argv.append(f'--num_games={num_games}')
   return argv
 
 
