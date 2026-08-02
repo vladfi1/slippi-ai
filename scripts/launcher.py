@@ -83,6 +83,21 @@ def _format_duration(seconds: float) -> str:
   return f'{total // 60}m {total % 60}s'
 
 
+def parse_max_attempts(text: str) -> 'int | None':
+  """Parse the max-attempts field. Blank -> 1 (retries disabled).
+  Non-integer or out-of-range -> None."""
+  s = text.strip()
+  if not s:
+    return 1
+  try:
+    n = int(s)
+  except ValueError:
+    return None
+  if 1 <= n <= 5:
+    return n
+  return None
+
+
 def list_models() -> list[str]:
   if not MODELS_DIR.is_dir():
     return []

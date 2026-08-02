@@ -437,5 +437,27 @@ class FormatDurationTest(unittest.TestCase):
     self.assertEqual(launcher._format_duration(-5), '0m 0s')
 
 
+class ParseMaxAttemptsTest(unittest.TestCase):
+
+  def test_valid_values(self):
+    for text, expected in [('1', 1), ('2', 2), ('3', 3), ('5', 5)]:
+      with self.subTest(text=text):
+        self.assertEqual(launcher.parse_max_attempts(text), expected)
+
+  def test_blank_returns_one(self):
+    self.assertEqual(launcher.parse_max_attempts(''), 1)
+    self.assertEqual(launcher.parse_max_attempts('   '), 1)
+
+  def test_out_of_range(self):
+    self.assertIsNone(launcher.parse_max_attempts('0'))
+    self.assertIsNone(launcher.parse_max_attempts('6'))
+    self.assertIsNone(launcher.parse_max_attempts('-1'))
+
+  def test_non_integer(self):
+    self.assertIsNone(launcher.parse_max_attempts('two'))
+    self.assertIsNone(launcher.parse_max_attempts('2.5'))
+    self.assertIsNone(launcher.parse_max_attempts('1a'))
+
+
 if __name__ == '__main__':
   unittest.main()
