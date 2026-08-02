@@ -148,6 +148,14 @@ class DiscordBotThread:
     """Mirror bot events into the launcher's log panel for visibility."""
     self._app.root.after(0, self._app.log.append, f'[discord] {text}\n', 'meta')
 
+  def _bot_connect_code(self) -> str:
+    """Read the bot's own connect code from its user.json for display."""
+    try:
+      with open(self._user_json_path) as f:
+        return json.load(f).get('connectCode', '?')
+    except (OSError, ValueError):
+      return '?'
+
   async def _set_ready_presence(self) -> None:
     if self._client is None:
       return
@@ -282,8 +290,10 @@ class DiscordBotThread:
     self._app.root.after(0, self._set_slot_label,
                         f'match slot: running (@{request.user_name} vs {code})')
     await self._set_busy_presence(user.display_name, char)
+    bot_code = self._bot_connect_code()
     await channel.send(
-        f'**@{user.display_name}** vs `{code}` as `{char}` — starting…')
+        f'**@{user.display_name}** vs `{code}` as `{char}` — starting…\n'
+        f'Enter my code in your Slippi game (Direct Connect): **`{bot_code}`**')
     # Build argv and spawn (from Tk main thread — ProcessRunner uses root.after internally).
     tab_values = {
         'model_path': self._model_path,
