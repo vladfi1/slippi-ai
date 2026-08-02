@@ -158,3 +158,6 @@ stripped_models/
 
 # git worktrees
 .worktrees/
+
+# Launcher config (stores the Discord bot token in plaintext).
+.slippi_ai_launcher.json
