@@ -203,19 +203,22 @@ class DiscordBotThread:
     self._model_path: str = ''
     self._user_json_path: str = ''
     self._character_choices: list[str] = []
+    self._max_attempts: int = 2
 
   @property
   def is_running(self) -> bool:
     return self._thread is not None and self._thread.is_alive()
 
   def start(self, token: str, allowed_channels: list[int], model_path: str,
-            user_json_path: str, character_choices: list[str]) -> None:
+            user_json_path: str, character_choices: list[str],
+            max_attempts: int = 2) -> None:
     if self.is_running:
       raise RuntimeError('Discord bot already running.')
     self._allowed_channels = list(allowed_channels)
     self._model_path = model_path
     self._user_json_path = user_json_path
     self._character_choices = list(character_choices)
+    self._max_attempts = max_attempts
     self._thread = threading.Thread(target=self._run, args=(token,), daemon=True)
     self._thread.start()
 
