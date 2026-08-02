@@ -459,5 +459,75 @@ class ParseMaxAttemptsTest(unittest.TestCase):
     self.assertIsNone(launcher.parse_max_attempts('1a'))
 
 
+class DiscoverModelsTest(unittest.TestCase):
+
+  def setUp(self):
+    self._tmp = tempfile.TemporaryDirectory()
+    self.tmp_dir = pathlib.Path(self._tmp.name)
+    self.models_dir = self.tmp_dir / 'models'
+    self.models_dir.mkdir()
+    self._orig_cache_path = launcher._model_cache_path
+    launcher._model_cache_path = lambda: self.tmp_dir / 'cache.json'
+
+  def tearDown(self):
+    launcher._model_cache_path = self._orig_cache_path
+    self._tmp.cleanup()
+
+  def test_discover_models_scans_dir_and_caches(self):
+    m1 = self.models_dir / 'model1'
+    m1.write_text('dummy')
+    m2 = self.models_dir / 'model2'
+    m2.write_text('dummy')
+
+    load_calls = []
+
+    def mock_load(path):
+      load_calls.append(path)
+      if 'model1' in path:
+        return ['fox', 'falco']
+      return ['marth']
+
+    orig_load = launcher._load_model_chars
+    launcher._load_model_chars = mock_load
+    try:
+      res1 = launcher.discover_models(self.models_dir)
+      self.assertEqual(res1, {'model1': ['fox', 'falco'], 'model2': ['marth']})
+      self.assertEqual(len(load_calls), 2)
+
+      # Second scan should hit cache
+      load_calls.clear()
+      res2 = launcher.discover_models(self.models_dir)
+      self.assertEqual(res2, {'model1': ['fox', 'falco'], 'model2': ['marth']})
+      self.assertEqual(len(load_calls), 0)
+
+      # Removing a file drops it from cache and results
+      m1.unlink()
+      res3 = launcher.discover_models(self.models_dir)
+      self.assertEqual(res3, {'model2': ['marth']})
+    finally:
+      launcher._load_model_chars = orig_load
+
+
+
+class DiscordBotModelTest(unittest.TestCase):
+
+  def test_format_models_reply_empty(self):
+    bot = launcher.DiscordBotThread(None, lambda status: None)
+    self.assertEqual(bot._format_models_reply(), 'No models loaded.')
+
+  def test_format_models_reply_with_models(self):
+    bot = launcher.DiscordBotThread(None, lambda status: None)
+    bot._models = {
+        'm1': ['fox', 'falco'],
+        'm2': ['marth'],
+    }
+    bot._default_model = 'm1'
+    reply = bot._format_models_reply()
+    self.assertIn('Available models:', reply)
+    self.assertIn('`m1` (default): fox, falco', reply)
+    self.assertIn('`m2`: marth', reply)
+
+
 if __name__ == '__main__':
   unittest.main()
+

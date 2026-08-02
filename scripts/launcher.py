@@ -75,6 +75,71 @@ def scrub_for_public(text: str) -> str:
   return ''.join(out_lines)
 
 
+def _model_cache_path() -> pathlib.Path:
+  return pathlib.Path(os.path.expanduser('~')) / '.slippi_ai_model_cache.json'
+
+
+def _load_model_chars(model_path: str) -> list[str]:
+  """Load a model checkpoint and return its supported characters as a
+  list of lowercase libmelee names. Imports slippi_ai.saving lazily so
+  the launcher itself stays fast to start."""
+  from slippi_ai import saving  # pulls in tensorflow, ~5-10 s first call
+  state = saving.load_state_from_disk(model_path)
+  config = state.get('config', {}) if isinstance(state, dict) else {}
+  if isinstance(config, dict):
+    dataset_cfg = config.get('dataset', {})
+    allowed = dataset_cfg.get('allowed_characters', '') if isinstance(dataset_cfg, dict) else ''
+  else:
+    allowed = getattr(getattr(config, 'dataset', None), 'allowed_characters', '')
+
+  if not allowed or allowed.lower() == 'all':
+    return [c.lower() for c in CHARACTERS]
+
+  return [c.strip().lower() for c in allowed.split(',') if c.strip()]
+
+
+
+def discover_models(models_dir: pathlib.Path) -> dict:
+  """Scan `models_dir` and return {model_filename: [char, ...]}. Cached
+  per-file by mtime in _model_cache_path() so unchanged files skip the
+  slow TF load."""
+  cache_path = _model_cache_path()
+  try:
+    cache = json.loads(cache_path.read_text())
+    if not isinstance(cache, dict):
+      cache = {}
+  except (OSError, ValueError):
+    cache = {}
+  results: dict = {}
+  if not models_dir.is_dir():
+    return results
+  for p in sorted(models_dir.iterdir()):
+    if not p.is_file():
+      continue
+    name = p.name
+    mtime = p.stat().st_mtime
+    entry = cache.get(name)
+    if isinstance(entry, dict) and entry.get('mtime') == mtime:
+      results[name] = list(entry.get('chars', []))
+      continue
+    try:
+      chars = _load_model_chars(str(p))
+    except Exception as e:
+      print(f'[launcher] failed to load {name}: {e}', file=sys.stderr)
+      continue
+    results[name] = chars
+    cache[name] = {'mtime': mtime, 'chars': chars}
+  # Drop cache entries for files that no longer exist.
+  for stale in list(cache):
+    if stale not in results:
+      cache.pop(stale, None)
+  try:
+    cache_path.write_text(json.dumps(cache, indent=2))
+  except OSError:
+    pass
+  return results
+
+
 def _format_duration(seconds: float) -> str:
   """Format an elapsed-seconds value as '{m}m {s}s'. Clamps at 0."""
   if seconds <= 0:
@@ -200,24 +265,28 @@ class DiscordBotThread:
     self._active: 'MatchRequest | None' = None
     self._timeout_task = None
     self._allowed_channels: list[int] = []
-    self._model_path: str = ''
+    self._models_dir: pathlib.Path = MODELS_DIR
+    self._models: dict[str, list[str]] = {}  # filename -> [chars]
+    self._default_model: str = ''
     self._user_json_path: str = ''
-    self._character_choices: list[str] = []
     self._max_attempts: int = 2
+    self._active_model_path: str = ''  # set per-request by _handle_play
 
   @property
   def is_running(self) -> bool:
     return self._thread is not None and self._thread.is_alive()
 
-  def start(self, token: str, allowed_channels: list[int], model_path: str,
-            user_json_path: str, character_choices: list[str],
+  def start(self, token: str, allowed_channels: list[int],
+            models_dir: pathlib.Path, models: dict,
+            default_model: str, user_json_path: str,
             max_attempts: int = 2) -> None:
     if self.is_running:
       raise RuntimeError('Discord bot already running.')
     self._allowed_channels = list(allowed_channels)
-    self._model_path = model_path
+    self._models_dir = models_dir
+    self._models = dict(models)
+    self._default_model = default_model
     self._user_json_path = user_json_path
-    self._character_choices = list(character_choices)
     self._max_attempts = max_attempts
     self._thread = threading.Thread(target=self._run, args=(token,), daemon=True)
     self._thread.start()
@@ -334,16 +403,26 @@ class DiscordBotThread:
       tokens = message.content.split()
       args = [t for t in tokens if not (t.startswith('<@') and t.endswith('>'))]
       self._log(f'parsed args={args}')
-      if len(args) != 2:
-        bot_name = self._client.user.display_name
-        chars = ', '.join(self._character_choices) or '(none configured)'
-        await message.channel.send(
-            f'Syntax: `@{bot_name} <connect_code> <character>` '
-            f'— e.g. `@{bot_name} TNBN#217 fox`\n'
-            f'Available characters: {chars}')
+      # Special command: `models` — list all models + their chars.
+      if len(args) == 1 and args[0].lower() == 'models':
+        await message.channel.send(self._format_models_reply())
         return
-      code, char = args
-      await self._handle_play(message.channel, message.author, code, char.lower())
+      # Play command: 2 args (code + char, uses default model) or
+      # 3 args (code + char + model).
+      if len(args) == 2:
+        code, char = args
+        model_name = self._default_model
+      elif len(args) == 3:
+        code, char, model_name = args
+      else:
+        bot_name = self._client.user.display_name
+        await message.channel.send(
+            f'Syntax: `@{bot_name} <connect_code> <character> [model]` '
+            f'— e.g. `@{bot_name} TNBN#217 fox`\n'
+            f'Say `@{bot_name} models` to see available models.')
+        return
+      await self._handle_play(
+          message.channel, message.author, code, char.lower(), model_name)
 
     self._log('starting client')
     try:
@@ -363,7 +442,18 @@ class DiscordBotThread:
       self._client = None
       self._post_status('stopped')
 
-  async def _handle_play(self, channel, user, code: str, char: str) -> None:
+  def _format_models_reply(self) -> str:
+    if not self._models:
+      return 'No models loaded.'
+    lines = ['Available models:']
+    for name in sorted(self._models):
+      chars = ', '.join(self._models[name]) or '(no characters)'
+      marker = ' (default)' if name == self._default_model else ''
+      lines.append(f'  `{name}`{marker}: {chars}')
+    return '\n'.join(lines)
+
+  async def _handle_play(self, channel, user, code: str, char: str,
+                         model_name: str) -> None:
     # Channel allowlist — silent drop.
     if channel.id not in self._allowed_channels:
       return
@@ -371,9 +461,16 @@ class DiscordBotThread:
     if not validate_connect_code(code):
       await channel.send('Invalid code — expected `ABCD#123`.')
       return
-    if not validate_supported_character(char, self._character_choices):
+    if model_name not in self._models:
+      known = ', '.join(sorted(self._models)) or '(none)'
       await channel.send(
-          f'Model does not support `{char}`. Options: {", ".join(self._character_choices)}')
+          f'Unknown model `{model_name}`. Available: {known}')
+      return
+    model_chars = self._models[model_name]
+    if not validate_supported_character(char, model_chars):
+      await channel.send(
+          f'Model `{model_name}` doesn\'t support `{char}`. Options: '
+          f'{", ".join(model_chars)}')
       return
     # Preempt any in-flight match so the new request can run.
     if self._active is not None:
@@ -407,9 +504,14 @@ class DiscordBotThread:
         started_at=time.monotonic(),
         max_attempts=self._max_attempts,
     )
+    # Stash the model choice on the runner so _start_attempt knows which
+    # file to spawn against — done as an attribute rather than a field on
+    # MatchRequest to avoid needing another dataclass field for a
+    # per-attempt-invariant value.
+    self._active_model_path = str(self._models_dir / model_name)
     self._active = request
     self._app.root.after(0, self._set_slot_label,
-                        f'match slot: running (@{request.user_name} vs {code})')
+                        f'match slot: running (@{request.user_name} vs {code}, {model_name})')
     await self._set_busy_presence(user.display_name, char)
     bot_code = self._bot_connect_code()
     await channel.send(
@@ -427,7 +529,7 @@ class DiscordBotThread:
 
     # Build argv (same as before).
     tab_values = {
-        'model_path': self._model_path,
+        'model_path': self._active_model_path,
         'char': request.character,
         'costume': '',
         'connect_code': request.connect_code,
@@ -1324,20 +1426,18 @@ class DiscordTab(ttk.Frame):
     super().__init__(parent)
     self.app = app
     self._bot: DiscordBotThread | None = None
+    self._models: dict[str, list[str]] = {}
     initial = self.app.config.tabs.get(self.TAB_KEY, {})
     self._error_label = ttk.Label(self, foreground='#c00000', wraplength=800, justify='left')
 
     self.token_var = tk.StringVar(value=initial.get('token', ''))
     self.channels_var = tk.StringVar(value=initial.get('allowed_channels', ''))
-    self.model_var = tk.StringVar(value=initial.get('model_path', ''))
+    self.models_dir_var = tk.StringVar(
+        value=initial.get('models_dir', str(MODELS_DIR)))
+    self.default_model_var = tk.StringVar(value=initial.get('default_model', ''))
     self.user_json_var = tk.StringVar(value=initial.get('user_json_path', ''))
     self.timeout_var = tk.StringVar(value=initial.get('connect_timeout_s', '600'))
     self.max_attempts_var = tk.StringVar(value=initial.get('max_attempts', '2'))
-    initial_chars = set(initial.get('supported_characters', []))
-    self.char_vars: dict[str, tk.BooleanVar] = {
-        c: tk.BooleanVar(value=(c.lower() in initial_chars))
-        for c in CHARACTERS
-    }
 
     grid = ttk.Frame(self)
     def row(label, widget, r, browse=None):
@@ -1348,18 +1448,22 @@ class DiscordTab(ttk.Frame):
 
     row('Bot token:', ttk.Entry(grid, textvariable=self.token_var, show='*', width=50), 0)
     row('Allowed channel IDs:', ttk.Entry(grid, textvariable=self.channels_var, width=50), 1)
-    row('Model path:', ttk.Entry(grid, textvariable=self.model_var, width=50), 2, browse=self._pick_model)
-    row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=50), 3, browse=self._pick_user_json)
-    row('Connect timeout (s):', ttk.Entry(grid, textvariable=self.timeout_var, width=8), 4)
-    row('Max attempts per request:', ttk.Spinbox(grid, from_=1, to=5, textvariable=self.max_attempts_var, width=6), 5)
+    row('Models directory:', ttk.Entry(grid, textvariable=self.models_dir_var, width=50), 2, browse=self._pick_models_dir)
+    self.default_model_combo = ttk.Combobox(
+        grid, textvariable=self.default_model_var, values=[], state='readonly', width=48)
+    row('Default model:', self.default_model_combo, 3)
+    ttk.Button(grid, text='Rescan…', command=self._on_refresh_models).grid(
+        row=3, column=2, padx=PAD_XS)
+    row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=50), 4, browse=self._pick_user_json)
+    row('Connect timeout (s):', ttk.Entry(grid, textvariable=self.timeout_var, width=8), 5)
+    row('Max attempts per request:', ttk.Spinbox(grid, from_=1, to=5, textvariable=self.max_attempts_var, width=6), 6)
     grid.grid_columnconfigure(1, weight=1)
     grid.pack(fill='x')
 
-    chars = ttk.LabelFrame(self, text='Supported characters (which your model can play)')
-    for i, c in enumerate(CHARACTERS):
-      ttk.Checkbutton(chars, text=c.lower(), variable=self.char_vars[c]).grid(
-          row=i // 6, column=i % 6, sticky='w', padx=PAD_S, pady=PAD_XS)
-    chars.pack(fill='x', pady=PAD_S)
+    self.models_summary = ttk.Label(
+        self, text='No models scanned yet — click Rescan or Start bot.',
+        foreground='#888888')
+    self.models_summary.pack(fill='x', padx=PAD_S, pady=(0, PAD_S))
 
     controls = ttk.Frame(self)
     self.start_btn = ttk.Button(controls, text='Start bot', command=self._on_start)
@@ -1373,26 +1477,45 @@ class DiscordTab(ttk.Frame):
     controls.pack(fill='x', pady=(PAD_M, PAD_S))
     self._error_label.pack(fill='x', pady=(0, PAD_S))
 
-  def _pick_model(self):
-    p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+  def _pick_models_dir(self):
+    p = filedialog.askdirectory(title='Select models directory',
+                                 initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
     if p:
-      self.model_var.set(p)
+      self.models_dir_var.set(p)
 
   def _pick_user_json(self):
     p = filedialog.askopenfilename(title='Select Slippi user.json', filetypes=[('JSON', '*.json'), ('All files', '*.*')])
     if p:
       self.user_json_var.set(p)
 
+  def _on_refresh_models(self):
+    """Scan the models directory (blocking; may take ~10 s per new model
+    the first time). Updates the default-model dropdown and summary."""
+    models_dir = pathlib.Path(self.models_dir_var.get())
+    self.models_summary.configure(text=f'Scanning {models_dir}…')
+    self.update_idletasks()
+    self._models = discover_models(models_dir)
+    names = sorted(self._models)
+    self.default_model_combo.configure(values=names)
+    if names and self.default_model_var.get() not in names:
+      self.default_model_var.set(names[0])
+    if not names:
+      self.models_summary.configure(
+          text=f'No loadable models in {models_dir}.', foreground='#c00000')
+    else:
+      pairs = ', '.join(f'{n} ({len(self._models[n])} chars)' for n in names)
+      self.models_summary.configure(
+          text=f'{len(names)} model(s): {pairs}', foreground='#888888')
+
   def _values(self) -> dict:
-    checked = sorted(c.lower() for c, v in self.char_vars.items() if v.get())
     return {
         'token': self.token_var.get(),
         'allowed_channels': self.channels_var.get().strip(),
-        'model_path': self.model_var.get(),
+        'models_dir': self.models_dir_var.get(),
+        'default_model': self.default_model_var.get(),
         'user_json_path': self.user_json_var.get(),
         'connect_timeout_s': self.timeout_var.get().strip() or '600',
         'max_attempts': self.max_attempts_var.get(),
-        'supported_characters': checked,
     }
 
   def _validate(self, values: dict) -> list[str]:
@@ -1404,16 +1527,20 @@ class DiscordTab(ttk.Frame):
       errors.append('Allowed channel IDs must be comma-separated integers.')
     elif not channel_ids:
       errors.append('At least one allowed channel ID is required.')
-    if not values['model_path']:
-      errors.append('Model path is required.')
-    elif not pathlib.Path(values['model_path']).exists():
-      errors.append(f'Model path does not exist: {values["model_path"]}')
+    if not values['models_dir']:
+      errors.append('Models directory is required.')
+    elif not pathlib.Path(values['models_dir']).is_dir():
+      errors.append(f'Models directory does not exist: {values["models_dir"]}')
+    if not self._models:
+      errors.append('No models loaded yet — click Rescan.')
+    elif not values['default_model']:
+      errors.append('Default model is required.')
+    elif values['default_model'] not in self._models:
+      errors.append(f'Default model `{values["default_model"]}` not found in scan.')
     if not values['user_json_path']:
       errors.append('Slippi user.json is required.')
     elif not pathlib.Path(values['user_json_path']).is_file():
       errors.append(f'user.json does not exist: {values["user_json_path"]}')
-    if not values['supported_characters']:
-      errors.append('At least one supported character must be checked.')
     try:
       t = int(values['connect_timeout_s'])
       if t <= 0:
@@ -1434,6 +1561,9 @@ class DiscordTab(ttk.Frame):
       return None
 
   def _on_start(self):
+    # If models haven't been scanned yet, do it now.
+    if not self._models:
+      self._on_refresh_models()
     values = self._values()
     errors = self._validate(values)
     if errors:
@@ -1446,9 +1576,10 @@ class DiscordTab(ttk.Frame):
     self._bot.start(
         token=values['token'],
         allowed_channels=self._parse_channel_ids(values['allowed_channels']) or [],
-        model_path=values['model_path'],
+        models_dir=pathlib.Path(values['models_dir']),
+        models=self._models,
+        default_model=values['default_model'],
         user_json_path=values['user_json_path'],
-        character_choices=values['supported_characters'],
         max_attempts=parse_max_attempts(values['max_attempts']) or 2,
     )
     self.start_btn.configure(state='disabled')
