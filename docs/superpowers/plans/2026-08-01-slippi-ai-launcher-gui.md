@@ -17,6 +17,7 @@
 - **Command formatting:** always `--key=value` (single argv element). Nested fancyflags use dots (`--p1.ai.path=...`, `--dolphin.iso=...`). Booleans use `--foo=true` / `--foo=false`. Blank optional fields → omit the flag.
 - **Python interpreter for subprocesses:** `sys.executable` (matches the launcher's own interpreter regardless of activation state).
 - **Character enum values** must match `melee.Character` names exactly (hardcoded list in `launcher.py`).
+- **Tests use `unittest.TestCase`** (matches repo convention — pytest is not installed). Every test snippet in this plan that uses bare `assert` or pytest fixtures (`tmp_path`, `monkeypatch`) must be adapted to `unittest`: put each group in a `TestCase` subclass, replace `assert x in y` with `self.assertIn(x, y)`, `assert a == b` with `self.assertEqual(a, b)`, `assert not any(...)` with `self.assertFalse(any(...))`, and `assert any(...)` with `self.assertTrue(any(...))`. Run with `python -m unittest tests.test_launcher_command -v`. Task 2 sets up the file structure — later tasks extend the same file, adding either new methods to existing `TestCase` classes or new `TestCase` classes.
 - Refer to the spec at `docs/superpowers/specs/2026-08-01-slippi-ai-launcher-gui-design.md` for behavior details not repeated here.
 
 ---
@@ -116,6 +117,8 @@ Create `tests/test_launcher_command.py`:
 import json
 import pathlib
 import sys
+import tempfile
+import unittest
 
 # Allow importing `scripts/launcher.py` as a module.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -124,42 +127,50 @@ sys.path.insert(0, str(REPO_ROOT / 'scripts'))
 import launcher  # noqa: E402
 
 
-def test_config_load_missing_file_returns_defaults(tmp_path, monkeypatch):
-  monkeypatch.setattr(launcher.Config, 'path', staticmethod(lambda: tmp_path / 'missing.json'))
-  cfg = launcher.Config.load()
-  assert cfg.global_ == {}
-  assert cfg.tabs == {}
-  assert cfg.last_tab == ''
+class ConfigTest(unittest.TestCase):
+
+  def setUp(self):
+    self._tmp = tempfile.TemporaryDirectory()
+    self.tmp_path = pathlib.Path(self._tmp.name)
+    self._orig_path = launcher.Config.path
+    launcher.Config.path = staticmethod(lambda: self.tmp_path / 'cfg.json')
+
+  def tearDown(self):
+    launcher.Config.path = self._orig_path
+    self._tmp.cleanup()
+
+  def test_load_missing_file_returns_defaults(self):
+    cfg = launcher.Config.load()
+    self.assertEqual(cfg.global_, {})
+    self.assertEqual(cfg.tabs, {})
+    self.assertEqual(cfg.last_tab, '')
+
+  def test_load_malformed_returns_defaults(self):
+    (self.tmp_path / 'cfg.json').write_text('not json {{{')
+    cfg = launcher.Config.load()
+    self.assertEqual(cfg.global_, {})
+
+  def test_save_then_load_roundtrips(self):
+    cfg = launcher.Config()
+    cfg.global_ = {'dolphin_path': 'X', 'iso_path': 'Y'}
+    cfg.tabs = {'eval_two': {'p1_type': 'human'}}
+    cfg.last_tab = 'eval_two'
+    cfg.save()
+    loaded = launcher.Config.load()
+    self.assertEqual(loaded.global_, cfg.global_)
+    self.assertEqual(loaded.tabs, cfg.tabs)
+    self.assertEqual(loaded.last_tab, 'eval_two')
+    data = json.loads((self.tmp_path / 'cfg.json').read_text())
+    self.assertEqual(data['global'], cfg.global_)
 
 
-def test_config_load_malformed_returns_defaults(tmp_path, monkeypatch):
-  p = tmp_path / 'cfg.json'
-  p.write_text('not json {{{')
-  monkeypatch.setattr(launcher.Config, 'path', staticmethod(lambda: p))
-  cfg = launcher.Config.load()
-  assert cfg.global_ == {}
-
-
-def test_config_save_then_load_roundtrips(tmp_path, monkeypatch):
-  p = tmp_path / 'cfg.json'
-  monkeypatch.setattr(launcher.Config, 'path', staticmethod(lambda: p))
-  cfg = launcher.Config()
-  cfg.global_ = {'dolphin_path': 'X', 'iso_path': 'Y'}
-  cfg.tabs = {'eval_two': {'p1_type': 'human'}}
-  cfg.last_tab = 'eval_two'
-  cfg.save()
-  loaded = launcher.Config.load()
-  assert loaded.global_ == cfg.global_
-  assert loaded.tabs == cfg.tabs
-  assert loaded.last_tab == 'eval_two'
-  # Sanity-check on-disk shape.
-  data = json.loads(p.read_text())
-  assert data['global'] == cfg.global_
+if __name__ == '__main__':
+  unittest.main()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
 Expected: FAIL — `AttributeError: module 'launcher' has no attribute 'Config'` (or import error).
 
 - [ ] **Step 3: Add `Config` to `scripts/launcher.py`**
@@ -202,8 +213,8 @@ class Config:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 3 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 3 tests.
 
 - [ ] **Step 5: Wire Config into LauncherApp**
 
@@ -608,94 +619,94 @@ git commit -m "[launcher] Add GlobalPathsFrame and reactive PlayerFrame."
 
 - [ ] **Step 1: Write failing test for eval_two build_argv**
 
-Add to `tests/test_launcher_command.py`:
+Add to `tests/test_launcher_command.py` (append these to the existing file after `ConfigTest`):
 
 ```python
 _DEFAULT_ADV = {'sample_temperature': '1.0', 'async_inference': True, 'name': '', 'mirror': False}
 
 
-def test_eval_two_build_argv_human_vs_ai():
-  argv = launcher.EvalTwoTab.build_argv(
-      global_paths={
-          'dolphin_path': r'C:\Dolphin\Slippi Dolphin.exe',
-          'iso_path': r'C:\ISO\SSBM.iso',
-      },
-      tab_values={
-          'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
-          'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': r'C:\models\medium-v2', 'cpu_level': '9'},
-          'num_games': '',
-          'advanced': _DEFAULT_ADV,
-      },
-  )
-  assert argv[0] == sys.executable
-  assert argv[1] == str(launcher.REPO_ROOT / 'scripts' / 'eval_two.py')
-  rest = argv[2:]
-  assert '--p1.type=human' in rest
-  assert '--p2.type=ai' in rest
-  assert '--p2.character=FALCO' in rest
-  assert r'--p2.ai.path=C:\models\medium-v2' in rest
-  assert r'--dolphin.path=C:\Dolphin\Slippi Dolphin.exe' in rest
-  assert r'--dolphin.iso=C:\ISO\SSBM.iso' in rest
-  # Advanced flags apply only to the AI player.
-  assert '--p2.ai.sample_temperature=1.0' in rest
-  assert '--p2.ai.async_inference=true' in rest
-  assert '--p2.ai.mirror=false' in rest
-  assert not any(a.startswith('--p1.ai.') for a in rest)  # p1 is human
-  assert not any(a.startswith('--p2.ai.name') for a in rest)  # blank name omitted
-  # No num_games flag when blank.
-  assert not any(a.startswith('--num_games') for a in rest)
+class EvalTwoBuildArgvTest(unittest.TestCase):
+
+  def test_human_vs_ai(self):
+    argv = launcher.EvalTwoTab.build_argv(
+        global_paths={
+            'dolphin_path': r'C:\Dolphin\Slippi Dolphin.exe',
+            'iso_path': r'C:\ISO\SSBM.iso',
+        },
+        tab_values={
+            'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
+            'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': r'C:\models\medium-v2', 'cpu_level': '9'},
+            'num_games': '',
+            'advanced': _DEFAULT_ADV,
+        },
+    )
+    self.assertEqual(argv[0], sys.executable)
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'eval_two.py'))
+    rest = argv[2:]
+    self.assertIn('--p1.type=human', rest)
+    self.assertIn('--p2.type=ai', rest)
+    self.assertIn('--p2.character=FALCO', rest)
+    self.assertIn(r'--p2.ai.path=C:\models\medium-v2', rest)
+    self.assertIn(r'--dolphin.path=C:\Dolphin\Slippi Dolphin.exe', rest)
+    self.assertIn(r'--dolphin.iso=C:\ISO\SSBM.iso', rest)
+    self.assertIn('--p2.ai.sample_temperature=1.0', rest)
+    self.assertIn('--p2.ai.async_inference=true', rest)
+    self.assertIn('--p2.ai.mirror=false', rest)
+    self.assertFalse(any(a.startswith('--p1.ai.') for a in rest))
+    self.assertFalse(any(a.startswith('--p2.ai.name') for a in rest))
+    self.assertFalse(any(a.startswith('--num_games') for a in rest))
+
+  def test_includes_num_games_when_set(self):
+    argv = launcher.EvalTwoTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'p1': {'type': 'ai', 'character': 'FOX', 'model_path': 'M1', 'cpu_level': '9'},
+            'p2': {'type': 'cpu', 'character': 'FALCO', 'model_path': '', 'cpu_level': '7'},
+            'num_games': '3',
+            'advanced': _DEFAULT_ADV,
+        },
+    )
+    rest = argv[2:]
+    self.assertIn('--num_games=3', rest)
+    self.assertIn('--p2.level=7', rest)
+
+  def test_advanced_overrides(self):
+    argv = launcher.EvalTwoTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
+            'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': 'M', 'cpu_level': '9'},
+            'num_games': '',
+            'advanced': {'sample_temperature': '0.8', 'async_inference': False, 'name': 'FalcoBot', 'mirror': True},
+        },
+    )
+    rest = argv[2:]
+    self.assertIn('--p2.ai.sample_temperature=0.8', rest)
+    self.assertIn('--p2.ai.async_inference=false', rest)
+    self.assertIn('--p2.ai.name=FalcoBot', rest)
+    self.assertIn('--p2.ai.mirror=true', rest)
 
 
-def test_eval_two_build_argv_includes_num_games_when_set():
-  argv = launcher.EvalTwoTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={
-          'p1': {'type': 'ai', 'character': 'FOX', 'model_path': 'M1', 'cpu_level': '9'},
-          'p2': {'type': 'cpu', 'character': 'FALCO', 'model_path': '', 'cpu_level': '7'},
-          'num_games': '3',
-          'advanced': _DEFAULT_ADV,
-      },
-  )
-  rest = argv[2:]
-  assert '--num_games=3' in rest
-  assert '--p2.level=7' in rest
+class EvalTwoValidateTest(unittest.TestCase):
 
-
-def test_eval_two_build_argv_advanced_overrides():
-  argv = launcher.EvalTwoTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={
-          'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
-          'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': 'M', 'cpu_level': '9'},
-          'num_games': '',
-          'advanced': {'sample_temperature': '0.8', 'async_inference': False, 'name': 'FalcoBot', 'mirror': True},
-      },
-  )
-  rest = argv[2:]
-  assert '--p2.ai.sample_temperature=0.8' in rest
-  assert '--p2.ai.async_inference=false' in rest
-  assert '--p2.ai.name=FalcoBot' in rest
-  assert '--p2.ai.mirror=true' in rest
-
-
-def test_eval_two_validate_flags_missing_dolphin():
-  errors = launcher.EvalTwoTab.validate(
-      global_paths={'dolphin_path': '', 'iso_path': ''},
-      tab_values={
-          'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
-          'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': '', 'cpu_level': '9'},
-          'num_games': '',
-          'advanced': _DEFAULT_ADV,
-      },
-  )
-  assert any('Dolphin' in e for e in errors)
-  assert any('ISO' in e for e in errors)
-  assert any('model' in e.lower() for e in errors)
+  def test_flags_missing_dolphin(self):
+    errors = launcher.EvalTwoTab.validate(
+        global_paths={'dolphin_path': '', 'iso_path': ''},
+        tab_values={
+            'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
+            'p2': {'type': 'ai', 'character': 'FALCO', 'model_path': '', 'cpu_level': '9'},
+            'num_games': '',
+            'advanced': _DEFAULT_ADV,
+        },
+    )
+    self.assertTrue(any('Dolphin' in e for e in errors))
+    self.assertTrue(any('ISO' in e for e in errors))
+    self.assertTrue(any('model' in e.lower() for e in errors))
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
 Expected: FAIL — `AttributeError: module 'launcher' has no attribute 'EvalTwoTab'`.
 
 - [ ] **Step 3: Add `ScriptTab` base + `EvalTwoTab` to `scripts/launcher.py`**
@@ -883,8 +894,8 @@ class EvalTwoTab(ScriptTab):
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 7 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 7 tests.
 
 - [ ] **Step 6: Manual smoke test**
 
@@ -912,30 +923,31 @@ git commit -m "[launcher] Add EvalTwoTab with build_argv unit tests."
 
 - [ ] **Step 1: Write failing test**
 
-Add to `tests/test_launcher_command.py`:
+Append to `tests/test_launcher_command.py`:
 
 ```python
-def test_run_dolphin_build_argv_defaults():
-  argv = launcher.RunDolphinTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={'N': '1', 'frames': '3600', 'render': False},
-  )
-  rest = argv[2:]
-  assert argv[1] == str(launcher.REPO_ROOT / 'scripts' / 'run_dolphin.py')
-  assert '--N=1' in rest
-  assert '--frames=3600' in rest
-  assert '--render=false' in rest
-  assert '--dolphin.path=D' in rest
-  assert '--dolphin.iso=I' in rest
+class RunDolphinTest(unittest.TestCase):
 
+  def test_build_argv_defaults(self):
+    argv = launcher.RunDolphinTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={'N': '1', 'frames': '3600', 'render': False},
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'run_dolphin.py'))
+    self.assertIn('--N=1', rest)
+    self.assertIn('--frames=3600', rest)
+    self.assertIn('--render=false', rest)
+    self.assertIn('--dolphin.path=D', rest)
+    self.assertIn('--dolphin.iso=I', rest)
 
-def test_run_dolphin_validate_requires_paths():
-  errors = launcher.RunDolphinTab.validate(
-      global_paths={'dolphin_path': '', 'iso_path': ''},
-      tab_values={'N': '1', 'frames': '3600', 'render': False},
-  )
-  assert any('Dolphin' in e for e in errors)
-  assert any('ISO' in e for e in errors)
+  def test_validate_requires_paths(self):
+    errors = launcher.RunDolphinTab.validate(
+        global_paths={'dolphin_path': '', 'iso_path': ''},
+        tab_values={'N': '1', 'frames': '3600', 'render': False},
+    )
+    self.assertTrue(any('Dolphin' in e for e in errors))
+    self.assertTrue(any('ISO' in e for e in errors))
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
@@ -999,8 +1011,8 @@ Update the `for tab_cls in (...)` tuple in `LauncherApp.__init__` to include `Ru
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 9 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 9 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -1022,7 +1034,7 @@ git commit -m "[launcher] Add RunDolphinTab."
 
 - [ ] **Step 1: Write failing tests**
 
-Add to `tests/test_launcher_command.py`:
+Append to `tests/test_launcher_command.py`:
 
 ```python
 def _eval_defaults():
@@ -1047,51 +1059,51 @@ def _eval_defaults():
   }
 
 
-def test_run_evaluator_build_argv_no_self_play():
-  argv = launcher.RunEvaluatorTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values=_eval_defaults(),
-  )
-  rest = argv[2:]
-  assert argv[1] == str(launcher.REPO_ROOT / 'scripts' / 'run_evaluator.py')
-  assert '--self_play=false' in rest
-  assert r'--player.ai.path=C:\M1' in rest
-  assert '--player.character=FOX' in rest
-  assert r'--opponent.ai.path=C:\M2' in rest
-  assert '--opponent.character=FALCO' in rest
-  assert '--num_envs=4' in rest
-  assert '--rollout_length=3600' in rest
-  assert not any(a.startswith('--num_games') for a in rest)
-  assert '--use_gpu=true' in rest
+class RunEvaluatorTest(unittest.TestCase):
 
+  def test_build_argv_no_self_play(self):
+    argv = launcher.RunEvaluatorTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=_eval_defaults(),
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'run_evaluator.py'))
+    self.assertIn('--self_play=false', rest)
+    self.assertIn(r'--player.ai.path=C:\M1', rest)
+    self.assertIn('--player.character=FOX', rest)
+    self.assertIn(r'--opponent.ai.path=C:\M2', rest)
+    self.assertIn('--opponent.character=FALCO', rest)
+    self.assertIn('--num_envs=4', rest)
+    self.assertIn('--rollout_length=3600', rest)
+    self.assertFalse(any(a.startswith('--num_games') for a in rest))
+    self.assertIn('--use_gpu=true', rest)
 
-def test_run_evaluator_build_argv_self_play_omits_opponent():
-  tv = _eval_defaults()
-  tv['self_play'] = True
-  tv['num_games'] = '10'
-  argv = launcher.RunEvaluatorTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values=tv,
-  )
-  rest = argv[2:]
-  assert '--self_play=true' in rest
-  assert not any(a.startswith('--opponent.') for a in rest)
-  assert '--num_games=10' in rest
+  def test_build_argv_self_play_omits_opponent(self):
+    tv = _eval_defaults()
+    tv['self_play'] = True
+    tv['num_games'] = '10'
+    argv = launcher.RunEvaluatorTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=tv,
+    )
+    rest = argv[2:]
+    self.assertIn('--self_play=true', rest)
+    self.assertFalse(any(a.startswith('--opponent.') for a in rest))
+    self.assertIn('--num_games=10', rest)
 
-
-def test_run_evaluator_validate_requires_player_model():
-  tv = _eval_defaults()
-  tv['player']['model_path'] = ''
-  errors = launcher.RunEvaluatorTab.validate(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values=tv,
-  )
-  assert any('Player' in e and 'model' in e.lower() for e in errors)
+  def test_validate_requires_player_model(self):
+    tv = _eval_defaults()
+    tv['player']['model_path'] = ''
+    errors = launcher.RunEvaluatorTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=tv,
+    )
+    self.assertTrue(any('Player' in e and 'model' in e.lower() for e in errors))
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
 Expected: 3 new failures.
 
 - [ ] **Step 3: Add `RunEvaluatorTab` to `scripts/launcher.py`**
@@ -1245,8 +1257,8 @@ Add `RunEvaluatorTab` to the tab tuple in `LauncherApp.__init__`.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 12 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 12 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -1268,51 +1280,51 @@ git commit -m "[launcher] Add RunEvaluatorTab with self-play toggle and advanced
 
 - [ ] **Step 1: Write failing test**
 
-Add to `tests/test_launcher_command.py`:
+Append to `tests/test_launcher_command.py`:
 
 ```python
-def test_netplay_build_argv_minimum():
-  argv = launcher.NetplayTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={
-          'model_path': r'C:\M', 'char': 'FOX', 'costume': '',
-          'connect_code': 'ABCD#123', 'runtime': '',
-      },
-  )
-  rest = argv[2:]
-  assert argv[1] == str(launcher.REPO_ROOT / 'scripts' / 'netplay.py')
-  assert r'--agent.path=C:\M' in rest
-  assert '--char=FOX' in rest
-  assert '--dolphin.connect_code=ABCD#123' in rest
-  assert '--dolphin.path=D' in rest
-  assert not any(a.startswith('--costume') for a in rest)
-  assert not any(a.startswith('--runtime') for a in rest)
+class NetplayTest(unittest.TestCase):
 
+  def test_build_argv_minimum(self):
+    argv = launcher.NetplayTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'model_path': r'C:\M', 'char': 'FOX', 'costume': '',
+            'connect_code': 'ABCD#123', 'runtime': '',
+        },
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'netplay.py'))
+    self.assertIn(r'--agent.path=C:\M', rest)
+    self.assertIn('--char=FOX', rest)
+    self.assertIn('--dolphin.connect_code=ABCD#123', rest)
+    self.assertIn('--dolphin.path=D', rest)
+    self.assertFalse(any(a.startswith('--costume') for a in rest))
+    self.assertFalse(any(a.startswith('--runtime') for a in rest))
 
-def test_netplay_build_argv_with_optionals():
-  argv = launcher.NetplayTab.build_argv(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={
-          'model_path': 'M', 'char': 'FALCO', 'costume': '2',
-          'connect_code': 'X#1', 'runtime': '300',
-      },
-  )
-  rest = argv[2:]
-  assert '--costume=2' in rest
-  assert '--runtime=300' in rest
+  def test_build_argv_with_optionals(self):
+    argv = launcher.NetplayTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'model_path': 'M', 'char': 'FALCO', 'costume': '2',
+            'connect_code': 'X#1', 'runtime': '300',
+        },
+    )
+    rest = argv[2:]
+    self.assertIn('--costume=2', rest)
+    self.assertIn('--runtime=300', rest)
 
-
-def test_netplay_validate_requires_connect_code():
-  errors = launcher.NetplayTab.validate(
-      global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
-      tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': '', 'runtime': ''},
-  )
-  assert any('connect' in e.lower() for e in errors)
+  def test_validate_requires_connect_code(self):
+    errors = launcher.NetplayTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': '', 'runtime': ''},
+    )
+    self.assertTrue(any('connect' in e.lower() for e in errors))
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
 Expected: 3 new failures.
 
 - [ ] **Step 3: Add `NetplayTab` to `scripts/launcher.py`**
@@ -1394,8 +1406,8 @@ Add `NetplayTab` to the tab tuple in `LauncherApp.__init__`.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 15 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 15 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -1429,8 +1441,8 @@ In `LauncherApp.__init__`, after the tab-registration loop:
 
 - [ ] **Step 2: Run full test suite**
 
-Run: `venv\Scripts\python.exe -m pytest tests/test_launcher_command.py -v`
-Expected: 15 passed.
+Run: `venv\Scripts\python.exe -m unittest tests.test_launcher_command -v`
+Expected: OK — 15 tests.
 
 - [ ] **Step 3: End-to-end manual smoke test**
 
