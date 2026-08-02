@@ -29,7 +29,6 @@ dolphin_flags.update(
 DOLPHIN = ff.DEFINE_dict('dolphin', **dolphin_flags)
 
 RUNTIME = flags.DEFINE_integer('runtime', None, 'Runtime in seconds.')
-NUM_GAMES = flags.DEFINE_integer('num_games', None, 'Stop after this many games have finished.')
 
 FLAGS = flags.FLAGS
 
@@ -89,26 +88,11 @@ def main(_):
     # "opponent never joined" timeout once the match is actually live.
     print('[NETPLAY_MATCH_STARTED]', flush=True)
 
-    games_finished = 0
-    was_in_game = True
-
     while True:
-      gamestate = dolphin.next_gamestate()
-      in_game = dolphin_lib.is_game_state(gamestate)
+      gamestate = dolphin.step()
+      agent.step(gamestate)
 
-      if in_game:
-        was_in_game = True
-        agent.step(gamestate)
-        num_frames += 1
-      else:
-        # Menu / postgame. Count a game as finished on the transition
-        # from in-game to menu.
-        if was_in_game:
-          was_in_game = False
-          games_finished += 1
-          print(f'[NETPLAY_GAME_FINISHED {games_finished}]', flush=True)
-          if NUM_GAMES.value is not None and games_finished >= NUM_GAMES.value:
-            break
+      num_frames += 1
 
       if RUNTIME.value is not None and num_frames >= RUNTIME.value * 60:
         break

@@ -708,6 +708,17 @@ class ProcessRunner:
       self._proc.kill()
     except OSError:
       pass
+    # On Windows, killing the netplay Python process does NOT reap the
+    # Dolphin.exe subprocess libmelee launched — it survives as an orphan
+    # and its still-bound slippi_port blocks the next attempt. Use
+    # taskkill /F /T to kill the entire process tree.
+    if sys.platform == 'win32':
+      try:
+        subprocess.run(
+            ['taskkill', '/F', '/T', '/PID', str(self._proc.pid)],
+            capture_output=True, timeout=5)
+      except (OSError, subprocess.SubprocessError):
+        pass
 
 
 class AdvancedSection(ttk.Frame):
@@ -1186,9 +1197,6 @@ def build_netplay_argv(global_paths: dict, tab_values: dict) -> list[str]:
     argv.append(f'--dolphin.user_json_path={tab_values["user_json_path"]}')
   if tab_values.get('runtime'):
     argv.append(f'--runtime={tab_values["runtime"]}')
-  # Bot plays best-of-3-style: fixed number of games per match request.
-  num_games = tab_values.get('num_games', 3)
-  argv.append(f'--num_games={num_games}')
   return argv
 
 
