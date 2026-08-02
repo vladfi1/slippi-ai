@@ -280,6 +280,18 @@ class NetplayTest(unittest.TestCase):
     )
     self.assertTrue(any('user.json' in e.lower() for e in errors))
 
+  def test_build_netplay_argv_helper_matches_tab(self):
+    tv = {
+        'model_path': r'C:\M', 'char': 'fox', 'costume': '',
+        'connect_code': 'ABCD#123', 'runtime': '',
+        'user_json_path': r'C:\U\user.json',
+    }
+    gp = {'dolphin_path': 'D', 'iso_path': 'I'}
+    self.assertEqual(
+        launcher.build_netplay_argv(gp, tv),
+        launcher.NetplayTab.build_argv(gp, tv),
+    )
+
 
 if __name__ == '__main__':
   unittest.main()

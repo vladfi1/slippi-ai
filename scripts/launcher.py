@@ -651,6 +651,22 @@ class RunEvaluatorTab(ScriptTab):
     return errors
 
 
+def build_netplay_argv(global_paths: dict, tab_values: dict) -> list[str]:
+  argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'netplay.py')]
+  argv.append(f'--agent.path={tab_values.get("model_path", "")}')
+  argv.append(f'--char={tab_values.get("char", "FOX").lower()}')
+  if tab_values.get('costume'):
+    argv.append(f'--costume={tab_values["costume"]}')
+  argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
+  argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
+  argv.append(f'--dolphin.connect_code={tab_values.get("connect_code", "")}')
+  if tab_values.get('user_json_path'):
+    argv.append(f'--dolphin.user_json_path={tab_values["user_json_path"]}')
+  if tab_values.get('runtime'):
+    argv.append(f'--runtime={tab_values["runtime"]}')
+  return argv
+
+
 class NetplayTab(ScriptTab):
 
   TAB_KEY = 'netplay'
@@ -702,20 +718,7 @@ class NetplayTab(ScriptTab):
 
   @staticmethod
   def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
-    argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'netplay.py')]
-    argv.append(f'--agent.path={tab_values.get("model_path", "")}')
-    # netplay uses absl.flags.DEFINE_enum_class, which serializes to lowercase.
-    argv.append(f'--char={tab_values.get("char", "FOX").lower()}')
-    if tab_values.get('costume'):
-      argv.append(f'--costume={tab_values["costume"]}')
-    argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
-    argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
-    argv.append(f'--dolphin.connect_code={tab_values.get("connect_code", "")}')
-    if tab_values.get('user_json_path'):
-      argv.append(f'--dolphin.user_json_path={tab_values["user_json_path"]}')
-    if tab_values.get('runtime'):
-      argv.append(f'--runtime={tab_values["runtime"]}')
-    return argv
+    return build_netplay_argv(global_paths, tab_values)
 
   @staticmethod
   def validate(global_paths: dict, tab_values: dict) -> list[str]:
