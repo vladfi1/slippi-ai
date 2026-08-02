@@ -686,17 +686,44 @@ class ProcessRunner:
     # (preempt-then-restart cycles ~0.5 s while escalation fires at 3-5 s).
     target = self._proc
     # On Windows, netplay launches Dolphin.exe as a grandchild via libmelee.
-    # A polite CTRL_BREAK to netplay's Python may kill netplay cleanly but
-    # leaves Dolphin.exe running as an orphan holding the slippi_port,
-    # which blocks the next attempt. taskkill /F /T reaps the whole tree
-    # in one shot — the only reliable option here.
+    # taskkill /F /T reaps the whole tree top-down (Dolphin first, then
+    # netplay's Python), which is the only reliable way to release the
+    # slippi_port before the next attempt tries to bind it.
     if sys.platform == 'win32':
+      pid = target.pid
+      result = None
+      try:
+        result = subprocess.run(
+            ['taskkill', '/F', '/T', '/PID', str(pid)],
+            capture_output=True, timeout=5)
+      except (OSError, subprocess.SubprocessError) as e:
+        self._log.append(f'taskkill error for pid {pid}: {e}\n', kind='stderr')
+      if result is not None and result.returncode != 0:
+        stderr = result.stderr.decode('utf-8', errors='replace').strip()
+        self._log.append(
+            f'taskkill /T /PID {pid} rc={result.returncode}: {stderr}\n',
+            kind='stderr')
+      # Wait for the netplay Python to actually exit so is_running flips.
+      try:
+        target.wait(timeout=5)
+      except subprocess.TimeoutExpired:
+        self._log.append(
+            f'netplay pid {pid} still alive after taskkill\n', kind='stderr')
+      # Belt-and-suspenders: after netplay dies, walk any surviving Slippi
+      # Dolphin.exe processes and kill those too. If netplay already died
+      # before we sent taskkill, the /T tree walk misses orphans; catching
+      # them by image name here is the fallback. Note this WILL kill the
+      # user's personal Dolphin if they have one open — for a bot machine
+      # this is the right tradeoff; the port needs to be free.
       try:
         subprocess.run(
-            ['taskkill', '/F', '/T', '/PID', str(target.pid)],
+            ['taskkill', '/F', '/IM', 'Slippi Dolphin.exe'],
             capture_output=True, timeout=5)
       except (OSError, subprocess.SubprocessError):
         pass
+      # Small settle so the OS releases the slippi_port before rebind.
+      import time as _time
+      _time.sleep(0.5)
       return
     # Non-Windows fallback: gentle terminate, then escalate.
     try:
