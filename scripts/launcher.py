@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -132,13 +133,32 @@ class DiscordBotThread:
 
   def _run(self, token: str) -> None:
     import discord
+    from discord import app_commands
     self._loop = asyncio.new_event_loop()
     asyncio.set_event_loop(self._loop)
     intents = discord.Intents.default()
     self._client = discord.Client(intents=intents)
+    tree = app_commands.CommandTree(self._client)
+
+    choices = [app_commands.Choice(name=c, value=c) for c in self._character_choices]
+
+    @tree.command(name='play', description='Challenge the Slippi-AI bot.')
+    @app_commands.describe(code='Your Slippi connect code, e.g. TNBN#217',
+                           char='Character for the AI to play')
+    @app_commands.choices(char=choices)
+    async def play_cmd(interaction: 'discord.Interaction',
+                       code: str,
+                       char: app_commands.Choice[str]) -> None:
+      await self._on_play(interaction, code, char.value)
 
     @self._client.event
     async def on_ready():
+      # Sync commands to every guild the bot is in.
+      for guild in self._client.guilds:
+        try:
+          await tree.sync(guild=guild)
+        except Exception as e:
+          self._post_status(f'sync failed on {guild}: {e}')
       self._post_status(f'connected as {self._client.user}')
 
     @self._client.event
@@ -164,6 +184,133 @@ class DiscordBotThread:
       self._loop = None
       self._client = None
       self._post_status('stopped')
+
+  async def _on_play(self, interaction, code: str, char: str) -> None:
+    # Channel allowlist — silent drop if not allowed.
+    if interaction.channel_id not in self._allowed_channels:
+      await interaction.response.send_message('Not authorized here.', ephemeral=True)
+      return
+    # Busy guard.
+    if self._active is not None:
+      await interaction.response.send_message(
+          f'Bot busy — @{self._active.user_name} is playing vs `{self._active.connect_code}`.')
+      return
+    # Validate.
+    if not validate_connect_code(code):
+      await interaction.response.send_message(
+          'Invalid code — expected `ABCD#123`.', ephemeral=True)
+      return
+    if not validate_supported_character(char, self._character_choices):
+      await interaction.response.send_message(
+          f'Model does not support `{char}`. Options: {", ".join(self._character_choices)}',
+          ephemeral=True)
+      return
+    # Claim slot.
+    request = MatchRequest(
+        user_id=interaction.user.id,
+        user_name=interaction.user.display_name,
+        channel_id=interaction.channel_id,
+        connect_code=code,
+        character=char,
+        started_at=time.monotonic(),
+    )
+    self._active = request
+    self._app.root.after(0, self._set_slot_label,
+                        f'match slot: running (@{request.user_name} vs {code})')
+    await interaction.response.send_message(
+        f'**@{interaction.user.display_name}** vs `{code}` as `{char}` — starting…')
+    # Build argv and spawn (from Tk main thread — ProcessRunner uses root.after internally).
+    tab_values = {
+        'model_path': self._model_path,
+        'char': char,
+        'costume': '',
+        'connect_code': code,
+        'runtime': '',
+        'user_json_path': self._user_json_path,
+    }
+    global_paths = self._app.global_paths.values()
+    argv = build_netplay_argv(global_paths, tab_values)
+    channel = interaction.channel
+
+    def on_exit_tk(exit_code: int) -> None:
+      # Runs on Tk main thread; bounce to discord loop.
+      recent = self._app.log.recent_lines()
+      if self._loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            self._on_match_ended(channel, exit_code, recent), self._loop)
+
+    def start_runner():
+      # Install the marker watcher before spawn.
+      self._app.log.on_line = self._watch_stdout
+      try:
+        self._app.runner.start(argv, cwd=REPO_ROOT, on_exit=on_exit_tk)
+      except RuntimeError as e:
+        # ProcessRunner refused (another script running). Report + clear slot.
+        if self._loop is not None:
+          asyncio.run_coroutine_threadsafe(
+              self._on_spawn_failed(channel, str(e)), self._loop)
+    self._app.root.after(0, start_runner)
+    # Timeout for "opponent never joined".
+    try:
+      timeout_s = int(self._app.config.tabs.get('discord', {}).get('connect_timeout_s', '600'))
+    except ValueError:
+      timeout_s = 600
+    self._timeout_task = self._loop.create_task(self._connect_timeout(channel, timeout_s))
+
+  def _watch_stdout(self, line: str, kind: str) -> None:
+    # Called on Tk main thread by LogPanel.append.
+    if '[NETPLAY_MATCH_STARTED]' in line and self._loop is not None:
+      asyncio.run_coroutine_threadsafe(self._on_match_started(), self._loop)
+
+  async def _on_match_started(self) -> None:
+    if self._timeout_task is not None and not self._timeout_task.done():
+      self._timeout_task.cancel()
+      self._timeout_task = None
+    if self._active is None:
+      return
+    channel = self._client.get_channel(self._active.channel_id)
+    if channel is not None:
+      await channel.send('**match live**')
+
+  async def _connect_timeout(self, channel, timeout_s: int) -> None:
+    try:
+      await asyncio.sleep(timeout_s)
+    except asyncio.CancelledError:
+      return
+    # Timeout fired without a match-started marker — kill it.
+    self._app.root.after(0, self._app.runner.stop)
+    try:
+      await channel.send('Opponent never joined — timing out.')
+    except Exception:
+      pass
+
+  async def _on_match_ended(self, channel, exit_code: int, recent_lines: list[str]) -> None:
+    # Clear slot + UI first so a busy reply after this is honest.
+    self._active = None
+    self._app.root.after(0, self._set_slot_label, 'match slot: idle')
+    self._app.root.after(0, self._clear_log_watcher)
+    if exit_code == 0:
+      await channel.send(f'Match ended (exit code 0).')
+    else:
+      tail = ''.join(recent_lines[-10:])
+      msg = f'Match failed (exit code {exit_code}).'
+      if tail.strip():
+        msg += f'\n```\n{tail[-1500:]}\n```'
+      await channel.send(msg)
+
+  async def _on_spawn_failed(self, channel, err: str) -> None:
+    self._active = None
+    self._app.root.after(0, self._set_slot_label, 'match slot: idle')
+    self._app.root.after(0, self._clear_log_watcher)
+    await channel.send(f'Failed to spawn netplay: {err}')
+
+  def _set_slot_label(self, text: str) -> None:
+    for tab in self._app._discord_tabs():
+      tab.slot_label.configure(text=text)
+
+  def _clear_log_watcher(self) -> None:
+    if self._app.log.on_line is self._watch_stdout:
+      self._app.log.on_line = None
 
 
 class LogPanel(ttk.Frame):
