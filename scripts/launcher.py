@@ -1,5 +1,6 @@
 """Tkinter launcher for slippi-ai scripts. See docs/superpowers/specs/2026-08-01-slippi-ai-launcher-gui-design.md."""
 
+import collections
 import json
 import os
 import pathlib
@@ -66,6 +67,8 @@ class Config:
 
 class LogPanel(ttk.Frame):
 
+  _RECENT_MAX = 20
+
   def __init__(self, parent):
     super().__init__(parent)
     self.text = tk.Text(self, height=15, wrap='none', state='disabled', background='#1e1e1e', foreground='#d4d4d4', insertbackground='#d4d4d4')
@@ -77,12 +80,24 @@ class LogPanel(ttk.Frame):
     self.grid_columnconfigure(0, weight=1)
     self.text.tag_config('stderr', foreground='#f48771')
     self.text.tag_config('meta', foreground='#888888')
+    self.on_line: 'Callable[[str, str], None] | None' = None
+    self._recent: collections.deque = collections.deque(maxlen=self._RECENT_MAX)
 
   def append(self, text: str, kind: str = 'stdout') -> None:
     self.text.configure(state='normal')
     self.text.insert('end', text, kind if kind != 'stdout' else ())
     self.text.see('end')
     self.text.configure(state='disabled')
+    self._recent.append(text)
+    if self.on_line is not None:
+      try:
+        self.on_line(text, kind)
+      except Exception as e:
+        # Observer failure must not break logging.
+        print(f'LogPanel.on_line raised: {e}', file=sys.stderr)
+
+  def recent_lines(self) -> list[str]:
+    return list(self._recent)
 
 
 class ProcessRunner:

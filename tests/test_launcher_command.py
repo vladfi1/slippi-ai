@@ -293,5 +293,39 @@ class NetplayTest(unittest.TestCase):
     )
 
 
+class LogPanelTest(unittest.TestCase):
+
+  def setUp(self):
+    # Use a hidden root; if display is unavailable, skip.
+    try:
+      self.root = launcher.tk.Tk()
+    except launcher.tk.TclError as e:
+      self.skipTest(f'No display: {e}')
+    self.root.withdraw()
+    self.panel = launcher.LogPanel(self.root)
+
+  def tearDown(self):
+    self.root.destroy()
+
+  def test_on_line_callback_fires_with_line_and_kind(self):
+    seen = []
+    self.panel.on_line = lambda line, kind: seen.append((line, kind))
+    self.panel.append('hello\n', kind='stdout')
+    self.panel.append('boom\n', kind='stderr')
+    self.assertEqual(seen, [('hello\n', 'stdout'), ('boom\n', 'stderr')])
+
+  def test_on_line_none_is_safe(self):
+    self.panel.on_line = None
+    self.panel.append('quiet\n')  # must not raise
+
+  def test_recent_lines_holds_last_20(self):
+    for i in range(25):
+      self.panel.append(f'line {i}\n')
+    lines = self.panel.recent_lines()
+    self.assertEqual(len(lines), 20)
+    self.assertEqual(lines[0], 'line 5\n')
+    self.assertEqual(lines[-1], 'line 24\n')
+
+
 if __name__ == '__main__':
   unittest.main()

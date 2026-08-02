@@ -84,6 +84,9 @@ def main(_):
     agent.step(gamestate)
 
     num_frames = 1
+    # Marker line consumed by the launcher's Discord bot to cancel its
+    # "opponent never joined" timeout once the match is actually live.
+    print('[NETPLAY_MATCH_STARTED]', flush=True)
 
     while True:
       gamestate = dolphin.step()
