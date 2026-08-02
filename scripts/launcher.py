@@ -637,6 +637,76 @@ class RunEvaluatorTab(ScriptTab):
     return errors
 
 
+class NetplayTab(ScriptTab):
+
+  TAB_KEY = 'netplay'
+  SCRIPT = 'scripts/netplay.py'
+  LABEL = 'netplay'
+
+  def _build_widgets(self):
+    initial = self.app.config.tabs.get(self.TAB_KEY, {})
+    self.model_var = tk.StringVar(value=initial.get('model_path', ''))
+    self.char_var = tk.StringVar(value=initial.get('char', 'FOX'))
+    self.costume_var = tk.StringVar(value=initial.get('costume', ''))
+    self.connect_var = tk.StringVar(value=initial.get('connect_code', ''))
+    self.runtime_var = tk.StringVar(value=initial.get('runtime', ''))
+
+    grid = ttk.Frame(self)
+    def row(label, widget, r):
+      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=4, pady=2)
+      widget.grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+    row('Model path:', ttk.Entry(grid, textvariable=self.model_var, width=40), 0)
+    ttk.Button(grid, text='Browse…', command=self._pick_model).grid(row=0, column=2, padx=4)
+    row('Character:', ttk.Combobox(grid, textvariable=self.char_var, values=CHARACTERS, state='readonly', width=18), 1)
+    row('Costume (blank = default):', ttk.Entry(grid, textvariable=self.costume_var, width=6), 2)
+    row('Connect code:', ttk.Entry(grid, textvariable=self.connect_var, width=16), 3)
+    row('Runtime seconds (blank = forever):', ttk.Entry(grid, textvariable=self.runtime_var, width=8), 4)
+    grid.pack(fill='x')
+
+  def _pick_model(self):
+    p = filedialog.askdirectory(title='Select model directory', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+    if p:
+      self.model_var.set(p)
+
+  def _values(self) -> dict:
+    return {
+        'model_path': self.model_var.get(),
+        'char': self.char_var.get(),
+        'costume': self.costume_var.get().strip(),
+        'connect_code': self.connect_var.get().strip(),
+        'runtime': self.runtime_var.get().strip(),
+    }
+
+  @staticmethod
+  def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
+    argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'netplay.py')]
+    argv.append(f'--agent.path={tab_values.get("model_path", "")}')
+    argv.append(f'--char={tab_values.get("char", "FOX")}')
+    if tab_values.get('costume'):
+      argv.append(f'--costume={tab_values["costume"]}')
+    argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
+    argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
+    argv.append(f'--dolphin.connect_code={tab_values.get("connect_code", "")}')
+    if tab_values.get('runtime'):
+      argv.append(f'--runtime={tab_values["runtime"]}')
+    return argv
+
+  @staticmethod
+  def validate(global_paths: dict, tab_values: dict) -> list[str]:
+    errors = []
+    if not global_paths.get('dolphin_path'):
+      errors.append('Dolphin path is required.')
+    if not global_paths.get('iso_path'):
+      errors.append('ISO path is required.')
+    if not tab_values.get('model_path'):
+      errors.append('Model path is required.')
+    elif not pathlib.Path(tab_values['model_path']).exists():
+      errors.append(f'Model path does not exist: {tab_values["model_path"]}')
+    if not tab_values.get('connect_code'):
+      errors.append('Connect code is required for netplay.')
+    return errors
+
+
 class LauncherApp:
 
   def __init__(self):
@@ -648,7 +718,7 @@ class LauncherApp:
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
-    for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab):
+    for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab, NetplayTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
     self.log = LogPanel(self.root)

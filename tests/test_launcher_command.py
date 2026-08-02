@@ -220,5 +220,44 @@ class RunEvaluatorTest(unittest.TestCase):
     self.assertTrue(any('Player' in e and 'model' in e.lower() for e in errors))
 
 
+class NetplayTest(unittest.TestCase):
+
+  def test_build_argv_minimum(self):
+    argv = launcher.NetplayTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'model_path': r'C:\M', 'char': 'FOX', 'costume': '',
+            'connect_code': 'ABCD#123', 'runtime': '',
+        },
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'netplay.py'))
+    self.assertIn(r'--agent.path=C:\M', rest)
+    self.assertIn('--char=FOX', rest)
+    self.assertIn('--dolphin.connect_code=ABCD#123', rest)
+    self.assertIn('--dolphin.path=D', rest)
+    self.assertFalse(any(a.startswith('--costume') for a in rest))
+    self.assertFalse(any(a.startswith('--runtime') for a in rest))
+
+  def test_build_argv_with_optionals(self):
+    argv = launcher.NetplayTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'model_path': 'M', 'char': 'FALCO', 'costume': '2',
+            'connect_code': 'X#1', 'runtime': '300',
+        },
+    )
+    rest = argv[2:]
+    self.assertIn('--costume=2', rest)
+    self.assertIn('--runtime=300', rest)
+
+  def test_validate_requires_connect_code(self):
+    errors = launcher.NetplayTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={'model_path': 'M', 'char': 'FOX', 'costume': '', 'connect_code': '', 'runtime': ''},
+    )
+    self.assertTrue(any('connect' in e.lower() for e in errors))
+
+
 if __name__ == '__main__':
   unittest.main()
