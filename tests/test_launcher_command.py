@@ -361,5 +361,48 @@ class MatchRequestTest(unittest.TestCase):
     self.assertEqual(r.started_at, 1.5)
 
 
+class ScrubForPublicTest(unittest.TestCase):
+
+  def test_drops_python_traceback_frames(self):
+    raw = (
+        'Traceback (most recent call last):\n'
+        '  File "C:\\Users\\alice\\proj\\scripts\\netplay.py", line 106, in <module>\n'
+        '    app.run(main)\n'
+        '  File "C:\\Users\\alice\\proj\\venv\\Lib\\site-packages\\absl\\app.py", line 410, in run\n'
+        '    _run_main(main, args)\n'
+        'melee.slippstream.EnetDisconnected\n'
+    )
+    out = launcher.scrub_for_public(raw)
+    self.assertNotIn('File "', out)
+    self.assertNotIn('alice', out)
+    self.assertIn('melee.slippstream.EnetDisconnected', out)
+
+  def test_redacts_home_paths_left_in_body(self):
+    for raw in [
+        r'error opening C:\Users\bob\slippi-ai\models\medium-v2',
+        r'error opening C:/Users/bob/slippi-ai/models/medium-v2',
+        r'error opening /Users/bob/slippi-ai/models/medium-v2',
+        r'error opening /home/bob/slippi-ai/models/medium-v2',
+    ]:
+      with self.subTest(raw=raw):
+        out = launcher.scrub_for_public(raw)
+        self.assertNotIn('bob', out)
+        self.assertIn('~', out)
+
+  def test_leaves_non_path_text_alone(self):
+    raw = 'Match ended with score 3-1 in stage FINAL_DESTINATION\n'
+    self.assertEqual(launcher.scrub_for_public(raw), raw)
+
+  def test_drops_caret_indicator_lines(self):
+    raw = (
+        '    gamestate = self.console.step()\n'
+        '                ^^^^^^^^^^^^^^^^^^^\n'
+        'Error: something\n'
+    )
+    out = launcher.scrub_for_public(raw)
+    self.assertNotIn('^^^', out)
+    self.assertIn('Error: something', out)
+
+
 if __name__ == '__main__':
   unittest.main()

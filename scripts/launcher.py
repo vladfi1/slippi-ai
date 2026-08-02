@@ -43,6 +43,28 @@ def validate_supported_character(char: str, supported: list[str]) -> bool:
   return char in supported
 
 
+# Matches Windows / macOS / Linux user-home path prefixes, e.g.
+# `C:\Users\alice`, `C:/Users/alice`, `/Users/alice`, `/home/alice`.
+_HOME_PATH_RE = re.compile(
+    r'(?:[A-Za-z]:[\\/])?(?:Users|home)[\\/][^\\/\s"\'`]+', re.IGNORECASE)
+
+
+def scrub_for_public(text: str) -> str:
+  """Redact filesystem paths and Python-traceback frame lines from `text`
+  before sending it to a public channel (Discord etc.)."""
+  out_lines = []
+  for line in text.splitlines(keepends=True):
+    stripped = line.strip()
+    # Drop `File "..."` frame lines and their caret indicators — they leak
+    # both absolute paths and internal structure without adding much value.
+    if stripped.startswith('File "') and '", line ' in stripped:
+      continue
+    if stripped and set(stripped) <= {'^', '~'}:
+      continue
+    out_lines.append(_HOME_PATH_RE.sub('~', line))
+  return ''.join(out_lines)
+
+
 def list_models() -> list[str]:
   if not MODELS_DIR.is_dir():
     return []
@@ -371,7 +393,7 @@ class DiscordBotThread:
     if exit_code == 0:
       await channel.send(f'Match ended (exit code 0).')
     else:
-      tail = ''.join(recent_lines[-10:])
+      tail = scrub_for_public(''.join(recent_lines[-10:]))
       msg = f'Match failed (exit code {exit_code}).'
       if tail.strip():
         msg += f'\n```\n{tail[-1500:]}\n```'
@@ -386,7 +408,7 @@ class DiscordBotThread:
     self._app.root.after(0, self._set_slot_label, 'match slot: idle')
     self._app.root.after(0, self._clear_log_watcher)
     await self._set_ready_presence()
-    await channel.send(f'Failed to spawn netplay: {err}')
+    await channel.send(f'Failed to spawn netplay: {scrub_for_public(err)}')
 
   def _set_slot_label(self, text: str) -> None:
     for tab in self._app._discord_tabs():
