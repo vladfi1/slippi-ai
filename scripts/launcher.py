@@ -29,7 +29,8 @@ MODELS_DIR = REPO_ROOT / 'models'
 def list_models() -> list[str]:
   if not MODELS_DIR.is_dir():
     return []
-  return sorted(p.name for p in MODELS_DIR.iterdir() if p.is_dir())
+  # Models are pickled state files, not directories.
+  return sorted(p.name for p in MODELS_DIR.iterdir() if p.is_file())
 
 
 class Config:
@@ -258,7 +259,7 @@ class PlayerFrame(ttk.LabelFrame):
     self.type_var.trace_add('write', lambda *_: self._layout())
 
   def _pick_model(self):
-    p = filedialog.askdirectory(title='Select model directory', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+    p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
     if p:
       self.model_var.set(p)
 
@@ -675,7 +676,7 @@ class NetplayTab(ScriptTab):
     grid.pack(fill='x')
 
   def _pick_model(self):
-    p = filedialog.askdirectory(title='Select model directory', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+    p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
     if p:
       self.model_var.set(p)
 
