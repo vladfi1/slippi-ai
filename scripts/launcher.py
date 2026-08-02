@@ -135,6 +135,18 @@ class DiscordBotThread:
     """Mirror bot events into the launcher's log panel for visibility."""
     self._app.root.after(0, self._app.log.append, f'[discord] {text}\n', 'meta')
 
+  async def _set_ready_presence(self) -> None:
+    if self._client is None:
+      return
+    activity = self._discord.Game(name='Ready — @ me <code> <char>')
+    await self._client.change_presence(status=self._discord.Status.online, activity=activity)
+
+  async def _set_busy_presence(self, user_name: str, char: str) -> None:
+    if self._client is None:
+      return
+    activity = self._discord.Game(name=f'vs @{user_name} ({char})')
+    await self._client.change_presence(status=self._discord.Status.dnd, activity=activity)
+
   def _run(self, token: str) -> None:
     import discord
     self._loop = asyncio.new_event_loop()
@@ -142,10 +154,12 @@ class DiscordBotThread:
     intents = discord.Intents.default()
     intents.message_content = True  # Required for @-mention command parsing.
     self._client = discord.Client(intents=intents)
+    self._discord = discord  # so helpers can access discord.Status / discord.Game
 
     @self._client.event
     async def on_ready():
       self._post_status(f'connected as {self._client.user}')
+      await self._set_ready_presence()
 
     @self._client.event
     async def on_disconnect():
@@ -154,6 +168,7 @@ class DiscordBotThread:
     @self._client.event
     async def on_resumed():
       self._post_status(f'connected as {self._client.user}')
+      await self._set_ready_presence()
 
     @self._client.event
     async def on_message(message):
@@ -206,6 +221,7 @@ class DiscordBotThread:
       code, char = args
       await self._handle_play(message.channel, message.author, code, char.lower())
 
+    self._log('starting client')
     try:
       self._loop.run_until_complete(self._client.start(token))
     except discord.LoginFailure:
@@ -213,6 +229,7 @@ class DiscordBotThread:
     except Exception as e:
       self._post_status(f'error: {e}')
     finally:
+      self._log('client closing (bot going offline)')
       try:
         self._loop.run_until_complete(self._client.close())
       except Exception:
@@ -251,6 +268,7 @@ class DiscordBotThread:
     self._active = request
     self._app.root.after(0, self._set_slot_label,
                         f'match slot: running (@{request.user_name} vs {code})')
+    await self._set_busy_presence(user.display_name, char)
     await channel.send(
         f'**@{user.display_name}** vs `{code}` as `{char}` — starting…')
     # Build argv and spawn (from Tk main thread — ProcessRunner uses root.after internally).
@@ -326,6 +344,7 @@ class DiscordBotThread:
     self._active = None
     self._app.root.after(0, self._set_slot_label, 'match slot: idle')
     self._app.root.after(0, self._clear_log_watcher)
+    await self._set_ready_presence()
     if exit_code == 0:
       await channel.send(f'Match ended (exit code 0).')
     else:
@@ -343,6 +362,7 @@ class DiscordBotThread:
     self._active = None
     self._app.root.after(0, self._set_slot_label, 'match slot: idle')
     self._app.root.after(0, self._clear_log_watcher)
+    await self._set_ready_presence()
     await channel.send(f'Failed to spawn netplay: {err}')
 
   def _set_slot_label(self, text: str) -> None:
