@@ -245,7 +245,7 @@ class NetplayTest(unittest.TestCase):
     rest = argv[2:]
     self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'netplay.py'))
     self.assertIn(r'--agent.path=C:\M', rest)
-    self.assertIn('--char=FOX', rest)
+    self.assertIn('--char=fox', rest)
     self.assertIn('--dolphin.connect_code=ABCD#123', rest)
     self.assertIn('--dolphin.path=D', rest)
     self.assertFalse(any(a.startswith('--costume') for a in rest))

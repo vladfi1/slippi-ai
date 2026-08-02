@@ -14,12 +14,14 @@ from tkinter import filedialog, ttk
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Hardcoded to avoid importing melee at startup (slow first-open).
-# Source: melee.Character enum in libmelee.
+# These MUST match melee.Character enum member names exactly.
+# fancyflags (eval_two/run_evaluator) accepts these uppercase names as-is;
+# absl.flags.DEFINE_enum_class (netplay's --char) accepts the same names lowercased.
 CHARACTERS = [
-    'FOX', 'FALCO', 'MARTH', 'SHEIK', 'JIGGLYPUFF', 'CAPTAIN_FALCON',
-    'PEACH', 'ICE_CLIMBERS', 'PIKACHU', 'SAMUS', 'DR_MARIO', 'YOSHI',
-    'LUIGI', 'GANONDORF', 'MARIO', 'YOUNG_LINK', 'LINK', 'DONKEY_KONG',
-    'GAME_AND_WATCH', 'MEWTWO', 'ROY', 'PICHU', 'NESS', 'BOWSER',
+    'FOX', 'FALCO', 'MARTH', 'SHEIK', 'JIGGLYPUFF', 'CPTFALCON',
+    'PEACH', 'POPO', 'NANA', 'PIKACHU', 'SAMUS', 'DOC', 'YOSHI',
+    'LUIGI', 'GANONDORF', 'MARIO', 'YLINK', 'LINK', 'DK',
+    'GAMEANDWATCH', 'MEWTWO', 'ROY', 'PICHU', 'NESS', 'BOWSER',
     'KIRBY', 'ZELDA',
 ]
 PLAYER_TYPES = ['ai', 'human', 'cpu']
@@ -702,7 +704,8 @@ class NetplayTab(ScriptTab):
   def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
     argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'netplay.py')]
     argv.append(f'--agent.path={tab_values.get("model_path", "")}')
-    argv.append(f'--char={tab_values.get("char", "FOX")}')
+    # netplay uses absl.flags.DEFINE_enum_class, which serializes to lowercase.
+    argv.append(f'--char={tab_values.get("char", "FOX").lower()}')
     if tab_values.get('costume'):
       argv.append(f'--costume={tab_values["costume"]}')
     argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
