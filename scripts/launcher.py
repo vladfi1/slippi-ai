@@ -364,7 +364,7 @@ class DiscordBotThread:
       self._post_status('stopped')
 
   async def _handle_play(self, channel, user, code: str, char: str) -> None:
-    # Channel allowlist — silent drop if not allowed.
+    # Channel allowlist — silent drop.
     if channel.id not in self._allowed_channels:
       return
     # Busy guard.
@@ -388,6 +388,7 @@ class DiscordBotThread:
         connect_code=code,
         character=char,
         started_at=time.monotonic(),
+        max_attempts=self._max_attempts,
     )
     self._active = request
     self._app.root.after(0, self._set_slot_label,
@@ -397,12 +398,22 @@ class DiscordBotThread:
     await channel.send(
         f'**@{user.display_name}** vs `{code}` as `{char}` — starting…\n'
         f'Enter my code in your Slippi game (Direct Connect): **`{bot_code}`**')
-    # Build argv and spawn (from Tk main thread — ProcessRunner uses root.after internally).
+    await self._start_attempt(request, channel, first=True)
+
+  async def _start_attempt(self, request: 'MatchRequest', channel, first: bool) -> None:
+    """Spawn one netplay attempt. If `first` is False, first posts a retry
+    message. Installs the marker watcher, spawns netplay, and starts the
+    connect timeout."""
+    if not first:
+      await channel.send(
+          f'Opponent didn\'t join, retrying ({request.attempt}/{request.max_attempts})…')
+
+    # Build argv (same as before).
     tab_values = {
         'model_path': self._model_path,
-        'char': char,
+        'char': request.character,
         'costume': '',
-        'connect_code': code,
+        'connect_code': request.connect_code,
         'runtime': '',
         'user_json_path': self._user_json_path,
     }
@@ -410,29 +421,89 @@ class DiscordBotThread:
     argv = build_netplay_argv(global_paths, tab_values)
 
     def on_exit_tk(exit_code: int) -> None:
-      # Runs on Tk main thread; bounce to discord loop.
+      # Runs on Tk main thread; bounce to bot loop.
       recent = self._app.log.recent_lines()
       if self._loop is not None:
         asyncio.run_coroutine_threadsafe(
-            self._on_match_ended(channel, exit_code, recent), self._loop)
+            self._end_attempt(request, channel, reason='exit',
+                              exit_code=exit_code, recent_lines=recent),
+            self._loop)
 
     def start_runner():
-      # Install the marker watcher before spawn.
+      # Install marker watcher before spawn.
       self._app.log.on_line = self._watch_stdout
       try:
         self._app.runner.start(argv, cwd=REPO_ROOT, on_exit=on_exit_tk)
       except RuntimeError as e:
-        # ProcessRunner refused (another script running). Report + clear slot.
         if self._loop is not None:
           asyncio.run_coroutine_threadsafe(
               self._on_spawn_failed(channel, str(e)), self._loop)
     self._app.root.after(0, start_runner)
-    # Timeout for "opponent never joined".
+
+    # Connect timeout for this attempt.
     try:
       timeout_s = int(self._app.config.tabs.get('discord', {}).get('connect_timeout_s', '600'))
     except ValueError:
       timeout_s = 600
-    self._timeout_task = self._loop.create_task(self._connect_timeout(channel, timeout_s))
+    self._timeout_task = self._loop.create_task(self._connect_timeout(request, channel, timeout_s))
+
+  async def _end_attempt(self, request: 'MatchRequest', channel, reason: str,
+                         exit_code: 'int | None' = None,
+                         recent_lines: 'list[str] | None' = None) -> None:
+    """Central decision point for what to do when an attempt finishes
+    (either from timeout or from process exit). `reason` is 'timeout' or
+    'exit'."""
+    # Idempotence: if the slot has already been cleared, another handler
+    # already dealt with this. E.g. timeout fires, kills the process, then
+    # the process's real exit fires this again.
+    if self._active is not request:
+      return
+
+    # Cancel any lingering timeout task.
+    if self._timeout_task is not None and not self._timeout_task.done():
+      self._timeout_task.cancel()
+    self._timeout_task = None
+
+    # On timeout, we need to kill the still-running netplay process.
+    # (On exit reason, the process already died.)
+    if reason == 'timeout':
+      self._app.root.after(0, self._app.runner.stop)
+
+    if request.match_started:
+      # Real match end (or mid-match crash). No retry.
+      self._active = None
+      self._app.root.after(0, self._set_slot_label, 'match slot: idle')
+      self._app.root.after(0, self._clear_log_watcher)
+      await self._set_ready_presence()
+      if reason == 'exit' and exit_code == 0:
+        duration = _format_duration(time.monotonic() - request.started_at)
+        await channel.send(f'Match ended after {duration}.')
+      else:
+        tail = scrub_for_public(''.join((recent_lines or [])[-10:]))
+        msg = f'Match failed (exit code {exit_code}).'
+        if tail.strip():
+          msg += f'\n```\n{tail[-1500:]}\n```'
+        await channel.send(msg)
+      return
+
+    # Pre-match failure (timeout, or process exit without marker).
+    if request.attempt < request.max_attempts:
+      request.attempt += 1
+      await asyncio.sleep(2)
+      # Re-check the slot in case the user cancelled or the bot stopped
+      # during the pause.
+      if self._active is not request:
+        return
+      await self._start_attempt(request, channel, first=False)
+      return
+
+    # All attempts exhausted.
+    self._active = None
+    self._app.root.after(0, self._set_slot_label, 'match slot: idle')
+    self._app.root.after(0, self._clear_log_watcher)
+    await self._set_ready_presence()
+    await channel.send(
+        f'Opponent didn\'t join after {request.max_attempts} attempts.')
 
   def _watch_stdout(self, line: str, kind: str) -> None:
     # Called on Tk main thread by LogPanel.append.
@@ -445,40 +516,18 @@ class DiscordBotThread:
       self._timeout_task = None
     if self._active is None:
       return
+    self._active.match_started = True
+    self._active.started_at = time.monotonic()
     channel = self._client.get_channel(self._active.channel_id)
     if channel is not None:
       await channel.send('**match live**')
 
-  async def _connect_timeout(self, channel, timeout_s: int) -> None:
+  async def _connect_timeout(self, request: 'MatchRequest', channel, timeout_s: int) -> None:
     try:
       await asyncio.sleep(timeout_s)
     except asyncio.CancelledError:
       return
-    # Timeout fired without a match-started marker — kill it.
-    self._app.root.after(0, self._app.runner.stop)
-    try:
-      await channel.send('Opponent never joined — timing out.')
-    except Exception:
-      pass
-
-  async def _on_match_ended(self, channel, exit_code: int, recent_lines: list[str]) -> None:
-    # Cancel connect timeout if still active.
-    if self._timeout_task is not None and not self._timeout_task.done():
-      self._timeout_task.cancel()
-    self._timeout_task = None
-    # Clear slot + UI first so a busy reply after this is honest.
-    self._active = None
-    self._app.root.after(0, self._set_slot_label, 'match slot: idle')
-    self._app.root.after(0, self._clear_log_watcher)
-    await self._set_ready_presence()
-    if exit_code == 0:
-      await channel.send(f'Match ended (exit code 0).')
-    else:
-      tail = scrub_for_public(''.join(recent_lines[-10:]))
-      msg = f'Match failed (exit code {exit_code}).'
-      if tail.strip():
-        msg += f'\n```\n{tail[-1500:]}\n```'
-      await channel.send(msg)
+    await self._end_attempt(request, channel, reason='timeout')
 
   async def _on_spawn_failed(self, channel, err: str) -> None:
     # Cancel connect timeout if still active.
