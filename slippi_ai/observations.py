@@ -198,9 +198,9 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
   def filter_batched(self, game: Game[S], env_slice: tp.Optional[slice] = None):
     """Updates in-place."""
     if env_slice is not None:
-      actions = game.p0.action[env_slice]
+      actions = game.p1.action[env_slice]
     else:
-      actions = game.p0.action
+      actions = game.p1.action
     del game
 
     same_action = actions == self.prev_action
@@ -208,7 +208,7 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
     self.count[~same_action] = 0
     self.prev_action[:] = actions
 
-    needs_mask = self.count < self.tech_mask_window & np.isin(actions, _TECH_ACTIONS_NP)
+    needs_mask = (self.count < self.tech_mask_window) & np.isin(actions, _TECH_ACTIONS_NP)
     actions[needs_mask] = _TECH_ACTIONS_NP[0]
 
   def reset_batched(self, needs_reset: BoolArray[S]):

@@ -380,6 +380,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
     # Capture the T+1 terminal observation and assemble the learner trajectory
     # trees expected by the existing PPO path.
+    # TODO: properly filter this state
     record_state(self._env.peek(), self._prev_agent_outputs[0], num_steps)
 
     build_start = time.perf_counter()
