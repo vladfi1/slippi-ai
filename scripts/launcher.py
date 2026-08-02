@@ -131,6 +131,10 @@ class DiscordBotThread:
   def _post_status(self, text: str) -> None:
     self._app.root.after(0, self._status_cb, text)
 
+  def _log(self, text: str) -> None:
+    """Mirror bot events into the launcher's log panel for visibility."""
+    self._app.root.after(0, self._app.log.append, f'[discord] {text}\n', 'meta')
+
   def _run(self, token: str) -> None:
     import discord
     self._loop = asyncio.new_event_loop()
@@ -153,13 +157,29 @@ class DiscordBotThread:
 
     @self._client.event
     async def on_message(message):
+      try:
+        await _handle_message(message)
+      except Exception as e:
+        self._log(f'on_message error: {type(e).__name__}: {e}')
+
+    async def _handle_message(message):
       if message.author == self._client.user:
         return
-      if self._client.user not in message.mentions:
+      mentioned = self._client.user in message.mentions
+      self._log(
+          f'msg from {message.author} in channel={message.channel.id} '
+          f'mentioned={mentioned} content={message.content!r}')
+      if not mentioned:
+        return
+      if message.channel.id not in self._allowed_channels:
+        self._log(
+            f'channel {message.channel.id} not in allowlist '
+            f'{self._allowed_channels} — ignoring')
         return
       # Strip mention tokens (raw form is <@NNN> or <@!NNN>) and split remainder.
       tokens = message.content.split()
       args = [t for t in tokens if not (t.startswith('<@') and t.endswith('>'))]
+      self._log(f'parsed args={args}')
       if len(args) != 2:
         bot_name = self._client.user.display_name
         chars = ', '.join(self._character_choices) or '(none configured)'
