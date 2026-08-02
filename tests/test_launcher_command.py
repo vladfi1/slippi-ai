@@ -132,5 +132,29 @@ class EvalTwoValidateTest(unittest.TestCase):
     self.assertTrue(any('model' in e.lower() for e in errors))
 
 
+class RunDolphinTest(unittest.TestCase):
+
+  def test_build_argv_defaults(self):
+    argv = launcher.RunDolphinTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={'N': '1', 'frames': '3600', 'render': False},
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'run_dolphin.py'))
+    self.assertIn('--N=1', rest)
+    self.assertIn('--frames=3600', rest)
+    self.assertIn('--render=false', rest)
+    self.assertIn('--dolphin.path=D', rest)
+    self.assertIn('--dolphin.iso=I', rest)
+
+  def test_validate_requires_paths(self):
+    errors = launcher.RunDolphinTab.validate(
+        global_paths={'dolphin_path': '', 'iso_path': ''},
+        tab_values={'N': '1', 'frames': '3600', 'render': False},
+    )
+    self.assertTrue(any('Dolphin' in e for e in errors))
+    self.assertTrue(any('ISO' in e for e in errors))
+
+
 if __name__ == '__main__':
   unittest.main()

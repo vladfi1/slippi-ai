@@ -451,6 +451,53 @@ class EvalTwoTab(ScriptTab):
     return errors
 
 
+class RunDolphinTab(ScriptTab):
+
+  TAB_KEY = 'run_dolphin'
+  SCRIPT = 'scripts/run_dolphin.py'
+  LABEL = 'run_dolphin'
+
+  def _build_widgets(self):
+    initial = self.app.config.tabs.get(self.TAB_KEY, {})
+    self.n_var = tk.StringVar(value=initial.get('N', '1'))
+    self.frames_var = tk.StringVar(value=initial.get('frames', '3600'))
+    self.render_var = tk.BooleanVar(value=bool(initial.get('render', False)))
+
+    grid = ttk.Frame(self)
+    ttk.Label(grid, text='N (instances):').grid(row=0, column=0, sticky='w', padx=4, pady=2)
+    ttk.Spinbox(grid, from_=1, to=32, textvariable=self.n_var, width=6).grid(row=0, column=1, sticky='w', padx=4, pady=2)
+    ttk.Label(grid, text='Frames:').grid(row=1, column=0, sticky='w', padx=4, pady=2)
+    ttk.Entry(grid, textvariable=self.frames_var, width=10).grid(row=1, column=1, sticky='w', padx=4, pady=2)
+    ttk.Checkbutton(grid, text='Render graphics', variable=self.render_var).grid(row=2, column=0, columnspan=2, sticky='w', padx=4, pady=2)
+    grid.pack(fill='x')
+
+  def _values(self) -> dict:
+    return {'N': self.n_var.get(), 'frames': self.frames_var.get(), 'render': self.render_var.get()}
+
+  @staticmethod
+  def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
+    argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'run_dolphin.py')]
+    argv.append(f'--N={tab_values.get("N", "1")}')
+    argv.append(f'--frames={tab_values.get("frames", "3600")}')
+    argv.append(f'--render={"true" if tab_values.get("render") else "false"}')
+    argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
+    argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
+    return argv
+
+  @staticmethod
+  def validate(global_paths: dict, tab_values: dict) -> list[str]:
+    errors = []
+    if not global_paths.get('dolphin_path'):
+      errors.append('Dolphin path is required.')
+    elif not pathlib.Path(global_paths['dolphin_path']).is_file():
+      errors.append(f'Dolphin path does not exist: {global_paths["dolphin_path"]}')
+    if not global_paths.get('iso_path'):
+      errors.append('ISO path is required.')
+    elif not pathlib.Path(global_paths['iso_path']).is_file():
+      errors.append(f'ISO path does not exist: {global_paths["iso_path"]}')
+    return errors
+
+
 class LauncherApp:
 
   def __init__(self):
@@ -462,7 +509,7 @@ class LauncherApp:
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
-    for tab_cls in (EvalTwoTab,):
+    for tab_cls in (EvalTwoTab, RunDolphinTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
     self.log = LogPanel(self.root)
