@@ -256,7 +256,7 @@ class AnimationFilter(ObservationFilter, tp.Generic[S]):
 
     # TODO: re-enable per-character masking
     is_tech_action = np.isin(game.p1.action, TECH_ACTIONS)
-    should_mask = is_tech_action & (action_frames <= self.tech_mask_window)
+    should_mask = is_tech_action & (action_frames < self.tech_mask_window)
 
     masked_actions = np.where(
         should_mask, TECH_ACTIONS[0], game.p1.action)
