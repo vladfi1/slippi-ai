@@ -133,32 +133,14 @@ class DiscordBotThread:
 
   def _run(self, token: str) -> None:
     import discord
-    from discord import app_commands
     self._loop = asyncio.new_event_loop()
     asyncio.set_event_loop(self._loop)
     intents = discord.Intents.default()
+    intents.message_content = True  # Required for @-mention command parsing.
     self._client = discord.Client(intents=intents)
-    tree = app_commands.CommandTree(self._client)
-
-    choices = [app_commands.Choice(name=c, value=c) for c in self._character_choices]
-
-    @tree.command(name='play', description='Challenge the Slippi-AI bot.')
-    @app_commands.describe(code='Your Slippi connect code, e.g. TNBN#217',
-                           char='Character for the AI to play')
-    @app_commands.choices(char=choices)
-    async def play_cmd(interaction: 'discord.Interaction',
-                       code: str,
-                       char: app_commands.Choice[str]) -> None:
-      await self._on_play(interaction, code, char.value)
 
     @self._client.event
     async def on_ready():
-      # Sync commands to every guild the bot is in.
-      for guild in self._client.guilds:
-        try:
-          await tree.sync(guild=guild)
-        except Exception as e:
-          self._post_status(f'sync failed on {guild}: {e}')
       self._post_status(f'connected as {self._client.user}')
 
     @self._client.event
@@ -168,6 +150,26 @@ class DiscordBotThread:
     @self._client.event
     async def on_resumed():
       self._post_status(f'connected as {self._client.user}')
+
+    @self._client.event
+    async def on_message(message):
+      if message.author == self._client.user:
+        return
+      if self._client.user not in message.mentions:
+        return
+      # Strip mention tokens (raw form is <@NNN> or <@!NNN>) and split remainder.
+      tokens = message.content.split()
+      args = [t for t in tokens if not (t.startswith('<@') and t.endswith('>'))]
+      if len(args) != 2:
+        bot_name = self._client.user.display_name
+        chars = ', '.join(self._character_choices) or '(none configured)'
+        await message.channel.send(
+            f'Syntax: `@{bot_name} <connect_code> <character>` '
+            f'— e.g. `@{bot_name} TNBN#217 fox`\n'
+            f'Available characters: {chars}')
+        return
+      code, char = args
+      await self._handle_play(message.channel, message.author, code, char.lower())
 
     try:
       self._loop.run_until_complete(self._client.start(token))
@@ -185,31 +187,28 @@ class DiscordBotThread:
       self._client = None
       self._post_status('stopped')
 
-  async def _on_play(self, interaction, code: str, char: str) -> None:
+  async def _handle_play(self, channel, user, code: str, char: str) -> None:
     # Channel allowlist — silent drop if not allowed.
-    if interaction.channel_id not in self._allowed_channels:
-      await interaction.response.send_message('Not authorized here.', ephemeral=True)
+    if channel.id not in self._allowed_channels:
       return
     # Busy guard.
     if self._active is not None:
-      await interaction.response.send_message(
+      await channel.send(
           f'Bot busy — @{self._active.user_name} is playing vs `{self._active.connect_code}`.')
       return
     # Validate.
     if not validate_connect_code(code):
-      await interaction.response.send_message(
-          'Invalid code — expected `ABCD#123`.', ephemeral=True)
+      await channel.send('Invalid code — expected `ABCD#123`.')
       return
     if not validate_supported_character(char, self._character_choices):
-      await interaction.response.send_message(
-          f'Model does not support `{char}`. Options: {", ".join(self._character_choices)}',
-          ephemeral=True)
+      await channel.send(
+          f'Model does not support `{char}`. Options: {", ".join(self._character_choices)}')
       return
     # Claim slot.
     request = MatchRequest(
-        user_id=interaction.user.id,
-        user_name=interaction.user.display_name,
-        channel_id=interaction.channel_id,
+        user_id=user.id,
+        user_name=user.display_name,
+        channel_id=channel.id,
         connect_code=code,
         character=char,
         started_at=time.monotonic(),
@@ -217,8 +216,8 @@ class DiscordBotThread:
     self._active = request
     self._app.root.after(0, self._set_slot_label,
                         f'match slot: running (@{request.user_name} vs {code})')
-    await interaction.response.send_message(
-        f'**@{interaction.user.display_name}** vs `{code}` as `{char}` — starting…')
+    await channel.send(
+        f'**@{user.display_name}** vs `{code}` as `{char}` — starting…')
     # Build argv and spawn (from Tk main thread — ProcessRunner uses root.after internally).
     tab_values = {
         'model_path': self._model_path,
@@ -230,7 +229,6 @@ class DiscordBotThread:
     }
     global_paths = self._app.global_paths.values()
     argv = build_netplay_argv(global_paths, tab_values)
-    channel = interaction.channel
 
     def on_exit_tk(exit_code: int) -> None:
       # Runs on Tk main thread; bounce to discord loop.
