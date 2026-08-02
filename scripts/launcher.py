@@ -72,6 +72,28 @@ def list_models() -> list[str]:
   return sorted(p.name for p in MODELS_DIR.iterdir() if p.is_file())
 
 
+def _apply_windows_dark_titlebar(root: tk.Tk) -> None:
+  """Ask Windows' DWM to render this window's title bar in dark mode.
+  No-op on non-Windows or older Windows versions."""
+  if sys.platform != 'win32':
+    return
+  try:
+    import ctypes
+    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+    value = ctypes.c_int(1)
+    # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE on Win10 build 18985+ and Win11.
+    # 19 is the older undocumented attribute on Win10 builds 17763-18984.
+    for attr in (20, 19):
+      if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+          hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+        # Force a redraw so the change becomes visible immediately.
+        root.withdraw()
+        root.deiconify()
+        return
+  except Exception:
+    pass  # Silent fallback — title bar stays light, rest of UI is fine.
+
+
 class Config:
 
   def __init__(self):
@@ -1268,6 +1290,7 @@ class LauncherApp:
       sv_ttk.set_theme('dark')
     except ImportError:
       pass  # Falls back to default ttk theme if sv-ttk isn't installed.
+    _apply_windows_dark_titlebar(self.root)
     self.config = Config.load()
     self.global_paths = GlobalPathsFrame(self.root, initial=self.config.global_)
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
