@@ -285,6 +285,10 @@ class DiscordBotThread:
       pass
 
   async def _on_match_ended(self, channel, exit_code: int, recent_lines: list[str]) -> None:
+    # Cancel connect timeout if still active.
+    if self._timeout_task is not None and not self._timeout_task.done():
+      self._timeout_task.cancel()
+    self._timeout_task = None
     # Clear slot + UI first so a busy reply after this is honest.
     self._active = None
     self._app.root.after(0, self._set_slot_label, 'match slot: idle')
@@ -299,6 +303,10 @@ class DiscordBotThread:
       await channel.send(msg)
 
   async def _on_spawn_failed(self, channel, err: str) -> None:
+    # Cancel connect timeout if still active.
+    if self._timeout_task is not None and not self._timeout_task.done():
+      self._timeout_task.cancel()
+    self._timeout_task = None
     self._active = None
     self._app.root.after(0, self._set_slot_label, 'match slot: idle')
     self._app.root.after(0, self._clear_log_watcher)
