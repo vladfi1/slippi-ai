@@ -14,3 +14,4 @@ tqdm
 git+https://github.com/vladfi1/skypilot.git
 git+https://github.com/vladfi1/webdataset.git@dev
 discord.py>=2.3
+sv-ttk>=2.6

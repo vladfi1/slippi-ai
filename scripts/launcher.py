@@ -1262,6 +1262,12 @@ class LauncherApp:
     self.root = tk.Tk()
     self.root.title('Slippi-AI Launcher')
     self.root.geometry('900x700')
+    # Modern flat theme (Windows 11 Sun Valley style).
+    try:
+      import sv_ttk
+      sv_ttk.set_theme('dark')
+    except ImportError:
+      pass  # Falls back to default ttk theme if sv-ttk isn't installed.
     self.config = Config.load()
     self.global_paths = GlobalPathsFrame(self.root, initial=self.config.global_)
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
