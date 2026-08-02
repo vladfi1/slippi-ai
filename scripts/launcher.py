@@ -1,6 +1,7 @@
 """Tkinter launcher for slippi-ai scripts. See docs/superpowers/specs/2026-08-01-slippi-ai-launcher-gui-design.md."""
 
 import collections
+import dataclasses
 import json
 import os
 import pathlib
@@ -74,6 +75,16 @@ class Config:
   def save(self) -> None:
     data = {'global': self.global_, 'tabs': self.tabs, 'last_tab': self.last_tab}
     self.path().write_text(json.dumps(data, indent=2))
+
+
+@dataclasses.dataclass
+class MatchRequest:
+  user_id: int
+  user_name: str
+  channel_id: int
+  connect_code: str
+  character: str
+  started_at: float
 
 
 class LogPanel(ttk.Frame):

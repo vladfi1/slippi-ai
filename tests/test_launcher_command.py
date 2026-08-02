@@ -349,5 +349,17 @@ class ValidatorTest(unittest.TestCase):
     self.assertFalse(launcher.validate_supported_character('', ['fox']))
 
 
+class MatchRequestTest(unittest.TestCase):
+
+  def test_construction_and_fields(self):
+    r = launcher.MatchRequest(
+        user_id=42, user_name='sean', channel_id=100,
+        connect_code='ABCD#123', character='fox', started_at=1.5,
+    )
+    self.assertEqual(r.user_id, 42)
+    self.assertEqual(r.character, 'fox')
+    self.assertEqual(r.started_at, 1.5)
+
+
 if __name__ == '__main__':
   unittest.main()
