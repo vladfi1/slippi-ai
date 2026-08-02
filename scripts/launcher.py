@@ -508,14 +508,20 @@ class DiscordBotThread:
   def _watch_stdout(self, line: str, kind: str) -> None:
     # Called on Tk main thread by LogPanel.append.
     if '[NETPLAY_MATCH_STARTED]' in line and self._loop is not None:
-      asyncio.run_coroutine_threadsafe(self._on_match_started(), self._loop)
+      # Snapshot the attempt this marker belongs to so a late-arriving
+      # marker from attempt N doesn't affect attempt N+1.
+      active = self._active
+      attempt = active.attempt if active is not None else 0
+      asyncio.run_coroutine_threadsafe(
+          self._on_match_started(attempt), self._loop)
 
-  async def _on_match_started(self) -> None:
+  async def _on_match_started(self, attempt: int) -> None:
+    if self._active is None or self._active.attempt != attempt:
+      # Late marker from a superseded attempt — ignore.
+      return
     if self._timeout_task is not None and not self._timeout_task.done():
       self._timeout_task.cancel()
       self._timeout_task = None
-    if self._active is None:
-      return
     self._active.match_started = True
     self._active.started_at = time.monotonic()
     channel = self._client.get_channel(self._active.channel_id)
