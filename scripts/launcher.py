@@ -32,6 +32,16 @@ CHARACTERS = [
 PLAYER_TYPES = ['ai', 'human', 'cpu']
 MODELS_DIR = REPO_ROOT / 'models'
 
+# Spacing scale — apply everywhere instead of ad-hoc pad values.
+# XS: internal widget padding, adjacent inline widgets.
+# S:  label-to-input separation, related-widget grouping.
+# M:  between form rows, between sections, outer window margins.
+# L:  around large containers (e.g. collapsed-section body indent).
+PAD_XS = 4
+PAD_S = 8
+PAD_M = 12
+PAD_L = 20
+
 _CONNECT_CODE_RE = re.compile(r'^[A-Z0-9]{2,6}#\d{1,6}$')
 
 
@@ -612,7 +622,7 @@ class AdvancedSection(ttk.Frame):
 
   def _refresh(self):
     if self._shown.get():
-      self.body.pack(fill='x', padx=16, pady=(2, 4))
+      self.body.pack(fill='x', padx=PAD_L, pady=(0, PAD_S))
     else:
       self.body.pack_forget()
 
@@ -628,9 +638,9 @@ class GlobalPathsFrame(ttk.LabelFrame):
     self.grid_columnconfigure(1, weight=1)
 
   def _row(self, label, var, row, browse_cmd):
-    ttk.Label(self, text=label).grid(row=row, column=0, sticky='w', padx=4, pady=2)
-    ttk.Entry(self, textvariable=var).grid(row=row, column=1, sticky='ew', padx=4, pady=2)
-    ttk.Button(self, text='Browse…', command=browse_cmd).grid(row=row, column=2, padx=4, pady=2)
+    ttk.Label(self, text=label).grid(row=row, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Entry(self, textvariable=var).grid(row=row, column=1, sticky='ew', padx=PAD_S, pady=PAD_XS)
+    ttk.Button(self, text='Browse…', command=browse_cmd).grid(row=row, column=2, padx=PAD_S, pady=PAD_XS)
 
   def _pick_dolphin(self):
     p = filedialog.askopenfilename(title='Select Slippi Dolphin.exe', filetypes=[('Executable', '*.exe'), ('All files', '*.*')])
@@ -655,8 +665,8 @@ class PlayerFrame(ttk.LabelFrame):
     self.model_var = tk.StringVar(value=initial.get('model_path', ''))
     self.level_var = tk.StringVar(value=initial.get('cpu_level', '9'))
 
-    ttk.Label(self, text='Type:').grid(row=0, column=0, sticky='w', padx=4, pady=2)
-    ttk.Combobox(self, textvariable=self.type_var, values=PLAYER_TYPES, state='readonly', width=8).grid(row=0, column=1, sticky='w', padx=4, pady=2)
+    ttk.Label(self, text='Type:').grid(row=0, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Combobox(self, textvariable=self.type_var, values=PLAYER_TYPES, state='readonly', width=8).grid(row=0, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
 
     self.char_label = ttk.Label(self, text='Character:')
     self.char_combo = ttk.Combobox(self, textvariable=self.char_var, values=CHARACTERS, state='readonly', width=18)
@@ -682,17 +692,17 @@ class PlayerFrame(ttk.LabelFrame):
     t = self.type_var.get()
     row = 1
     if t in ('ai', 'cpu'):
-      self.char_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
-      self.char_combo.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+      self.char_label.grid(row=row, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      self.char_combo.grid(row=row, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
       row += 1
     if t == 'ai':
-      self.model_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
-      self.model_combo.grid(row=row, column=1, sticky='ew', padx=4, pady=2)
-      self.model_browse.grid(row=row, column=2, padx=4, pady=2)
+      self.model_label.grid(row=row, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      self.model_combo.grid(row=row, column=1, sticky='ew', padx=PAD_S, pady=PAD_XS)
+      self.model_browse.grid(row=row, column=2, padx=PAD_S, pady=PAD_XS)
       row += 1
     if t == 'cpu':
-      self.level_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
-      self.level_spin.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+      self.level_label.grid(row=row, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      self.level_spin.grid(row=row, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
 
   def values(self) -> dict:
     return {
@@ -734,11 +744,11 @@ class ScriptTab(ttk.Frame):
     self.run_btn = ttk.Button(controls, text='Run', command=self._on_run)
     self.stop_btn = ttk.Button(controls, text='Stop', command=self._on_stop, state='disabled')
     self.status = ttk.Label(controls, text='idle')
-    self.run_btn.pack(side='left', padx=4)
-    self.stop_btn.pack(side='left', padx=4)
-    self.status.pack(side='left', padx=12)
-    controls.pack(fill='x', pady=(8, 4))
-    self._error_label.pack(fill='x', pady=(0, 4))
+    self.run_btn.pack(side='left', padx=PAD_XS)
+    self.stop_btn.pack(side='left', padx=PAD_XS)
+    self.status.pack(side='left', padx=PAD_M)
+    controls.pack(fill='x', pady=(PAD_M, PAD_S))
+    self._error_label.pack(fill='x', pady=(0, PAD_S))
 
   def _on_run(self):
     global_paths = self.app.global_paths.values()
@@ -800,16 +810,16 @@ class EvalTwoTab(ScriptTab):
     row = ttk.Frame(self)
     self.p1 = PlayerFrame(row, 'Player 1', initial.get('p1', {'type': 'human'}))
     self.p2 = PlayerFrame(row, 'Player 2', initial.get('p2', {'type': 'ai', 'character': 'FALCO'}))
-    self.p1.pack(side='left', fill='both', expand=True, padx=4, pady=4)
-    self.p2.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+    self.p1.pack(side='left', fill='both', expand=True, padx=PAD_S, pady=PAD_S)
+    self.p2.pack(side='left', fill='both', expand=True, padx=PAD_S, pady=PAD_S)
     row.pack(fill='x')
 
     ngf = ttk.Frame(self)
-    ttk.Label(ngf, text='Num games:').pack(side='left', padx=4)
+    ttk.Label(ngf, text='Num games:').pack(side='left', padx=PAD_XS)
     self.num_games_var = tk.StringVar(value=initial.get('num_games', ''))
-    ttk.Entry(ngf, textvariable=self.num_games_var, width=8).pack(side='left', padx=4)
-    ttk.Label(ngf, text='(blank = infinite)', foreground='#666666').pack(side='left', padx=4)
-    ngf.pack(fill='x', pady=4)
+    ttk.Entry(ngf, textvariable=self.num_games_var, width=8).pack(side='left', padx=PAD_XS)
+    ttk.Label(ngf, text='(blank = infinite)', foreground='#666666').pack(side='left', padx=PAD_XS)
+    ngf.pack(fill='x', pady=PAD_S)
 
     # Advanced (collapsible) — applies to whichever players are AI.
     adv = initial.get('advanced', {})
@@ -820,13 +830,13 @@ class EvalTwoTab(ScriptTab):
     adv_sec = AdvancedSection(self)
     body = adv_sec.body
     def _adv_entry(text, var, width=10):
-      f = ttk.Frame(body); ttk.Label(f, text=text).pack(side='left', padx=4)
-      ttk.Entry(f, textvariable=var, width=width).pack(side='left', padx=4); f.pack(anchor='w')
+      f = ttk.Frame(body); ttk.Label(f, text=text).pack(side='left', padx=PAD_XS)
+      ttk.Entry(f, textvariable=var, width=width).pack(side='left', padx=PAD_XS); f.pack(anchor='w')
     _adv_entry('sample_temperature:', self.sample_temperature)
     _adv_entry('name (blank = default):', self.agent_name, width=20)
     ttk.Checkbutton(body, text='async_inference', variable=self.async_inference).pack(anchor='w')
     ttk.Checkbutton(body, text='mirror (flip x axis)', variable=self.mirror).pack(anchor='w')
-    adv_sec.pack(fill='x', pady=4)
+    adv_sec.pack(fill='x', pady=PAD_S)
 
   def _values(self) -> dict:
     return {
@@ -889,11 +899,11 @@ class RunDolphinTab(ScriptTab):
     self.render_var = tk.BooleanVar(value=bool(initial.get('render', False)))
 
     grid = ttk.Frame(self)
-    ttk.Label(grid, text='N (instances):').grid(row=0, column=0, sticky='w', padx=4, pady=2)
-    ttk.Spinbox(grid, from_=1, to=32, textvariable=self.n_var, width=6).grid(row=0, column=1, sticky='w', padx=4, pady=2)
-    ttk.Label(grid, text='Frames:').grid(row=1, column=0, sticky='w', padx=4, pady=2)
-    ttk.Entry(grid, textvariable=self.frames_var, width=10).grid(row=1, column=1, sticky='w', padx=4, pady=2)
-    ttk.Checkbutton(grid, text='Render graphics', variable=self.render_var).grid(row=2, column=0, columnspan=2, sticky='w', padx=4, pady=2)
+    ttk.Label(grid, text='N (instances):').grid(row=0, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Spinbox(grid, from_=1, to=32, textvariable=self.n_var, width=6).grid(row=0, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Label(grid, text='Frames:').grid(row=1, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Entry(grid, textvariable=self.frames_var, width=10).grid(row=1, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
+    ttk.Checkbutton(grid, text='Render graphics', variable=self.render_var).grid(row=2, column=0, columnspan=2, sticky='w', padx=PAD_S, pady=PAD_XS)
     grid.pack(fill='x')
 
   def _values(self) -> dict:
@@ -956,18 +966,18 @@ class RunEvaluatorTab(ScriptTab):
     def label_entry(text, var, width=30, r=None):
       nonlocal row
       r = row if r is None else r
-      ttk.Label(grid, text=text).grid(row=r, column=0, sticky='w', padx=4, pady=2)
-      ttk.Entry(grid, textvariable=var, width=width).grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+      ttk.Label(grid, text=text).grid(row=r, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      ttk.Entry(grid, textvariable=var, width=width).grid(row=r, column=1, sticky='ew', padx=PAD_S, pady=PAD_XS)
       row = r + 1
     def label_combo(text, var, values, width=18):
       nonlocal row
-      ttk.Label(grid, text=text).grid(row=row, column=0, sticky='w', padx=4, pady=2)
-      ttk.Combobox(grid, textvariable=var, values=values, state='readonly', width=width).grid(row=row, column=1, sticky='w', padx=4, pady=2)
+      ttk.Label(grid, text=text).grid(row=row, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      ttk.Combobox(grid, textvariable=var, values=values, state='readonly', width=width).grid(row=row, column=1, sticky='w', padx=PAD_S, pady=PAD_XS)
       row += 1
 
     label_entry('Player model path:', self.player_model, width=40)
     label_combo('Player character:', self.player_char, CHARACTERS)
-    ttk.Checkbutton(grid, text='Self play (use player for both)', variable=self.self_play).grid(row=row, column=0, columnspan=2, sticky='w', padx=4, pady=2); row += 1
+    ttk.Checkbutton(grid, text='Self play (use player for both)', variable=self.self_play).grid(row=row, column=0, columnspan=2, sticky='w', padx=PAD_S, pady=PAD_XS); row += 1
     label_entry('Opponent model path:', self.opp_model, width=40)
     label_combo('Opponent character:', self.opp_char, CHARACTERS)
     label_entry('Num envs:', self.num_envs, width=8)
@@ -986,17 +996,17 @@ class RunEvaluatorTab(ScriptTab):
         (self.quiet, 'quiet'),
         (self.burnin, 'burnin'),
     ]:
-      ttk.Checkbutton(body, text=text, variable=var).pack(anchor='w', padx=4)
+      ttk.Checkbutton(body, text=text, variable=var).pack(anchor='w', padx=PAD_XS)
     for var, text in [
         (self.num_env_steps, 'num_env_steps'),
         (self.inner_batch_size, 'inner_batch_size'),
         (self.num_agent_steps, 'num_agent_steps'),
     ]:
       f = ttk.Frame(body)
-      ttk.Label(f, text=text + ':').pack(side='left', padx=4)
-      ttk.Entry(f, textvariable=var, width=8).pack(side='left', padx=4)
+      ttk.Label(f, text=text + ':').pack(side='left', padx=PAD_XS)
+      ttk.Entry(f, textvariable=var, width=8).pack(side='left', padx=PAD_XS)
       f.pack(anchor='w')
-    adv_sec.pack(fill='x', pady=6)
+    adv_sec.pack(fill='x', pady=PAD_M)
 
   def _values(self) -> dict:
     return {
@@ -1095,16 +1105,16 @@ class NetplayTab(ScriptTab):
 
     grid = ttk.Frame(self)
     def row(label, widget, r):
-      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=4, pady=2)
-      widget.grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      widget.grid(row=r, column=1, sticky='ew', padx=PAD_S, pady=PAD_XS)
     row('Model path:', ttk.Entry(grid, textvariable=self.model_var, width=40), 0)
-    ttk.Button(grid, text='Browse…', command=self._pick_model).grid(row=0, column=2, padx=4)
+    ttk.Button(grid, text='Browse…', command=self._pick_model).grid(row=0, column=2, padx=PAD_XS)
     row('Character:', ttk.Combobox(grid, textvariable=self.char_var, values=CHARACTERS, state='readonly', width=18), 1)
     row('Costume (blank = default):', ttk.Entry(grid, textvariable=self.costume_var, width=6), 2)
     row('Connect code:', ttk.Entry(grid, textvariable=self.connect_var, width=16), 3)
     row('Runtime seconds (blank = forever):', ttk.Entry(grid, textvariable=self.runtime_var, width=8), 4)
     row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=40), 5)
-    ttk.Button(grid, text='Browse…', command=self._pick_user_json).grid(row=5, column=2, padx=4)
+    ttk.Button(grid, text='Browse…', command=self._pick_user_json).grid(row=5, column=2, padx=PAD_XS)
     grid.pack(fill='x')
 
   def _pick_model(self):
@@ -1176,10 +1186,10 @@ class DiscordTab(ttk.Frame):
 
     grid = ttk.Frame(self)
     def row(label, widget, r, browse=None):
-      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=4, pady=2)
-      widget.grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+      ttk.Label(grid, text=label).grid(row=r, column=0, sticky='w', padx=PAD_S, pady=PAD_XS)
+      widget.grid(row=r, column=1, sticky='ew', padx=PAD_S, pady=PAD_XS)
       if browse is not None:
-        ttk.Button(grid, text='Browse…', command=browse).grid(row=r, column=2, padx=4)
+        ttk.Button(grid, text='Browse…', command=browse).grid(row=r, column=2, padx=PAD_XS)
 
     row('Bot token:', ttk.Entry(grid, textvariable=self.token_var, show='*', width=50), 0)
     row('Allowed channel IDs:', ttk.Entry(grid, textvariable=self.channels_var, width=50), 1)
@@ -1192,20 +1202,20 @@ class DiscordTab(ttk.Frame):
     chars = ttk.LabelFrame(self, text='Supported characters (which your model can play)')
     for i, c in enumerate(CHARACTERS):
       ttk.Checkbutton(chars, text=c.lower(), variable=self.char_vars[c]).grid(
-          row=i // 6, column=i % 6, sticky='w', padx=6, pady=2)
-    chars.pack(fill='x', pady=4)
+          row=i // 6, column=i % 6, sticky='w', padx=PAD_S, pady=PAD_XS)
+    chars.pack(fill='x', pady=PAD_S)
 
     controls = ttk.Frame(self)
     self.start_btn = ttk.Button(controls, text='Start bot', command=self._on_start)
     self.stop_btn = ttk.Button(controls, text='Stop bot', command=self._on_stop, state='disabled')
     self.status = ttk.Label(controls, text='stopped')
     self.slot_label = ttk.Label(controls, text='match slot: idle', foreground='#666666')
-    self.start_btn.pack(side='left', padx=4)
-    self.stop_btn.pack(side='left', padx=4)
-    self.status.pack(side='left', padx=12)
-    self.slot_label.pack(side='left', padx=12)
-    controls.pack(fill='x', pady=(8, 4))
-    self._error_label.pack(fill='x', pady=(0, 4))
+    self.start_btn.pack(side='left', padx=PAD_XS)
+    self.stop_btn.pack(side='left', padx=PAD_XS)
+    self.status.pack(side='left', padx=PAD_M)
+    self.slot_label.pack(side='left', padx=PAD_M)
+    controls.pack(fill='x', pady=(PAD_M, PAD_S))
+    self._error_label.pack(fill='x', pady=(0, PAD_S))
 
   def _pick_model(self):
     p = filedialog.askopenfilename(title='Select model file', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
@@ -1313,9 +1323,9 @@ class LauncherApp:
     _apply_windows_dark_titlebar(self.root)
     self.config = Config.load()
     self.global_paths = GlobalPathsFrame(self.root, initial=self.config.global_)
-    self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
+    self.global_paths.pack(fill='x', padx=PAD_M, pady=(PAD_M, PAD_S))
     self.notebook = ttk.Notebook(self.root)
-    self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
+    self.notebook.pack(fill='both', expand=True, padx=PAD_M, pady=PAD_M)
     for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab, NetplayTab, DiscordTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
@@ -1325,7 +1335,7 @@ class LauncherApp:
           self.notebook.select(i)
           break
     self.log = LogPanel(self.root)
-    self.log.pack(fill='both', expand=False, padx=8, pady=(0, 8))
+    self.log.pack(fill='both', expand=False, padx=PAD_M, pady=(0, PAD_M))
     self.runner = ProcessRunner(self.root, self.log)
     self._quit_requested = False
     self.root.protocol('WM_DELETE_WINDOW', self._on_close)
