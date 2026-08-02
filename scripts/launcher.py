@@ -1,5 +1,6 @@
 """Tkinter launcher for slippi-ai scripts. See docs/superpowers/specs/2026-08-01-slippi-ai-launcher-gui-design.md."""
 
+import asyncio
 import collections
 import dataclasses
 import json
@@ -85,6 +86,84 @@ class MatchRequest:
   connect_code: str
   character: str
   started_at: float
+
+
+class DiscordBotThread:
+
+  def __init__(self, app: 'LauncherApp', status_cb):
+    self._app = app
+    self._status_cb = status_cb
+    self._thread: threading.Thread | None = None
+    self._loop: asyncio.AbstractEventLoop | None = None
+    self._client = None  # discord.Client, created inside the thread
+    self._active: 'MatchRequest | None' = None
+    self._timeout_task = None
+    self._allowed_channels: list[int] = []
+    self._model_path: str = ''
+    self._user_json_path: str = ''
+    self._character_choices: list[str] = []
+
+  @property
+  def is_running(self) -> bool:
+    return self._thread is not None and self._thread.is_alive()
+
+  def start(self, token: str, allowed_channels: list[int], model_path: str,
+            user_json_path: str, character_choices: list[str]) -> None:
+    if self.is_running:
+      raise RuntimeError('Discord bot already running.')
+    self._allowed_channels = list(allowed_channels)
+    self._model_path = model_path
+    self._user_json_path = user_json_path
+    self._character_choices = list(character_choices)
+    self._thread = threading.Thread(target=self._run, args=(token,), daemon=True)
+    self._thread.start()
+
+  def stop(self) -> None:
+    if self._loop is None or self._client is None:
+      return
+    fut = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
+    try:
+      fut.result(timeout=5)
+    except Exception:
+      pass
+
+  def _post_status(self, text: str) -> None:
+    self._app.root.after(0, self._status_cb, text)
+
+  def _run(self, token: str) -> None:
+    import discord
+    self._loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(self._loop)
+    intents = discord.Intents.default()
+    self._client = discord.Client(intents=intents)
+
+    @self._client.event
+    async def on_ready():
+      self._post_status(f'connected as {self._client.user}')
+
+    @self._client.event
+    async def on_disconnect():
+      self._post_status('disconnected — reconnecting…')
+
+    @self._client.event
+    async def on_resumed():
+      self._post_status(f'connected as {self._client.user}')
+
+    try:
+      self._loop.run_until_complete(self._client.start(token))
+    except discord.LoginFailure:
+      self._post_status('bad token')
+    except Exception as e:
+      self._post_status(f'error: {e}')
+    finally:
+      try:
+        self._loop.run_until_complete(self._client.close())
+      except Exception:
+        pass
+      self._loop.close()
+      self._loop = None
+      self._client = None
+      self._post_status('stopped')
 
 
 class LogPanel(ttk.Frame):
