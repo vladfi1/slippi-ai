@@ -359,6 +359,20 @@ class MatchRequestTest(unittest.TestCase):
     self.assertEqual(r.user_id, 42)
     self.assertEqual(r.character, 'fox')
     self.assertEqual(r.started_at, 1.5)
+    # New defaults.
+    self.assertEqual(r.attempt, 1)
+    self.assertEqual(r.max_attempts, 2)
+    self.assertFalse(r.match_started)
+
+  def test_construction_with_new_fields(self):
+    r = launcher.MatchRequest(
+        user_id=1, user_name='x', channel_id=1,
+        connect_code='X#1', character='fox', started_at=0.0,
+        attempt=2, max_attempts=3, match_started=True,
+    )
+    self.assertEqual(r.attempt, 2)
+    self.assertEqual(r.max_attempts, 3)
+    self.assertTrue(r.match_started)
 
 
 class ScrubForPublicTest(unittest.TestCase):

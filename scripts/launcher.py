@@ -161,6 +161,9 @@ class MatchRequest:
   connect_code: str
   character: str
   started_at: float
+  attempt: int = 1
+  max_attempts: int = 2
+  match_started: bool = False
 
 
 class DiscordBotThread:
