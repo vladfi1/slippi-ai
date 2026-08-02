@@ -681,31 +681,35 @@ class ProcessRunner:
     if not self.is_running:
       return
     assert self._proc is not None
+    # Capture the specific process we're targeting so escalation callbacks
+    # scheduled below don't accidentally kill a NEW process started later
+    # (preempt-then-restart cycles ~0.5 s while escalation fires at 3-5 s).
+    target = self._proc
     try:
       if sys.platform == 'win32':
-        self._proc.send_signal(signal.CTRL_BREAK_EVENT)
+        target.send_signal(signal.CTRL_BREAK_EVENT)
       else:
-        self._proc.terminate()
+        target.terminate()
     except OSError:
       pass
-    self._root.after(int(self._STOP_GRACE_S * 1000), self._escalate_terminate)
+    self._root.after(int(self._STOP_GRACE_S * 1000),
+                     lambda: self._escalate_terminate(target))
 
-  def _escalate_terminate(self) -> None:
-    if not self.is_running:
+  def _escalate_terminate(self, target: 'subprocess.Popen') -> None:
+    if self._proc is not target or target.poll() is not None:
       return
-    assert self._proc is not None
     try:
-      self._proc.terminate()
+      target.terminate()
     except OSError:
       pass
-    self._root.after(int(self._TERMINATE_GRACE_S * 1000), self._escalate_kill)
+    self._root.after(int(self._TERMINATE_GRACE_S * 1000),
+                     lambda: self._escalate_kill(target))
 
-  def _escalate_kill(self) -> None:
-    if not self.is_running:
+  def _escalate_kill(self, target: 'subprocess.Popen') -> None:
+    if self._proc is not target or target.poll() is not None:
       return
-    assert self._proc is not None
     try:
-      self._proc.kill()
+      target.kill()
     except OSError:
       pass
     # On Windows, killing the netplay Python process does NOT reap the
@@ -715,7 +719,7 @@ class ProcessRunner:
     if sys.platform == 'win32':
       try:
         subprocess.run(
-            ['taskkill', '/F', '/T', '/PID', str(self._proc.pid)],
+            ['taskkill', '/F', '/T', '/PID', str(target.pid)],
             capture_output=True, timeout=5)
       except (OSError, subprocess.SubprocessError):
         pass
