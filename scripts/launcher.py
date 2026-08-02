@@ -155,7 +155,6 @@ class ProcessRunner:
   def stop(self) -> None:
     if not self.is_running:
       return
-    import time
     assert self._proc is not None
     try:
       if sys.platform == 'win32':
@@ -164,16 +163,26 @@ class ProcessRunner:
         self._proc.terminate()
     except OSError:
       pass
-    deadline = time.monotonic() + self._STOP_GRACE_S
-    while time.monotonic() < deadline and self._proc.poll() is None:
-      time.sleep(0.1)
-    if self._proc.poll() is None:
+    self._root.after(int(self._STOP_GRACE_S * 1000), self._escalate_terminate)
+
+  def _escalate_terminate(self) -> None:
+    if not self.is_running:
+      return
+    assert self._proc is not None
+    try:
       self._proc.terminate()
-      deadline = time.monotonic() + self._TERMINATE_GRACE_S
-      while time.monotonic() < deadline and self._proc.poll() is None:
-        time.sleep(0.1)
-    if self._proc.poll() is None:
+    except OSError:
+      pass
+    self._root.after(int(self._TERMINATE_GRACE_S * 1000), self._escalate_kill)
+
+  def _escalate_kill(self) -> None:
+    if not self.is_running:
+      return
+    assert self._proc is not None
+    try:
       self._proc.kill()
+    except OSError:
+      pass
 
 
 class AdvancedSection(ttk.Frame):
@@ -442,6 +451,8 @@ class EvalTwoTab(ScriptTab):
       errors.append('ISO path is required.')
     elif not pathlib.Path(global_paths['iso_path']).is_file():
       errors.append(f'ISO path does not exist: {global_paths["iso_path"]}')
+    if tab_values['p1']['type'] == 'human' and tab_values['p2']['type'] == 'human':
+      errors.append('At least one player must be AI or CPU (both cannot be human).')
     for name, p in (('Player 1', tab_values['p1']), ('Player 2', tab_values['p2'])):
       if p['type'] == 'ai':
         if not p.get('model_path'):
@@ -729,14 +740,20 @@ class LauncherApp:
     self.log = LogPanel(self.root)
     self.log.pack(fill='both', expand=False, padx=8, pady=(0, 8))
     self.runner = ProcessRunner(self.root, self.log)
+    self._quit_requested = False
     self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
   def _on_close(self):
     if self.runner.is_running:
-      from tkinter import messagebox
-      if not messagebox.askyesno('Script running', 'A script is still running. Stop and quit?'):
-        return
-      self.runner.stop()
+      if not self._quit_requested:
+        from tkinter import messagebox
+        if not messagebox.askyesno('Script running', 'A script is still running. Stop and quit?'):
+          return
+        self._quit_requested = True
+        self.runner.stop()
+      # Re-poll every 200 ms until the process has exited.
+      self.root.after(200, self._on_close)
+      return
     self.config.global_ = self.global_paths.values()
     self.config.save()
     self.root.destroy()

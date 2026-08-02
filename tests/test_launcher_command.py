@@ -131,6 +131,18 @@ class EvalTwoValidateTest(unittest.TestCase):
     self.assertTrue(any('ISO' in e for e in errors))
     self.assertTrue(any('model' in e.lower() for e in errors))
 
+  def test_flags_both_players_human(self):
+    errors = launcher.EvalTwoTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values={
+            'p1': {'type': 'human', 'character': 'FOX', 'model_path': '', 'cpu_level': '9'},
+            'p2': {'type': 'human', 'character': 'FALCO', 'model_path': '', 'cpu_level': '9'},
+            'num_games': '',
+            'advanced': _DEFAULT_ADV,
+        },
+    )
+    self.assertTrue(any('both cannot be human' in e.lower() or 'both' in e.lower() for e in errors))
+
 
 class RunDolphinTest(unittest.TestCase):
 
