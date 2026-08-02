@@ -280,6 +280,177 @@ class PlayerFrame(ttk.LabelFrame):
     }
 
 
+class ScriptTab(ttk.Frame):
+  """Abstract base for one script's tab."""
+
+  TAB_KEY: str = ''  # subclass sets, e.g. 'eval_two'
+  SCRIPT: str = ''   # e.g. 'scripts/eval_two.py'
+  LABEL: str = ''    # notebook tab label
+
+  def __init__(self, parent, app):
+    super().__init__(parent)
+    self.app = app
+    self._error_label = ttk.Label(self, foreground='#c00000', wraplength=800, justify='left')
+    self._build_widgets()
+    self._build_controls()
+
+  # Subclasses override:
+  def _build_widgets(self) -> None: raise NotImplementedError
+  def _values(self) -> dict: raise NotImplementedError
+
+  @staticmethod
+  def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
+    raise NotImplementedError
+
+  @staticmethod
+  def validate(global_paths: dict, tab_values: dict) -> list[str]:
+    raise NotImplementedError
+
+  def _build_controls(self):
+    controls = ttk.Frame(self)
+    self.run_btn = ttk.Button(controls, text='Run', command=self._on_run)
+    self.stop_btn = ttk.Button(controls, text='Stop', command=self._on_stop, state='disabled')
+    self.status = ttk.Label(controls, text='idle')
+    self.run_btn.pack(side='left', padx=4)
+    self.stop_btn.pack(side='left', padx=4)
+    self.status.pack(side='left', padx=12)
+    controls.pack(fill='x', pady=(8, 4))
+    self._error_label.pack(fill='x', pady=(0, 4))
+
+  def _on_run(self):
+    global_paths = self.app.global_paths.values()
+    tab_values = self._values()
+    errors = self.validate(global_paths, tab_values)
+    if errors:
+      self._error_label.configure(text='\n'.join(errors))
+      return
+    self._error_label.configure(text='')
+    # Persist config snapshot.
+    self.app.config.global_ = global_paths
+    self.app.config.tabs[self.TAB_KEY] = tab_values
+    self.app.config.last_tab = self.TAB_KEY
+    self.app.config.save()
+    argv = self.build_argv(global_paths, tab_values)
+    self.run_btn.configure(state='disabled')
+    self.stop_btn.configure(state='normal')
+    self.status.configure(text='running')
+    self.app.runner.start(argv, cwd=REPO_ROOT, on_exit=self._on_exit)
+
+  def _on_stop(self):
+    self.app.runner.stop()
+
+  def _on_exit(self, code: int):
+    self.run_btn.configure(state='normal')
+    self.stop_btn.configure(state='disabled')
+    self.status.configure(text=f'exited (code {code})')
+
+
+def _add_player_flags(args: list[str], prefix: str, p: dict, advanced: dict | None = None) -> None:
+  """Append fancyflags for one player. `advanced` applies only when type=ai."""
+  t = p.get('type', 'ai')
+  args.append(f'--{prefix}.type={t}')
+  if t in ('ai', 'cpu'):
+    args.append(f'--{prefix}.character={p.get("character", "FOX")}')
+  if t == 'ai' and p.get('model_path'):
+    args.append(f'--{prefix}.ai.path={p["model_path"]}')
+  if t == 'cpu':
+    args.append(f'--{prefix}.level={p.get("cpu_level", "9")}')
+  if t == 'ai' and advanced:
+    st = str(advanced.get('sample_temperature', '')).strip()
+    if st:
+      args.append(f'--{prefix}.ai.sample_temperature={st}')
+    args.append(f'--{prefix}.ai.async_inference={"true" if advanced.get("async_inference") else "false"}')
+    name = str(advanced.get('name', '')).strip()
+    if name:
+      args.append(f'--{prefix}.ai.name={name}')
+    args.append(f'--{prefix}.ai.mirror={"true" if advanced.get("mirror") else "false"}')
+
+
+class EvalTwoTab(ScriptTab):
+
+  TAB_KEY = 'eval_two'
+  SCRIPT = 'scripts/eval_two.py'
+  LABEL = 'eval_two'
+
+  def _build_widgets(self):
+    initial = self.app.config.tabs.get(self.TAB_KEY, {})
+    row = ttk.Frame(self)
+    self.p1 = PlayerFrame(row, 'Player 1', initial.get('p1', {'type': 'human'}))
+    self.p2 = PlayerFrame(row, 'Player 2', initial.get('p2', {'type': 'ai', 'character': 'FALCO'}))
+    self.p1.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+    self.p2.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+    row.pack(fill='x')
+
+    ngf = ttk.Frame(self)
+    ttk.Label(ngf, text='Num games:').pack(side='left', padx=4)
+    self.num_games_var = tk.StringVar(value=initial.get('num_games', ''))
+    ttk.Entry(ngf, textvariable=self.num_games_var, width=8).pack(side='left', padx=4)
+    ttk.Label(ngf, text='(blank = infinite)', foreground='#666666').pack(side='left', padx=4)
+    ngf.pack(fill='x', pady=4)
+
+    # Advanced (collapsible) — applies to whichever players are AI.
+    adv = initial.get('advanced', {})
+    self.sample_temperature = tk.StringVar(value=adv.get('sample_temperature', '1.0'))
+    self.async_inference = tk.BooleanVar(value=bool(adv.get('async_inference', True)))
+    self.agent_name = tk.StringVar(value=adv.get('name', ''))
+    self.mirror = tk.BooleanVar(value=bool(adv.get('mirror', False)))
+    adv_sec = AdvancedSection(self)
+    body = adv_sec.body
+    def _adv_entry(text, var, width=10):
+      f = ttk.Frame(body); ttk.Label(f, text=text).pack(side='left', padx=4)
+      ttk.Entry(f, textvariable=var, width=width).pack(side='left', padx=4); f.pack(anchor='w')
+    _adv_entry('sample_temperature:', self.sample_temperature)
+    _adv_entry('name (blank = default):', self.agent_name, width=20)
+    ttk.Checkbutton(body, text='async_inference', variable=self.async_inference).pack(anchor='w')
+    ttk.Checkbutton(body, text='mirror (flip x axis)', variable=self.mirror).pack(anchor='w')
+    adv_sec.pack(fill='x', pady=4)
+
+  def _values(self) -> dict:
+    return {
+        'p1': self.p1.values(),
+        'p2': self.p2.values(),
+        'num_games': self.num_games_var.get().strip(),
+        'advanced': {
+            'sample_temperature': self.sample_temperature.get().strip(),
+            'async_inference': self.async_inference.get(),
+            'name': self.agent_name.get().strip(),
+            'mirror': self.mirror.get(),
+        },
+    }
+
+  @staticmethod
+  def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
+    argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'eval_two.py')]
+    adv = tab_values.get('advanced', {})
+    _add_player_flags(argv, 'p1', tab_values['p1'], adv)
+    _add_player_flags(argv, 'p2', tab_values['p2'], adv)
+    argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
+    argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
+    ng = tab_values.get('num_games', '').strip()
+    if ng:
+      argv.append(f'--num_games={ng}')
+    return argv
+
+  @staticmethod
+  def validate(global_paths: dict, tab_values: dict) -> list[str]:
+    errors = []
+    if not global_paths.get('dolphin_path'):
+      errors.append('Dolphin path is required.')
+    elif not pathlib.Path(global_paths['dolphin_path']).is_file():
+      errors.append(f'Dolphin path does not exist: {global_paths["dolphin_path"]}')
+    if not global_paths.get('iso_path'):
+      errors.append('ISO path is required.')
+    elif not pathlib.Path(global_paths['iso_path']).is_file():
+      errors.append(f'ISO path does not exist: {global_paths["iso_path"]}')
+    for name, p in (('Player 1', tab_values['p1']), ('Player 2', tab_values['p2'])):
+      if p['type'] == 'ai':
+        if not p.get('model_path'):
+          errors.append(f'{name}: model path is required when type=ai.')
+        elif not pathlib.Path(p['model_path']).exists():
+          errors.append(f'{name}: model path does not exist: {p["model_path"]}')
+    return errors
+
+
 class LauncherApp:
 
   def __init__(self):
@@ -291,6 +462,9 @@ class LauncherApp:
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
+    for tab_cls in (EvalTwoTab,):
+      tab = tab_cls(self.notebook, self)
+      self.notebook.add(tab, text=tab_cls.LABEL)
     self.log = LogPanel(self.root)
     self.log.pack(fill='both', expand=False, padx=8, pady=(0, 8))
     self.runner = ProcessRunner(self.root, self.log)
