@@ -1256,6 +1256,7 @@ class DiscordTab(ttk.Frame):
     self.model_var = tk.StringVar(value=initial.get('model_path', ''))
     self.user_json_var = tk.StringVar(value=initial.get('user_json_path', ''))
     self.timeout_var = tk.StringVar(value=initial.get('connect_timeout_s', '600'))
+    self.max_attempts_var = tk.StringVar(value=initial.get('max_attempts', '2'))
     initial_chars = set(initial.get('supported_characters', []))
     self.char_vars: dict[str, tk.BooleanVar] = {
         c: tk.BooleanVar(value=(c.lower() in initial_chars))
@@ -1274,6 +1275,7 @@ class DiscordTab(ttk.Frame):
     row('Model path:', ttk.Entry(grid, textvariable=self.model_var, width=50), 2, browse=self._pick_model)
     row('Slippi user.json:', ttk.Entry(grid, textvariable=self.user_json_var, width=50), 3, browse=self._pick_user_json)
     row('Connect timeout (s):', ttk.Entry(grid, textvariable=self.timeout_var, width=8), 4)
+    row('Max attempts per request:', ttk.Spinbox(grid, from_=1, to=5, textvariable=self.max_attempts_var, width=6), 5)
     grid.grid_columnconfigure(1, weight=1)
     grid.pack(fill='x')
 
@@ -1313,6 +1315,7 @@ class DiscordTab(ttk.Frame):
         'model_path': self.model_var.get(),
         'user_json_path': self.user_json_var.get(),
         'connect_timeout_s': self.timeout_var.get().strip() or '600',
+        'max_attempts': self.max_attempts_var.get(),
         'supported_characters': checked,
     }
 
@@ -1341,6 +1344,8 @@ class DiscordTab(ttk.Frame):
         raise ValueError
     except ValueError:
       errors.append('Connect timeout must be a positive integer (seconds).')
+    if parse_max_attempts(values.get('max_attempts', '')) is None:
+      errors.append('Max attempts must be an integer between 1 and 5.')
     return errors
 
   @staticmethod
@@ -1368,6 +1373,7 @@ class DiscordTab(ttk.Frame):
         model_path=values['model_path'],
         user_json_path=values['user_json_path'],
         character_choices=values['supported_characters'],
+        max_attempts=parse_max_attempts(values['max_attempts']) or 2,
     )
     self.start_btn.configure(state='disabled')
     self.stop_btn.configure(state='normal')
