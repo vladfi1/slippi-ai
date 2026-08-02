@@ -9,9 +9,27 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# Hardcoded to avoid importing melee at startup (slow first-open).
+# Source: melee.Character enum in libmelee.
+CHARACTERS = [
+    'FOX', 'FALCO', 'MARTH', 'SHEIK', 'JIGGLYPUFF', 'CAPTAIN_FALCON',
+    'PEACH', 'ICE_CLIMBERS', 'PIKACHU', 'SAMUS', 'DR_MARIO', 'YOSHI',
+    'LUIGI', 'GANONDORF', 'MARIO', 'YOUNG_LINK', 'LINK', 'DONKEY_KONG',
+    'GAME_AND_WATCH', 'MEWTWO', 'ROY', 'PICHU', 'NESS', 'BOWSER',
+    'KIRBY', 'ZELDA',
+]
+PLAYER_TYPES = ['ai', 'human', 'cpu']
+MODELS_DIR = REPO_ROOT / 'models'
+
+
+def list_models() -> list[str]:
+  if not MODELS_DIR.is_dir():
+    return []
+  return sorted(p.name for p in MODELS_DIR.iterdir() if p.is_dir())
 
 
 class Config:
@@ -176,18 +194,106 @@ class AdvancedSection(ttk.Frame):
       self.body.pack_forget()
 
 
+class GlobalPathsFrame(ttk.LabelFrame):
+
+  def __init__(self, parent, initial: dict):
+    super().__init__(parent, text='Global paths')
+    self.dolphin_var = tk.StringVar(value=initial.get('dolphin_path', ''))
+    self.iso_var = tk.StringVar(value=initial.get('iso_path', ''))
+    self._row('Dolphin:', self.dolphin_var, 0, self._pick_dolphin)
+    self._row('ISO:', self.iso_var, 1, self._pick_iso)
+    self.grid_columnconfigure(1, weight=1)
+
+  def _row(self, label, var, row, browse_cmd):
+    ttk.Label(self, text=label).grid(row=row, column=0, sticky='w', padx=4, pady=2)
+    ttk.Entry(self, textvariable=var).grid(row=row, column=1, sticky='ew', padx=4, pady=2)
+    ttk.Button(self, text='Browse…', command=browse_cmd).grid(row=row, column=2, padx=4, pady=2)
+
+  def _pick_dolphin(self):
+    p = filedialog.askopenfilename(title='Select Slippi Dolphin.exe', filetypes=[('Executable', '*.exe'), ('All files', '*.*')])
+    if p:
+      self.dolphin_var.set(p)
+
+  def _pick_iso(self):
+    p = filedialog.askopenfilename(title='Select SSBM ISO', filetypes=[('ISO', '*.iso'), ('All files', '*.*')])
+    if p:
+      self.iso_var.set(p)
+
+  def values(self) -> dict:
+    return {'dolphin_path': self.dolphin_var.get(), 'iso_path': self.iso_var.get()}
+
+
+class PlayerFrame(ttk.LabelFrame):
+
+  def __init__(self, parent, label: str, initial: dict):
+    super().__init__(parent, text=label)
+    self.type_var = tk.StringVar(value=initial.get('type', 'ai'))
+    self.char_var = tk.StringVar(value=initial.get('character', 'FOX'))
+    self.model_var = tk.StringVar(value=initial.get('model_path', ''))
+    self.level_var = tk.StringVar(value=initial.get('cpu_level', '9'))
+
+    ttk.Label(self, text='Type:').grid(row=0, column=0, sticky='w', padx=4, pady=2)
+    ttk.Combobox(self, textvariable=self.type_var, values=PLAYER_TYPES, state='readonly', width=8).grid(row=0, column=1, sticky='w', padx=4, pady=2)
+
+    self.char_label = ttk.Label(self, text='Character:')
+    self.char_combo = ttk.Combobox(self, textvariable=self.char_var, values=CHARACTERS, state='readonly', width=18)
+
+    self.model_label = ttk.Label(self, text='Model:')
+    self.model_combo = ttk.Combobox(self, textvariable=self.model_var, values=list_models(), width=30)
+    self.model_browse = ttk.Button(self, text='Browse…', command=self._pick_model)
+
+    self.level_label = ttk.Label(self, text='CPU Level:')
+    self.level_spin = ttk.Spinbox(self, from_=1, to=9, textvariable=self.level_var, width=4)
+
+    self._layout()
+    self.type_var.trace_add('write', lambda *_: self._layout())
+
+  def _pick_model(self):
+    p = filedialog.askdirectory(title='Select model directory', initialdir=str(MODELS_DIR) if MODELS_DIR.is_dir() else None)
+    if p:
+      self.model_var.set(p)
+
+  def _layout(self):
+    for w in (self.char_label, self.char_combo, self.model_label, self.model_combo, self.model_browse, self.level_label, self.level_spin):
+      w.grid_forget()
+    t = self.type_var.get()
+    row = 1
+    if t in ('ai', 'cpu'):
+      self.char_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
+      self.char_combo.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+      row += 1
+    if t == 'ai':
+      self.model_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
+      self.model_combo.grid(row=row, column=1, sticky='ew', padx=4, pady=2)
+      self.model_browse.grid(row=row, column=2, padx=4, pady=2)
+      row += 1
+    if t == 'cpu':
+      self.level_label.grid(row=row, column=0, sticky='w', padx=4, pady=2)
+      self.level_spin.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+
+  def values(self) -> dict:
+    return {
+        'type': self.type_var.get(),
+        'character': self.char_var.get(),
+        'model_path': self.model_var.get(),
+        'cpu_level': self.level_var.get(),
+    }
+
+
 class LauncherApp:
 
   def __init__(self):
     self.root = tk.Tk()
     self.root.title('Slippi-AI Launcher')
     self.root.geometry('900x700')
+    self.config = Config.load()
+    self.global_paths = GlobalPathsFrame(self.root, initial=self.config.global_)
+    self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
     self.log = LogPanel(self.root)
     self.log.pack(fill='both', expand=False, padx=8, pady=(0, 8))
     self.runner = ProcessRunner(self.root, self.log)
-    self.config = Config.load()
     self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
   def _on_close(self):
@@ -196,6 +302,7 @@ class LauncherApp:
       if not messagebox.askyesno('Script running', 'A script is still running. Stop and quit?'):
         return
       self.runner.stop()
+    self.config.global_ = self.global_paths.values()
     self.config.save()
     self.root.destroy()
 
