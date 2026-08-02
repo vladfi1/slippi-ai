@@ -77,21 +77,41 @@ def _apply_windows_dark_titlebar(root: tk.Tk) -> None:
   No-op on non-Windows or older Windows versions."""
   if sys.platform != 'win32':
     return
-  try:
-    import ctypes
-    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-    value = ctypes.c_int(1)
-    # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE on Win10 build 18985+ and Win11.
-    # 19 is the older undocumented attribute on Win10 builds 17763-18984.
-    for attr in (20, 19):
-      if ctypes.windll.dwmapi.DwmSetWindowAttribute(
-          hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
-        # Force a redraw so the change becomes visible immediately.
-        root.withdraw()
-        root.deiconify()
-        return
-  except Exception:
-    pass  # Silent fallback — title bar stays light, rest of UI is fine.
+  import ctypes
+
+  def _try_set():
+    try:
+      # Ensure the window has been realized so its HWND is valid.
+      root.update_idletasks()
+      # Try both HWND resolutions — depending on how the Tk build wraps
+      # the toplevel, either the winfo_id itself or its parent is the
+      # HWND that owns the title bar.
+      candidates = [root.winfo_id()]
+      parent = ctypes.windll.user32.GetParent(root.winfo_id())
+      if parent:
+        candidates.append(parent)
+      value = ctypes.c_int(1)
+      dwm = ctypes.windll.dwmapi
+      for hwnd in candidates:
+        for attr in (20, 19):
+          hr = dwm.DwmSetWindowAttribute(
+              hwnd, attr, ctypes.byref(value), ctypes.sizeof(value))
+          if hr == 0:
+            # Force a redraw so the title-bar color updates immediately.
+            root.withdraw()
+            root.deiconify()
+            return
+      # If we got here, nothing worked. Print once so it shows in the
+      # console output when the user runs launcher.bat.
+      print(f'[launcher] dark title bar not applied '
+            f'(hwnds={candidates}); Windows version may not support it.',
+            file=sys.stderr)
+    except Exception as e:
+      print(f'[launcher] dark title bar error: {e}', file=sys.stderr)
+
+  # Defer to after the window is fully mapped — some Windows builds
+  # ignore the attribute if set before the window is on screen.
+  root.after(50, _try_set)
 
 
 class Config:
