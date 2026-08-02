@@ -498,6 +498,145 @@ class RunDolphinTab(ScriptTab):
     return errors
 
 
+class RunEvaluatorTab(ScriptTab):
+
+  TAB_KEY = 'run_evaluator'
+  SCRIPT = 'scripts/run_evaluator.py'
+  LABEL = 'run_evaluator'
+
+  def _build_widgets(self):
+    initial = self.app.config.tabs.get(self.TAB_KEY, {})
+    self.player_model = tk.StringVar(value=initial.get('player', {}).get('model_path', ''))
+    self.player_char = tk.StringVar(value=initial.get('player', {}).get('character', 'FOX'))
+    self.opp_model = tk.StringVar(value=initial.get('opponent', {}).get('model_path', ''))
+    self.opp_char = tk.StringVar(value=initial.get('opponent', {}).get('character', 'FALCO'))
+    self.self_play = tk.BooleanVar(value=bool(initial.get('self_play', False)))
+    self.num_envs = tk.StringVar(value=initial.get('num_envs', '4'))
+    self.rollout_length = tk.StringVar(value=initial.get('rollout_length', '3600'))
+    self.num_games = tk.StringVar(value=initial.get('num_games', ''))
+    # Advanced:
+    self.use_gpu = tk.BooleanVar(value=bool(initial.get('use_gpu', True)))
+    self.async_envs = tk.BooleanVar(value=bool(initial.get('async_envs', False)))
+    self.sim_envs = tk.BooleanVar(value=bool(initial.get('sim_envs', False)))
+    self.fake_envs = tk.BooleanVar(value=bool(initial.get('fake_envs', False)))
+    self.swap_ports = tk.BooleanVar(value=bool(initial.get('swap_ports', True)))
+    self.quiet = tk.BooleanVar(value=bool(initial.get('quiet', False)))
+    self.burnin = tk.BooleanVar(value=bool(initial.get('burnin', False)))
+    self.num_env_steps = tk.StringVar(value=initial.get('num_env_steps', '0'))
+    self.inner_batch_size = tk.StringVar(value=initial.get('inner_batch_size', '1'))
+    self.num_agent_steps = tk.StringVar(value=initial.get('num_agent_steps', '0'))
+
+    row = 0
+    grid = ttk.Frame(self)
+    def label_entry(text, var, width=30, r=None):
+      nonlocal row
+      r = row if r is None else r
+      ttk.Label(grid, text=text).grid(row=r, column=0, sticky='w', padx=4, pady=2)
+      ttk.Entry(grid, textvariable=var, width=width).grid(row=r, column=1, sticky='ew', padx=4, pady=2)
+      row = r + 1
+    def label_combo(text, var, values, width=18):
+      nonlocal row
+      ttk.Label(grid, text=text).grid(row=row, column=0, sticky='w', padx=4, pady=2)
+      ttk.Combobox(grid, textvariable=var, values=values, state='readonly', width=width).grid(row=row, column=1, sticky='w', padx=4, pady=2)
+      row += 1
+
+    label_entry('Player model path:', self.player_model, width=40)
+    label_combo('Player character:', self.player_char, CHARACTERS)
+    ttk.Checkbutton(grid, text='Self play (use player for both)', variable=self.self_play).grid(row=row, column=0, columnspan=2, sticky='w', padx=4, pady=2); row += 1
+    label_entry('Opponent model path:', self.opp_model, width=40)
+    label_combo('Opponent character:', self.opp_char, CHARACTERS)
+    label_entry('Num envs:', self.num_envs, width=8)
+    label_entry('Rollout length:', self.rollout_length, width=8)
+    label_entry('Num games (blank = infinite):', self.num_games, width=8)
+    grid.pack(fill='x')
+
+    adv_sec = AdvancedSection(self)
+    body = adv_sec.body
+    for var, text in [
+        (self.use_gpu, 'use_gpu'),
+        (self.async_envs, 'async_envs'),
+        (self.sim_envs, 'sim_envs'),
+        (self.fake_envs, 'fake_envs'),
+        (self.swap_ports, 'swap_ports'),
+        (self.quiet, 'quiet'),
+        (self.burnin, 'burnin'),
+    ]:
+      ttk.Checkbutton(body, text=text, variable=var).pack(anchor='w', padx=4)
+    for var, text in [
+        (self.num_env_steps, 'num_env_steps'),
+        (self.inner_batch_size, 'inner_batch_size'),
+        (self.num_agent_steps, 'num_agent_steps'),
+    ]:
+      f = ttk.Frame(body)
+      ttk.Label(f, text=text + ':').pack(side='left', padx=4)
+      ttk.Entry(f, textvariable=var, width=8).pack(side='left', padx=4)
+      f.pack(anchor='w')
+    adv_sec.pack(fill='x', pady=6)
+
+  def _values(self) -> dict:
+    return {
+        'player': {'model_path': self.player_model.get(), 'character': self.player_char.get()},
+        'opponent': {'model_path': self.opp_model.get(), 'character': self.opp_char.get()},
+        'self_play': self.self_play.get(),
+        'num_envs': self.num_envs.get(),
+        'rollout_length': self.rollout_length.get(),
+        'num_games': self.num_games.get().strip(),
+        'use_gpu': self.use_gpu.get(),
+        'async_envs': self.async_envs.get(),
+        'sim_envs': self.sim_envs.get(),
+        'fake_envs': self.fake_envs.get(),
+        'swap_ports': self.swap_ports.get(),
+        'quiet': self.quiet.get(),
+        'burnin': self.burnin.get(),
+        'num_env_steps': self.num_env_steps.get(),
+        'inner_batch_size': self.inner_batch_size.get(),
+        'num_agent_steps': self.num_agent_steps.get(),
+    }
+
+  @staticmethod
+  def build_argv(global_paths: dict, tab_values: dict) -> list[str]:
+    argv = [sys.executable, str(REPO_ROOT / 'scripts' / 'run_evaluator.py')]
+    p = tab_values['player']
+    argv.append(f'--player.ai.path={p["model_path"]}')
+    argv.append(f'--player.character={p["character"]}')
+    self_play = bool(tab_values.get('self_play'))
+    argv.append(f'--self_play={"true" if self_play else "false"}')
+    if not self_play:
+      o = tab_values['opponent']
+      argv.append(f'--opponent.ai.path={o["model_path"]}')
+      argv.append(f'--opponent.character={o["character"]}')
+    argv.append(f'--num_envs={tab_values.get("num_envs", "1")}')
+    argv.append(f'--rollout_length={tab_values.get("rollout_length", "3600")}')
+    ng = str(tab_values.get('num_games', '')).strip()
+    if ng:
+      argv.append(f'--num_games={ng}')
+    for key in ('use_gpu', 'async_envs', 'sim_envs', 'fake_envs', 'swap_ports', 'quiet', 'burnin'):
+      argv.append(f'--{key}={"true" if tab_values.get(key) else "false"}')
+    for key in ('num_env_steps', 'inner_batch_size', 'num_agent_steps'):
+      argv.append(f'--{key}={tab_values.get(key, "0")}')
+    argv.append(f'--dolphin.path={global_paths.get("dolphin_path", "")}')
+    argv.append(f'--dolphin.iso={global_paths.get("iso_path", "")}')
+    return argv
+
+  @staticmethod
+  def validate(global_paths: dict, tab_values: dict) -> list[str]:
+    errors = []
+    if not global_paths.get('dolphin_path'):
+      errors.append('Dolphin path is required.')
+    if not global_paths.get('iso_path'):
+      errors.append('ISO path is required.')
+    if not tab_values['player'].get('model_path'):
+      errors.append('Player: model path is required.')
+    elif not pathlib.Path(tab_values['player']['model_path']).exists():
+      errors.append(f'Player: model path does not exist: {tab_values["player"]["model_path"]}')
+    if not tab_values.get('self_play'):
+      if not tab_values['opponent'].get('model_path'):
+        errors.append('Opponent: model path is required (or enable self-play).')
+      elif not pathlib.Path(tab_values['opponent']['model_path']).exists():
+        errors.append(f'Opponent: model path does not exist: {tab_values["opponent"]["model_path"]}')
+    return errors
+
+
 class LauncherApp:
 
   def __init__(self):
@@ -509,7 +648,7 @@ class LauncherApp:
     self.global_paths.pack(fill='x', padx=8, pady=(8, 4))
     self.notebook = ttk.Notebook(self.root)
     self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
-    for tab_cls in (EvalTwoTab, RunDolphinTab):
+    for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
     self.log = LogPanel(self.root)

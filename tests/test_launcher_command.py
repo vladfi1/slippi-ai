@@ -156,5 +156,69 @@ class RunDolphinTest(unittest.TestCase):
     self.assertTrue(any('ISO' in e for e in errors))
 
 
+def _eval_defaults():
+  return {
+      'player': {'model_path': r'C:\M1', 'character': 'FOX'},
+      'opponent': {'model_path': r'C:\M2', 'character': 'FALCO'},
+      'self_play': False,
+      'num_envs': '4',
+      'rollout_length': '3600',
+      'num_games': '',
+      # Advanced (defaults):
+      'use_gpu': True,
+      'async_envs': False,
+      'sim_envs': False,
+      'fake_envs': False,
+      'swap_ports': True,
+      'quiet': False,
+      'burnin': False,
+      'num_env_steps': '0',
+      'inner_batch_size': '1',
+      'num_agent_steps': '0',
+  }
+
+
+class RunEvaluatorTest(unittest.TestCase):
+
+  def test_build_argv_no_self_play(self):
+    argv = launcher.RunEvaluatorTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=_eval_defaults(),
+    )
+    rest = argv[2:]
+    self.assertEqual(argv[1], str(launcher.REPO_ROOT / 'scripts' / 'run_evaluator.py'))
+    self.assertIn('--self_play=false', rest)
+    self.assertIn(r'--player.ai.path=C:\M1', rest)
+    self.assertIn('--player.character=FOX', rest)
+    self.assertIn(r'--opponent.ai.path=C:\M2', rest)
+    self.assertIn('--opponent.character=FALCO', rest)
+    self.assertIn('--num_envs=4', rest)
+    self.assertIn('--rollout_length=3600', rest)
+    self.assertFalse(any(a.startswith('--num_games') for a in rest))
+    self.assertIn('--use_gpu=true', rest)
+
+  def test_build_argv_self_play_omits_opponent(self):
+    tv = _eval_defaults()
+    tv['self_play'] = True
+    tv['num_games'] = '10'
+    argv = launcher.RunEvaluatorTab.build_argv(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=tv,
+    )
+    rest = argv[2:]
+    self.assertIn('--self_play=true', rest)
+    self.assertFalse(any(a.startswith('--opponent.') for a in rest))
+    self.assertIn('--num_games=10', rest)
+
+  def test_validate_requires_player_model(self):
+    tv = _eval_defaults()
+    tv['player']['model_path'] = ''
+    errors = launcher.RunEvaluatorTab.validate(
+        global_paths={'dolphin_path': 'D', 'iso_path': 'I'},
+        tab_values=tv,
+    )
+    self.assertTrue(any('Player' in e and 'model' in e.lower() for e in errors))
+
+
 if __name__ == '__main__':
   unittest.main()
