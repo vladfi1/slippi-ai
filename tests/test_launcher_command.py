@@ -418,5 +418,24 @@ class ScrubForPublicTest(unittest.TestCase):
     self.assertIn('Error: something', out)
 
 
+class FormatDurationTest(unittest.TestCase):
+
+  def test_typical_match(self):
+    self.assertEqual(launcher._format_duration(4 * 60 + 12), '4m 12s')
+
+  def test_under_a_minute(self):
+    self.assertEqual(launcher._format_duration(45), '0m 45s')
+
+  def test_over_an_hour(self):
+    self.assertEqual(launcher._format_duration(65 * 60), '65m 0s')
+
+  def test_fractional_seconds_floor(self):
+    self.assertEqual(launcher._format_duration(90.9), '1m 30s')
+
+  def test_zero_and_negative(self):
+    self.assertEqual(launcher._format_duration(0), '0m 0s')
+    self.assertEqual(launcher._format_duration(-5), '0m 0s')
+
+
 if __name__ == '__main__':
   unittest.main()

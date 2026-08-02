@@ -75,6 +75,14 @@ def scrub_for_public(text: str) -> str:
   return ''.join(out_lines)
 
 
+def _format_duration(seconds: float) -> str:
+  """Format an elapsed-seconds value as '{m}m {s}s'. Clamps at 0."""
+  if seconds <= 0:
+    return '0m 0s'
+  total = int(seconds)
+  return f'{total // 60}m {total % 60}s'
+
+
 def list_models() -> list[str]:
   if not MODELS_DIR.is_dir():
     return []
