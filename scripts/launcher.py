@@ -685,11 +685,22 @@ class ProcessRunner:
     # scheduled below don't accidentally kill a NEW process started later
     # (preempt-then-restart cycles ~0.5 s while escalation fires at 3-5 s).
     target = self._proc
+    # On Windows, netplay launches Dolphin.exe as a grandchild via libmelee.
+    # A polite CTRL_BREAK to netplay's Python may kill netplay cleanly but
+    # leaves Dolphin.exe running as an orphan holding the slippi_port,
+    # which blocks the next attempt. taskkill /F /T reaps the whole tree
+    # in one shot — the only reliable option here.
+    if sys.platform == 'win32':
+      try:
+        subprocess.run(
+            ['taskkill', '/F', '/T', '/PID', str(target.pid)],
+            capture_output=True, timeout=5)
+      except (OSError, subprocess.SubprocessError):
+        pass
+      return
+    # Non-Windows fallback: gentle terminate, then escalate.
     try:
-      if sys.platform == 'win32':
-        target.send_signal(signal.CTRL_BREAK_EVENT)
-      else:
-        target.terminate()
+      target.terminate()
     except OSError:
       pass
     self._root.after(int(self._STOP_GRACE_S * 1000),
