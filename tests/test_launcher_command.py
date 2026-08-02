@@ -327,5 +327,27 @@ class LogPanelTest(unittest.TestCase):
     self.assertEqual(lines[-1], 'line 24\n')
 
 
+class ValidatorTest(unittest.TestCase):
+
+  def test_connect_code_valid(self):
+    for code in ['ABCD#123', 'TNBN#217', 'A1#1', 'ABCDEF#999999']:
+      with self.subTest(code=code):
+        self.assertTrue(launcher.validate_connect_code(code))
+
+  def test_connect_code_invalid(self):
+    for code in ['', 'abcd#123', 'ABCD-123', 'ABCD#', '#123',
+                 'A#1', 'ABCDEFG#1', 'ABCD#1234567', 'ABCD#12a']:
+      with self.subTest(code=code):
+        self.assertFalse(launcher.validate_connect_code(code))
+
+  def test_character_supported(self):
+    self.assertTrue(launcher.validate_supported_character('fox', ['fox', 'falco']))
+
+  def test_character_unsupported(self):
+    self.assertFalse(launcher.validate_supported_character('marth', ['fox', 'falco']))
+    self.assertFalse(launcher.validate_supported_character('FOX', ['fox', 'falco']))  # case-sensitive
+    self.assertFalse(launcher.validate_supported_character('', ['fox']))
+
+
 if __name__ == '__main__':
   unittest.main()

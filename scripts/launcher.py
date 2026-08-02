@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -27,6 +28,16 @@ CHARACTERS = [
 ]
 PLAYER_TYPES = ['ai', 'human', 'cpu']
 MODELS_DIR = REPO_ROOT / 'models'
+
+_CONNECT_CODE_RE = re.compile(r'^[A-Z0-9]{2,6}#\d{1,6}$')
+
+
+def validate_connect_code(code: str) -> bool:
+  return bool(_CONNECT_CODE_RE.match(code or ''))
+
+
+def validate_supported_character(char: str, supported: list[str]) -> bool:
+  return char in supported
 
 
 def list_models() -> list[str]:
