@@ -721,6 +721,11 @@ class LauncherApp:
     for tab_cls in (EvalTwoTab, RunDolphinTab, RunEvaluatorTab, NetplayTab):
       tab = tab_cls(self.notebook, self)
       self.notebook.add(tab, text=tab_cls.LABEL)
+    if self.config.last_tab:
+      for i, tab in enumerate(self.notebook.tabs()):
+        if self.notebook.tab(tab, 'text') == self.config.last_tab:
+          self.notebook.select(i)
+          break
     self.log = LogPanel(self.root)
     self.log.pack(fill='both', expand=False, padx=8, pady=(0, 8))
     self.runner = ProcessRunner(self.root, self.log)
