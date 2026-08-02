@@ -162,10 +162,24 @@ class DiscordBotThread:
       except Exception as e:
         self._log(f'on_message error: {type(e).__name__}: {e}')
 
+    def _bot_is_addressed(message):
+      # Direct user mention.
+      if self._client.user in message.mentions:
+        return True
+      # Role mention where the role belongs to the bot (e.g. an auto-created
+      # bot role with the same display name — Discord's autocomplete offers
+      # both the user and the role, and users often pick the role).
+      if message.guild is None:
+        return False
+      bot_member = message.guild.get_member(self._client.user.id)
+      if bot_member is None:
+        return False
+      return any(role in bot_member.roles for role in message.role_mentions)
+
     async def _handle_message(message):
       if message.author == self._client.user:
         return
-      mentioned = self._client.user in message.mentions
+      mentioned = _bot_is_addressed(message)
       self._log(
           f'msg from {message.author} in channel={message.channel.id} '
           f'mentioned={mentioned} content={message.content!r}')
@@ -176,7 +190,8 @@ class DiscordBotThread:
             f'channel {message.channel.id} not in allowlist '
             f'{self._allowed_channels} — ignoring')
         return
-      # Strip mention tokens (raw form is <@NNN> or <@!NNN>) and split remainder.
+      # Strip mention tokens (raw form is <@NNN>, <@!NNN>, or <@&NNN> for roles)
+      # and split remainder.
       tokens = message.content.split()
       args = [t for t in tokens if not (t.startswith('<@') and t.endswith('>'))]
       self._log(f'parsed args={args}')
