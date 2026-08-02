@@ -122,7 +122,20 @@ class DiscordBotThread:
   def stop(self) -> None:
     if self._loop is None or self._client is None:
       return
-    fut = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
+    client = self._client
+    discord_mod = self._discord
+
+    async def _graceful_shutdown():
+      # Setting presence to invisible before closing propagates the offline
+      # state to Discord clients immediately, instead of waiting ~30-60 s
+      # for the server-side heartbeat to time out.
+      try:
+        await client.change_presence(status=discord_mod.Status.invisible)
+      except Exception:
+        pass
+      await client.close()
+
+    fut = asyncio.run_coroutine_threadsafe(_graceful_shutdown(), self._loop)
     try:
       fut.result(timeout=5)
     except Exception:
