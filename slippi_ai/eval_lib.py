@@ -413,6 +413,12 @@ def get_name_from_rl_state(state: dict) -> tp.Optional[list[str]]:
   name = agent_config['name']
   return [name] if isinstance(name, str) else name
 
+def rating_from_rl_state(state: dict) -> tp.Optional[float]:
+  agent_config = get_agent_config(state)
+  if agent_config is None:
+    return None
+  return agent_config.get('rating')
+
 def build_delayed_agent(
     state: dict,
     console_delay: int,
@@ -460,6 +466,13 @@ def build_delayed_agent(
 
   extra_kwargs = {}
   if imitation_config['embed'].get('with_rating', False):
+    rl_rating = rating_from_rl_state(state)
+    if rating is None:
+      if rl_rating is not None:
+        logging.info(f'Setting agent rating to {rl_rating} from RL')
+        rating = rl_rating
+    elif rl_rating is not None and rl_rating != rating:
+      logging.warning(f'Agent trained with rating {rl_rating}, using {rating}')
     if rating is None:
       raise ValueError('Must specify a rating.')
     extra_kwargs['rating'] = rating
