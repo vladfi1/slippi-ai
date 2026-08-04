@@ -22,6 +22,7 @@ python scripts/eval_two.py \
 
 """
 
+import contextlib
 import logging
 import os
 
@@ -56,6 +57,10 @@ NUM_GAMES = flags.DEFINE_integer('num_games', None, 'Number of games to play')
 FLAGS = flags.FLAGS
 
 def main(_):
+  with contextlib.ExitStack() as exit_stack:
+    _main(exit_stack)
+
+def _main(exit_stack: contextlib.ExitStack):
   eval_lib.disable_gpus()
 
   players = {
@@ -76,51 +81,46 @@ def main(_):
       )
       agent.start()
       agents.append(agent)
+      exit_stack.callback(agent.stop)
 
       eval_lib.update_character(player, agent.config)
 
-  dolphin = None
-  try:
-    # TODO: use an envs.Environment like in RL
-    dolphin = dolphin_lib.Dolphin(
-        players=players,
-        **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
-    )
+  # TODO: use an envs.Environment like in RL
+  dolphin = dolphin_lib.Dolphin(
+      players=players,
+      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
+  )
+  exit_stack.callback(dolphin.stop)
 
-    for agent in agents:
-      agent.set_controller(dolphin.controllers[agent._port])
+  for agent in agents:
+    agent.set_controller(dolphin.controllers[agent._port])
 
-    step_timer = utils.Profiler()
+  step_timer = utils.Profiler()
 
-    num_games = 0
+  num_games = 0
 
   # Main loop
-    for gamestate in dolphin.iter_gamestates(skip_menu_frames=False):
-      if dolphin_lib.is_menu_state(gamestate):
-        if num_games == NUM_GAMES.value:
-          break
-        continue
+  for gamestate in dolphin.iter_gamestates(skip_menu_frames=False):
+    if dolphin_lib.is_menu_state(gamestate):
+      if num_games == NUM_GAMES.value:
+        break
+      continue
 
-      if gamestate.frame == -123: # initial frame
-        num_games += 1
-        logging.info(f'Game {num_games}')
+    if gamestate.frame == -123: # initial frame
+      num_games += 1
+      logging.info(f'Game {num_games}')
 
-      with step_timer:
-        for agent in agents:
-          agent.step(gamestate)
+    with step_timer:
+      for agent in agents:
+        agent.step(gamestate)
 
-      if gamestate.frame > 0 and gamestate.frame % (30 * 60) == 15 * 60:
-        step_time = step_timer.mean_time()
-        logging.info(f'step_time: {step_time:.3f}')
-        if step_time > 0.016:
-          logging.error('running too slow to keep up with the game!')
-        elif step_time > 0.012:
-          logging.warning('running slow, performance may be degraded')
-  finally:
-    for agent in agents:
-      agent.stop()
-    if dolphin is not None:
-      dolphin.stop()
+    if gamestate.frame > 0 and gamestate.frame % (30 * 60) == 15 * 60:
+      step_time = step_timer.mean_time()
+      logging.info(f'step_time: {step_time:.3f}')
+      if step_time > 0.016:
+        logging.error('running too slow to keep up with the game!')
+      elif step_time > 0.012:
+        logging.warning('running slow, performance may be degraded')
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
