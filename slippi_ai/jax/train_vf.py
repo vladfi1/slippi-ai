@@ -133,7 +133,7 @@ class TrainManager:
     self.step_profiler = utils.Profiler()
     self.data_sharding = data_sharding
     self.epoch_offset = epoch_offset
-    self.last_epoch = 0.
+    self.last_epoch = epoch_offset
 
     hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
     if data_sharding is not None:
@@ -220,6 +220,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         logging.warning(
             f'Requested {key} config doesn\'t match, overriding from checkpoint.')
         setattr(config, key, previous)
+
+    config.dataset.copy_characteristics_from(restore_config.dataset)
+    config.data.copy_characteristics_from(restore_config.data)
 
     name_map = restored_state['name_map']
   elif config.compatible_policy is not None:
@@ -384,7 +387,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' step={step_time:.3f}')
     print()
 
-  last_train_epoch_evaluated = 0.
+  last_train_epoch_evaluated = train_epoch
 
   def maybe_eval(force: bool = False):
     nonlocal best_eval_loss, last_train_epoch_evaluated
