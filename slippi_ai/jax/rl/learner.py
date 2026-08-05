@@ -649,4 +649,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # Assumes policy/value function + optimizers have the same keys as in
     # imitation checkpoints. There is no teacher state but that's ok since
     # nn.update only needs the updates to be a subset of the state.
+    # Checkpoints are unpickled as numpy arrays; convert to jax arrays.
+    state_dict = jax.tree.map(jnp.asarray, state_dict)
     jax_utils.set_module_state(self, state_dict)

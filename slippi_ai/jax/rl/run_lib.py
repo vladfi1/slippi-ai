@@ -431,8 +431,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       value_function=value_function,
   )
 
-  params = jax.tree.map(jnp.asarray, rl_state['state'])
-  learner.restore_from_imitation(params)
+  learner.restore_from_imitation(rl_state['state'])
 
   PORT = 1
   ENEMY_PORT = 2
