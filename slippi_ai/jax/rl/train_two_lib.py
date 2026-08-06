@@ -293,7 +293,7 @@ class ExperimentManager:
       self,
       config: Config,
       agents: dict[int, AgentManager],
-      build_actor: tp.Callable[[], evaluators.RolloutWorker],
+      build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
       exit_stack: tp.Optional[contextlib.ExitStack] = None,
   ):
     self._config = config
@@ -324,6 +324,10 @@ class ExperimentManager:
 
     if not self._config.dolphin.infinite_time:
       logging.info('Finite time mode, disabling env resets')
+      self.reset_interval = None
+    elif config.actor.use_sim_envs:
+      # JaxSimRolloutWorker.reset_env is not implemented.
+      logging.info('Sim envs, disabling env resets')
       self.reset_interval = None
     else:
       self.reset_interval = config.runtime.reset_every_n_steps
@@ -393,6 +397,8 @@ class ExperimentManager:
           trajectories[port].append(trajectory[port])
         actor_metrics.append(timings)
 
+      for metrics in actor_metrics:
+        metrics.pop('completed_games', None)
       actor_metrics = utils.map_nt(lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
@@ -462,6 +468,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
         inner_batch_size=config.actor.inner_batch_size,
     )
 
+  build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker]
   build_actor = lambda: evaluators.RolloutWorker(
       agent_kwargs=agent_kwargs,
       dolphin_kwargs=dolphin_kwargs,
@@ -471,6 +478,45 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       use_gpu=config.actor.gpu_inference,
       use_fake_envs=config.actor.use_fake_envs,
   )
+
+  if config.actor.use_sim_envs:
+    if config.actor.async_envs and (
+        config.actor.num_envs % config.actor.inner_batch_size):
+      raise ValueError(
+          f'num_envs={config.actor.num_envs} must be divisible by '
+          f'inner_batch_size={config.actor.inner_batch_size} for sim RL.')
+
+    for port, agent in agents.items():
+      batch_steps = agent.agent_config.batch_steps
+      delay = agent.learner.policy.delay
+      if batch_steps > delay:
+        raise ValueError(
+            f'Port {port}: agent.batch_steps={batch_steps} exceeds policy '
+            f'delay {delay} for sim RL.')
+      if config.actor.rollout_length % max(1, batch_steps):
+        raise ValueError(
+            f'Port {port}: agent.batch_steps must divide rollout_length '
+            'for sim RL.')
+
+    def build_actor() -> evaluators.AbstractRolloutWorker:
+      from slippi_ai.sim_env import jax_rollout
+
+      # Unlike self-play, the two ports have distinct policies, so each gets
+      # its own agent instead of a single one batched over both ports.
+      return jax_rollout.JaxSimRolloutWorker(
+          agent_kwargs=agent_kwargs,
+          dolphin_kwargs=dolphin_kwargs,
+          num_envs=config.actor.num_envs,
+          rollout_length=config.actor.rollout_length,
+          use_fake_envs=config.actor.use_fake_envs,
+          async_envs=config.actor.async_envs,
+          inner_batch_size=config.actor.inner_batch_size,
+          # When there's a single ppo batch we immediately use the trajectory
+          # data without invalidating it by calling rollout again, so there's
+          # no need to make a copy of the data.
+          copy_data=config.learner.ppo.num_batches > 1,
+          keep_agent_outputs_on_device=config.actor.keep_agent_outputs_on_device,
+      )
 
   experiment_manager = ExperimentManager(
       config=config,
