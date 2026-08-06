@@ -1,5 +1,6 @@
 """Train two JAX agents against each other."""
 
+import contextlib
 import dataclasses
 import itertools
 import logging
@@ -9,6 +10,7 @@ import typing as tp
 
 import melee
 import numpy as np
+import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai import (
@@ -22,6 +24,7 @@ from slippi_ai import (
 )
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib as jax_train_lib
+from slippi_ai.jax import train_vf
 from slippi_ai.jax.rl import learner as learner_lib
 from slippi_ai.jax.rl import run_lib
 from slippi_ai.types import Game
@@ -47,6 +50,9 @@ class RuntimeConfig:
 @dataclasses.dataclass
 class AgentConfig:
   teacher: tp.Optional[str] = None
+  # Will override a value function in the teacher checkpoint. Necessary if the
+  # teacher has no value function i.e. was produced by policy-only training.
+  value_function: tp.Optional[str] = None
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
   # Character to play. If None, inferred from the teacher checkpoint (only
   # works if it was trained on a single character).
@@ -54,6 +60,8 @@ class AgentConfig:
   compile: bool = True
   batch_steps: int = 0
   async_inference: bool = False
+  override_delay: tp.Optional[int] = None
+  jax: run_lib.JaxAgentConfig = field(run_lib.JaxAgentConfig)
 
 def default_learner_config():
   return learner_lib.LearnerConfig(
@@ -105,6 +113,26 @@ def _resolve_character(
       'allows multiple characters.')
 
 
+def _merge_value_function(rl_state: dict, vf_path: str, port: int):
+  """Merges a separately-trained value function into an imitation state."""
+  vf_state = jax_saving.load_state_from_disk(vf_path)
+  errors = train_vf.check_compatibility(vf_state, rl_state)
+  if errors:
+    raise ValueError(
+        f'Port {port}: incompatible Policy and VF:\n' + '\n'.join(errors))
+
+  # TODO: share code with the merge_checkpoints script
+  for key in vf_state['state']:
+    if key in rl_state['state']:
+      logging.warning(f'State "{key}" is being overridden from {vf_path}')
+
+  rl_state['state'].update(vf_state['state'])  # key names are compatible
+  rl_state['config']['value_function'] = dict(
+      separate_network_config=True,
+      network=vf_state['config']['network'],
+  )
+
+
 class AgentManager:
 
   def __init__(
@@ -133,8 +161,17 @@ class AgentManager:
       self.step: int = rl_state['step']
       restore_config = flag_utils.dataclass_from_dict(
           AgentConfig, rl_state[AGENT_CONFIG_KEY])
+
+      for key in ['teacher', 'value_function']:
+        requested = getattr(agent_config, key)
+        previous = getattr(restore_config, key)
+        if requested and requested != previous:
+          raise ValueError(
+              f'Port {port}: requested {key} does not match checkpoint: '
+              f'{requested} (requested) != {previous} (checkpoint)')
+        setattr(agent_config, key, previous)
+
       agent_config.name = restore_config.name
-      agent_config.teacher = restore_config.teacher
       if restore_config.char is not None:
         agent_config.char = restore_config.char
     elif not agent_config.teacher:
@@ -145,17 +182,43 @@ class AgentManager:
     teacher_state = jax_saving.load_state_from_disk(agent_config.teacher)
     self.character = _resolve_character(agent_config, teacher_state, port)
 
-    if not self.found:
-      run_lib.reset_optimizer_steps(teacher_state)
+    if self.found:
+      rl_delay = rl_state['config']['policy']['delay']
+      teacher_delay = teacher_state['config']['policy']['delay']
+      if rl_delay != teacher_delay:
+        raise ValueError(
+            f'Port {port}: teacher delay does not match RL state delay: '
+            f'{teacher_delay} != {rl_delay}.')
+    else:
       rl_state = teacher_state
       self.save_path = None
       self.step = 0
 
-    teacher_config_dict = jax_saving.upgrade_config(teacher_state['config'])
+      # A restored checkpoint already contains the value function, so only
+      # merge a separate one when initializing from the teacher.
+      if agent_config.value_function:
+        _merge_value_function(rl_state, agent_config.value_function, port)
+
+      run_lib.reset_optimizer_steps(rl_state)
+
+    if 'value_function' not in rl_state['config']:
+      raise ValueError(
+          f'Port {port}: teacher was not trained with a value function; pass '
+          f'--config.p{port}.value_function to supply one.')
+
+    if agent_config.override_delay is not None:
+      for state in [rl_state, teacher_state]:
+        state['config']['policy']['delay'] = agent_config.override_delay
+
+    # Must be rl_state's config, not the teacher's: the two differ when a
+    # separate value function is merged in (agent_config.value_function), and
+    # saving the teacher's config would drop that override, breaking the next
+    # restore.
+    rl_config_dict = jax_saving.upgrade_config(rl_state['config'])
 
     self.to_save = {
-        'config': teacher_state['config'],
-        'name_map': teacher_state['name_map'],
+        'config': rl_state['config'],
+        'name_map': rl_state['name_map'],
         AGENT_CONFIG_KEY: dataclasses.asdict(agent_config),
     }
     self.name = agent_config.name
@@ -164,7 +227,7 @@ class AgentManager:
     policy = jax_saving.load_policy_from_state(rl_state)
 
     pretraining_config = flag_utils.dataclass_from_dict(
-        jax_train_lib.Config, teacher_config_dict)
+        jax_train_lib.Config, rl_config_dict)
     value_function = jax_train_lib.value_function_from_config(
         pretraining_config, rngs=nnx.Rngs(port))
 
@@ -188,7 +251,10 @@ class AgentManager:
     self.to_save['opponent'] = opp_name
 
   def policy_variables(self):
-    return self.learner.policy_variables()
+    # Note: the parameters returned with to_numpy=False will be invalidated by
+    # jax buffer donation on the next learner update, but we don't need to make
+    # a copy because we use them only for the next rollout.
+    return self.learner.policy_variables(to_numpy=False)
 
   def get_state(self) -> dict:
     return dict(
@@ -213,6 +279,7 @@ class AgentManager:
         compile=self.agent_config.compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
+        jax=dataclasses.asdict(self.agent_config.jax),
     )
 
 
@@ -223,6 +290,7 @@ class ExperimentManager:
       config: Config,
       agents: dict[int, AgentManager],
       build_actor: tp.Callable[[], evaluators.RolloutWorker],
+      exit_stack: tp.Optional[contextlib.ExitStack] = None,
   ):
     self._config = config
     self._agents = agents
@@ -230,6 +298,12 @@ class ExperimentManager:
     self._unroll_length = config.actor.rollout_length
     self._num_ppo_batches = config.learner.ppo.num_batches
     self._burnin_steps_after_reset = config.runtime.burnin_steps_after_reset
+
+    self._learner_dtype = jnp.float32
+    self._agent_dtypes = {
+        port: agent.agent_config.jax.dtype.dtype
+        for port, agent in agents.items()
+    }
 
     batch_size = config.actor.num_envs
 
@@ -253,12 +327,27 @@ class ExperimentManager:
     with self.reset_profiler:
       self.actor = self._build_actor()
       self.actor.start()
+
+      if exit_stack is not None:
+        exit_stack.callback(self.actor.stop)
+
       self.num_rollouts = 0
       self._burnin_after_reset()
 
   def _rollout(self) -> tuple[tp.Mapping[int, evaluators.Trajectory], dict]:
     self.num_rollouts += 1
-    return self.actor.rollout(self._unroll_length)
+    trajectories, timings = self.actor.rollout(self._unroll_length)
+
+    # Agents may run at a lower precision than the learner.
+    trajectories = dict(trajectories)
+    for port, agent_dtype in self._agent_dtypes.items():
+      if agent_dtype != self._learner_dtype:
+        trajectory = trajectories[port]
+        trajectories[port] = trajectory._replace(
+            initial_state=run_lib.cast_floats(
+                trajectory.initial_state, dtype=self._learner_dtype))
+
+    return trajectories, timings
 
   def unroll(self):
     """Advance hidden states without training (for burnin)."""
@@ -312,6 +401,10 @@ class ExperimentManager:
 
 
 def run(config: Config):
+  with contextlib.ExitStack() as exit_stack:
+    _run(config, exit_stack)
+
+def _run(config: Config, exit_stack: contextlib.ExitStack):
   tag = config.runtime.tag or jax_train_lib.get_experiment_tag()
   expt_dir = config.runtime.expt_dir
   if expt_dir is None:
@@ -379,6 +472,7 @@ def run(config: Config):
       config=config,
       agents=agents,
       build_actor=build_actor,
+      exit_stack=exit_stack,
   )
 
   step_profiler = utils.Profiler()
@@ -477,22 +571,17 @@ def run(config: Config):
     assert learner_config.optimizer_burnin_epochs == 0
     assert learner_config.value_burnin_epochs == 0
 
-  try:
-    logging.info('Main training loop')
+  logging.info('Main training loop')
 
-    while step < config.runtime.max_step:
-      with step_profiler:
-        trajectories, metrics = experiment_manager.step(step)
+  while step < config.runtime.max_step:
+    with step_profiler:
+      trajectories, metrics = experiment_manager.step(step)
 
-      if experiment_manager.learner_profiler.num_calls > 0:
-        logger.record(get_log_data(trajectories, metrics))
-        maybe_flush(step)
+    if experiment_manager.learner_profiler.num_calls > 0:
+      logger.record(get_log_data(trajectories, metrics))
+      maybe_flush(step)
 
+    step += 1
+    maybe_save(step)
 
-      maybe_save(step)
-      step += 1
-
-    save(step)
-
-  finally:
-    experiment_manager.actor.stop()
+  save(step)
