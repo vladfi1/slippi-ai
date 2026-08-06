@@ -642,12 +642,15 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     return final_state, metrics
 
   def get_state(self) -> dict:
-    return jax_utils.get_module_state(self)
+    state = jax_utils.get_module_state(self)
+    del state['teacher']
+    return state
 
   def restore_from_imitation(self, state_dict: dict):
     # Assumes policy/value function + optimizers have the same keys as in
     # imitation checkpoints. There is no teacher state but that's ok since
     # nn.update only needs the updates to be a subset of the state.
     # Checkpoints are unpickled as numpy arrays; convert to jax arrays.
+    assert 'teacher' not in state_dict
     state_dict = jax.tree.map(jnp.asarray, state_dict)
     jax_utils.set_module_state(self, state_dict)
