@@ -43,6 +43,7 @@ class LearnerConfig:
   entropy_weight: float = 0
   value_cost: float = 0.5
   reward_halflife: float = 4  # measured in seconds
+  gae_lambda: float = 0
   reward: reward_lib.RewardConfig = field(reward_lib.RewardConfig.default)
   ppo: PPOConfig = field(PPOConfig)
   fused: bool = False
@@ -216,8 +217,12 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
     )
+    # Train with gae_lambda; evaluate with lambda=1 for unbiased value targets.
     unroll_vf = jax_utils.with_compute_dtype(
         self._unroll_vf, config.value_dtype.dtype)
+    train_unroll_vf = jax_utils.with_compute_dtype(
+        functools.partial(self._unroll_vf, lambda_=config.gae_lambda),
+        config.value_dtype.dtype)
     self._unroll_vf_mb = jax_utils.microbatch_fn(
         self._unroll_vf, **value_mbkwargs)
     self.unroll_vf = jax_utils.run_loss_fn(
@@ -226,11 +231,12 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         **value_mbkwargs,
     )
     self._train_vf_mb = jax_utils.train_fn(
-        unroll_vf, loss_scale=self._config.value_loss_scale, **value_mbkwargs)
+        train_unroll_vf, loss_scale=self._config.value_loss_scale,
+        **value_mbkwargs)
     self.train_vf = jax_utils.cached_train_fn(
         self.value_function,
         self.value_optimizer,
-        unroll_vf,
+        train_unroll_vf,
         **value_mbkwargs,
     )
 
@@ -308,10 +314,11 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       value_function: vf_lib.ValueFunction,
       trajectory: Trajectory,
       initial_state: RecurrentState,
+      lambda_: float = 1.0,
   ) -> tuple[jax_utils.Loss, Metrics, RecurrentState, Advantage]:
     value_frames = get_frames(trajectory)
     outputs, final_state = value_function.loss(
-        value_frames, initial_state, self.discount)
+        value_frames, initial_state, self.discount, lambda_=lambda_)
     # b16 metrics are annoying to log and print
     metrics = utils.map_single_structure(
         lambda x: jnp.astype(x, jnp.float32), outputs.metrics)
