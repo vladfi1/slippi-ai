@@ -63,6 +63,14 @@ class ActorConfig:
   use_sim_envs: bool = False
   keep_agent_outputs_on_device: bool = True
 
+  def get_inner_batch_size(self) -> int:
+    if self.inner_batch_size == -1:
+      cpu_count = os.cpu_count()
+      if cpu_count is not None:
+        return self.num_envs // cpu_count
+
+    return self.inner_batch_size
+
 @dataclasses.dataclass
 class JaxAgentConfig:
   pack_args: bool = True
@@ -511,7 +519,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   if config.actor.async_envs:
     env_kwargs.update(
         num_steps=config.actor.num_env_steps,
-        inner_batch_size=config.actor.inner_batch_size,
+        inner_batch_size=config.actor.get_inner_batch_size(),
     )
 
   build_actor = lambda: evaluators.RolloutWorker(
@@ -528,10 +536,10 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     if config.opponent.type == OpponentType.CPU:
       raise ValueError('Sim env only supports AI-vs-AI opponents.')
     if config.actor.async_envs:
-      if config.actor.num_envs % config.actor.inner_batch_size:
+      if config.actor.num_envs % config.actor.get_inner_batch_size():
         raise ValueError(
             f'num_envs={config.actor.num_envs} must be divisible by '
-            f'inner_batch_size={config.actor.inner_batch_size} for sim RL.')
+            f'inner_batch_size={config.actor.get_inner_batch_size()} for sim RL.')
     if config.agent.batch_steps > policy.delay:
       raise ValueError(
           f'agent.batch_steps={config.agent.batch_steps} exceeds policy delay '
@@ -557,7 +565,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
           rollout_length=config.actor.rollout_length,
           use_fake_envs=config.actor.use_fake_envs,
           async_envs=config.actor.async_envs,
-          inner_batch_size=config.actor.inner_batch_size,
+          inner_batch_size=config.actor.get_inner_batch_size(),
           # When there's a single ppo batch we immediately use the trajectory
           # data without invalidating it by calling rollout again, so there's
           # no need to make a copy of the data. TODO: we could always avoid
