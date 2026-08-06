@@ -196,9 +196,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
 
     mbs = self._config.microbatch_size
 
-    teacher_mbs = self._config.teacher_mbs or mbs
     teacher_mbkwargs = MBKwargs(
-        microbatch_size=teacher_mbs,
+        microbatch_size=self._config.teacher_mbs,
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
     )
@@ -213,7 +212,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
 
     value_mbkwargs = MBKwargs(
-        microbatch_size=self._config.value_mbs or mbs,
+        microbatch_size=self._config.value_mbs,
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
     )
