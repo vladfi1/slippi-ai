@@ -47,6 +47,17 @@ class ValueFunction(nnx.Module):
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
     return self.network.initial_state(batch_size, rngs)
 
+  def unroll(
+      self,
+      state_action: data.StateAction,
+      is_resetting: Array,
+      initial_state: RecurrentState,
+  ) -> tp.Tuple[Array, RecurrentState]:
+    outputs, final_state = self.network.unroll(
+        state_action, is_resetting, initial_state)
+    values = jnp.squeeze(self.value_head(outputs), -1)
+    return values, final_state
+
   def loss(
       self,
       frames: data.Frames,
@@ -64,14 +75,78 @@ class ValueFunction(nnx.Module):
       discount_on_death: Discount factor to use when either player *respawns*.
         The reward for KOs comes on the frame of death, which precedes respawn.
     """
-    rewards = frames.reward
-
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
-    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
-    outputs, final_state = self.network.unroll(
+    values, final_state = self.unroll(
         inputs, frames.is_resetting[:-1], initial_state)
 
-    values = jnp.squeeze(self.value_head(outputs), -1)
+    outputs = self._get_outputs(
+        frames=frames,
+        values=values,
+        final_state=final_state,
+        discount=discount,
+        discount_on_death=discount_on_death,
+    )
+
+    return outputs, final_state
+
+  def loss_batched(
+      self,
+      frames: data.Frames,
+      initial_state: RecurrentState,
+      discount: float,
+      batch_size: int,  # batch size in time
+      discount_on_death: tp.Optional[float] = None,
+  ) -> tp.Tuple[ValueOutputs, RecurrentState]:
+    """Like `loss`, but unrolls the network in chunks of `batch_size` frames."""
+    total_unroll_length = frames.reward.shape[0]
+    num_batches, r = divmod(total_unroll_length, batch_size)
+    if r != 0:
+      raise ValueError(
+          f'Unroll length {total_unroll_length} is not divisible by '
+          f'batch size {batch_size}.')
+
+    def to_batched(x: Array) -> Array:
+      assert x.shape[0] == total_unroll_length
+      return x.reshape((num_batches, batch_size) + x.shape[1:])
+
+    inputs, is_resetting = jax.tree.map(
+        lambda x: to_batched(x[:-1]),
+        (frames.state_action, frames.is_resetting))
+
+    # nnx will complain about trace levels if we use jax.lax.scan
+    scan_fn = nnx.scan(
+        nnx.remat(ValueFunction.unroll),
+        in_axes=(None, 0, 0, nnx.Carry),
+        out_axes=(0, nnx.Carry),
+    )
+
+    values, final_state = scan_fn(self, inputs, is_resetting, initial_state)
+
+    # Reshape values back to [T, B]
+    assert values.shape[:2] == (num_batches, batch_size)
+    values = values.reshape((total_unroll_length,) + values.shape[2:])
+
+    outputs = self._get_outputs(
+        frames=frames,
+        values=values,
+        final_state=final_state,
+        discount=discount,
+        discount_on_death=discount_on_death,
+    )
+
+    return outputs, final_state
+
+  def _get_outputs(
+      self,
+      frames: data.Frames,
+      values: Array,
+      final_state: RecurrentState,
+      discount: float,
+      discount_on_death: tp.Optional[float] = None,
+  ) -> ValueOutputs:
+    rewards = frames.reward
+
+    last_input = utils.map_nt(lambda t: t[-1], frames.state_action)
     last_output, _ = self.network.step_with_reset(
         last_input, frames.is_resetting[-1], final_state)
     last_value = jnp.squeeze(self.value_head(last_output), -1)
@@ -109,14 +184,12 @@ class ValueFunction(nnx.Module):
         'uev': uev,  # unexplained variance
     }
 
-    value_outputs = ValueOutputs(
+    return ValueOutputs(
         returns=value_targets,
         advantages=advantages,
         loss=value_loss,
         metrics=metrics,
     )
-
-    return value_outputs, final_state
 
 
 class FakeValueFunction(nnx.Module):

@@ -57,6 +57,9 @@ class Config:
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
   reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
+  # Optionally use longer unroll length for less biased evaluation.
+  test_unroll_multiplier: int = 1
+
   # Loads obs config and name map to be compatible with a given policy.
   compatible_policy: tp.Optional[str] = None
 
@@ -238,6 +241,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.warning('No compatible policy or checkpoint specified.')
 
+  if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
+    logging.info("Setting learner unroll batch size = %d", config.data.unroll_length)
+    config.learner.unroll_batch_size = config.data.unroll_length
+
   # Set wandb config after potential overrides from checkpoint or compatible policy.
   wandb.config.update(dataclasses.asdict(config))
 
@@ -278,6 +285,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data_config = dataclasses.replace(
       train_data_config,
       num_workers=2 * train_data_config.num_workers,
+      unroll_length=config.data.unroll_length * config.test_unroll_multiplier,
+      unroll_chunks=0,  # the unroll multiplier obviates the need for this
   )
 
   train_data, test_data, name_map = data_lib.build_sources(
@@ -400,7 +409,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
 
     def time_mean(x: jax.Array, axis: int = 1) -> np.ndarray:
-      assert x.shape[axis] == config.data.unroll_length
+      assert x.shape[axis] == config.data.unroll_length * config.test_unroll_multiplier
       return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()

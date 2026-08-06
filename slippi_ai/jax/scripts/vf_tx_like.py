@@ -19,6 +19,7 @@ def default_config():
 
   config.data.batch_size = 512
   config.data.unroll_length = 80
+  config.test_unroll_multiplier = 16
   config.data.num_workers = 1
   config.data.unroll_chunks = 4
   config.data.balance_characters = True
@@ -100,8 +101,9 @@ if __name__ == '__main__':
 
         n = config.network[config.network['name']]['num_layers']
         h = config.network[config.network['name']]['hidden_size']
+        um = config.test_unroll_multiplier
 
-        config.tag = f"vf_{char}{op}_tx{n}x{h}"
+        config.tag = f"vf_{char}{op}_tx{n}x{h}_um{um}"
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:

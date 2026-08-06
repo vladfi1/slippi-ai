@@ -24,15 +24,23 @@ class VFLearnerConfig:
   smap_optimizer: bool = True
   bf16: bool = False
 
+  unroll_batch_size: tp.Optional[int] = None
+
 
 def value_loss_fn(
     value_function: vf_lib.ValueFunction,
     frames: Frames,
     initial_states: RecurrentState,
     discount: float,
+    unroll_batch_size: tp.Optional[int] = None,
 ) -> tuple[jax_utils.Loss, dict, RecurrentState]:
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
-  value_outputs, final_states = value_function.loss(tm_frames, initial_states, discount)
+  if unroll_batch_size is None:
+    value_outputs, final_states = value_function.loss(
+        tm_frames, initial_states, discount)
+  else:
+    value_outputs, final_states = value_function.loss_batched(
+        tm_frames, initial_states, discount, unroll_batch_size)
   loss = jnp.mean(value_outputs.loss, axis=0)
   bm_metrics = jax.tree.map(swap_axes, value_outputs.metrics)
   return loss, bm_metrics, final_states
@@ -78,6 +86,7 @@ class VFLearner(nnx.Module):
         module=self.value_function,
         loss_fn=unroll_vf,
         mesh=mesh,
+        static_argnames=['unroll_batch_size'],
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -91,8 +100,12 @@ class VFLearner(nnx.Module):
       value_function: vf_lib.ValueFunction,
       bm_frames: Frames,
       initial_state: RecurrentState,
+      *,
+      unroll_batch_size: tp.Optional[int] = None,
   ) -> tuple[Array, dict, RecurrentState]:
-    return value_loss_fn(value_function, bm_frames, initial_state, self.discount)
+    return value_loss_fn(
+        value_function, bm_frames, initial_state, self.discount,
+        unroll_batch_size=unroll_batch_size)
 
   def step(
       self,
@@ -112,6 +125,8 @@ class VFLearner(nnx.Module):
     if train:
       metrics, final_state = self.train_vf(frames, initial_state)
     else:
-      metrics, final_state = self.run_vf(frames, initial_state)
+      metrics, final_state = self.run_vf(
+          frames, initial_state,
+          unroll_batch_size=self.config.unroll_batch_size)
 
     return {'value': metrics}, final_state
