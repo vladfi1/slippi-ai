@@ -41,21 +41,23 @@ def generalized_returns(
     values: Array,
     bootstrap: Array,
     lambdas: Array,
+    dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
-  assert values.dtype == bootstrap.dtype
-  rewards = rewards.astype(bootstrap.dtype)
-  discounts = discounts.astype(bootstrap.dtype)
-  lambdas = lambdas.astype(bootstrap.dtype)
+  values = values.astype(dtype)
+  bootstrap = bootstrap.astype(dtype)
+  rewards = rewards.astype(dtype)
+  discounts = discounts.astype(dtype)
+  lambdas = lambdas.astype(dtype)
 
   def scan_fn(future_value, inputs):
     reward, discount, current_value, lambda_ = inputs
     value = reward + discount * future_value
     smoothed_value = lambda_ * value + (1 - lambda_) * current_value
-    return smoothed_value, smoothed_value
+    return smoothed_value, value
 
-  _, smoothed_returns = jax.lax.scan(
+  _, returns = jax.lax.scan(
       scan_fn, bootstrap, (rewards, discounts, values, lambdas), reverse=True)
-  return smoothed_returns
+  return returns
 
 def generalized_returns_with_resetting(
     rewards: Array,
@@ -64,14 +66,10 @@ def generalized_returns_with_resetting(
     bootstrap: Array,  # For t=T
     discount: float,
     lambda_: float = 1.0,
+    dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
   discounts = jnp.where(is_resetting, 0.0, discount)
-  lambdas = jnp.where(is_resetting, 0.0, lambda_)
-
-  assert values.dtype == bootstrap.dtype
-  rewards = rewards.astype(bootstrap.dtype)
-  discounts = discounts.astype(bootstrap.dtype)
-  lambdas = lambdas.astype(bootstrap.dtype)
+  lambdas = jnp.full_like(discounts, lambda_)
 
   return generalized_returns(
       rewards=rewards,
@@ -79,4 +77,5 @@ def generalized_returns_with_resetting(
       values=values,
       bootstrap=bootstrap,
       lambdas=lambdas,
+      dtype=dtype,
   )

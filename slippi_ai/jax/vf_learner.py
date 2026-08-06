@@ -20,6 +20,7 @@ Array = jax.Array
 class VFLearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
+  gae_lambda: float = 0
   explicit_pmean: bool = False
   smap_optimizer: bool = True
   bf16: bool = False
@@ -33,14 +34,16 @@ def value_loss_fn(
     initial_states: RecurrentState,
     discount: float,
     unroll_batch_size: tp.Optional[int] = None,
+    lambda_: float = 1.0,
 ) -> tuple[jax_utils.Loss, dict, RecurrentState]:
   tm_frames: Frames = jax.tree.map(swap_axes, frames)
   if unroll_batch_size is None:
     value_outputs, final_states = value_function.loss(
-        tm_frames, initial_states, discount)
+        tm_frames, initial_states, discount, lambda_=lambda_)
   else:
     value_outputs, final_states = value_function.loss_batched(
-        tm_frames, initial_states, discount, unroll_batch_size)
+        tm_frames, initial_states, discount, unroll_batch_size,
+        lambda_=lambda_)
   loss = jnp.mean(value_outputs.loss, axis=0)
   bm_metrics = jax.tree.map(swap_axes, value_outputs.metrics)
   return loss, bm_metrics, final_states
@@ -79,6 +82,7 @@ class VFLearner(nnx.Module):
         module=self.value_function,
         optimizer=self.value_optimizer,
         loss_fn=unroll_vf,
+        static_argnames=['lambda_'],
         **sharding_kwargs,
     )
 
@@ -86,7 +90,7 @@ class VFLearner(nnx.Module):
         module=self.value_function,
         loss_fn=unroll_vf,
         mesh=mesh,
-        static_argnames=['unroll_batch_size'],
+        static_argnames=['unroll_batch_size', 'lambda_'],
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -102,10 +106,11 @@ class VFLearner(nnx.Module):
       initial_state: RecurrentState,
       *,
       unroll_batch_size: tp.Optional[int] = None,
+      lambda_: float = 1.0,
   ) -> tuple[Array, dict, RecurrentState]:
     return value_loss_fn(
         value_function, bm_frames, initial_state, self.discount,
-        unroll_batch_size=unroll_batch_size)
+        unroll_batch_size=unroll_batch_size, lambda_=lambda_)
 
   def step(
       self,
@@ -123,8 +128,10 @@ class VFLearner(nnx.Module):
     frames = jax_utils.device_put(frames, self.data_sharding)
 
     if train:
-      metrics, final_state = self.train_vf(frames, initial_state)
+      metrics, final_state = self.train_vf(
+          frames, initial_state, lambda_=self.config.gae_lambda)
     else:
+      # Evaluate with lambda=1 for unbiased value targets.
       metrics, final_state = self.run_vf(
           frames, initial_state,
           unroll_batch_size=self.config.unroll_batch_size)

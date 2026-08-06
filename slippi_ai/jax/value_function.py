@@ -64,6 +64,7 @@ class ValueFunction(nnx.Module):
       initial_state: RecurrentState,
       discount: float,
       discount_on_death: tp.Optional[float] = None,
+      lambda_: float = 1.0,
   ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Computes prediction loss on a batch of frames.
 
@@ -74,6 +75,8 @@ class ValueFunction(nnx.Module):
       discount: Per-frame discount factor for returns.
       discount_on_death: Discount factor to use when either player *respawns*.
         The reward for KOs comes on the frame of death, which precedes respawn.
+      lambda_: TD-lambda parameter for the value targets; 1 gives discounted
+        returns while 0 gives one-step TD targets.
     """
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
     values, final_state = self.unroll(
@@ -85,6 +88,7 @@ class ValueFunction(nnx.Module):
         final_state=final_state,
         discount=discount,
         discount_on_death=discount_on_death,
+        lambda_=lambda_,
     )
 
     return outputs, final_state
@@ -96,6 +100,7 @@ class ValueFunction(nnx.Module):
       discount: float,
       batch_size: int,  # batch size in time
       discount_on_death: tp.Optional[float] = None,
+      lambda_: float = 1.0,
   ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Like `loss`, but unrolls the network in chunks of `batch_size` frames."""
     total_unroll_length = frames.reward.shape[0]
@@ -132,6 +137,7 @@ class ValueFunction(nnx.Module):
         final_state=final_state,
         discount=discount,
         discount_on_death=discount_on_death,
+        lambda_=lambda_,
     )
 
     return outputs, final_state
@@ -143,6 +149,7 @@ class ValueFunction(nnx.Module):
       final_state: RecurrentState,
       discount: float,
       discount_on_death: tp.Optional[float] = None,
+      lambda_: float = 1.0,
   ) -> ValueOutputs:
     rewards = frames.reward
 
@@ -161,11 +168,16 @@ class ValueFunction(nnx.Module):
 
       discounts = jnp.where(respawn_happened, discounts_on_death, discounts)
 
-    value_targets = rl_lib.discounted_returns(
+    # Don't bootstrap across game boundaries.
+    discounts = jnp.where(frames.is_resetting[1:], 0.0, discounts)
+
+    # Return computation is done in float32 as it doesn't work well in bf16.
+    value_targets = rl_lib.generalized_returns(
         rewards=rewards,
         discounts=discounts,
-        # Discounted returns computation doesn't work well in bf16.
-        bootstrap=last_value.astype(jnp.float32))
+        values=values,
+        bootstrap=last_value,
+        lambdas=jnp.full_like(discounts, lambda_))
     value_targets = jax.lax.stop_gradient(value_targets)
     advantages = value_targets - values
     value_loss = jnp.square(advantages)

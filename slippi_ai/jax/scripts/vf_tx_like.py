@@ -105,6 +105,10 @@ if __name__ == '__main__':
 
         config.tag = f"vf_{char}{op}_tx{n}x{h}_um{um}"
 
+        gae = config.learner.gae_lambda
+        if gae != 0:
+          config.tag += f"_gae{gae:.1f}"
+
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.tag

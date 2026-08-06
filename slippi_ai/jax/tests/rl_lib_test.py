@@ -47,7 +47,7 @@ class RlLibTest(unittest.TestCase):
     np.testing.assert_allclose(returns, expected)
 
   def test_generalized_returns_lambda_zero(self):
-    # When lambda=0, generalized_returns should return the values unchanged.
+    # When lambda=0, generalized_returns should give one-step TD targets.
     rewards = np.array([1, 2, 3], np.float32)
     discounts = np.array([1, 0.5, 0.25], np.float32)
     bootstrap = np.array(4, np.float32)
@@ -57,7 +57,10 @@ class RlLibTest(unittest.TestCase):
     returns = rl_lib.generalized_returns(
         rewards, discounts, values, bootstrap, lambdas)
 
-    np.testing.assert_allclose(returns, values)
+    # returns[t] = rewards[t] + discounts[t] * values[t + 1]
+    expected = np.array([1 + 20, 2 + 0.5 * 30, 3 + 0.25 * 4], np.float32)
+
+    np.testing.assert_allclose(returns, expected)
 
   def test_generalized_returns_mixed_lambdas(self):
     rewards = np.array([3, 2, 2], np.float32)
@@ -73,7 +76,7 @@ class RlLibTest(unittest.TestCase):
     # t=2: value=2+1*4=6; smoothed=0.5*6+0.5*6=6
     # t=1: value=2+1*6=8; smoothed=0.25*8+0.75*4=5
     # t=0: value=3+1*5=8; smoothed=0.75*8+0.25*4=7
-    expected = np.array([7, 5, 6], np.float32)
+    expected = np.array([8, 8, 6], np.float32)
 
     np.testing.assert_allclose(returns, expected)
 
