@@ -379,36 +379,39 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
     step = rl_state['step']
     logging.info('Restored at step %d', step)
-  elif config.teacher:
+  else:
+    if not config.teacher:
+      raise ValueError('Must pass "teacher" if not restoring.')
+
     logging.info(f'Initializing from teacher: {config.teacher}')
     teacher_state = jax_saving.load_state_from_disk(config.teacher)
     rl_state = teacher_state
     step = 0
-  else:
-    raise ValueError('Must pass exactly one of "teacher" and "restore".')
 
-  if not restore_path and config.value_function:
-    vf_state = jax_saving.load_state_from_disk(config.value_function)
-    errors = train_vf.check_compatibility(vf_state, rl_state)
-    if errors:
-      raise ValueError('Incompatible Policy and VF:\n' + '\n'.join(errors))
+    if config.value_function:
+      if 'value_function' in teacher_state['config']:
+        logging.warning(
+            'Overriding existing teacher value function with %s', config.value_function)
 
-    # TODO: share code with the merge_checkpoints script
-    for key in vf_state['state']:
-      if key in rl_state['state']:
-        logging.warning(f'State "{key}" is being overridden from {config.value_function}')
+      vf_state = jax_saving.load_state_from_disk(config.value_function)
+      errors = train_vf.check_compatibility(vf_state, rl_state)
+      if errors:
+        raise ValueError('Incompatible Policy and VF:\n' + '\n'.join(errors))
 
-    rl_state['state'].update(vf_state['state'])  # key names are compatible
-    rl_state['config']['value_function'] = dict(
-        separate_network_config=True,
-        network=vf_state['config']['network'],
-    )
+      # TODO: share code with the merge_checkpoints script
+      for key in vf_state['state']:
+        if key in rl_state['state']:
+          logging.warning(f'State "{key}" is being overridden from {config.value_function}')
 
-  if not restore_path:
+      rl_state['state'].update(vf_state['state'])  # key names are compatible
+      rl_state['config']['value_function'] = dict(
+          separate_network_config=True,
+          network=vf_state['config']['network'],
+      )
+    elif 'value_function' not in teacher_state['config']:
+      raise ValueError('teacher was not trained with a value function')
+
     reset_optimizer_steps(rl_state)
-
-  if 'value_function' not in teacher_state['config']:
-    raise ValueError('teacher was not trained with a value function')
 
   # This is a bit hacky, pretraining could be policy-only i.e. from
   # train_policy instead of train_lib but it works in practice.
