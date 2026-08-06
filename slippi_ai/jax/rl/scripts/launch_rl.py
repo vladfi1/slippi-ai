@@ -13,7 +13,7 @@ if __name__ == '__main__':
   import fancyflags as ff
   import wandb
 
-  import melee
+  from melee import Character
 
   from slippi_ai.data import chars_from_string
   from slippi_ai import flag_utils
@@ -43,15 +43,16 @@ if __name__ == '__main__':
   CONFIG.learner.policy_gradient_weight=PGW
   CONFIG.learner.reward_halflife=4
   CONFIG.learner.ppo.num_epochs=2
-  CONFIG.learner.ppo.num_batches=16
+  CONFIG.learner.ppo.num_batches=1
   CONFIG.learner.ppo.beta=3e-1
   CONFIG.learner.ppo.epsilon=1e-2
   # CONFIG.teacher=f'pickled_models/jax/{MODEL}'
   CONFIG.opponent.type=run_lib.OpponentType.SELF
   CONFIG.opponent.train=True
   CONFIG.actor.rollout_length=80
-  CONFIG.actor.num_envs=200
-  CONFIG.actor.inner_batch_size=8
+  CONFIG.actor.use_sim_envs=True
+  CONFIG.actor.num_envs=2048
+  CONFIG.actor.inner_batch_size=-1
   CONFIG.actor.async_envs=True
   CONFIG.actor.num_env_steps=4
   CONFIG.actor.gpu_inference=True
@@ -84,6 +85,7 @@ if __name__ == '__main__':
   )
 
   KLW = flags.DEFINE_float('kl_weight', 1e-2, 'weight for KL teacher losses')
+  GROUPED_CHARS = flags.DEFINE_bool('grouped_chars', False, 'Use grouped characters for training')
 
   LEARNER_PERF = flags.DEFINE_bool('learner_perf', False, 'Run to measure learner performance')
 
@@ -94,6 +96,16 @@ if __name__ == '__main__':
     config.learner.kl_teacher_weight = KLW.value
     config.learner.reverse_kl_teacher_weight = KLW.value
 
+    if GROUPED_CHARS.value:
+      # Characters with a reasonable amount of data in the dataset.
+      config.agent.char = [
+          Character.FOX, Character.FALCO, Character.MARTH, Character.SHEIK,
+          Character.JIGGLYPUFF, Character.CPTFALCON, Character.PEACH,
+          Character.DOC, Character.POPO, Character.YOSHI, Character.SAMUS,
+          Character.DK, Character.LUIGI, Character.GANONDORF, Character.MARIO,
+          Character.LINK, Character.YLINK, Character.NESS,
+      ]
+      assert len(config.agent.char) == 18
 
     if config.teacher is not None:
       imitation_state = saving.load_state_from_disk(config.teacher)
@@ -110,6 +122,11 @@ if __name__ == '__main__':
         for char in config.agent.char:
           if char not in chars:
             raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
+
+      if GROUPED_CHARS.value:
+        char_tag = 'grouped'
+      else:
+        char_tag = char_str
 
       if config.agent.name is None:
         config.agent.name = [MP] * len(config.agent.char)
@@ -133,7 +150,12 @@ if __name__ == '__main__':
         else:
           raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
 
-        config.runtime.tag = f"{char_str}_d{delay}_{opp}_kl_{KLW.value:.0e}"
+        if config.agent.rating:
+          rstr = f'_r{int(config.agent.rating)}'
+        else:
+          rstr = ''
+
+        config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
@@ -145,7 +167,6 @@ if __name__ == '__main__':
       # config.actor.use_sim_envs = False
       # config.actor.use_fake_envs = True
       wandb_kwargs['mode'] = 'disabled'
-      config.agent
 
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.runtime.tag
