@@ -201,14 +201,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
         output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
     )
-    unroll_teacher = jax_utils.with_compute_dtype(
-        self._unroll_teacher, config.teacher_dtype.dtype)
+    jax_utils.cast_module_state_to_dtype(self.teacher, config.teacher_dtype.dtype)
     self._unroll_teacher_mb = jax_utils.microbatch_fn(
-        jax_utils.no_loss(unroll_teacher),
+        jax_utils.no_loss(self._unroll_teacher),
         **teacher_mbkwargs
     )
     self.unroll_teacher = jax_utils.run_loss_fn(
-        self.teacher, unroll_teacher,
+        self.teacher, self._unroll_teacher,
         **teacher_mbkwargs,
     )
 
