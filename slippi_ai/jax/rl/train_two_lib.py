@@ -54,6 +54,9 @@ class AgentConfig:
   # teacher has no value function i.e. was produced by policy-only training.
   value_function: tp.Optional[str] = None
   name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
+  # Rating to condition the agent on. Required when the teacher was trained
+  # with ratings (embed.with_rating); ignored otherwise.
+  rating: tp.Optional[float] = None
   # Character to play. If None, inferred from the teacher checkpoint (only
   # works if it was trained on a single character).
   char: tp.Optional[melee.Character] = None
@@ -279,6 +282,7 @@ class AgentManager:
         compile=self.agent_config.compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
+        rating=self.agent_config.rating,
         jax=dataclasses.asdict(self.agent_config.jax),
     )
 
