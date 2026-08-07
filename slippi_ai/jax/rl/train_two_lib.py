@@ -596,8 +596,9 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     trajectories = all_trajectories[main_port]
 
     step_time = step_profiler.mean_time()
+    sps = 1 / step_time
     steps_per_rollout = config.actor.num_envs * config.actor.rollout_length
-    fps = len(trajectories) * steps_per_rollout / step_time
+    fps = len(trajectories) * steps_per_rollout * sps
     mps = fps / MINUTES_PER_FRAME
 
     timings = dict(
@@ -605,14 +606,12 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
         learner=experiment_manager.learner_profiler.mean_time(),
         reset=experiment_manager.reset_profiler.mean_time(),
         total=step_time,
+        sps=sps,
         fps=fps,
         mps=mps,
     )
-    actor_timing = metrics['actor'].pop('timing')
-    for key in ['env_pop', 'env_push']:
-      timings[key] = actor_timing[key]
-    for key in ['agent_step']:
-      timings[key] = actor_timing[key][main_port]
+    timings['actor'] = utils.map_nt(
+        lambda x: x * 1000, metrics['actor'].pop('timing'))
 
     states: Game = utils.map_nt(
         lambda *xs: np.stack(xs, axis=1),
@@ -642,25 +641,37 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   logger = Logger()
   steps_per_epoch = config.learner.ppo.num_batches
+  frames_per_step = config.actor.num_envs * config.actor.rollout_length
 
   def flush(step: int):
-    metrics = logger.flush(step * steps_per_epoch)
+    total_steps = step * steps_per_epoch
+    total_frames = total_steps * frames_per_step
+    extras = dict(
+        total_frames=total_frames,
+    )
+
+    metrics = logger.flush(total_steps, extras=extras)
     if metrics is None:
       return
+
+    for profiler in [
+        step_profiler, experiment_manager.rollout_profiler,
+        experiment_manager.learner_profiler, experiment_manager.reset_profiler,
+    ]:
+      profiler.reset()
 
     print('\nStep:', step)
 
     timings: dict = metrics['timings']
-    timing_str = ', '.join(
-        '{k}: {v:.3f}'.format(k=k, v=v) for k, v in timings.items())
-    print(timing_str)
+    timings = utils.map_nt(lambda v: f'{v:.3f}', timings)
+    print(timings)
 
     learner_metrics = metrics['learner']
-    pre_update = learner_metrics['ppo_step']['0']
-    mean_actor_kl = pre_update['actor_kl']['mean']
-    max_actor_kl = pre_update['actor_kl']['max']
+    post_update = learner_metrics['post_update']
+    mean_actor_kl = post_update['actor_kl']['mean']
+    max_actor_kl = post_update['actor_kl']['max']
     print(f'actor_kl: mean={mean_actor_kl:.3g} max={max_actor_kl:.3g}')
-    teacher_kl = pre_update['teacher_kl']
+    teacher_kl = post_update['teacher_kl']
     print(f'teacher_kl: {teacher_kl:.3g}')
     print(f'uev: {learner_metrics["value"]["uev"]:.3f}')
 
