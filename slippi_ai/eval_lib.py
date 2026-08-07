@@ -379,7 +379,7 @@ def get_name_code(state: dict, name: str) -> int:
   if not name_map:
     return 0
   if name not in name_map:
-    raise ValueError(f'Nametag must be one of {name_map.keys()}.')
+    raise ValueError(f'Nametag must be one of {name_map.keys()}, got {name}.')
   return name_map[name]
 
 
