@@ -10,6 +10,7 @@ import multiprocessing as mp
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
 import queue
+import time
 import traceback
 import typing as tp
 
@@ -36,6 +37,7 @@ from slippi_ai.jax.jax_utils import slice_map, fast_map
 T = tp.TypeVar('T')
 
 _BARRIER_TIMEOUT_S = 900.0
+_ERROR_POLL_S = 1.0
 
 
 def _copy_into_slice(src: np.ndarray, dst: np.ndarray, dst_slice: slice):
@@ -190,10 +192,19 @@ class MultiprocessSimEnvironment:
     """
     # TODO: is there a more efficient way to do this? A semaphore could work
     # but it doesn't allow you to acquire N at once.
-    for event in self._obs_written_events[index]:
-      if not event.wait(timeout=_BARRIER_TIMEOUT_S):
+    # Poll in short increments: a worker that raised (error_queue) or died
+    # without cleanup (native crash) would otherwise present as a silent
+    # hang until the full barrier timeout.
+    deadline = time.monotonic() + _BARRIER_TIMEOUT_S
+    for worker_id, event in enumerate(self._obs_written_events[index]):
+      while not event.wait(timeout=_ERROR_POLL_S):
         self._check_worker_errors()
-        raise RuntimeError('timed out waiting for worker observations')
+        process = self._processes[worker_id]
+        if not process.is_alive():
+          raise RuntimeError(
+              f'{process.name} died with exit code {process.exitcode}')
+        if time.monotonic() > deadline:
+          raise RuntimeError('timed out waiting for worker observations')
       if clear:
         event.clear()
 
