@@ -65,6 +65,12 @@ class MultiprocessSimEnvironment:
   ):
     self._num_envs = num_envs
     self._inner_batch_size = inner_batch_size
+    # A non-positive size would give num_workers <= 0, spawning no workers at
+    # all. The barriers below iterate over per-worker events, so they'd pass
+    # trivially and rollouts would silently read never-written buffers.
+    if self._inner_batch_size <= 0:
+      raise ValueError(
+          f'inner_batch_size must be positive, got {self._inner_batch_size}.')
     if self._num_envs % self._inner_batch_size:
       raise ValueError(
           f'num_envs={self._num_envs} must be divisible by '
