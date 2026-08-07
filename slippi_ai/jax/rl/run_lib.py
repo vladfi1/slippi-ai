@@ -375,7 +375,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
           f'{config.teacher} (requested) != {previous_teacher} (checkpoint)')
 
     logging.info(f'Using teacher: {previous_teacher}')
-    config.teacher = previous_teacher  # for saving
+    rl_state['config']['teacher'] = previous_teacher  # for saving
     teacher_state = jax_saving.load_state_from_disk(previous_teacher)
 
     rl_delay = rl_state['config']['policy']['delay']

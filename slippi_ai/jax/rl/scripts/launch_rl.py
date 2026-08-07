@@ -31,7 +31,7 @@ if __name__ == '__main__':
 
   CONFIG = run_lib.Config()
 
-  CONFIG.runtime.max_step=10000
+  CONFIG.runtime.max_step=20000
   CONFIG.runtime.log_interval=300
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
@@ -107,55 +107,67 @@ if __name__ == '__main__':
       ]
       assert len(config.agent.char) == 18
 
-    if config.teacher is not None:
-      imitation_state = saving.load_state_from_disk(config.teacher)
-      imitation_config = flag_utils.dataclass_from_dict(
-          train_lib.Config, imitation_state['config'])
-      char_str = imitation_config.dataset.allowed_characters
-      chars = chars_from_string(char_str)
+    if config.restore:
+      state = saving.load_state_from_disk(config.restore)
+      teacher = state['config']['teacher']
+      del state
+    else:
+      teacher = config.teacher
 
-      if config.agent.char is None:
-        assert chars is not None
-        config.agent.char = chars
-        logging.info(f"Using teacher's allowed characters: {chars}")
-      elif chars is not None:
-        for char in config.agent.char:
-          if char not in chars:
-            raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
+    if teacher is None:
+      raise ValueError('Teacher model must be specified via --config.teacher or --restore')
 
-      if GROUPED_CHARS.value:
-        char_tag = 'grouped'
+    imitation_state = saving.load_state_from_disk(teacher)
+    imitation_config = flag_utils.dataclass_from_dict(
+        train_lib.Config, imitation_state['config'])
+    char_str = imitation_config.dataset.allowed_characters
+    chars = chars_from_string(char_str)
+
+    if GROUPED_CHARS.value:
+      char_tag = 'grouped'
+    else:
+      char_tag = char_str
+
+    if config.agent.name is None:
+      config.agent.name = [MP] * len(config.agent.char)
+
+    if config.agent.char is None:
+      assert chars is not None
+      config.agent.char = chars
+      logging.info(f"Using teacher's allowed characters: {chars}")
+    elif chars is not None:
+      for char in config.agent.char:
+        if char not in chars:
+          raise ValueError(f"Character {char} not in teacher's allowed characters: {chars}")
+
+    if config.agent.name is None:
+      config.agent.name = [MP] * len(config.agent.char)
+
+    delay = imitation_config.policy.delay
+
+    if config.runtime.tag is None:
+      if config.opponent.type is run_lib.OpponentType.SELF:
+        if config.opponent.train:
+          opp = 'ditto'
+        elif config.opponent.update_interval is not None:
+          opp = f'ditto-{config.opponent.update_interval}'
+        else:
+          opp = 'ditto-fixed'
+      elif config.opponent.type is run_lib.OpponentType.CPU:
+        opp = 'vs_cpu'
+      elif config.opponent.type is run_lib.OpponentType.OTHER:
+        # assert config.opponent.other.path is not None
+        # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
+        opp = 'vs-fixed'
       else:
-        char_tag = char_str
+        raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
 
-      if config.agent.name is None:
-        config.agent.name = [MP] * len(config.agent.char)
+      if config.agent.rating:
+        rstr = f'_r{int(config.agent.rating)}'
+      else:
+        rstr = ''
 
-      delay = imitation_config.policy.delay
-
-      if config.runtime.tag is None:
-        if config.opponent.type is run_lib.OpponentType.SELF:
-          if config.opponent.train:
-            opp = 'ditto'
-          elif config.opponent.update_interval is not None:
-            opp = f'ditto-{config.opponent.update_interval}'
-          else:
-            opp = 'ditto-fixed'
-        elif config.opponent.type is run_lib.OpponentType.CPU:
-          opp = 'vs_cpu'
-        elif config.opponent.type is run_lib.OpponentType.OTHER:
-          # assert config.opponent.other.path is not None
-          # opponent_state = saving.load_state_from_disk(config.opponent.other.path)
-          opp = 'vs-fixed'
-        else:
-          raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
-
-        if config.agent.rating:
-          rstr = f'_r{int(config.agent.rating)}'
-        else:
-          rstr = ''
-
-        config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}"
+      config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
