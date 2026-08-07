@@ -286,6 +286,7 @@ class LearnerManager:
 
       self._hidden_state, metrics = self._learner.ppo(
           trajectories, self._hidden_state, step=step)
+      self._learner.check_actor_kl(metrics)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
 

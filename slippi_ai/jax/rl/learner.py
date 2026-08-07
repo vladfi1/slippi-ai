@@ -557,14 +557,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       advantages.append(advantage)
       value_metrics_list.append(metrics)
 
-    # Collect value function metrics.
-    if jit:
-      value_metrics = utils.batch_nest(
-          utils.map_single_structure(np.asarray, value_metrics_list))
-      value_metrics = utils.map_single_structure(np.mean, value_metrics)
-    else:
-      value_metrics = utils.map_nt(
-          lambda *xs: jnp.stack(xs).mean(), *value_metrics_list)
+    # Collect value function metrics. Keep them on device so we don't block
+    # dispatch of the PPO epochs below.
+    value_metrics = utils.map_nt(
+        lambda *xs: jnp.stack(xs).mean(), *value_metrics_list)
 
     timings['vf'] = time.perf_counter() - start
 
@@ -642,20 +638,21 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       final_state, metrics = self._ppo(
           trajectories, initial_state, num_epochs, jit=jit)
 
-    final_metrics = metrics['post_update']
-
-    # Revert if the policy moved too far from the actor.
-    reverted = False
-    final_actor_kl = np.asarray(final_metrics['actor_kl']['mean'])
-    if final_actor_kl > self._config.ppo.max_mean_actor_kl:
-      # jax_utils.set_module_state(self.policy, checkpoint)
-      # reverted = True
-      # TODO: implement state reversion
-      raise ValueError(f"Mean actor KL after PPO update is too high: {final_actor_kl}")
-
-    metrics['reverted'] = reverted
+    metrics['reverted'] = False
 
     return final_state, metrics
+
+  def check_actor_kl(self, metrics: dict):
+    """Raise if the post-update actor KL is too high.
+
+    Blocks on this learner's device; when running multiple learners, call
+    this only after all of them have dispatched their updates via `ppo`.
+    """
+    # TODO: implement state reversion instead of raising
+    final_actor_kl = np.asarray(metrics['post_update']['actor_kl']['mean'])
+    if final_actor_kl > self._config.ppo.max_mean_actor_kl:
+      raise ValueError(
+          f"Mean actor KL after PPO update is too high: {final_actor_kl}")
 
   def get_state(self) -> dict:
     state = jax_utils.get_module_state(self)

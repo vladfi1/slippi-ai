@@ -1,5 +1,6 @@
 """Train two JAX agents against each other."""
 
+import concurrent.futures
 import contextlib
 import dataclasses
 import itertools
@@ -340,6 +341,14 @@ class ExperimentManager:
         for port, learner in self._learners.items()
     }
 
+    # Dispatching a learner update is substantial host-side work (XLA runs the
+    # scanned unrolls by launching each iteration's kernels from the calling
+    # thread), so a single thread cannot keep two devices busy. Run each
+    # learner's update on its own thread; the XLA module executes with the GIL
+    # released, so the launch work genuinely parallelizes.
+    self._learner_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(self._learners))
+
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
@@ -425,10 +434,18 @@ class ExperimentManager:
       actor_metrics = utils.map_nt(lambda *xs: np.mean(xs), *actor_metrics)
 
     with self.learner_profiler:
+      futures = {
+          port: self._learner_pool.submit(
+              learner.ppo,
+              trajectories[port], self._hidden_states[port], step=step)
+          for port, learner in self._learners.items()
+      }
       metrics = {}
+      for port, future in futures.items():
+        self._hidden_states[port], metrics[port] = future.result()
+
       for port, learner in self._learners.items():
-        self._hidden_states[port], metrics[port] = learner.ppo(
-            trajectories[port], self._hidden_states[port], step=step)
+        learner.check_actor_kl(metrics[port])
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
 
