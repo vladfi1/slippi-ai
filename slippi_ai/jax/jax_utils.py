@@ -65,6 +65,20 @@ def num_devices() -> int:
   """Get the number of local devices."""
   return jax.local_device_count()
 
+def get_local_device(index: tp.Optional[int]) -> tp.Optional[jax.Device]:
+  """Resolve a local device index to a Device; None means default placement."""
+  if index is None:
+    return None
+  devices = jax.local_devices()
+  if index >= len(devices):
+    raise ValueError(
+        f'Device index {index} out of range; {len(devices)} local devices.')
+  return devices[index]
+
+def put_module_on_device(module: nnx.Module | nnx.Rngs, device: jax.Device):
+  """Move module state onto a specific device in-place."""
+  map_update(lambda x: jax.device_put(x, device), module)
+
 def struct_dtype(struct) -> tp.Optional[jnp.dtype]:
   leaves = jax.tree_util.tree_leaves(struct)
   floating_dtypes = set[jnp.dtype]()

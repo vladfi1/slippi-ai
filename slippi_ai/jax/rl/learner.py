@@ -165,8 +165,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       policy: Policy[ControllerType],
       teacher: Policy[ControllerType],
       value_function: vf_lib.ValueFunction,
+      device: tp.Optional[jax.Device] = None,
   ) -> None:
     self._config = config
+    self._device = device
     self.policy = policy
     self.teacher = teacher
     self.value_function = value_function
@@ -252,6 +254,11 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     )
     self.fused_ppo = jax_utils.cached_partial(fused_ppo, self)
 
+    if device is not None:
+      # Commits all parameters and optimizer state, so subsequent computations
+      # (which follow committed inputs) run on this device.
+      jax_utils.put_module_on_device(self, device)
+
   def initial_state(
       self, batch_size: int, rngs: tp.Optional[nnx.Rngs] = None,
   ) -> LearnerState:
@@ -266,10 +273,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         self.value_function.initial_state(batch_size, rngs),
         dtype=self._config.value_dtype.dtype)
 
-    return LearnerState(
+    state = LearnerState(
         teacher=teacher_state,
         value_function=value_state,
     )
+    if self._device is not None:
+      state = jax.device_put(state, self._device)
+    return state
 
   def policy_variables(self, to_numpy: bool = True):
     """Returns policy state for actor update via evaluators.update_variables."""
@@ -658,5 +668,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # nn.update only needs the updates to be a subset of the state.
     # Checkpoints are unpickled as numpy arrays; convert to jax arrays.
     assert 'teacher' not in state_dict
-    state_dict = jax.tree.map(jnp.asarray, state_dict)
+    # device_put with device=None is equivalent to jnp.asarray.
+    state_dict = jax.tree.map(
+        lambda x: jax.device_put(x, self._device), state_dict)
     jax_utils.set_module_state(self, state_dict)

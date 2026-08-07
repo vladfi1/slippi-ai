@@ -10,6 +10,7 @@ import typing as tp
 
 import melee
 import numpy as np
+import jax
 import jax.numpy as jnp
 from flax import nnx
 
@@ -98,6 +99,20 @@ ENEMY_PORTS = {1: 2, 2: 1}
 AGENT_CONFIG_KEY = 'agent_config'
 
 
+def assign_devices(
+    ports: tp.Sequence[int] = PORTS,
+) -> dict[int, tp.Optional[jax.Device]]:
+  """Give each port's agent/learner its own device when several are available."""
+  devices = jax.local_devices()
+  if len(devices) < 2:
+    return {port: None for port in ports}
+
+  assignment = {port: devices[i % len(devices)] for i, port in enumerate(ports)}
+  for port, device in assignment.items():
+    logging.info('Port %d: using device %s', port, device)
+  return assignment
+
+
 def _resolve_character(
     agent_config: AgentConfig,
     teacher_state: dict,
@@ -144,11 +159,13 @@ class AgentManager:
       port: int,
       expt_dir: str,
       learner_config: learner_lib.LearnerConfig,
+      device: tp.Optional[jax.Device] = None,
   ):
     self.agent_config = agent_config
     self.port = port
     self.enemy_port = ENEMY_PORTS[port]
     self.expt_dir = expt_dir
+    self.device = device
 
     suffix = f'-{port}.pkl'
     self.found = False
@@ -239,6 +256,7 @@ class AgentManager:
         teacher=teacher,
         policy=policy,
         value_function=value_function,
+        device=device,
     )
     self.learner.restore_from_imitation(rl_state['state'])
 
@@ -277,13 +295,18 @@ class AgentManager:
       f.write(pickled_state)
 
   def agent_kwargs(self) -> dict:
+    jax_kwargs = dataclasses.asdict(self.agent_config.jax)
+    # Run inference on the same device as this port's learner, unless
+    # explicitly overridden in the config.
+    if jax_kwargs.get('device_index') is None and self.device is not None:
+      jax_kwargs['device_index'] = jax.local_devices().index(self.device)
     return dict(
         state=self.get_state(),
         compile=self.agent_config.compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
         rating=self.agent_config.rating,
-        jax=dataclasses.asdict(self.agent_config.jax),
+        jax=jax_kwargs,
     )
 
 
@@ -425,6 +448,8 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   batch_size = config.actor.num_envs
 
+  port_devices = assign_devices()
+
   agents: dict[int, AgentManager] = {}
   for port in PORTS:
     agents[port] = AgentManager(
@@ -432,6 +457,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
         port=port,
         expt_dir=expt_dir,
         learner_config=getattr(config, f'learner{port}'),
+        device=port_devices[port],
     )
 
   # Set up opponent info (used for save file naming).

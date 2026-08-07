@@ -48,6 +48,7 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       pack_args: bool = False,
       functionalize: bool = False,
       dtype: str | DType = DType.FP32,
+      device_index: tp.Optional[int] = None,
   ):
     self._policy = policy
     self._batch_size = batch_size
@@ -92,6 +93,15 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     self._dtype = dtype
 
     jax_utils.cast_module_state_to_dtype(policy, dtype.dtype)
+
+    # Committing the parameters (and rngs) to a device makes all downstream
+    # computations run there.
+    self._device = jax_utils.get_local_device(device_index)
+    if self._device is not None:
+      jax_utils.put_module_on_device(policy, self._device)
+      jax_utils.put_module_on_device(rngs, self._device)
+      self._prev_controller = jax.device_put(
+          self._prev_controller, self._device)
 
     # TODO: this shouldn't be necessay if we always make sure that the policy
     # parameters are in the correct dtype.
@@ -171,6 +181,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     if dtype is not DType.FP32:
       self._hidden_state = jax_utils.cast_floats_to_dtype(
           self._hidden_state, dtype.dtype)
+    if self._device is not None:
+      self._hidden_state = jax.device_put(self._hidden_state, self._device)
 
   def hidden_state(self) -> policies.RecurrentState:
     """Returns the current hidden state."""
@@ -186,6 +198,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
   def set_policy_state(self, state: State):
     state = jax_utils.cast_floats_to_dtype(state, self._dtype.dtype)
+    if self._device is not None:
+      state = jax.device_put(state, self._device)
     self._policy.set_state(state)
 
   @property

@@ -75,6 +75,8 @@ class ActorConfig:
 class JaxAgentConfig:
   pack_args: bool = True
   dtype: DType = DType.FP32
+  # Local device to run inference on; None uses the default device.
+  device_index: tp.Optional[int] = None
 
 @dataclasses.dataclass
 class AgentConfig:
