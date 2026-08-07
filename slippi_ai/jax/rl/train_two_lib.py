@@ -341,11 +341,27 @@ class ExperimentManager:
         for port, learner in self._learners.items()
     }
 
-    # Dispatching a learner update is substantial host-side work (XLA runs the
-    # scanned unrolls by launching each iteration's kernels from the calling
-    # thread), so a single thread cannot keep two devices busy. Run each
-    # learner's update on its own thread; the XLA module executes with the GIL
-    # released, so the launch work genuinely parallelizes.
+    # Dispatching a learner update is substantial host-side work: XLA:GPU
+    # executes a scan/While loop by launching each iteration's kernels from
+    # the calling thread, so a jitted call over our 80-step unrolls occupies
+    # the host for roughly the module's execution time (at large batch the
+    # CUDA launch queue also fills up, making "dispatch" fully synchronous).
+    # A single thread therefore cannot keep two devices busy no matter the
+    # dispatch order. Run each learner's update on its own thread instead;
+    # the XLA module executes with the GIL released, so the launch work
+    # genuinely parallelizes (measured ~1.9x on 2x3080Ti at num_envs=2048,
+    # learner phase 5.1s -> 2.66s).
+    #
+    # Notes from investigating alternatives (2026-08, jax 0.10.1):
+    # - Removing host syncs and dispatching both learners from one thread is
+    #   NOT sufficient; async dispatch is a myth for scan-heavy modules.
+    #   Simple chained-matmul benchmarks DO overlap (~2x) and won't
+    #   reproduce the problem.
+    # - XLA command buffers (--xla_gpu_enable_command_buffer=...,WHILE)
+    #   captured only the loop bodies into CUDA graphs; the While loop still
+    #   iterates on the host (one small cuGraphLaunch per iteration), so
+    #   learner host time was unchanged. Worth re-testing after XLA upgrades
+    #   in case whole-loop capture (conditional graph nodes) lands.
     self._learner_pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=len(self._learners))
 
