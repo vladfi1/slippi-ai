@@ -412,7 +412,7 @@ class RolloutWorker(AbstractRolloutWorker):
     self._env.stop()
 
 class RolloutMetrics(tp.NamedTuple):
-  reward: float
+  reward: np.float32
 
   @classmethod
   def from_trajectory(cls, trajectory: Trajectory) -> tp.Self:

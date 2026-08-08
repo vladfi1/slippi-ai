@@ -26,7 +26,8 @@ from slippi_ai import sim_env
 from slippi_ai import utils
 from slippi_ai.sim_env.observations import build_trajectory_buffer
 from slippi_ai.controller_heads import SampleOutputs
-from slippi_ai.evaluators import Port, Timings, Trajectory, AbstractRolloutWorker
+from slippi_ai.evaluators import (
+    Port, Timings, Trajectory, RolloutMetrics, AbstractRolloutWorker)
 from slippi_ai.jax.jax_utils import fast_map, slice_map, jit
 from slippi_ai.policies import Platform
 
@@ -306,6 +307,29 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       num_steps: int,
       verbose: bool = False,
   ) -> tuple[tp.Mapping[Port, Trajectory], Timings]:
+    return self._rollout(num_steps, verbose=verbose, build_trajectories=True)
+
+  def rollout_metrics(
+      self,
+      num_steps: int,
+      verbose: bool = False,
+  ) -> tuple[tp.Mapping[Port, RolloutMetrics], Timings]:
+    """Like `rollout`, but only returns per-port reward sums.
+
+    Skips the two things that make a full Trajectory expensive: the per-step
+    agent outputs (the logits dominate) and the encoded states. Memory then
+    scales with the env state buffer alone, which matters for long rollouts
+    with many envs. Use this when the caller only evaluates, i.e. never learns
+    from the trajectory.
+    """
+    return self._rollout(num_steps, verbose=verbose, build_trajectories=False)
+
+  def _rollout(
+      self,
+      num_steps: int,
+      verbose: bool,
+      build_trajectories: bool,
+  ) -> tuple[tp.Mapping[Port, tp.Union[Trajectory, RolloutMetrics]], Timings]:
     timings: dict = collections.defaultdict(float)
     for key in ['agent_step', 'agent_pop']:
       timings[key] = collections.defaultdict(float)
@@ -324,7 +348,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     initial_states = [
         agent_info.agent.hidden_state
         for agent_info in self._agents
-    ]
+    ] if build_trajectories else None
 
     if verbose:
       import tqdm
@@ -341,8 +365,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
 
       fast_map(np.copyto, state_buffer.slots[t], game_batch)
 
-      for buffer, output in zip(action_buffers, prev_agent_outputs):
-        buffer.append(output)
+      if build_trajectories:
+        for buffer, output in zip(action_buffers, prev_agent_outputs):
+          buffer.append(output)
 
       timings['state_copy'] += time.perf_counter() - copy_start
 
@@ -388,8 +413,31 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
     build_start = time.perf_counter()
     rewards = reward.ko_diff(state_buffer.time_major.game)
 
-    # Record the delayed actions.
     assert len(self._prev_agent_outputs) == 1 + self._env_runahead
+
+    if not build_trajectories:
+      results: dict[Port, RolloutMetrics] = {}
+      for agent_info in self._agents:
+        # Note: peek_n forces the agent to process all of the `num_steps` states
+        # that it's been fed, which is what leaves its hidden state correct for
+        # the next rollout. It must happen even though we discard the actions.
+        agent_info.agent.peek_n(agent_info.agent.delay - self._env_runahead)
+
+        # Slice rewards exactly as the trajectory path does, so that this mode
+        # reports the same numbers as RolloutMetrics.from_trajectory.
+        if self._per_agent_outputs:
+          reward_slices = [(agent_info.ports[0], agent_info.env_slice)]
+        else:
+          reward_slices = list(
+              zip(agent_info.ports, agent_info.env_to_port_slices))
+
+        for port, env_slice in reward_slices:
+          results[port] = RolloutMetrics(
+              reward=np.sum(rewards[:, env_slice], dtype=np.float32))
+
+      return results, self._build_metrics(timings, num_steps, build_start)
+
+    # Record the delayed actions.
     remaining_actions = list(self._prev_agent_outputs)[1:]
 
     trajectories: dict[Port, Trajectory] = {}
@@ -457,12 +505,15 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
               delayed_actions=slice_map(agent_to_port_slice, delayed_actions),
           )
 
-    timings['trajectory_build'] = time.perf_counter() - build_start
-    timing = jax.tree.map(lambda x: x / num_steps, timings)
+    return trajectories, self._build_metrics(timings, num_steps, build_start)
 
-    return trajectories, {
-        'timing': timing,
-        'unexpected_reset': state_buffer.time_major.needs_reset[1:, :self._num_envs].copy(),
+  def _build_metrics(
+      self, timings: dict, num_steps: int, build_start: float) -> Timings:
+    timings['trajectory_build'] = time.perf_counter() - build_start
+    return {
+        'timing': jax.tree.map(lambda x: x / num_steps, timings),
+        'unexpected_reset': self._state_buffer.time_major.needs_reset[
+            1:, :self._num_envs].copy(),
         'completed_games': self._env.pop_completed_games(),
     }
 
