@@ -547,11 +547,14 @@ class Agent:
     self.mirror = mirror
 
     self.name_map: dict[str, int] = state['name_map']
-    rl_names = get_name_from_rl_state(state)
-    if rl_names is not None:
-      self.name_codes = [self.name_map[n] for n in rl_names]
+    if self.name_map:
+      rl_names = get_name_from_rl_state(state)
+      if rl_names is not None:
+        self.name_codes = [self.name_map[n] for n in rl_names]
+      else:
+        self.name_codes = list(set(self.name_map.values()))
     else:
-      self.name_codes = list(set(self.name_map.values()))
+      self.name_codes = [0]
     self.name_index = 0
 
     self._agent = build_delayed_agent(state, batch_size=1, **agent_kwargs)
