@@ -183,9 +183,6 @@ if __name__ == '__main__':
           inner_batch_size=INNER_BATCH_SIZE.value,
           # When burnin is enabled, mirror the behavior during RL training.
           keep_agent_outputs_on_device=BURNIN.value,
-          # We consume each chunk's trajectory before rolling out the next one,
-          # so there's no need for a private copy of the state buffer.
-          copy_data=False,
       )
     else:
       evaluator = evaluators.Evaluator(
@@ -208,7 +205,13 @@ if __name__ == '__main__':
           burnin_steps = chunk_length
 
         print(f'Burning in for {burnin_steps} steps...')
-        evaluator.rollout(burnin_steps, verbose=not QUIET.value)
+        # Warm up the same code path we time below, not the trajectory one.
+        if SIM_ENVS.value:
+          from slippi_ai.sim_env import jax_rollout
+          assert isinstance(evaluator, jax_rollout.JaxSimRolloutWorker)
+          evaluator.rollout_metrics(burnin_steps, verbose=not QUIET.value)
+        else:
+          evaluator.rollout(burnin_steps, verbose=not QUIET.value)
 
       if TF_PROFILE.value:
         import tensorflow as tf
@@ -237,19 +240,29 @@ if __name__ == '__main__':
       rewards = {}
       completed_games = []
       total_steps = 0
+
+      # A per-rollout bar would restart on every chunk, so when chunking is on
+      # we track the whole evaluation with one bar instead. Running to a game
+      # cohort has no step target, so that bar is unbounded.
+      progress = None
+      if not QUIET.value and chunk_length != ROLLOUT_LENGTH.value:
+        import tqdm
+        progress = tqdm.tqdm(
+            total=None if NUM_GAMES.value else ROLLOUT_LENGTH.value,
+            desc='Rollout', unit='step')
+
+      # Let the worker draw its own per-step bar only when we aren't drawing one.
+      verbose = not QUIET.value and progress is None
+
       with timer:
         while True:
           if isinstance(evaluator, evaluators.Evaluator):
-            stats, metrics = evaluator.rollout(chunk_length, verbose=not QUIET.value)
+            stats, metrics = evaluator.rollout(chunk_length, verbose=verbose)
           else:
-            trajectories, metrics = evaluator.rollout(chunk_length, verbose=not QUIET.value)
-            stats = {
-                port: evaluators.RolloutMetrics.from_trajectory(trajectory)
-                for port, trajectory in trajectories.items()
-            }
-            # Drop the trajectories (agent logits especially) before rolling out
-            # the next chunk, so only one chunk is ever live.
-            del trajectories
+            # We only need reward sums, so skip building trajectories: their
+            # per-step agent outputs (logits) and encoded states dominate memory.
+            stats, metrics = evaluator.rollout_metrics(
+                chunk_length, verbose=verbose)
           total_steps += chunk_length
           for port, stat in stats.items():
             rewards[port] = rewards.get(port, 0) + stat.reward
@@ -264,11 +277,19 @@ if __name__ == '__main__':
               if key in cohort:
                 cohort_results[key] = game
             completed_games = list(cohort_results.values())
+          if progress is not None:
+            progress.update(chunk_length)
+            if NUM_GAMES.value:
+              progress.set_postfix(
+                  games=f'{len(completed_games)}/{NUM_GAMES.value}')
           if NUM_GAMES.value:
             if len(completed_games) >= NUM_GAMES.value:
               break
           elif total_steps >= ROLLOUT_LENGTH.value:
             break
+
+      if progress is not None:
+        progress.close()
 
       if TF_PROFILE.value:
         import tensorflow as tf
