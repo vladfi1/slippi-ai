@@ -676,8 +676,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # imitation checkpoints. There is no teacher state but that's ok since
     # nn.update only needs the updates to be a subset of the state.
     # Checkpoints are unpickled as numpy arrays; convert to jax arrays.
-    assert 'teacher' not in state_dict
+
+    if 'teacher' in state_dict:
+      del state_dict['teacher']
+      logging.warning("Found teacher state in imitation checkpoint; ignoring it.")
+
     # device_put with device=None is equivalent to jnp.asarray.
     state_dict = jax.tree.map(
         lambda x: jax.device_put(x, self._device), state_dict)
+    state_dict = jax.tree.map(jnp.asarray, state_dict)
     jax_utils.set_module_state(self, state_dict)
