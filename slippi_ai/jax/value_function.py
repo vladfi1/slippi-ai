@@ -65,6 +65,7 @@ class ValueFunction(nnx.Module):
       discount: float,
       discount_on_death: tp.Optional[float] = None,
       lambda_: float = 1.0,
+      advantage_lambda: tp.Optional[float] = None,
   ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Computes prediction loss on a batch of frames.
 
@@ -77,6 +78,9 @@ class ValueFunction(nnx.Module):
         The reward for KOs comes on the frame of death, which precedes respawn.
       lambda_: TD-lambda parameter for the value targets; 1 gives discounted
         returns while 0 gives one-step TD targets.
+      advantage_lambda: TD-lambda parameter for the returned advantages; None
+        uses lambda_. Allows e.g. training the values with low-variance TD(0)
+        targets while still providing unbiased lambda=1 advantages.
     """
     inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
     values, final_state = self.unroll(
@@ -89,6 +93,7 @@ class ValueFunction(nnx.Module):
         discount=discount,
         discount_on_death=discount_on_death,
         lambda_=lambda_,
+        advantage_lambda=advantage_lambda,
     )
 
     return outputs, final_state
@@ -101,6 +106,7 @@ class ValueFunction(nnx.Module):
       batch_size: int,  # batch size in time
       discount_on_death: tp.Optional[float] = None,
       lambda_: float = 1.0,
+      advantage_lambda: tp.Optional[float] = None,
   ) -> tp.Tuple[ValueOutputs, RecurrentState]:
     """Like `loss`, but unrolls the network in chunks of `batch_size` frames."""
     total_unroll_length = frames.reward.shape[0]
@@ -138,6 +144,7 @@ class ValueFunction(nnx.Module):
         discount=discount,
         discount_on_death=discount_on_death,
         lambda_=lambda_,
+        advantage_lambda=advantage_lambda,
     )
 
     return outputs, final_state
@@ -150,6 +157,7 @@ class ValueFunction(nnx.Module):
       discount: float,
       discount_on_death: tp.Optional[float] = None,
       lambda_: float = 1.0,
+      advantage_lambda: tp.Optional[float] = None,
   ) -> ValueOutputs:
     rewards = frames.reward
 
@@ -179,8 +187,19 @@ class ValueFunction(nnx.Module):
         bootstrap=last_value,
         lambdas=jnp.full_like(discounts, lambda_))
     value_targets = jax.lax.stop_gradient(value_targets)
-    advantages = value_targets - values
-    value_loss = jnp.square(advantages)
+    td_errors = value_targets - values
+    value_loss = jnp.square(td_errors)
+
+    if advantage_lambda is None or advantage_lambda == lambda_:
+      advantages = td_errors
+    else:
+      advantage_targets = rl_lib.generalized_returns(
+          rewards=rewards,
+          discounts=discounts,
+          values=values,
+          bootstrap=last_value,
+          lambdas=jnp.full_like(discounts, advantage_lambda))
+      advantages = jax.lax.stop_gradient(advantage_targets) - values
 
     _, value_variance = jax_utils.mean_and_variance(value_targets)
     uev = value_loss / (value_variance + 1e-8)
