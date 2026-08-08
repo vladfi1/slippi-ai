@@ -23,6 +23,13 @@ if __name__ == '__main__':
 
   ROLLOUT_LENGTH = flags.DEFINE_integer(
       'rollout_length', 60 * 60, 'number of steps per rollout')
+  CHUNK_LENGTH = flags.DEFINE_integer(
+      'chunk_length', 0,
+      'Number of steps per rollout chunk; 0 means one chunk of '
+      '--rollout_length. Must divide --rollout_length. Trajectories are only '
+      'used for reward sums here, so smaller chunks cut peak memory: the '
+      'per-step agent outputs (notably logits) and the env state buffer are '
+      'sized by chunk length rather than by the full rollout.')
   NUM_ENVS = flags.DEFINE_integer('num_envs', 1, 'Number of environments.')
 
   FAKE_ENVS = flags.DEFINE_boolean('fake_envs', False, 'Use fake environments.')
@@ -36,7 +43,9 @@ if __name__ == '__main__':
 
   USE_GPU = flags.DEFINE_boolean('use_gpu', True, 'Use GPU for inference.')
   NUM_AGENT_STEPS = flags.DEFINE_integer(
-      'num_agent_steps', 0, 'Number of agent steps to batch.')
+      'num_agent_steps', 0,
+      'Default number of agent steps to batch; a per-agent '
+      '--{player,opponent}.ai.batch_steps takes precedence.')
 
   agent_flags = utils.deep_copy(eval_lib.BATCH_AGENT_FLAGS)
   agent_flags['tf']['jit_compile'] = ff.Boolean(True)
@@ -114,7 +123,9 @@ if __name__ == '__main__':
         path = akwargs.pop('path')
         akwargs.update(
             state=saving.load_state_from_disk(path),
-            batch_steps=NUM_AGENT_STEPS.value,
+            # --num_agent_steps is the default for all agents; a per-agent
+            # --{player,opponent}.ai.batch_steps overrides it.
+            batch_steps=akwargs['batch_steps'] or NUM_AGENT_STEPS.value,
         )
         agent_kwargs[port] = akwargs
 
@@ -132,6 +143,21 @@ if __name__ == '__main__':
 
     if NUM_GAMES.value and not SIM_ENVS.value:
       raise ValueError('--num_games currently requires --sim_envs.')
+
+    # Every agent's batch_steps must divide the rollout length, so a chunk has
+    # to be a multiple of all of them.
+    agent_batch_steps = math.lcm(
+        *[kwargs['batch_steps'] or 1 for kwargs in agent_kwargs.values()])
+
+    chunk_length = CHUNK_LENGTH.value or ROLLOUT_LENGTH.value
+    if ROLLOUT_LENGTH.value % chunk_length != 0:
+      raise ValueError(
+          f'--chunk_length ({chunk_length}) must divide '
+          f'--rollout_length ({ROLLOUT_LENGTH.value}).')
+    if chunk_length % agent_batch_steps != 0:
+      raise ValueError(
+          f'chunk length ({chunk_length}) must be a multiple of every agent\'s '
+          f'batch_steps (lcm={agent_batch_steps}).')
 
     if SIM_ENVS.value:
       if len(agent_kwargs) != 2:
@@ -151,12 +177,15 @@ if __name__ == '__main__':
           agent_kwargs=sim_agent_kwargs,
           dolphin_kwargs=dolphin_kwargs,
           num_envs=NUM_ENVS.value,
-          rollout_length=ROLLOUT_LENGTH.value,
+          rollout_length=chunk_length,
           use_fake_envs=FAKE_ENVS.value,
           async_envs=ASYNC_ENVS.value,
           inner_batch_size=INNER_BATCH_SIZE.value,
           # When burnin is enabled, mirror the behavior during RL training.
           keep_agent_outputs_on_device=BURNIN.value,
+          # We consume each chunk's trajectory before rolling out the next one,
+          # so there's no need for a private copy of the state buffer.
+          copy_data=False,
       )
     else:
       evaluator = evaluators.Evaluator(
@@ -173,10 +202,10 @@ if __name__ == '__main__':
 
     with evaluator.run():
       if BURNIN.value:
-        batch_steps = NUM_AGENT_STEPS.value or 1
-        burnin_steps = math.ceil(32 / batch_steps) * batch_steps
+        burnin_steps = math.ceil(32 / agent_batch_steps) * agent_batch_steps
         if SIM_ENVS.value:
-          burnin_steps = ROLLOUT_LENGTH.value
+          # JaxSimRolloutWorker only accepts rollouts of its configured length.
+          burnin_steps = chunk_length
 
         print(f'Burning in for {burnin_steps} steps...')
         evaluator.rollout(burnin_steps, verbose=not QUIET.value)
@@ -211,14 +240,17 @@ if __name__ == '__main__':
       with timer:
         while True:
           if isinstance(evaluator, evaluators.Evaluator):
-            stats, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
+            stats, metrics = evaluator.rollout(chunk_length, verbose=not QUIET.value)
           else:
-            trajectories, metrics = evaluator.rollout(ROLLOUT_LENGTH.value, verbose=not QUIET.value)
+            trajectories, metrics = evaluator.rollout(chunk_length, verbose=not QUIET.value)
             stats = {
                 port: evaluators.RolloutMetrics.from_trajectory(trajectory)
                 for port, trajectory in trajectories.items()
             }
-          total_steps += ROLLOUT_LENGTH.value
+            # Drop the trajectories (agent logits especially) before rolling out
+            # the next chunk, so only one chunk is ever live.
+            del trajectories
+          total_steps += chunk_length
           for port, stat in stats.items():
             rewards[port] = rewards.get(port, 0) + stat.reward
           if cohort is None:
@@ -232,7 +264,10 @@ if __name__ == '__main__':
               if key in cohort:
                 cohort_results[key] = game
             completed_games = list(cohort_results.values())
-          if not NUM_GAMES.value or len(completed_games) >= NUM_GAMES.value:
+          if NUM_GAMES.value:
+            if len(completed_games) >= NUM_GAMES.value:
+              break
+          elif total_steps >= ROLLOUT_LENGTH.value:
             break
 
       if TF_PROFILE.value:
