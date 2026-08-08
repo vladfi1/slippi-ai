@@ -198,7 +198,9 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         max_frame_id=(
             -1 if dolphin_kwargs_0['infinite_time'] else 8 * 60 * 60 - 123),
         fake=use_fake_envs,
-        frame_buffer_length=self._rollout_length + 1,
+        # Note: we deliberately don't set frame_buffer_length. The env sizes
+        # its own ring from the runahead; it has nothing to do with the
+        # rollout length.
         runahead=self._env_runahead,
     )
 

@@ -59,7 +59,6 @@ class MultiprocessSimEnvironment:
       inner_batch_size: int,
       players: tp.Sequence[sim_env.PlayerConfigs],
       stage: tp.Sequence[melee.Stage],
-      frame_buffer_length: int = 128,
       runahead: int = 0,  # number of extra actions that can be pushed
       max_frame_id: int = -1,
       data_dir: str | None = None,
@@ -144,7 +143,6 @@ class MultiprocessSimEnvironment:
               total_envs=self._num_envs,
               players=players[start:stop],
               stages=stage[start:stop],
-              frame_buffer_length=frame_buffer_length,
               env_runahead=self._env_runahead,
               max_frame_id=max_frame_id,
               data_dir=data_dir,
@@ -281,7 +279,6 @@ def _worker_main(
     total_envs: int,
     players: tp.Sequence[sim_env.PlayerConfigs],
     stages: tp.Sequence[melee.Stage],
-    frame_buffer_length: int,
     env_runahead: int,
     max_frame_id: int,
     data_dir: str | None,
@@ -316,14 +313,12 @@ def _worker_main(
         num_envs=batch_size,
         players=players,
         stage=stages,
-        frame_buffer_length=frame_buffer_length,
         max_frame_id=max_frame_id,
         data_dir=data_dir,
         fake=fake,
         # Seed matches by global env index so sharding doesn't change games.
         seed_offset=offset,
     )
-    del frame_buffer_length  # don't confuse with env runahead
     env_slice = slice(offset, offset + batch_size)
     p1_slice = env_slice
     p2_slice = slice(total_envs + offset, total_envs + offset + batch_size)

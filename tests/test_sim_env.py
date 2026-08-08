@@ -341,7 +341,6 @@ class SimEnvTest(unittest.TestCase):
         inner_batch_size=2,
         players=players,
         stage=stages,
-        frame_buffer_length=16,
         max_frame_id=0,
     )
     try:
@@ -396,7 +395,6 @@ class SimEnvTest(unittest.TestCase):
             },
         ] * 2,
         stage=[melee.Stage.FINAL_DESTINATION] * 2,
-        frame_buffer_length=16,
     )
     try:
       multi.pop()

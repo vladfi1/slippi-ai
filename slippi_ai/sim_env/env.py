@@ -58,6 +58,12 @@ class SimStepInfo(tp.NamedTuple):
   terminal: np.ndarray
   step_t: int
 
+# Frames in the native ring buffer. EnvBatch wraps its own cursor and we copy
+# each published frame out before the next advance, so this doesn't need to
+# span a rollout -- 1 is functionally sufficient. A small ring is also slightly
+# faster than a large one, which doesn't fit in cache.
+FRAME_BUFFER_LENGTH = 16
+
 
 PlayerConfigs = tp.Mapping[int, dolphin.AI]
 CharacterPool = str | tp.Sequence[melee.Character | str | int]
@@ -77,7 +83,7 @@ class SimBatchedEnvironment:
       num_envs: int,
       players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
       *,
-      frame_buffer_length: int = 128,
+      frame_buffer_length: int = FRAME_BUFFER_LENGTH,
       stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
@@ -374,7 +380,7 @@ class CompatSimBatchedEnvironment(SimBatchedEnvironment):
       num_envs: int,
       players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
       *,
-      frame_buffer_length: int = 128,
+      frame_buffer_length: int = FRAME_BUFFER_LENGTH,
       stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
@@ -435,7 +441,7 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
       num_envs: int,
       players: PlayerConfigs | tp.Sequence[PlayerConfigs] | None = None,
       *,
-      frame_buffer_length: int = 128,
+      frame_buffer_length: int = FRAME_BUFFER_LENGTH,
       stage: melee.Stage | tp.Sequence[melee.Stage] = melee.Stage.FINAL_DESTINATION,
       character_pool: CharacterPool | None = None,
       max_frame_id: int = -1,
@@ -443,6 +449,15 @@ class AsyncSimBatchedEnvironment(SimBatchedEnvironment):
       fake: bool = False,
       runahead: int = 0,  # number of extra actions that can be pushed
   ):
+    # The native ring doesn't need to span a rollout: EnvBatch wraps its cursor
+    # on its own (carrying the current observation to slot 0), we only ever
+    # read `current_frame`, and each published frame is copied into
+    # `_trajectory_buffer` before the next advance. The length therefore only
+    # sets how often the cursor wraps, so it just needs headroom over the
+    # runahead. Sizing it by rollout length instead costs ~1KB of resident
+    # memory per env-frame for nothing: 3.5 GiB at 512 envs x 7200 steps.
+    frame_buffer_length = max(frame_buffer_length, runahead + 2)
+
     super().__init__(
         num_envs=num_envs,
         players=players,
