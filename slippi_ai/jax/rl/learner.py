@@ -684,5 +684,4 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # device_put with device=None is equivalent to jnp.asarray.
     state_dict = jax.tree.map(
         lambda x: jax.device_put(x, self._device), state_dict)
-    state_dict = jax.tree.map(jnp.asarray, state_dict)
     jax_utils.set_module_state(self, state_dict)
