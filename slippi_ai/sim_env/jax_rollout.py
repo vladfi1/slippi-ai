@@ -398,9 +398,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
         for port in agent_info.ports:
           timings['agent_step'][port] += elapsed_per_port
 
-      record_start = time.perf_counter()
       record_state(game_batch, self._prev_agent_outputs.popleft(), t)
-      timings['record_state'] += time.perf_counter() - record_start
 
       # Feed the actions from the agents into the environment.
       self._push_actions(timings)
