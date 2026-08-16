@@ -13,7 +13,6 @@ from absl import logging
 import numpy as np
 import jax
 from flax import nnx
-import wandb
 
 from slippi_ai import (
     flag_utils,
@@ -246,6 +245,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     config.learner.unroll_batch_size = config.data.unroll_length
 
   # Set wandb config after potential overrides from checkpoint or compatible policy.
+  import wandb
   wandb.config.update(dataclasses.asdict(config))
 
   rngs = nnx.Rngs(config.seed)

@@ -16,8 +16,6 @@ import jax
 import numpy as np
 from flax import nnx
 
-import wandb
-
 import melee
 
 from slippi_ai import (
@@ -147,6 +145,7 @@ def log_stats(
     step: tp.Optional[int] = None,
     take_mean: bool = True,
 ):
+  import wandb
   if take_mean:
     stats = utils.map_nt(mean, stats)
   wandb.log(data=stats, step=step)
@@ -293,6 +292,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   config.data.random_offset = config.observation.frame_skip.skip
   config.dataset.with_ratings = config.embed.with_rating
 
+  import wandb
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
   runtime = config.runtime

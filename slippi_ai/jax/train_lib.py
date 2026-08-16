@@ -16,8 +16,6 @@ import jax
 import numpy as np
 from flax import nnx
 
-import wandb
-
 import melee
 
 from slippi_ai import (
@@ -154,16 +152,7 @@ def mean(value):
     value = value.mean().item()
   return value
 
-
-def log_stats(
-    stats: dict,
-    step: tp.Optional[int] = None,
-    take_mean: bool = True,
-):
-  if take_mean:
-    stats = utils.map_nt(mean, stats)
-  wandb.log(data=stats, step=step)
-
+log_stats = train_policy.log_stats
 
 _field = utils.field
 
@@ -370,6 +359,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   exit_stack.callback(test_data.shutdown)
 
   # Record name map
+  import wandb
   logging.info(name_map)
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
