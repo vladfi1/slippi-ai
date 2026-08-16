@@ -15,8 +15,8 @@ import pickle
 
 from absl import app, flags
 
-from slippi_ai import flag_utils, paths
-from slippi_ai.jax import saving, train_policy, train_vf
+from slippi_ai import paths
+from slippi_ai.jax import saving, train_vf
 
 POLICY = flags.DEFINE_string(
     'policy', str(paths.JAX_POLICY_CHECKPOINT), 'Path to the policy checkpoint.')
@@ -24,7 +24,8 @@ VALUE_FUNCTION = flags.DEFINE_string(
     'value_function', str(paths.JAX_VF_CHECKPOINT), 'Path to the VF checkpoint.')
 OUTPUT = flags.DEFINE_string(
     'output', str(paths.JAX_MERGED_CHECKPOINT), 'Path to write the merged checkpoint.')
-
+OVERWRITE = flags.DEFINE_bool(
+    'overwrite', False, 'Whether to overwrite the policy.')
 
 def main(_):
   policy_state = saving.load_state_from_disk(POLICY.value)
@@ -63,7 +64,10 @@ def main(_):
       ),
   )
 
-  output = OUTPUT.value
+  if OVERWRITE.value:
+    output = POLICY.value
+  else:
+    output = OUTPUT.value
   print(f'Saving merged checkpoint to {output}')
   with open(output, 'wb') as f:
     pickle.dump(combined, f)
