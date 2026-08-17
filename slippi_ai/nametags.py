@@ -82,7 +82,6 @@ NAME_GROUPS = [
   ('KJH', 'KJH#23'),  # 9K replays
   ('BillyBoPeep', 'BILLY#0'),  # 1.5K replays
   ('Spark', 'ZAID#0'),
-  ('Trif', 'TRIF#0', 'TRIF#268'),  # 9K replays
   ('Inky', 'INKY#398'),  # Sheik Player from Nova Scotia, 3.5K replays
   ('JChu', 'JCHU#536'),  # 3.5K replays
   ('Axe', 'AXE#845'),  # 800 replays
@@ -100,6 +99,10 @@ NAME_GROUPS = [
   ('Moky', 'MOKY#475'),  # 3K replays
   ('Jmook', 'JM#0', 'JMO#192'),
   ('Ossify', 'OSSIFY#0'),  # 1K replays
+
+  # Peach
+  ('Trif', 'TRIF#0', 'TRIF#268'),  # 9K replays
+  ('Fecfec', 'FECF#121'),  # 1K replays
 
   # Ice Climbers
   ('CookBook', 'COOK#671'),  # 20K replays

@@ -24,6 +24,9 @@ FIXED_RATINGS = {
 # rating misrepresents their skill (e.g. top players who rarely play ranked).
 RATING_OVERRIDES: dict[str, float] = {
     'Zain': 3200,
+    'Fecfec': 2600,
+    'Trif': 3000,
+    'Magi': 2900,
 }
 
 def ratings_path(root: str) -> str:
