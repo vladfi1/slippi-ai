@@ -110,7 +110,7 @@ if __name__ == '__main__':
 
     if config.restore:
       state = saving.load_state_from_disk(config.restore)
-      teacher = state['config']['teacher']
+      teacher = state['rl_config']['teacher']
       del state
     else:
       teacher = config.teacher
@@ -121,6 +121,7 @@ if __name__ == '__main__':
     imitation_state = saving.load_state_from_disk(teacher)
     imitation_config = flag_utils.dataclass_from_dict(
         train_lib.Config, imitation_state['config'])
+    del imitation_state
     char_str = imitation_config.dataset.allowed_characters
     chars = chars_from_string(char_str)
 
