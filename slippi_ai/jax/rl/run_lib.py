@@ -373,13 +373,19 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
     if config.teacher and config.teacher != previous_teacher:
       assert restore_from_checkpoint
-      raise ValueError(
-          'Requested teacher does not match checkpoint: '
+      logging.warning(
+          'Overriding previous teacher in checkpoint: '
           f'{config.teacher} (requested) != {previous_teacher} (checkpoint)')
 
-    logging.info(f'Using teacher: {previous_teacher}')
-    rl_state['rl_config']['teacher'] = previous_teacher  # for saving
-    teacher_state = jax_saving.load_state_from_disk(previous_teacher)
+    if config.teacher is None:
+      logging.info(f'Using teacher: {previous_teacher}')
+      rl_state['rl_config']['teacher'] = previous_teacher  # for saving
+      teacher = previous_teacher
+    else:
+      teacher = config.teacher
+
+    del previous_teacher
+    teacher_state = jax_saving.load_state_from_disk(teacher)
 
     rl_delay = rl_state['config']['policy']['delay']
     teacher_delay = teacher_state['config']['policy']['delay']
@@ -435,12 +441,12 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
     for state in [rl_state, teacher_state]:
       state['config']['policy']['delay'] = config.override_delay
 
-  teacher = jax_saving.load_policy_from_state(teacher_state)
+  teacher_policy = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
 
   learner = learner_lib.Learner(
       config=config.learner,
-      teacher=teacher,
+      teacher=teacher_policy,
       policy=policy,
       value_function=value_function,
   )
