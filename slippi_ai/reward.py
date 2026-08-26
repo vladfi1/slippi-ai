@@ -58,7 +58,13 @@ def compute_approaching_factor(
   # Player teleports when respawning.
   dying = is_dying(player.action)
   respawning = np.logical_and(dying[:-1], np.logical_not(dying[1:]))
-  approach_factor = np.where(respawning, 0, approach_factor)
+
+  # Don't approach an already dead opponent; incentivizes wasting jumps.
+  opponent_dying = is_dying(opponent.action)
+
+  mask = np.logical_or(respawning, opponent_dying[:-1])
+
+  approach_factor = np.where(mask, 0, approach_factor)
 
   return approach_factor
 
