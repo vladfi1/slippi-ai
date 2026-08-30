@@ -88,14 +88,17 @@ def amount_offstage(player: Player, stage: np.ndarray) -> np.ndarray:
   return np.sqrt(np.square(dx) + np.square(dy))
 
 
-DEFAULT_STALLING_THRESHOLD = 50
+DEFAULT_STALLING_THRESHOLD = 30
 
 def is_stalling_offstage(
     player: Player,
+    opponent: Player,
     stage: np.ndarray,
     threshold: float = DEFAULT_STALLING_THRESHOLD,
 ) -> np.ndarray:
-  return amount_offstage(player, stage) > threshold
+  opponent_offstage = amount_offstage(opponent, stage) > 0
+  is_stalling = amount_offstage(player, stage) > threshold
+  return np.logical_and(~opponent_offstage, is_stalling)
 
 def is_aerial_shine(player: Player):
   is_fox = player.character == melee.Character.FOX.value
@@ -106,11 +109,6 @@ def is_aerial_shine(player: Player):
   is_shine = player.action == melee.Action.DOWN_B_AIR
 
   return np.logical_and(is_spacie, is_shine)
-
-def find_offstage_shine_stalls(player: Player, stage: np.ndarray):
-  return np.logical_and(
-      is_stalling_offstage(player, stage),
-      is_aerial_shine(player))
 
 @dataclasses.dataclass
 class RewardConfig:
@@ -127,7 +125,7 @@ class RewardConfig:
         damage_ratio=0.01,
         ledge_grab_penalty=0.02,
         approaching_factor=1e-3,
-        stalling_penalty=0.1,
+        stalling_penalty=0.2,
         stalling_threshold=DEFAULT_STALLING_THRESHOLD,
         nana_ratio=0.5,
     )
@@ -172,7 +170,7 @@ def compute_rewards(
     bad_ledge_grabs = get_bad_ledge_grabs(player, opponent).astype(np.float32)
     reward -= ledge_grab_penalty * bad_ledge_grabs
 
-    stalling = is_stalling_offstage(player, game.stage, stalling_threshold)[1:]
+    stalling = is_stalling_offstage(player, opponent, game.stage, stalling_threshold)[1:]
     reward -= (stalling_penalty / 60) * stalling.astype(np.float32)
 
     reward += approaching_factor * compute_approaching_factor(player, opponent)
@@ -202,7 +200,7 @@ def player_stats(
       damages=process_damages(player.percent).mean() * FPM,
       ledge_grabs=get_bad_ledge_grabs(player, opponent).mean() * FPM,
       approaching_factor=compute_approaching_factor(player, opponent).mean(),
-      stalling=is_stalling_offstage(player, stage, stalling_threshold).mean(),
+      stalling=is_stalling_offstage(player, opponent, stage, stalling_threshold).mean(),
   )
 
   if player.nana != ():
