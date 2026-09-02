@@ -4,6 +4,8 @@ import jax.numpy as jnp
 
 Array = jax.Array | np.ndarray
 
+DEFAULT_HALFLIFE_SECONDS = 8
+
 def discount_from_halflife(halflife_seconds: float, fps: float = 60.0) -> float:
   """Computes the per-frame discount factor corresponding to a given halflife."""
   return 0.5 ** (1 / (halflife_seconds * fps))

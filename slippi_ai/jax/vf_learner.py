@@ -19,7 +19,7 @@ Array = jax.Array
 @dataclasses.dataclass
 class VFLearnerConfig:
   learning_rate: float = 1e-4
-  reward_halflife: float = 4
+  reward_halflife: float = rl_lib.DEFAULT_HALFLIFE_SECONDS
   gae_lambda: float = 0
   explicit_pmean: bool = False
   smap_optimizer: bool = True

@@ -42,7 +42,6 @@ if __name__ == '__main__':
   CONFIG.learner.learning_rate=3e-5
   CONFIG.learner.value_cost=1
   CONFIG.learner.policy_gradient_weight=PGW
-  CONFIG.learner.reward_halflife=4
   CONFIG.learner.ppo.num_epochs=2
   CONFIG.learner.ppo.num_batches=1
   CONFIG.learner.ppo.beta=3e-1

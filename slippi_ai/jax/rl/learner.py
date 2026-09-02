@@ -42,7 +42,7 @@ class LearnerConfig:
   reverse_kl_teacher_weight: float = 0
   entropy_weight: float = 0
   value_cost: float = 0.5
-  reward_halflife: float = 4  # measured in seconds
+  reward_halflife: float = rl_lib.DEFAULT_HALFLIFE_SECONDS
   # TD-lambda for the value function's training targets.
   gae_lambda: float = 0
   # TD-lambda for the advantages used by PPO; None falls back to gae_lambda.

@@ -12,7 +12,7 @@ from flax import nnx
 from slippi_ai.data import Frames
 from slippi_ai.jax.policies import Policy
 from slippi_ai.jax.networks import RecurrentState
-from slippi_ai.jax import value_function as vf_lib
+from slippi_ai.jax import rl_lib, value_function as vf_lib
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax.jax_utils import swap_axes
 from slippi_ai.jax.policy_learner import (
@@ -27,7 +27,7 @@ Array = jax.Array
 
 @dataclasses.dataclass
 class LearnerConfig(PolicyLearnerConfig):
-  reward_halflife: float = 4
+  reward_halflife: float = rl_lib.DEFAULT_HALFLIFE_SECONDS
 
 class Learner(nnx.Module):
 
