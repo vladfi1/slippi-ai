@@ -12,6 +12,7 @@ from slippi_ai.jax.controller_heads import (
     SampleOutputs,
     ControllerType,
     AutoRegressive,
+    ResidualAutoRegressive,
 )
 from slippi_ai.jax import embed, networks, jax_utils
 from slippi_ai import data, types, utils, policies
@@ -77,7 +78,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
     # TODO: do this in a less hacky way
 
-    if isinstance(self.controller_head, AutoRegressive):
+    if isinstance(self.controller_head, (AutoRegressive, ResidualAutoRegressive)):
       self.controller_head.remat = True
 
     self.network.enable_remat()

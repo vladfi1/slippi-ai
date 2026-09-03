@@ -273,6 +273,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Randomize windows to improve data diversity across epochs.
   config.data.random_offset = config.policy.frame_skip
 
+  import wandb
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
   # Multi-device setup

@@ -13,6 +13,11 @@ JAX_VF_CHECKPOINT = CHECKPOINTS_DIR / 'jax_vf_demo'
 JAX_POLICY_CHECKPOINT = CHECKPOINTS_DIR / 'jax_policy_demo'
 JAX_MERGED_CHECKPOINT = CHECKPOINTS_DIR / 'jax_merged_demo'
 
+# Checkpoints from before the frame-skip refactor (residual controller head).
+JAX_IMITATION_CHECKPOINT_LEGACY = CHECKPOINTS_DIR / 'jax_demo_legacy'
+JAX_VF_CHECKPOINT_LEGACY = CHECKPOINTS_DIR / 'jax_vf_demo_legacy'
+JAX_POLICY_CHECKPOINT_LEGACY = CHECKPOINTS_DIR / 'jax_policy_demo_legacy'
+
 JAX_Q_FN_CKPT = CHECKPOINTS_DIR / 'jax_q_fn'
 JAX_NASH_Q_FN_CKPT = CHECKPOINTS_DIR / 'jax' / 'nash_q_fn'
 

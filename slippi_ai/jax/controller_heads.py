@@ -269,7 +269,10 @@ class AutoRegressive(ControllerHead[ControllerType]):
       ])
 
     if not shared:
-      raise NotImplementedError('Non-shared autoregressive controller heads are no longer supported.')
+      if frame_skip != 1:
+        raise NotImplementedError('Non-shared autoregressive controller heads are no longer supported.')
+      # With frame_skip == 1 shared and non-shared heads are identical.
+      logging.warning('shared=False is deprecated for autoregressive controller heads.')
 
     # Store as a list for compatibility with old checkpoints.
     res_blocks = [build_res_blocks()]
@@ -385,9 +388,194 @@ class AutoRegressive(ControllerHead[ControllerType]):
         lambda do: jax_utils.add_n(self.controller_embedding.flatten(do.distance)))
 
 
+class ResidualAutoRegressiveComponent(nnx.Module):
+  """Autoregressive residual component (legacy, pre-frame-skip)."""
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      embedder: embed.Embedding,
+      residual_size: int,
+      depth: int = 0,
+  ):
+    self.embedder = embedder
+
+    # Build encoder MLP
+    self._encoder = jax_utils.MLP(
+        rngs,
+        input_size=residual_size + embedder.size,
+        features=[residual_size] * depth + [embedder.distribution_size()],
+        activation=nnx.relu,
+        activate_final=False,
+    )
+
+    # The decoder doesn't need depth, because a single Linear decoding a one-hot
+    # has full expressive power over the output
+    self.decoder = nnx.Linear(
+        embedder.size, residual_size,
+        kernel_init=nnx.initializers.zeros_init(),
+        rngs=rngs)
+
+  def sample(
+      self,
+      rng: jax.Array,
+      residual: Array,
+      prev_raw: Array,
+      **kwargs,
+  ) -> tp.Tuple[Array, SampleOutputs]:
+    # Directly connect from the same component at time t-1
+    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
+    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    # Project down to the size desired by the component
+    logits = self._encoder(input_)
+    # Sample the component
+    sample = self.embedder.sample(rng, logits, **kwargs)
+    # Condition future components on the current sample
+    sample_embedding = self.embedder(sample).astype(residual.dtype)
+    residual = residual + self.decoder(sample_embedding)
+    return residual, SampleOutputs(controller_state=sample, logits=logits)
+
+  def distance(
+      self,
+      residual: Array,
+      prev_raw: Array,
+      target_raw: Array,
+  ) -> tp.Tuple[Array, DistanceOutputs]:
+    # Directly connect from the same component at time t-1
+    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
+    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    # Project down to the size desired by the component
+    logits = self._encoder(input_)
+    # Compute the distance between prediction and target
+    distance = self.embedder.distance(logits, target_raw)
+    # Auto-regress using the target (aka teacher forcing)
+    target_embedding = self.embedder(target_raw).astype(residual.dtype)
+    residual = residual + self.decoder(target_embedding)
+    return residual, DistanceOutputs(distance=distance, logits=logits)
+
+
+class ResidualAutoRegressive(ControllerHead[ControllerType]):
+  """Legacy autoregressive head with a residual stream and MLP components.
+
+  This is the head used by checkpoints trained before the frame-skip
+  refactor (config keys `residual_size`/`component_depth`). It is kept so
+  that those checkpoints remain loadable; new training should prefer
+  `AutoRegressive`. With frame_skip > 1 each skipped action is predicted
+  independently from the same network output, conditioned on its own
+  previous action.
+  """
+
+  @classmethod
+  def default_config(cls):
+    return dict(
+        residual_size=128,
+        component_depth=0,
+        remat=False,
+    )
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      frame_skip: int,
+      embed_controller: embed.Embedding[Controller, ControllerType],
+      residual_size: int,
+      component_depth: int,
+      remat: bool = False,
+  ):
+    del frame_skip
+    self.embed_controller = embed_controller
+    self.to_residual = nnx.Linear(input_size, residual_size, rngs=rngs)
+    self.embed_struct = self.embed_controller.map(lambda e: e)
+    self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
+    if remat:
+      logging.warning('Setting remat in the controller head config is deprecated, ignoring.')
+    self.remat = False
+    self.res_blocks = nnx.List([
+        ResidualAutoRegressiveComponent(
+            rngs, e,
+            residual_size=residual_size, depth=component_depth)
+        for e in self.embed_flat
+    ])
+
+  @property
+  def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
+    return self.embed_controller
+
+  def _sample_one(
+      self,
+      rngs: nnx.Rngs | nnx.RngStream,
+      inputs: Array,
+      prev_controller_state: ControllerType,
+      temperature: tp.Optional[float],
+  ) -> SampleOutputs[ControllerType]:
+    residual = self.to_residual(inputs)
+    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
+
+    sample_outputs: list[SampleOutputs] = []
+    for res_block, prev in zip(self.res_blocks, prev_controller_flat):
+      sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
+      residual, sample = sample_fn(
+          rngs(), residual, prev, temperature=temperature)
+      sample_outputs.append(sample)
+
+    samples, logits = zip(*sample_outputs)
+    return SampleOutputs(
+        controller_state=self.embed_controller.unflatten(iter(samples)),
+        logits=self.embed_controller.unflatten(iter(logits)),
+    )
+
+  def sample(
+      self,
+      rngs: nnx.Rngs | nnx.RngStream,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      temperature: tp.Optional[float] = None,
+  ) -> list[SampleOutputs[ControllerType]]:
+    return [
+        self._sample_one(rngs, inputs, prev, temperature)
+        for prev in prev_controller_state
+    ]
+
+  def _distance_one(
+      self,
+      inputs: Array,
+      prev_controller_state: ControllerType,
+      target_controller_state: ControllerType,
+  ) -> DistanceOutputs[ControllerType]:
+    residual = self.to_residual(inputs)
+    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
+    target_controller_flat = list(self.embed_controller.flatten(target_controller_state))
+
+    distance_outputs: list[DistanceOutputs] = []
+    for res_block, prev, target in zip(
+        self.res_blocks, prev_controller_flat, target_controller_flat):
+      distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
+      residual, distance = distance_fn(residual, prev, target)
+      distance_outputs.append(distance)
+
+    distances, logits = zip(*distance_outputs)
+    return DistanceOutputs(
+        distance=self.embed_controller.unflatten(iter(distances)),
+        logits=self.embed_controller.unflatten(iter(logits)),
+    )
+
+  def distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    return [
+        self._distance_one(inputs, prev, target)
+        for prev, target in zip(prev_controller_state, target_controller_state)
+    ]
+
+
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,
     autoregressive=AutoRegressive,
+    residual_autoregressive=ResidualAutoRegressive,
 )
 
 DEFAULT_CONFIG: dict[str, tp.Any] = dict({k: c.default_config() for k, c in CONSTRUCTORS.items()})
@@ -418,8 +606,19 @@ def construct(
     Constructed controller head.
   """
   ch_type = CONSTRUCTORS[name]
+  head_config = config[name]
+  if name == 'autoregressive' and 'residual_size' in head_config:
+    # Checkpoints from before the frame-skip refactor used the residual head
+    # under the 'autoregressive' name; keep them loadable.
+    ch_type = ResidualAutoRegressive
+    head_config = dict(head_config)
+    for key in ['component', 'shared']:
+      if key in head_config:
+        logging.warning(
+            f'Ignoring {key} in autoregressive config due to residual_size.')
+        del head_config[key]
   kwargs = dict(
-      config[name],
+      head_config,
       rngs=rngs,
       input_size=input_size,
       embed_controller=embed_controller,

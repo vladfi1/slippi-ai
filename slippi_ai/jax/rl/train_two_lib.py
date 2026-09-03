@@ -340,6 +340,17 @@ class ExperimentManager:
         port: learner.initial_state(batch_size)
         for port, learner in self._learners.items()
     }
+    # Fold per-frame rollouts into frame-skipped trajectories, one per port.
+    self._converters = {
+        port: learner_lib.FrameSkipConverter(
+            frame_skip=learner.policy.frame_skip,
+            batch_size=batch_size,
+            dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
+                [batch_size]),
+            reward_config=learner._config.reward,
+        )
+        for port, learner in self._learners.items()
+    }
 
     # Dispatching a learner update is substantial host-side work: XLA:GPU
     # executes a scan/While loop by launching each iteration's kernels from
@@ -390,27 +401,34 @@ class ExperimentManager:
       self.num_rollouts = 0
       self._burnin_after_reset()
 
-  def _rollout(self) -> tuple[tp.Mapping[int, evaluators.Trajectory], dict]:
+  def _rollout(self) -> tuple[
+      dict[int, learner_lib.FrameSkipTrajectory],
+      tp.Mapping[int, evaluators.Trajectory],
+      dict]:
     self.num_rollouts += 1
     trajectories, timings = self.actor.rollout(self._unroll_length)
 
+    fs_trajectories = {
+        port: self._converters[port].convert(trajectories[port])
+        for port in PORTS
+    }
+
     # Agents may run at a lower precision than the learner.
-    trajectories = dict(trajectories)
     for port, agent_dtype in self._agent_dtypes.items():
       if agent_dtype != self._learner_dtype:
-        trajectory = trajectories[port]
-        trajectories[port] = trajectory._replace(
+        fs_trajectory = fs_trajectories[port]
+        fs_trajectories[port] = fs_trajectory._replace(
             initial_state=run_lib.cast_floats(
-                trajectory.initial_state, dtype=self._learner_dtype))
+                fs_trajectory.initial_state, dtype=self._learner_dtype))
 
-    return trajectories, timings
+    return fs_trajectories, trajectories, timings
 
   def unroll(self):
     """Advance hidden states without training (for burnin)."""
-    trajectory, _ = self._rollout()
+    fs_trajectories, _, _ = self._rollout()
     for port, learner in self._learners.items():
       _, self._hidden_states[port] = learner.unroll(
-          trajectory[port], self._hidden_states[port])
+          fs_trajectories[port], self._hidden_states[port])
 
   def _burnin_after_reset(self):
     for _ in range(self._burnin_steps_after_reset):
@@ -438,11 +456,15 @@ class ExperimentManager:
       trajectories: dict[int, list[evaluators.Trajectory]] = {
           port: [] for port in PORTS
       }
+      fs_trajectories: dict[int, list[learner_lib.FrameSkipTrajectory]] = {
+          port: [] for port in PORTS
+      }
       actor_metrics = []
       for _ in range(self._num_ppo_batches):
-        trajectory, timings = self._rollout()
+        fs_trajectory, trajectory, timings = self._rollout()
         for port in PORTS:
           trajectories[port].append(trajectory[port])
+          fs_trajectories[port].append(fs_trajectory[port])
         actor_metrics.append(timings)
 
       for metrics in actor_metrics:
@@ -453,7 +475,7 @@ class ExperimentManager:
       futures = {
           port: self._learner_pool.submit(
               learner.ppo,
-              trajectories[port], self._hidden_states[port], step=step)
+              fs_trajectories[port], self._hidden_states[port], step=step)
           for port, learner in self._learners.items()
       }
       metrics = {}

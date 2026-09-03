@@ -9,6 +9,7 @@ the shared `GameBatchBuffers`.
 import multiprocessing as mp
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
+import logging
 import queue
 import time
 import traceback

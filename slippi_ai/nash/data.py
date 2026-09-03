@@ -14,6 +14,16 @@ Rank2 = tuple[int, int]
 Rank3 = tuple[int, int, int]
 ZippedFrames = types.Frames[Rank3, types.Controller[Rank3]]
 
+def _p1_rating(
+    batch_with_meta: data_lib.BatchWithMeta[data_lib.Rank2],
+) -> types.FloatArray[data_lib.Rank2]:
+  """Broadcasts the opponent's (per-replay) rating to [B, T]."""
+  batch = batch_with_meta.batch
+  p1_rating = np.asarray(
+      batch_with_meta.meta.meta.p1.rating, dtype=np.float32)  # [B]
+  return np.broadcast_to(p1_rating[:, None], batch.rating.shape)
+
+
 class DoubleBatch(tp.NamedTuple):
   p0_batch: data_lib.Batch[Rank2]
   p1_batch: data_lib.Batch[Rank2]
@@ -34,6 +44,7 @@ class DoubleBatch(tp.NamedTuple):
     p1_batch = data_lib.Batch[Rank2](
         game=p1_game,
         name=full_p1_name_code,
+        rating=_p1_rating(batch_with_meta),
         is_resetting=batch.is_resetting,
         reward=-batch.reward,  # assume 0-sum
     )
@@ -87,6 +98,7 @@ def convert_batch(
   p1_batch = data_lib.Batch(
       game=p1_game,
       name=full_p1_name_code,
+      rating=_p1_rating(batch_with_meta),
       is_resetting=batch.is_resetting,
       reward=-batch.reward,  # assume 0-sum
   )

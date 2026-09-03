@@ -12,7 +12,7 @@ import numpy as np
 import optax
 from flax import nnx
 
-from slippi_ai import data, reward as reward_lib, utils
+from slippi_ai import data, evaluators, reward as reward_lib, utils
 from slippi_ai.types import S, Frames, StateAction, Game, FloatArray, BoolArray
 from slippi_ai.jax import jax_utils, embed, rl_lib
 from slippi_ai.jax import value_function as vf_lib
@@ -80,6 +80,7 @@ class LearnerConfig:
 class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
   states: Game[Rank2]  # [U/FS + 1, B]
   name: np.ndarray[Rank2, np.dtype[np.int32]]  # [U/FS + 1, B]
+  rating: FloatArray[Rank2]  # [U/FS + 1, B]
   actions: list[SampleOutputs[ControllerType]]  # FS * [U/FS + 1, B]
   rewards: FloatArray[Rank2]  # [U/FS, B]
   is_resetting: BoolArray[Rank2]  # [U/FS + 1, B]
@@ -91,12 +92,85 @@ class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
     return cls(
         states=1,
         name=1,
+        rating=1,
         actions=1,
         rewards=1,
         is_resetting=1,
         initial_state=0,
         delayed_actions=0,
     )
+
+class FrameSkipConverter(tp.Generic[ControllerType]):
+  """Converts per-frame rollout Trajectories into FrameSkipTrajectories.
+
+  Keeps the trailing (frame_skip - 1) actions and reset flags across calls so
+  that consecutive rollouts form one continuous frame-skipped sequence. Also
+  computes rewards from the game states.
+  """
+
+  def __init__(
+      self,
+      frame_skip: int,
+      batch_size: int,
+      dummy_sample_outputs: SampleOutputs[ControllerType],
+      reward_config: reward_lib.RewardConfig,
+  ):
+    self.frame_skip = frame_skip
+    self.batch_size = batch_size
+    self._reward_kwargs = dataclasses.asdict(reward_config)
+    self._prev_actions = [dummy_sample_outputs] * (frame_skip - 1)
+    self._prev_is_resetting = np.full([frame_skip - 1, batch_size], False)
+
+  def convert(
+      self,
+      trajectory: evaluators.Trajectory[Rank2, ControllerType, RecurrentState],
+  ) -> FrameSkipTrajectory[ControllerType]:
+    assert not trajectory.delayed_actions, 'Not implemented'
+    frame_skip = self.frame_skip
+
+    # Previous actions for time steps [-FS+1, -1]
+    prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
+
+    # Create full action sequence for time steps [-FS+1, U]
+    actions = utils.map_nt(
+        lambda *xs: np.concatenate(xs, axis=0),
+        *prev_actions,
+        trajectory.actions,
+    )
+    # Split into skipped (previous) actions for time steps [0, U / FS]
+    actions = [
+        utils.map_nt(lambda t: t[i::frame_skip], actions)
+        for i in range(frame_skip)
+    ]
+    self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
+
+    states = utils.map_single_structure(
+        lambda x: x[::frame_skip], trajectory.states)
+
+    is_resetting = np.concatenate([
+        self._prev_is_resetting,
+        trajectory.is_resetting,
+    ], axis=0)
+    self._prev_is_resetting = is_resetting[-frame_skip:-1]
+    is_resetting = is_resetting.reshape(
+        (-1, frame_skip, self.batch_size)).any(axis=1)
+
+    rewards = reward_lib.compute_rewards(trajectory.states, **self._reward_kwargs)
+    # Don't reward transitions across game boundaries.
+    rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
+    rewards = rewards.reshape((-1, frame_skip, self.batch_size)).sum(axis=1)
+
+    return FrameSkipTrajectory(
+        states=states,
+        name=trajectory.name[::frame_skip],
+        rating=trajectory.rating[::frame_skip],
+        actions=actions,
+        rewards=rewards,
+        is_resetting=is_resetting,
+        initial_state=trajectory.initial_state,
+        delayed_actions=trajectory.delayed_actions,
+    )
+
 
 class LearnerState(tp.NamedTuple):
   teacher: RecurrentState
@@ -257,12 +331,20 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # advantage_lambda; evaluate with lambda=1 for unbiased value targets.
     unroll_vf = jax_utils.with_compute_dtype(
         self._unroll_vf, config.value_dtype.dtype)
+    # Note: not a functools.partial, as nnx.grad can't resolve the resulting
+    # keyword-only defaults in the signature.
+    def train_unroll_vf_(
+        value_function: vf_lib.ValueFunction[ControllerType],
+        trajectory: FrameSkipTrajectory[ControllerType],
+        initial_state: RecurrentState,
+    ):
+      return self._unroll_vf(
+          value_function, trajectory, initial_state,
+          lambda_=config.gae_lambda,
+          advantage_lambda=config.advantage_lambda)
+
     train_unroll_vf = jax_utils.with_compute_dtype(
-        functools.partial(
-            self._unroll_vf,
-            lambda_=config.gae_lambda,
-            advantage_lambda=config.advantage_lambda),
-        config.value_dtype.dtype)
+        train_unroll_vf_, config.value_dtype.dtype)
     self._unroll_vf_mb = jax_utils.microbatch_module(
         self._unroll_vf, **value_mbkwargs)
     self.unroll_vf = jax_utils.run_loss_fn(

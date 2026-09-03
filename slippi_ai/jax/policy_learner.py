@@ -117,7 +117,7 @@ def check_compute_dtypes(policy: Policy[ControllerType]) -> dict[str, str]:
 
   # ControllerRNN (if present)
   embed_mod = policy.network._embed_module
-  if isinstance(embed_mod, networks.EnhancedEmbedModule):
+  if isinstance(embed_mod, networks.EnhancedEmbedModule) and embed_mod._use_controller_rnn:
     crnn = embed_mod._controller_rnns[0]
     crnn_out = jax_utils.eval_shape_method(crnn.unroll, dummy_sa.action)
     results['controller_rnn_out'] = str(crnn_out.dtype)

@@ -111,6 +111,9 @@ jobs:
     - name: JAX Policy
       run: python slippi_ai/jax/tests/train_policy_test.py
 
+    - name: Checkpoint compatibility test
+      run: python slippi_ai/jax/tests/checkpoint_compat_test.py
+
     - name: JAX Value Function
       run: python slippi_ai/jax/tests/train_vf_test.py
 

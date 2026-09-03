@@ -102,6 +102,23 @@ _submodule_mappings = {
 }
 _old_keys = ['value_head']
 
+# Submodules that were wrapped in an nnx.List (of length 1) at some point.
+_listified_submodules = {
+    # EnhancedEmbedModule's ControllerRNN, from the frame-skip refactor.
+    '_controller_rnn': '_controller_rnns',
+}
+
+def _upgrade_nested(params: dict):
+  for key in list(params.keys()):
+    value = params[key]
+    if key in _listified_submodules:
+      new_key = _listified_submodules[key]
+      assert new_key not in params, f"Both {key} and {new_key} found in params, cannot upgrade."
+      params[new_key] = {0: params.pop(key)}
+      value = params[new_key]
+    if isinstance(value, dict):
+      _upgrade_nested(value)
+
 def upgrade_policy(params: dict):
   for old_name, new_name in _submodule_mappings.items():
     if old_name in params:
@@ -111,6 +128,8 @@ def upgrade_policy(params: dict):
   for old_key in _old_keys:
     if old_key in params:
       del params[old_key]
+
+  _upgrade_nested(params)
 
 def load_policy_from_state(state: dict) -> policies.Policy:
   policy = policy_from_config_dict(state['config'])
