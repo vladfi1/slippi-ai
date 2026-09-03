@@ -13,8 +13,10 @@ import tree
 
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
-from slippi_ai.data import StateAction, Action
-from slippi_ai.types import Controller, Game, Player, Nana, Item, S
+from slippi_ai.types import (
+  Controller, Game, Player, Nana, Item, S,
+  Action, StateAction, Frames,
+)
 
 Array = jax.Array
 
@@ -36,6 +38,9 @@ OutputTree2 = tp.TypeVar('OutputTree2', bound=Outputs)
 Shape = int | tp.Sequence[int]
 
 class Network(nnx.Module, abc.ABC, tp.Generic[InputTree, OutputTree]):
+
+  def enable_remat(self):
+    logging.warning('Remat is not supported for %s', self.__class__.__name__)
 
   @property
   @abc.abstractmethod
@@ -235,6 +240,7 @@ class RecurrentWrapper(Network[Array, Array]):
     # flax's RNNCells have the arguments reversed
     core = self._core
     if self._remat:
+      # core = jax_utils.remat_method(self._core.__call__, prevent_cse=False)
       core = nnx.remat(self._core, prevent_cse=False)
     next_state, output = core(prev_state, inputs)
     return output, next_state
@@ -365,8 +371,17 @@ class Compose(Network[InputTree, OutputTree]):
 
 class Sequential(Network[InputTree, InputTree]):
 
-  def __init__(self, layers: tp.Sequence[Network[InputTree, InputTree]]):
+  def __init__(
+      self,
+      layers: tp.Sequence[Network[InputTree, InputTree]],
+      remat: bool = False,
+  ):
     self._layers = nnx.List(layers)
+    self.remat = remat
+
+  def enable_remat(self):
+    # TODO: enable remat for all layers? that might be excessive
+    self.remat = True
 
   @property
   def output_size(self) -> int:
@@ -378,21 +393,30 @@ class Sequential(Network[InputTree, InputTree]):
   def step(self, inputs, prev_state):
     next_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, prev_state):
-      inputs, next_state = layer.step(inputs, state)
+      step_fn = layer.step
+      if self.remat:
+        step_fn = jax_utils.remat_method(layer.step)
+      inputs, next_state = step_fn(inputs, state)
       next_states.append(next_state)
     return inputs, next_states
 
   def unroll(self, inputs, reset, initial_state):
     final_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, initial_state):
-      inputs, final_state = layer.unroll(inputs, reset, state)
+      unroll_fn = layer.unroll
+      if self.remat:
+        unroll_fn = jax_utils.remat_method(layer.unroll)
+      inputs, final_state = unroll_fn(inputs, reset, state)
       final_states.append(final_state)
     return inputs, final_states
 
   def scan(self, inputs, reset, initial_state):
     hidden_states: list[RecurrentState] = []
     for layer, state in zip(self._layers, initial_state):
-      inputs, hidden_state = layer.scan(inputs, reset, state)
+      scan_fn = layer.scan
+      if self.remat:
+        scan_fn = jax_utils.remat_method(layer.scan)
+      inputs, hidden_state = scan_fn(inputs, reset, state)
       hidden_states.append(hidden_state)
     return inputs, hidden_states
 
@@ -423,34 +447,6 @@ class ResidualWrapper(Network[InputTree, InputTree]):
   def scan(self, inputs, reset, initial_state):
     outputs, final_state = self._net.scan(inputs, reset, initial_state)
     return self._combine(inputs, outputs), final_state
-
-class RematWrapper(Network[InputTree, OutputTree]):
-
-  def __init__(self, net: Network[InputTree, OutputTree]):
-    self._net = net
-
-  @property
-  def output_size(self) -> int:
-    return self._net.output_size
-
-  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
-    return self._net.initial_state(batch_size, rngs)
-
-  # Note: we can't directly use jax.remat on self._net.step as it raises issues
-  # with nnx stuff inside the method. We also have to use nnx.remat as a
-  # decorator on the _unbound_ function rather than the method.
-
-  @nnx.remat
-  def step(self, inputs, prev_state):
-    return self._net.step(inputs, prev_state)
-
-  @nnx.remat
-  def unroll(self, inputs, reset, initial_state):
-    return self._net.unroll(inputs, reset, initial_state)
-
-  @nnx.remat
-  def scan(self, inputs, reset, initial_state):
-    return self._net.scan(inputs, reset, initial_state)
 
 class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
 
@@ -617,7 +613,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
     for _ in range(num_layers):
       recurrent = ResidualWrapper(
-          recurrent_constructor(rngs, hidden_size, hidden_size))
+          recurrent_constructor(rngs, hidden_size, hidden_size, remat=remat))
       layers.append(recurrent)
 
       ffw_layer = ResBlock(
@@ -626,10 +622,10 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
           layer_norm=layer_norm)
       layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
 
-    if remat:
-      layers = [RematWrapper(layer) for layer in layers]
+    # Don't use RematWrapper as it changes the network state structure which
+    # prevents loading form checkpoints.
 
-    super().__init__(layers)
+    super().__init__(layers, remat=remat)
 
 
 class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
@@ -639,6 +635,9 @@ class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
   @abc.abstractmethod
   def output_size(self) -> int:
     """Returns the output size of the network."""
+
+  def enable_remat(self):
+    logging.warning('Remat is not supported for %s', self.__class__.__name__)
 
   @abc.abstractmethod
   def dummy(self, shape: S) -> StateAction[S, Action]:
@@ -731,20 +730,22 @@ class EmbedModule(abc.ABC, tp.Generic[Action]):
     """
 
   @abc.abstractmethod
-  def __call__(self, state_action: StateAction[S, Action]) -> Array:
+  def __call__(self, state_action: StateAction[S, Action], remat: bool = False) -> Array:
     """Embeds the state and action into an Array suitable for the network."""
 
 class Embeddings(tp.NamedTuple, tp.Generic[Action]):
   config: embed_lib.EmbedConfig[Action]
   num_names: int
+  frame_skip: int
   embed_game: embed_lib.Embedding[Game, Game]
   embed_action: embed_lib.Embedding[Controller, Action]
-  embed_state_action: embed_lib.Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]
+  embed_state_action: embed_lib.StateActionEmbedding[Action]
 
   @classmethod
   def init(
     cls,
     config: embed_lib.EmbedConfig[Action],
+    frame_skip: int,
     num_names: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
   ) -> tp.Self:
@@ -753,12 +754,14 @@ class Embeddings(tp.NamedTuple, tp.Generic[Action]):
     embed_state_action = embed_lib.get_state_action_embedding(
         embed_game=embed_game,
         embed_action=embed_action,
+        frame_skip=frame_skip,
         num_names=num_names,
         with_rating=config.with_rating,
     )
     return cls(
         config=config,
         num_names=num_names,
+        frame_skip=frame_skip,
         embed_game=embed_game,
         embed_action=embed_action,
         embed_state_action=embed_state_action,
@@ -786,7 +789,8 @@ class SimpleEmbedModule(EmbedModule[Action]):
   def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_game.from_state(game)
 
-  def __call__(self, state_action: StateAction[S, Action]) -> Array:
+  def __call__(self, state_action: StateAction[S, Action], remat: bool = False) -> Array:
+    del remat  # unused
     return self._embed_state_action(state_action)
 
 class SimpleEmbedNetwork(StateActionNetwork[Action]):
@@ -806,6 +810,10 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
   def output_size(self) -> int:
     return self._network.output_size
 
+  def enable_remat(self):
+    self._remat = True
+    self._network.enable_remat()
+
   def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_module.dummy(shape)
 
@@ -819,10 +827,13 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     return self._embed_module.encode_game(game)
 
   def _embed(self, state_action: StateAction[S, Action]) -> Array:
-    if self._remat:
-      x = nnx.remat(apply)(self._embed_module, state_action)
-    else:
-      x = self._embed_module(state_action)
+    # if self._remat:
+    #   if isinstance(self._embed_module, nnx.Module):
+    #     x = nnx.remat(apply)(self._embed_module, state_action, remat=True)
+    #   else:
+    #     x = nnx.remat(self._embed_module)(state_action)
+    # else:
+    x = self._embed_module(state_action, remat=self._remat)
     x = x.astype(jax_utils.module_dtype(self))
     return x
 
@@ -902,15 +913,24 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
     self._initial_state_fn = cells[0].initialize_carry
     self._cells = nnx.List(cells)
 
-  def __call__(self, controller: Action) -> Array:
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
+    if isinstance(batch_size, int):
+      batch_shape = (batch_size,)
+    else:
+      batch_shape = tuple(batch_size)
+    input_shape = batch_shape + (self._embed_flat[0].size,)
+    state = self._initial_state_fn(input_shape, rngs)
+    dtype = jax_utils.module_dtype(self)
+    return jax_utils.cast_floats_to_dtype(state, dtype)
+
+  def __call__(
+      self,
+      controller: Action,
+      prev_state: RecurrentState,
+  ) -> tuple[Array, RecurrentState]:
     dtype = jax_utils.module_dtype(self)
 
-    input_flat: list[Array] = list(self._embed_controller.flatten(controller))
-    input_shape = input_flat[0].shape + (self._embed_flat[0].size,)
-
-    # TODO: pass rngs properly? maybe reuse from __init__?
-    hidden_state = self._initial_state_fn(input_shape, rngs=nnx.Rngs(0))
-    hidden_state = jax_utils.cast_floats_to_dtype(hidden_state, dtype)
+    hidden_state = prev_state
 
     for cell, embed, component in zip(
         self._cells, self._embed_flat,
@@ -918,7 +938,26 @@ class ControllerRNN(nnx.Module, tp.Generic[Action]):
 
       hidden_state, output = cell(hidden_state, embed(component).astype(dtype))
 
-    return output  # type: ignore
+    return output, hidden_state  # type: ignore
+
+  def unroll(
+      self,
+      controllers: list[Action],
+      remat: bool = False,
+  ) -> Array:
+    batch_shape = next(self._embed_controller.flatten(controllers[0])).shape
+    initial_state = self.initial_state(batch_shape, nnx.Rngs(0))
+
+    inputs = self._embed_controller.map(
+        lambda _, *xs: jnp.stack(xs), *controllers)  # type: ignore
+
+    cell_fn = ControllerRNN.__call__
+    if remat:
+      cell_fn = nnx.remat(cell_fn)
+
+    outputs, _ = jax_utils.dynamic_rnn_module(cell_fn, self, inputs, initial_state)
+    return outputs[-1]
+
 
 P = tp.ParamSpec('P')
 T = tp.TypeVar('T')
@@ -1061,6 +1100,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
         rnn_cell='lstm',
         use_self_nana=True,
         use_controller_rnn=False,
+        share_crnn=True,
         use_learned_char=True,
         use_learned_action=True,
         use_char_action_joint=True,
@@ -1078,6 +1118,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       rnn_cell: str = 'lstm',
       use_self_nana: bool = True,
       use_controller_rnn: bool = False,
+      share_crnn: bool = True,
       use_learned_char: bool = True,
       use_learned_action: bool = True,
       use_char_action_joint: bool = True,
@@ -1107,12 +1148,18 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 
     self._use_controller_rnn = use_controller_rnn
     if use_controller_rnn:
-      self._controller_rnn = ControllerRNN(
+      if not share_crnn:
+        raise NotImplementedError('Separate CRNNs not supported anymore.')
+
+      controller_rnn = ControllerRNN(
           rngs=rngs,
           embed_controller=self._embed_controller,
           hidden_size=hidden_size,
           rnn_cell=rnn_cell,
       )
+
+      # Wrap in List for backwards compatibility with the old non-share_crnn path.
+      self._controller_rnns = nnx.List([controller_rnn])
 
     # Assumes that p0 and p1 have the same embedding structure
     embed_char = embed_lib.embed_char
@@ -1149,7 +1196,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
   def dummy(self, shape: S) -> StateAction[S, Action]:
     return self._embed_state_action.dummy(shape)
 
-  def encode(self, state_action: StateAction[S, Controller]) -> StateAction[S, Action]:
+  def encode(self, state_action: StateAction[S, Controller]):
     return self._embed_state_action.from_state(state_action)
 
   def encode_game(self, game: Game[S]) -> Game[S]:
@@ -1198,7 +1245,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       parts.append(self._embed_player_or_nana(raw.nana, default.nana))
     return jnp.concatenate(parts, axis=-1)
 
-  def __call__(self, state_action: StateAction[tp.Any, Action]) -> Array:
+  def __call__(self, state_action: StateAction[tp.Any, Action], remat: bool = False) -> Array:
     dtype = jax_utils.module_dtype(self)
 
     raw_game = state_action.state
@@ -1242,9 +1289,9 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       parts.append(default_state_action_embed.rating)
 
     if self._use_controller_rnn:
-      parts.append(self._controller_rnn(state_action.action))
+      parts.append(self._controller_rnns[0].unroll(state_action.action, remat=remat))
     else:
-      parts.append(self._embed_controller(state_action.action))
+      parts.extend(map(self._embed_controller, state_action.action))
 
     return jnp.concatenate(parts, axis=-1)
 
@@ -1305,11 +1352,13 @@ def build_embed_module(
     rngs: nnx.Rngs,
     config: dict,
     embed_config: embed_lib.EmbedConfig[Action],
+    frame_skip: int,
     num_names: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
 ):
-  embeddings = Embeddings.init(
+  embeddings: Embeddings[Action] = Embeddings.init(
       config=embed_config,
+      frame_skip=frame_skip,
       num_names=num_names,
       embed_action=embed_action,
   )
@@ -1334,7 +1383,9 @@ def build_embed_network(
     embed_config: embed_lib.EmbedConfig[Action],
     num_names: int,
     network_config: dict,
+    frame_skip: int,
     embed_action: tp.Optional[embed_lib.Embedding[Controller, Action]] = None,
+    remat: bool = False,
 ) -> StateActionNetwork[Action]:
   """Build a SimpleEmbedNetwork from config.
 
@@ -1343,7 +1394,7 @@ def build_embed_network(
     embed_config: Configuration for embeddings.
     num_names: Number of player names for the name embedding.
     network_config: Network configuration dict.
-
+    frame_skip: Number of frames to skip for the action embedding.
   Returns:
     Constructed SimpleEmbedNetwork.
   """
@@ -1354,6 +1405,7 @@ def build_embed_network(
       rngs=rngs,
       config=network_config['embed'],
       embed_config=embed_config,
+      frame_skip=frame_skip,
       num_names=num_names,
       embed_action=embed_action,
   )
@@ -1367,4 +1419,5 @@ def build_embed_network(
   return SimpleEmbedNetwork(
       embed_module=embed_module,
       network=network,
+      remat=remat,
   )

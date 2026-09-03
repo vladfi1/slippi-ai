@@ -25,12 +25,9 @@ from slippi_ai import (
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
-    embed as embed_lib,
     saving,
     train_lib,
     jax_utils,
-    networks,
-    train_lib,
 )
 from slippi_ai.jax.q import (
     q_fn_learner as learner_lib,
@@ -67,14 +64,10 @@ class Config:
   # both the q-function and the policy.
   compatible_policy: tp.Optional[str] = None
 
-  max_names: int = 16
+  q_function: q_lib.QFunctionConfig = _field(q_lib.QFunctionConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
   delay: tp.Optional[int] = None  # if None, use the policy's delay
-
-  # Used only to define the action embedding and delay.
-  embed: embed_lib.EmbedConfig = _field(embed_lib.EmbedConfig)
-  network: dict = _field(networks.default_config)
 
   expt_root: str = 'experiments/q_function'
   expt_dir: tp.Optional[str] = None
@@ -188,7 +181,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, restored_state['config'])
 
-    for key in ['network', 'embed', 'observation', 'delay', 'max_names']:
+    for key in ['q_function', 'observation', 'delay']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
@@ -205,7 +198,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         train_lib.Config, imitation_state['config'])
 
     config.observation = imitation_config.observation
-    config.max_names = imitation_config.max_names
+    # Sync the embedding so the q-function's action representation matches the
+    # policy's; this is required for downstream q-policy training, which mixes
+    # policy samples with q-function-encoded actions.
+    config.q_function.embed = imitation_config.embed
+    config.q_function.num_names = imitation_config.max_names
+    config.q_function.frame_skip = imitation_config.policy.frame_skip
     name_map = imitation_state['name_map']
     if config.delay is None:
       logging.info('setting delay from compatible policy: %d', imitation_config.policy.delay)
@@ -215,22 +213,24 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.delay is None:
       raise ValueError('Must specify delay.')
 
+  frame_skip = config.q_function.frame_skip
+
   if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
-    logging.info("Setting learner unroll batch size = %d", config.data.unroll_length)
-    config.learner.unroll_batch_size = config.data.unroll_length
+    unroll_batch_size = config.data.unroll_length // frame_skip
+    logging.info(
+        "Setting learner unroll batch size = %d to avoid OOMs during eval",
+        unroll_batch_size)
+    config.learner.unroll_batch_size = unroll_batch_size
+
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = frame_skip
 
   # Set wandb config after potential overrides from checkpoint or compatible policy.
   wandb.config.update(dataclasses.asdict(config))
 
   rngs = nnx.Rngs(config.seed)
 
-  q_function = q_lib.QFunction(
-      rngs=rngs,
-      network_config=config.network,
-      embed_action=config.embed.controller.make_embedding(),
-      embed_config=config.embed,
-      num_names=config.max_names,
-  )
+  q_function = q_lib.build_q_function(rngs, config.q_function)
 
   mesh = jax_utils.get_mesh()
   data_sharding = jax_utils.data_sharding(mesh)
@@ -256,8 +256,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   jax_utils.replicate_module(learner, mesh)
 
   logging.info("Network configuration")
-  for comp in ['network']:
-    logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
+  logging.info(f'Using network: {config.q_function.core_net["name"]}')
 
   ### Dataset Creation ###
   train_data_config = config.data
@@ -273,8 +272,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       train_data_config=train_data_config,
       test_data_config=test_data_config,
       name_map=name_map,
-      max_names=config.max_names,
-      extra_frames=config.delay + 1,
+      max_names=config.q_function.num_names,
+      extra_frames=config.delay + frame_skip,
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -388,7 +387,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
 
     def time_mean(x: jax.Array, axis: int = 1) -> np.ndarray:
-      assert x.shape[axis] == config.data.unroll_length * config.test_unroll_multiplier
+      expected = config.data.unroll_length * config.test_unroll_multiplier // frame_skip
+      assert x.shape[axis] == expected
       return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()

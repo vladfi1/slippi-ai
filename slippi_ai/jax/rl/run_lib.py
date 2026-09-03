@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from slippi_ai.types import Action, Game
 from slippi_ai import (
     dolphin as dolphin_lib,
     eval_lib,
@@ -31,7 +32,10 @@ from slippi_ai.jax import train_vf
 from slippi_ai.jax import saving as jax_saving
 from slippi_ai.jax import train_lib
 from slippi_ai.jax.rl import learner as learner_lib
-from slippi_ai.types import Game
+from slippi_ai.jax import train_policy
+from slippi_ai.jax.networks import RecurrentState
+
+Rank2 = tuple[int, int]
 
 field = lambda f: dataclasses.field(default_factory=f)
 
@@ -138,7 +142,9 @@ class OpponentConfig:
   other: AgentConfig = field(AgentConfig)
 
   update_interval: tp.Optional[int] = None
-  train: bool = False
+  # Note: not training or updating when type=self is equivalent to setting
+  # type=other and other.path to the teacher checkpoint.
+  train: bool = True
 
   def should_update(self, step: int):
     if self.type is not OpponentType.SELF:
@@ -171,6 +177,7 @@ class Config:
   # teacher has no value function i.e. was produced by policy-only training.
   value_function: tp.Optional[str] = None
 
+  remat: bool = False
   override_delay: tp.Optional[int] = None
 
 
@@ -181,11 +188,11 @@ cast_floats = jax_utils.jit(
   jax_utils.cast_floats_to_dtype,
   static_argnames='dtype')
 
-class LearnerManager:
+class LearnerManager(tp.Generic[Action]):
 
   def __init__(
       self,
-      learner: learner_lib.Learner,
+      learner: learner_lib.Learner[Action],
       config: Config,
       build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker],
       port: int,
@@ -204,15 +211,22 @@ class LearnerManager:
     self._agent_dtype = config.agent.jax.dtype.dtype
     self._learner_dtype = jnp.float32
 
-    batch_size = config.actor.num_envs
+    self.batch_size = config.actor.num_envs
     if config.opponent.should_train():
-      batch_size *= 2
-    self._hidden_state = learner.initial_state(batch_size)
+      self.batch_size *= 2
+    self._hidden_state = learner.initial_state(self.batch_size)
 
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
     self.reset_profiler = utils.Profiler(burnin=0)
+
+    self.frame_skip = learner.policy.frame_skip
+
+    self._prev_actions = [
+        learner.policy.controller_head.dummy_sample_outputs([self.batch_size])
+    ] * (self.frame_skip - 1)
+    self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size], False)
 
     with self.reset_profiler:
       self.actor = self._build_actor()
@@ -230,7 +244,7 @@ class LearnerManager:
       for _ in range(self._burnin_steps_after_reset):
         self.unroll()
 
-  def _rollout(self) -> tuple[evaluators.Trajectory, dict]:
+  def _rollout(self):
     trajectories, timings = self.actor.rollout(self._unroll_length)
 
     # The sim-env rollout worker directly returns batched trajectories.
@@ -241,16 +255,61 @@ class LearnerManager:
     else:
       trajectory = trajectories[self._port]
 
-    if self._learner_dtype != self._agent_dtype:
-      trajectory = trajectory._replace(
-        initial_state=cast_floats(
-          trajectory.initial_state, dtype=self._learner_dtype))
+    trajectory: evaluators.Trajectory[Rank2, Action, RecurrentState]
 
-    return trajectory, timings
+    assert not trajectory.delayed_actions, 'Not implemented'
+
+    # Previous actions for time steps [-FS+1, -1]
+    prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
+
+    # Create full action sequence of length for time steps [-FS+1, U]
+    actions = utils.map_nt(
+        lambda *xs: np.concatenate(xs, axis=0),
+        *prev_actions,
+        trajectory.actions,
+    )
+    # Split into skipped (previous) actions for time steps [0, U / FS]
+    actions = [
+        utils.map_nt(lambda t: t[i::self.frame_skip], actions)
+        for i in range(self.frame_skip)
+    ]
+    self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
+
+    state = utils.map_single_structure(
+      lambda x: x[::self.frame_skip], trajectory.states)
+
+    is_resetting = np.concatenate([
+        self._prev_is_resetting,
+        trajectory.is_resetting,
+    ], axis=0)
+    self._prev_is_resetting = is_resetting[-self.frame_skip:-1]
+    is_resetting = is_resetting.reshape(
+      (-1, self.frame_skip, self.batch_size)).any(axis=1)
+
+    rewards = reward.compute_rewards(
+        trajectory.states,
+        **dataclasses.asdict(self._config.learner.reward))
+    rewards = rewards.reshape((-1, self.frame_skip, self.batch_size)).sum(axis=1)
+
+    initial_state = trajectory.initial_state
+    if self._learner_dtype != self._agent_dtype:
+      initial_state = cast_floats(initial_state, dtype=self._learner_dtype)
+
+    fs_trajectory = learner_lib.FrameSkipTrajectory(
+        states=state,
+        name=trajectory.name[::self.frame_skip],
+        actions=actions,
+        rewards=rewards,
+        is_resetting=is_resetting,
+        initial_state=initial_state,
+        delayed_actions=trajectory.delayed_actions,
+    )
+
+    return fs_trajectory, trajectory, timings
 
   def unroll(self):
     """Advance hidden state without training (e.g. for burnin)."""
-    trajectory, _ = self._rollout()
+    trajectory, _, _ = self._rollout()
     _, self._hidden_state = self._learner.unroll(
         trajectory, self._hidden_state)
 
@@ -270,13 +329,16 @@ class LearnerManager:
       self.actor.update_variables(variables)
 
     with self.rollout_profiler:
-      trajectories = []
+      fs_trajectories: list[learner_lib.FrameSkipTrajectory[Action]] = []
+      trajectories: list[evaluators.Trajectory[Rank2, Action, RecurrentState]] = []
       actor_metrics = []
       for _ in range(self._num_ppo_batches):
-        trajectory, timings = self._rollout()
+        fs_trajectory, trajectory, timings = self._rollout()
+        fs_trajectories.append(fs_trajectory)
         trajectories.append(trajectory)
         actor_metrics.append(timings)
 
+      # Remove unsupported metrics from sim env
       for metrics in actor_metrics:
         metrics.pop('completed_games', None)
       actor_metrics = utils.map_nt(
@@ -285,24 +347,32 @@ class LearnerManager:
     with self.learner_profiler:
 
       self._hidden_state, metrics = self._learner.ppo(
-          trajectories, self._hidden_state, step=step)
+          fs_trajectories, self._hidden_state, step=step)
       self._learner.check_actor_kl(metrics)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)
-
 
 class Logger:
 
   def __init__(self):
     self.buffer: list[dict] = []
 
+  def _pull_last_from_device(self):
+    last = jax.device_get(self.buffer.pop())
+    last = jax.tree.map(train_policy.mean, last)
+    self.buffer.append(last)
+
   def record(self, to_log):
-    to_log = utils.map_single_structure(np.mean, to_log)
+    if self.buffer:
+      self._pull_last_from_device()
+
     self.buffer.append(to_log)
 
   def flush(self, step: int, extras: dict = {}) -> tp.Optional[dict]:
     if not self.buffer:
       return None
+
+    self._pull_last_from_device()
 
     to_log = utils.map_nt(
         lambda *xs: np.mean(xs), *self.buffer)
@@ -440,6 +510,9 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   teacher_policy = jax_saving.load_policy_from_state(teacher_state)
   policy = jax_saving.load_policy_from_state(rl_state)
+
+  if config.remat:
+    policy.enable_remat()
 
   learner = learner_lib.Learner(
       config=config.learner,

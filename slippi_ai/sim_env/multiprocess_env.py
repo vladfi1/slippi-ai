@@ -161,6 +161,7 @@ class MultiprocessSimEnvironment:
       self._processes.append(process)
 
   def stop(self):
+    logging.info('Stopping multiprocess sim environment')
     if self._closed:
       return
     self._closed = True

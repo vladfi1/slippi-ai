@@ -2,8 +2,9 @@
 
 """Train a model using imitation learning."""
 
-import dataclasses
 import os
+
+os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
 
 from absl import app, flags
 import fancyflags as ff
@@ -12,7 +13,7 @@ import wandb
 
 import melee
 from slippi_ai import flag_utils, paths
-from slippi_ai.jax import train_lib, train_policy, embed, networks
+from slippi_ai.jax import train_lib, train_policy, embed, networks, saving
 from skypilot import launch
 
 NET_NAME = networks.TransformerLike.name()
@@ -22,7 +23,7 @@ def default_config():
 
   config.policy.delay = 21
   config.data.batch_size=512
-  config.data.unroll_length=80
+  config.data.unroll_length=84
   config.data.num_workers=1
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
@@ -42,19 +43,20 @@ def default_config():
 
   config.network[NET_NAME].update(
       num_layers=3,
-      hidden_size=512,
   )
 
   config.value_function.separate_network_config = True
   config.value_function.network[NET_NAME].update(
       num_layers=1,
-      hidden_size=512,
   )
 
   ch_name = 'autoregressive'
   config.controller_head['name'] = ch_name
-  config.controller_head[ch_name]['component_depth'] = 2
-  config.controller_head[ch_name]['residual_size'] = 128
+  component_config = config.controller_head[ch_name]['component']
+  component_name = 'lstm'
+  component_config['name'] = component_name
+  component_config[component_name]['hidden_size'] = 256
+
   config.dataset.mirror = False
   config.dataset.allowed_opponents='all'
   # config.dataset.banned_names="${BANNED_NAMES}"
@@ -86,9 +88,11 @@ if __name__ == '__main__':
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
+          hidden_size=ff.Integer(None),
           use_controller_rnn=ff.Boolean(False),
-          use_learned_char=ff.Boolean(True),
-          use_learned_action=ff.Boolean(True),
+          share_crnn=ff.Boolean(True),
+          use_learned_char=ff.Boolean(False),
+          use_learned_action=ff.Boolean(False),
           use_char_action_joint=ff.Boolean(True),
           use_item_sum=ff.Boolean(True),
           use_items=ff.Boolean(True),
@@ -123,10 +127,45 @@ if __name__ == '__main__':
   def main(_):
     config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
 
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
     delay = config.policy.delay
 
+    char = CHAR.value
+
+    arch_config = config
+    if config.restore_path is not None:
+      restore_state = saving.load_state_from_disk(config.restore_path)
+      arch_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, saving.upgrade_config(restore_state['config']))
+      del restore_state
+
+      char = arch_config.dataset.allowed_characters
+      config.dataset.copy_characteristics_from(arch_config.dataset)
+      net = arch_config.network['name']
+      net_config = arch_config.network[net]
+    else:
+      net_config = dict(NET.value)
+      net = net_config.pop('name')
+
+      embed_config = dict(EMBED.value)
+      embed_name = embed_config['name']
+      enhanced = embed_config['enhanced']
+      if enhanced['hidden_size'] is None:
+        enhanced['hidden_size'] = net_config['hidden_size'] // 4
+      enhanced['use_self_nana'] = char in ['popo', 'all']
+
+      def update_embed_config(config: dict):
+        config['name'] = embed_name
+        config[embed_name].update(embed_config[embed_name])
+
+      def update_network_config(config: dict):
+        config['name'] = net
+        config[net].update(net_config)
+        update_embed_config(config['embed'])
+
+      update_network_config(config.network)
+
+      vf_net_config = config.value_function.network
+      update_network_config(vf_net_config)
 
     if TOY_DATA.value:
       config.dataset.dataset_path = str(paths.TOY_DATASET)
@@ -139,13 +178,27 @@ if __name__ == '__main__':
     else:
       config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
-      char = CHAR.value
-
       if config.tag is None:
-        n = config.network[net]['num_layers']
+        ops = config.dataset.allowed_opponents
+        if ops == 'all':
+          op = ''
+        elif ops == char:
+          op = '_ditto'
+        else:
+          op = f"_vs_{ops}"
+
+        n = arch_config.network[net]['num_layers']
         h = net_config['hidden_size']
 
-        parts = [char, f'd{delay}', f'tx{n}x{h}']
+        rfs = f'rfs{config.policy.frame_skip}'
+
+        ch = arch_config.controller_head['autoregressive']['component']
+        assert ch['name'] == 'tx_like'
+        ch = ch['tx_like']
+        chn = ch['num_layers']
+        chs = ch['hidden_size']
+
+        parts = [char, f'd{delay}{op}', f'tx{n}x{h}', f'ch{chn}x{chs}', rfs]
 
         if config.embed.with_rating:
           parts.append('rating')
@@ -153,25 +206,6 @@ if __name__ == '__main__':
         config.tag = "_".join(parts)
 
     config.dataset.allowed_characters = char
-
-    embed_config = dict(EMBED.value)
-    embed_name = embed_config['name']
-    embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
-    embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
-
-    def update_embed_config(config: dict):
-      config['name'] = embed_name
-      config[embed_name].update(embed_config[embed_name])
-
-    def update_network_config(config: dict):
-      config['name'] = net
-      config[net].update(net_config)
-      update_embed_config(config['embed'])
-
-    update_network_config(config.network)
-
-    vf_net_config = config.value_function.network
-    update_network_config(vf_net_config)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:

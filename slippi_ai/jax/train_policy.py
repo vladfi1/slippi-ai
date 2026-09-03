@@ -48,6 +48,8 @@ class TrainManager:
       self,
       learner: learner_lib.PolicyLearner,
       data_source: data_lib.AbstractDataSource,
+      *,
+      frame_skip: int,
       step_kwargs={},
       prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
@@ -56,6 +58,7 @@ class TrainManager:
   ):
     self.learner = learner
     self.data_source = data_source
+    self.frame_skip = frame_skip
     self.rngs = rngs or nnx.Rngs(0)
     self.step_kwargs = step_kwargs
     self.data_profiler = utils.Profiler()
@@ -93,19 +96,8 @@ class TrainManager:
     if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
 
-    state_action = data_lib.StateAction(
-        state=batch.game,
-        action=batch.game.p0.controller,
-        name=batch.name,
-        rating=batch.rating,
-    )
-    state_action = self._encode_state_action(state_action)
-
-    frames = data_lib.Frames(
-        state_action=state_action,
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
+    frames = batch.to_frames(self.frame_skip)
+    frames = frames._replace(state_action=self._encode_state_action(frames.state_action))
 
     if self.prefetch > 0:
       frames = jax_utils.device_put(frames, self.data_sharding)
@@ -203,6 +195,10 @@ class Config:
   version: int = 1
   platform: str = Platform.JAX.value
 
+  def validate(self):
+    if self.data.unroll_length % self.policy.frame_skip != 0:
+      raise ValueError('unroll_length must be divisible by frame_skip')
+
 
 def _get_loss(stats: dict):
   loss = stats['policy']['loss']
@@ -221,6 +217,8 @@ def train(config: Config):
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
 
+  config.validate()
+
   if config.runtime.profile_server_port is not None:
     jax.profiler.start_server(config.runtime.profile_server_port)
 
@@ -236,14 +234,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   restored = False
   combined_state: tp.Optional[dict] = None
-  if config.restore_path:
-    logging.info('restoring from %s', config.restore_path)
-    with open(config.restore_path, 'rb') as f:
-      combined_state = pickle.load(f)
-    restored = True
-  elif os.path.exists(pickle_path):
+  if os.path.exists(pickle_path):
     logging.info('restoring from %s', pickle_path)
     with open(pickle_path, 'rb') as f:
+      combined_state = pickle.load(f)
+    restored = True
+    if config.restore_path is not None:
+      logging.warning('found existing checkpoint, ignoring restore_path')
+  elif config.restore_path:
+    logging.info('restoring from %s', config.restore_path)
+    with open(config.restore_path, 'rb') as f:
       combined_state = pickle.load(f)
     restored = True
   else:
@@ -268,10 +268,21 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, combined_state['config'])
 
+    for key in ['value_function', 'value_optimizer']:
+      if key in combined_state['state']:
+        del combined_state['state'][key]
+        logging.warning(f'Removing {key} from state')
+
     if restore_config.policy.delay != config.policy.delay:
       logging.warning(
           f'Changing delay from {restore_config.policy.delay} to {config.policy.delay}.')
       best_eval_loss = float('inf')
+      config.runtime.eval_at_start = True
+    if restore_config.policy.frame_skip != config.policy.frame_skip:
+      logging.warning(
+          f'Changing frame skip from {restore_config.policy.frame_skip} to {config.policy.frame_skip}.')
+      best_eval_loss = float('inf')
+      config.runtime.eval_at_start = True
 
     for key in ['network', 'controller_head', 'embed', 'max_names']:
       current = getattr(config, key)
@@ -289,7 +300,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   # Randomize windows to improve data diversity across epochs.
-  config.data.random_offset = config.observation.frame_skip.skip
+  config.data.random_offset = config.policy.frame_skip
   config.dataset.with_ratings = config.embed.with_rating
 
   import wandb
@@ -356,7 +367,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=policy.delay + 1,
+      extra_frames=policy.delay + config.policy.frame_skip,
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -382,13 +393,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       rngs=rngs,
       data_sharding=data_sharding,
       prefetch=runtime.prefetch,
+      frame_skip=config.policy.frame_skip,
   )
 
   train_manager = TrainManager(
-      learner, train_data, dict(train=True, compile=runtime.compile),
-      epoch_offset=train_epoch, **manager_kwargs)
+      learner, train_data,
+      step_kwargs=dict(train=True, compile=runtime.compile),
+      epoch_offset=train_epoch,
+      **manager_kwargs)
   test_manager = TrainManager(
-      learner, test_data, dict(train=False, compile=runtime.compile),
+      learner, test_data,
+      step_kwargs=dict(train=False, compile=runtime.compile),
       **manager_kwargs)
 
   exit_stack.callback(train_manager.stop)
@@ -633,6 +648,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
 
   train_stats = None
+  maybe_eval()
 
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:

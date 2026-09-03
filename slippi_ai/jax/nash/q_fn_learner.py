@@ -21,10 +21,11 @@ from slippi_ai.jax.nash.q_function import Rank3
 class LearnerConfig:
   learning_rate: float = 1e-4
   reward_halflife: float = 4
+  gae_lambda: float = 0
 
   unroll_batch_size: tp.Optional[int] = None
 
-Loss = jax.Array
+Loss = jax_utils.Loss
 Rank2 = tuple[int, int]
 
 Q_FUNCTION = 'q_function'
@@ -50,7 +51,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.q_function_optimizer = nnx.Optimizer(
         q_function, optax.adam(learning_rate), wrt=nnx.Param)
 
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.discount = rl_lib.discount_from_halflife(
+      config.reward_halflife, frame_skip=self.q_function.frame_skip)
 
     jax_utils.replicate_module(self, mesh)
 
@@ -111,19 +113,21 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,  # [B, 2]
       *,
       unroll_batch_size: tp.Optional[int] = None,
+      lambda_: float = 1.0,
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = nash_utils.bm_to_tm(combined_frames)
     frames = self._get_delayed_frames(frames)
 
     if unroll_batch_size is None:
-      q_outputs, final_state = q_function.loss(
-          frames, initial_state, self.discount)
-    else:
-      q_outputs, final_state = q_function.loss_batched(
-          frames, initial_state, self.discount, unroll_batch_size)
+      unroll_batch_size = frames.reward.shape[0]
 
-    bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])
-    bm_metrics = jax.tree.map(lambda x: jnp.moveaxis(x, 0, 2), q_outputs.metrics)
+    q_outputs, final_state = q_function.loss_batched(
+        frames, initial_state, self.discount, unroll_batch_size,
+        lambda_=lambda_)
+
+    bm_loss = jnp.mean(q_outputs.loss, axis=[0, 2])  # [T, B, 2] -> [B]
+    # metrics: [T, B, 2] -> [B, 2]
+    bm_metrics = jax.tree.map(lambda x: jnp.mean(x, axis=0), q_outputs.metrics)
 
     return bm_loss, bm_metrics, final_state
 
@@ -137,7 +141,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     frames = self._encode_frames(zipped_frames)
 
     if train:
-      metrics, final_state = self.train_q_function(frames, initial_state)
+      metrics, final_state = self.train_q_function(
+        frames, initial_state, lambda_=self.config.gae_lambda)
     else:
       metrics, final_state = self.run_q_function(
         frames, initial_state, unroll_batch_size=self.config.unroll_batch_size)

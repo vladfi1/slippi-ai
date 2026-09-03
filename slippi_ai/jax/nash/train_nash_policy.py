@@ -12,6 +12,7 @@ from absl import logging
 import numpy as np
 import jax
 from flax import nnx
+import tqdm
 import wandb
 
 from slippi_ai import (
@@ -24,6 +25,7 @@ from slippi_ai import (
 )
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
+    rl_lib,
     saving,
     train_lib,
     jax_utils,
@@ -48,6 +50,10 @@ class RuntimeConfig:
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
+  eval_at_start: bool = False
+  verbose_eval: bool = False
+  save_best: bool = True
+  run_single_eval: bool = False
 
   profile_server_port: tp.Optional[int] = None
   profile_trace_dir: tp.Optional[str] = None
@@ -99,6 +105,7 @@ class Config:
   reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
+  remat: bool = True
 
   expt_root: str = 'experiments/nash_policy'
   expt_dir: tp.Optional[str] = None
@@ -159,21 +166,31 @@ class TrainManager:
     return stats, batch
 
 def print_losses(name: str, stats: dict):
-  spl = stats[learner_lib.SAMPLE_POLICY]['loss']
-  nent = stats[learner_lib.NASH_POLICY]['nash_entropy']
-  nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy']
-  spl, nent, nxent = map(train_lib.mean, (spl, nent, nxent))
+  to_print = dict(
+      spl = stats[learner_lib.SAMPLE_POLICY]['loss'],
+      ufrac = stats[learner_lib.NASH_POLICY]['unique_fraction'],
+      ifrac = stats[learner_lib.Q_FUNCTION]['information_fraction'],
+      nent = stats[learner_lib.NASH_POLICY]['nash_entropy'],
+      nxent = stats[learner_lib.NASH_POLICY]['nash_cross_entropy'],
+  )
+  to_print = utils.map_nt(train_lib.mean, to_print)
 
-  tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
+  # tv = train_lib.mean(stats[learner_lib.NASH]['total_violation'])
   ns = np.asarray(stats[learner_lib.NASH]['num_steps'])
 
-  print(
-      f'{name}: spl={spl:.3f} nent={nent:.3f} nxent={nxent:.3f} '
-      f'tv={tv:.4f} nsmean={ns.mean():.2f} nsmax={ns.max():.4f}')
+  items = [f'{name}:']
+  for key, value in to_print.items():
+    items.append(f'{key}={value:.3f}')
+
+  items.extend([
+    f'nsmean={ns.mean():.1f}',
+    f'nsmax={ns.max():.1f}',
+  ])
+  print(' '.join(items))
 
 def train(config: Config):
   with contextlib.ExitStack() as exit_stack:
-    _train(config, exit_stack)
+    return _train(config, exit_stack)
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Nash solver needs float64 for stability
@@ -263,6 +280,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   assert isinstance(name_map, dict)
 
+  if config.remat:
+    logging.info('Enabling remat for nash policy')
+    nash_policy.enable_remat()
+
   # Initialize q_function
   if config.initialize_q_function_from:
     # TODO: version the q_function checkpoint and handle upgrades
@@ -335,6 +356,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       nash_policy_optimizer_state=policy_optimizer_state,
   )
 
+  frame_skip = imitation_config.policy.frame_skip
+
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = frame_skip
+
   # Set up dataset for training on both sides of each replay
   config.dataset.swap = False
   config.dataset.allowed_opponents = config.dataset.allowed_characters
@@ -344,7 +370,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       dataset_config=config.dataset,
       train_data_config=config.data,
       name_map=name_map,
-      extra_frames=1 + nash_policy.delay,
+      extra_frames=frame_skip + nash_policy.delay,
       observation_config=imitation_config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -353,6 +379,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     nash_source = nash_data.TwoPlayerDataSource(
         source=source,
         name_map=name_map,
+        frame_skip=frame_skip,
+        discount=rl_lib.discount_from_halflife(config.learner.reward_halflife),
     )
     exit_stack.callback(nash_source.shutdown)
     return nash_source
@@ -410,7 +438,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       f.write(pickled_state)
 
   FRAMES_PER_MINUTE = 60 * 60
-  FRAMES_PER_STEP = config.data.batch_size * config.data.unroll_length
+  FRAMES_PER_STEP = 2 * config.data.batch_size * config.data.unroll_length
 
   step_tracker = utils.Tracker(step)
   epoch_tracker = utils.Tracker(train_manager.last_epoch)
@@ -420,6 +448,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   def maybe_log(train_stats: dict):
     """Do a test step, then log both train and test stats."""
     test_stats, _ = test_manager.step()
+
+    sample_pm = train_stats[learner_lib.NASH].pop('sample_payoff_matrix')
+    test_stats[learner_lib.NASH].pop('sample_payoff_matrix')
 
     elapsed_time = log_tracker.update(time.time())
     total_steps = step
@@ -462,38 +493,66 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     )
     train_lib.log_stats(all_stats, total_steps)
 
+    pm = np.asarray(sample_pm)[0]  # [S, S]
+    n_cols = pm.shape[1]
+    table = wandb.Table(columns=[str(i) for i in range(n_cols)], data=pm.tolist())
+    wandb.log({'train/nash/payoff_matrix': table}, step=total_steps)
+
   last_train_epoch_evaluated = 0.
+  needs_first_eval = runtime.eval_at_start
 
   def maybe_eval(force: bool = False):
-    nonlocal best_eval_loss, last_train_epoch_evaluated
+    nonlocal last_train_epoch_evaluated, needs_first_eval
 
     train_epoch = train_manager.last_epoch
-    if not force and (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
+    if (not force and not needs_first_eval
+        and (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1):
       return
     last_train_epoch_evaluated = train_epoch
+    needs_first_eval = False
+
+    return do_eval()
+
+  def do_eval():
+    nonlocal best_eval_loss
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
+    prev_test_epoch = initial_test_epoch
     test_stats_jax = None
     num_eval_steps = 0
-    while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
-      # Get _previous_ step's stats to allow jax runahead
-      if test_stats_jax is not None:
-        test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
-        per_step_eval_stats.append(test_stats_np)
 
-      test_stats_jax, batch = test_manager.step()
-      metas.append(batch.meta)
+    with tqdm.tqdm(
+      total=runtime.max_eval_steps or runtime.num_eval_epochs,
+      disable=not runtime.verbose_eval,
+      unit='step' if runtime.max_eval_steps is not None else 'epoch',
+    ) as pbar:
+      while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
+        # Get _previous_ step's stats to allow jax runahead
+        if test_stats_jax is not None:
+          test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
+          test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
+          per_step_eval_stats.append(test_stats_np)
 
-      # Optionally stop eval early
-      num_eval_steps += 1
-      if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
-        break
+        test_stats_jax, batch = test_manager.step()
+        metas.append(batch.meta)
+
+        if runtime.max_eval_steps is not None:
+          pbar.update(1)
+        else:
+          pbar.update(test_manager.last_epoch - prev_test_epoch)
+        prev_test_epoch = test_manager.last_epoch
+
+        # Optionally stop eval early
+        num_eval_steps += 1
+        if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
+          break
 
     assert test_stats_jax is not None
+    test_stats_jax[learner_lib.NASH].pop('sample_payoff_matrix')
     test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
@@ -539,7 +598,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     eval_loss = mean_stats[learner_lib.NASH_POLICY]['total_loss']
 
     # Save if the eval loss is the best so far
-    if eval_loss < best_eval_loss:
+    if eval_loss < best_eval_loss and config.runtime.save_best:
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
@@ -552,6 +611,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' num_batches={len(per_step_eval_stats)}')
     print()
 
+    return mean_stats
+
     # TODO: Log losses aggregated by name.
 
   start_time = time.time()
@@ -563,7 +624,18 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       raise ValueError('max_step must be set when profile_trace_dir is set to limit the trace size.')
     jax.profiler.start_trace(config.runtime.profile_trace_dir)
 
+  if config.runtime.run_single_eval:
+    config.runtime.save_best = False
+    return do_eval()
+
+  maybe_eval()  # Possibly run initial evaluation
+
   while time.time() - start_time < runtime.max_runtime:
+
+    if config.runtime.max_step is not None and step >= config.runtime.max_step:
+      logging.info('Reached max step %d, stopping training.', step)
+      break
+
     with train_profiler:
       train_stats, _ = train_manager.step()
 
@@ -574,10 +646,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     maybe_log(train_stats)
     maybe_eval()
-
-    if config.runtime.max_step is not None and step >= config.runtime.max_step:
-      logging.info('Reached max step %d, stopping training.', step)
-      break
 
   # maybe_eval(force=True)
   if config.runtime.profile_trace_dir is not None:

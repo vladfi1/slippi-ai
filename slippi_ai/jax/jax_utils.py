@@ -26,6 +26,12 @@ T = tp.TypeVar('T')
 
 DATA_AXIS = 'data'
 
+def data_spec(axis: int, name: str = DATA_AXIS) -> PS:
+  """Convenience function for creating a PartitionSpec for data parallelism."""
+  axes: list[str | None] = [None] * (axis + 1)
+  axes[axis] = name
+  return PS(*axes)
+
 def get_mesh(axis_name: str = DATA_AXIS) -> Mesh:
   """Create a 1D device mesh for data parallelism."""
   return Mesh(jax.devices(), (axis_name,))
@@ -39,10 +45,6 @@ def replicate_sharding(mesh: Mesh) -> NamedSharding:
 def data_sharding(mesh: Mesh, axis_name: str = DATA_AXIS) -> NamedSharding:
   """Create a sharding that splits the first axis across devices."""
   return NamedSharding(mesh, PS(axis_name))
-
-def device_put(pytree: T, sharding: tp.Optional[NamedSharding]) -> T:
-  """Shard a pytree of arrays with the given sharding."""
-  return jax.device_put(pytree, sharding)
 
 def map_update(
     f: tp.Callable[[jax.Array], jax.Array],
@@ -58,8 +60,6 @@ def shard_module(module: nnx.Module | nnx.Rngs, sharding: NamedSharding):
 def replicate_module(module: nnx.Module, mesh: Mesh):
   """Replicate module parameters across all devices in the mesh."""
   shard_module(module, replicate_sharding(mesh))
-
-
 
 def num_devices() -> int:
   """Get the number of local devices."""
@@ -146,6 +146,15 @@ def stack_modules(modules: tp.Iterable[ModT], axis: int = 0) -> ModT:
   stacked_state = jax.tree.map(stack_fn, *[nnx.state(m) for m in modules])
   graphdef = nnx.graphdef(modules[0])
   return nnx.merge(graphdef, stacked_state)
+
+def unstack_pytree(
+    pytree: T,
+    axis: int = 0,
+) -> list[T]:
+  """Unstack a pytree along the given axis, returning a list of pytrees."""
+  leaves, structure = jax.tree.flatten(pytree)
+  unstacked_leaves = [jnp.unstack(x, axis=axis) for x in leaves]
+  return [jax.tree.unflatten(structure, xs) for xs in zip(*unstacked_leaves)]
 
 # Other utilities
 
@@ -333,6 +342,13 @@ def scan_method(
 
   return functools.partial(nnx.scan(unbound_f, in_axes=in_axes, out_axes=out_axes, **scan_kwargs), bound_self)
 
+def functionalize(f: tp.Callable[P, T]) -> tp.Callable[P, T]:
+  """Hides nnx modules from nnx transformations to prevent trace errors."""
+  @functools.wraps(f)
+  def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+    return f(*args, **kwargs)
+  return wrapped
+
 def dynamic_rnn(
     cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
     inputs: InputTree,
@@ -349,8 +365,34 @@ def dynamic_rnn(
     outputs: Stacked outputs over time
     final_state: Final recurrent state
   """
-  return scan_method(cell_fn)(inputs, initial_state)
 
+  cell_fn = functionalize(cell_fn)
+
+  # Workaround for https://docs.jax.dev/en/latest/notebooks/shard_map.html#scan-vma
+  _, state = jax.eval_shape(cell_fn, inputs, initial_state)
+  initial_state = jax.tree.map(as_vma, initial_state, state)
+
+  return nnx.scan(
+      cell_fn,
+      in_axes=(0, nnx.Carry),
+      out_axes=(0, nnx.Carry),
+  )(inputs, initial_state)
+
+def dynamic_rnn_module(
+    cell_fn: tp.Callable[[ModT, InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
+    module: ModT,
+    inputs: InputTree,
+    initial_state: RecurrentState,
+) -> tuple[OutputTree, RecurrentState]:
+  # Workaround for https://docs.jax.dev/en/latest/notebooks/shard_map.html#scan-vma
+  _, state = nnx.eval_shape(cell_fn, module, inputs, initial_state)
+  initial_state = jax.tree.map(as_vma, initial_state, state)
+
+  return nnx.scan(
+      cell_fn,
+      in_axes=(None, 0, nnx.Carry),
+      out_axes=(0, nnx.Carry),
+  )(module, inputs, initial_state)
 
 def scan_rnn(
     cell_fn: tp.Callable[[InputTree, RecurrentState], tuple[OutputTree, RecurrentState]],
@@ -427,6 +469,7 @@ def grad_with_aux(
 ) -> tp.Callable[P, tuple[Grads, AuxT]]:
   """Adds type signature to nnx.grad."""
 
+  @functools.wraps(f)  # needed to help nnx figure out the type signature
   def g(*args: P.args, **kwargs: P.kwargs):
     loss, aux = f(*args, **kwargs)
     if take_mean:
@@ -454,6 +497,7 @@ def grad_with_aux_tuple(
     loss_scale: tp.Optional[float] = None,
 ) -> tp.Callable[P, tuple[Grads, *Outputs]]:
 
+  @functools.wraps(f)  # needed to help nnx figure out the type signature
   def packed_loss_fn(*args: P.args, **kwargs: P.kwargs):
     outputs = f(*args, **kwargs)
     return outputs[0], outputs[1:]
@@ -572,6 +616,7 @@ def shard_map_grads(
 In1 = tp.TypeVar('In1')
 In2 = tp.TypeVar('In2')
 In3 = tp.TypeVar('In3')
+In4 = tp.TypeVar('In4')
 
 @tp.overload
 def partial(
@@ -612,6 +657,13 @@ def cached_partial(
     arg1: In1, arg2: In2, arg3: In3,
 ) -> tp.Callable[P, T]: ...
 
+@tp.overload
+def cached_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, In4, P], T],
+    arg1: In1, arg2: In2, arg3: In3, arg4: In4,
+) -> tp.Callable[P, T]: ...
+
+
 def cached_partial(func, *args):  # type: ignore
   return nnx.cached_partial(func, *args)
 
@@ -627,6 +679,9 @@ jit = _typed_transform(jax.jit)
 nnx_jit = _typed_transform(nnx.jit)
 shard_map = _typed_transform(jax.shard_map)
 annotate_function = _typed_transform(jax.profiler.annotate_function)
+
+device_put = _typed_transform(jax.device_put)
+device_get = _typed_transform(jax.device_get)
 
 def grad0(
     f: tp.Callable[tp.Concatenate[T, P], Loss],
@@ -718,12 +773,28 @@ def multi_vmap(
 
   return func
 
+def get_vma(x) -> set[str]:
+  if hasattr(x, 'vma'):
+    return x.vma
+  t = jax.typeof(x)
+  import jax.core as jc
+  if isinstance(t, jc.ShapedArray):
+    return t.manual_axis_type.varying
+  return set()
 
 def as_vma(x: T, ref) -> T:
-  if not hasattr(ref, 'vma'):
-    return x
+  if isinstance(ref, jax.ShapeDtypeStruct):
+    if ref.manual_axis_type is None:
+      return x
+    vma = ref.manual_axis_type.varying
 
-  return jax.lax.pcast(x, tuple(ref.vma), to='varying')
+  else:
+    if not hasattr(ref, 'vma') or ref.vma is None:
+      return x
+    vma = ref.vma
+
+  axes = tuple(vma - get_vma(x))
+  return jax.lax.pcast(x, axes, to='varying')
 
 PackedArg = list[np.ndarray]
 
@@ -828,37 +899,6 @@ def packed_nnx_jit(
 
   return wrapped
 
-# This is a simpler version of what nnx transforms already do internally.
-# Maybe there's a way to reuse some of their code?
-def functionalize(
-    func: tp.Callable[..., T],
-    argnums: tp.Sequence[int],
-    inputs: tp.Sequence[tp.Any],
-):
-  if len(argnums) != len(inputs):
-    raise ValueError(f'Length of argnums {len(argnums)} must match length of inputs {len(inputs)}.')
-
-  graphdefs: list[nnx.GraphDef] = []
-  for item in inputs:
-    graphdefs.append(nnx.graphdef(item))
-
-  @functools.wraps(func)
-  def wrapped(*args, **kwargs) -> tuple[T, list[dict]]:
-    args = list(args)
-
-    for argnum, graphdef in zip(argnums, graphdefs):
-      args[argnum] = nnx.merge(graphdef, args[argnum])
-
-    output = func(*args, **kwargs)
-
-    pure_outputs = []
-    for argnum in argnums:
-      pure_outputs.append(nnx.state(args[argnum]).to_pure_dict())
-
-    return output, pure_outputs
-
-  return wrapped
-
 CachedArgs = tp.TypeVarTuple('CachedArgs')
 
 class CachedFunctionalJit(tp.Generic[*CachedArgs, P, T]):
@@ -956,31 +996,120 @@ def cached_functional_jit(
     donate_argnums=donate_argnums,
     **jit_kwargs)
 
+# Microbatching utilities.
+
+Axis = int | None | nnx.StateAxes
+AxisPrefix = Axis | tuple
+
 def microbatch_array(x: jax.Array, axis: int, microbatch_size: int):
   new_shape = x.shape[:axis] + (-1, microbatch_size) + x.shape[axis+1:]
   return x.reshape(new_shape)
 
 def unmicrobatch_array(x: jax.Array, axis: int):
+  """Merges microbatches back into the batch dimension."""
+  # NOTE: a None/StateAxes axis doesn't make sense for outputs
   assert len(x.shape) > axis + 1
   new_shape = x.shape[:axis] + (-1,) + x.shape[axis+2:]
   return x.reshape(new_shape)
 
-def get_batch_size(axis_prefix: T, struct: T) -> int:
-  full_in_axes = jax.tree.broadcast(axis_prefix, struct)
-  batch_sizes = jax.tree.map(lambda x, axis: x.shape[axis], struct, full_in_axes)
-  batch_sizes: set[int] = set(jax.tree.leaves(batch_sizes))
-  if len(batch_sizes) != 1:
-    raise ValueError('Got different batch sizes')
+def _substruct_batch_size(axis: Axis, substruct: tp.Any) -> int | None:
+  if isinstance(axis, (type(None), nnx.StateAxes)):
+    return None
+  leaves = jax.tree.leaves(substruct)
+  batch_sizes = set(leaf.shape[axis] for leaf in leaves)
+  if len(batch_sizes) == 0:
+    return None
+  if len(batch_sizes) > 1:
+    raise ValueError('Got different batch sizes: ' + str(batch_sizes))
   return batch_sizes.pop()
 
-def microbatch_struct(axis_prefix: T, struct: T, microbatch_size: int) -> T:
-  return utils.map_nt(
-      lambda axis, substruct: utils.map_nt(
-          functools.partial(microbatch_array, axis=axis, microbatch_size=microbatch_size),
-          substruct),
+# We can't use jax.tree.map because it doesn't treat None as leaves, meaning
+# that map(None, struct) doesn't work.
+prefix_map = functools.partial(jax.tree.map, is_leaf=lambda x: x is None)
+
+def get_batch_size(axis_prefix: AxisPrefix, struct: tp.Any) -> int | None:
+  batch_sizes = jax.tree.leaves(prefix_map(
+      _substruct_batch_size, axis_prefix, struct))
+  batch_sizes = set(size for size in batch_sizes if size is not None)
+  if len(batch_sizes) == 0:
+    return None
+  if len(batch_sizes) > 1:
+    raise ValueError('Got different batch sizes: ' + str(batch_sizes))
+  return batch_sizes.pop()
+
+def microbatch_substruct(axis: Axis, substruct: T, microbatch_size: int) -> T:
+  # TODO: properly handle StateAxes
+  if axis is None:
+    return substruct
+  if isinstance(axis, nnx.StateAxes):
+    if axis.filters == (...,) and axis.axes[0] in (None, nnx.Carry):
+      return substruct
+    raise NotImplementedError('Complex StateAxes not supported for microbatching')
+  return jax.tree.map(
+      functools.partial(microbatch_array, axis=axis, microbatch_size=microbatch_size),
+      substruct)
+
+def microbatch_struct(axis_prefix: AxisPrefix, struct: T, microbatch_size: int) -> T:
+  return prefix_map(
+      functools.partial(microbatch_substruct, microbatch_size=microbatch_size),
       axis_prefix, struct)
 
+def unmicrobatch_substruct(axis: int, substruct: T) -> T:
+  return jax.tree.map(
+      functools.partial(unmicrobatch_array, axis=axis),
+      substruct)
+
+def unmicrobatch_struct(axis_prefix: AxisPrefix, struct: T) -> T:
+  # Technically we don't need to use prefix_map here because axis_prefix should
+  # not contain Nones as they don't make sense for outputs.
+  return prefix_map(unmicrobatch_substruct, axis_prefix, struct)
+
 def microbatch_fn(
+    f: tp.Callable[P, T],  # operates on batched inputs
+    microbatch_size: int,  # 0 means no microbatching
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,
+) -> tp.Callable[P, T]:
+  mbs = microbatch_size
+
+  if microbatch_size == 0:
+    return f
+
+  def microbatched(*args: P.args, **kwargs: P.kwargs) -> T:
+    batch_size = get_batch_size(input_batch_dims, args)
+
+    if batch_size is not None and batch_size % mbs != 0:
+      raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
+
+    microbatched_inputs = microbatch_struct(input_batch_dims, args, mbs)
+
+    def with_kwargs(*args: P.args):
+      return f(*args, **kwargs)
+
+    scan_fn = nnx.scan(
+        with_kwargs,
+        in_axes=input_batch_dims,
+        out_axes=output_batch_dims,
+    )
+
+    microbatched_outputs = scan_fn(*microbatched_inputs)
+    return unmicrobatch_struct(output_batch_dims, microbatched_outputs)
+
+  return microbatched
+
+def lax_map_fn(
+    f: tp.Callable[P, T],
+    microbatch_size: int = 1,
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,
+) -> tp.Callable[P, T]:
+  """Like jax.lax.map but compatible with nnx."""
+  # TODO: PR to flax?
+  vmapped = nnx.vmap(f, in_axes=input_batch_dims, out_axes=output_batch_dims)
+  return microbatch_fn(vmapped, microbatch_size, input_batch_dims, output_batch_dims)
+
+# TODO: replace with microbatch_fn
+def microbatch_module(
     f: tp.Callable[tp.Concatenate[ModT, P], T],
     microbatch_size: int,  # 0 means no microbatching
     input_batch_dims: int | tuple = 0,
@@ -995,42 +1124,39 @@ def microbatch_fn(
   ) -> T:
     batch_size = get_batch_size(input_batch_dims, args)
 
-    if batch_size < microbatch_size:
+    if batch_size is not None and batch_size < microbatch_size:
       mbs = batch_size
       logging.info('Requested microbatch size %d is larger than batch size %d.',
                    microbatch_size, batch_size)
     else:
       mbs = microbatch_size
 
-    if batch_size % mbs != 0:
+    if batch_size is not None and batch_size % mbs != 0:
       raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
 
-    full_in_axes = jax.tree.broadcast(input_batch_dims, args)
-    microbatched_inputs = utils.map_nt(
-        functools.partial(microbatch_array, microbatch_size=mbs),
-        args, full_in_axes)
-
-    output_shapes = nnx.eval_shape(f, module, *args, **kwargs)
-    full_out_axes = jax.tree.broadcast(output_batch_dims, output_shapes)
+    microbatched_inputs = microbatch_struct(input_batch_dims, args, mbs)
+    in_axes = input_batch_dims
+    if isinstance(in_axes, int):
+      in_axes = (in_axes,) * len(args)
 
     def with_kwargs(module: ModT, *args: P.args):
       return f(module, *args, **kwargs)
 
     scan_fn = nnx.scan(
         with_kwargs,
-        in_axes=(None, *full_in_axes),
-        out_axes=full_out_axes,
+        in_axes=(None, *in_axes),
+        out_axes=output_batch_dims,
     )
 
     microbatched_outputs = scan_fn(module, *microbatched_inputs)
-    return jax.tree.map(unmicrobatch_array, microbatched_outputs, full_out_axes)
+    return unmicrobatch_struct(output_batch_dims, microbatched_outputs)
 
   return microbatched
 
 def microbatched_grads(
     loss_fn: tp.Callable[tp.Concatenate[ModT, P], tuple[Loss, *Outputs]],
     microbatch_size: int,
-    input_batch_dims: int | tuple = 0,
+    input_batch_dims: int | tuple = 0,  # doesn't include module
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     take_mean: bool = True,
     fp32_grads: bool = True,
@@ -1048,6 +1174,9 @@ def microbatched_grads(
   ) -> tuple[Grads, *Outputs]:
     batch_size = get_batch_size(input_batch_dims, args)
 
+    if batch_size is None:
+      return grad_fn(module, *args, **kwargs)
+
     if batch_size < microbatch_size:
       mbs = batch_size
       logging.info('Requested microbatch size %d is larger than batch size %d.',
@@ -1060,19 +1189,21 @@ def microbatched_grads(
       raise ValueError(f'microbatch size {mbs} must divide batch size {batch_size}')
 
     logging.info(f'Split inputs into {num_microbatches} microbatches of size {mbs}')
-    full_in_axes = jax.tree.broadcast(input_batch_dims, args)
-    microbatched_inputs = jax.tree.map(
-        functools.partial(microbatch_array, microbatch_size=mbs),
-        args, full_in_axes)
+    in_axes = input_batch_dims
+    if isinstance(in_axes, int):
+      in_axes = (in_axes,) * len(args)
+    microbatched_inputs = microbatch_struct(input_batch_dims, args, mbs)
 
     output_shapes = nnx.eval_shape(grad_fn, module, *args, **kwargs)
     zero_grads = jax.tree.map(jnp.zeros_like, output_shapes[0])
 
-    full_out_axes = jax.tree.broadcast(output_batch_dims, output_shapes[1:])
+    out_axes = output_batch_dims
+    if isinstance(out_axes, int):
+      out_axes = (out_axes,) * len(output_shapes[1:])
 
     @nnx.scan(
-        in_axes=(None, nnx.Carry, *full_in_axes),
-        out_axes=(nnx.Carry, *full_out_axes),
+        in_axes=(None, nnx.Carry, *in_axes),
+        out_axes=(nnx.Carry, *out_axes),
     )
     def scan_fn(module: ModT, grads_acc: Grads, *args: P.args):
       grads_and_outputs = grad_fn(module, *args, **kwargs)
@@ -1086,7 +1217,7 @@ def microbatched_grads(
       grads = jax.tree.map(lambda g: g / num_microbatches, grads)
 
     microbatched_outputs = grads_and_outputs[1:]
-    outputs = jax.tree.map(unmicrobatch_array, microbatched_outputs, full_out_axes)
+    outputs = unmicrobatch_struct(output_batch_dims, microbatched_outputs)
 
     return (grads, *outputs)
 
@@ -1102,7 +1233,7 @@ def run_loss_fn(
   run_fn = no_loss(loss_fn)
 
   if microbatch_size != 0:
-    run_fn = microbatch_fn(
+    run_fn = microbatch_module(
         run_fn,
         microbatch_size=microbatch_size,
         input_batch_dims=input_batch_dims,
@@ -1112,13 +1243,13 @@ def run_loss_fn(
   return cached_partial(jit_run, module)
 
 def train_fn(
-    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    loss_fn: tp.Callable[tp.Concatenate[ModT, P], tuple[Loss, *Outputs]],
     input_batch_dims: int | tuple = 0,
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     microbatch_size: int = 0,
     fp32_grads: bool = True,
     loss_scale: tp.Optional[float] = None,
-) -> tp.Callable[tp.Concatenate[ModT, nnx.Optimizer[ModT], Data, State, P], tuple[AuxT, State, *Outputs]]:
+) -> tp.Callable[tp.Concatenate[ModT, nnx.Optimizer[ModT], P], tuple[*Outputs]]:
 
   grad_fn = microbatched_grads(
       loss_fn, microbatch_size,
@@ -1130,9 +1261,9 @@ def train_fn(
 
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
-      data: Data, state: State, *args: P.args, **kwargs: P.kwargs,
-  ) -> tuple[AuxT, State, *Outputs]:
-    outputs = grad_fn(module, data, state, *args, **kwargs)
+      *args: P.args, **kwargs: P.kwargs,
+  ) -> tuple[*Outputs]:
+    outputs = grad_fn(module, *args, **kwargs)
     optimizer.update(module, outputs[0])
     return outputs[1:]
 
@@ -1156,6 +1287,9 @@ def train_fn_with_rngs(
     optimizer: nnx.Optimizer[ModT],
     rngs: nnx.Rngs,
     loss_fn: tp.Callable[tp.Concatenate[ModT, nnx.Rngs, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    input_batch_dims: int | tuple = 0,  # doesn't include Rngs
+    output_batch_dims: int | tuple = 0,  # doesn't include Loss
+    microbatch_size: int = 0,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
 
   grad_fn = grad_with_aux_tuple(loss_fn)
@@ -1178,7 +1312,8 @@ def data_parallel_train(
     optimizer: nnx.Optimizer[ModT],
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
@@ -1187,8 +1322,8 @@ def data_parallel_train(
     pack_data: bool = False,
     dtype: tp.Optional[jnp.dtype] = None,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   def train(
       module: ModT, optimizer: nnx.Optimizer[ModT],
@@ -1210,7 +1345,7 @@ def data_parallel_train(
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
       grads, (aux, new_state) = shard_map_grads(
-          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
+          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis_name)(
               module, (data, state), PSpecCache(*args, **kwargs))
 
       optimizer.update(module, grads)
@@ -1218,11 +1353,14 @@ def data_parallel_train(
       return aux, new_state
 
     sharded_grads_fn = sharded_grads(
-        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis, dtype=dtype)
+        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis_name,
+        dtype=dtype)
+
+    DS = data_spec(data_axis, name=data_axis_name)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), PS(), DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def update_fn(
@@ -1256,20 +1394,21 @@ def data_parallel_train_with_rngs(
     rngs: nnx.Rngs,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   # Shard the Rngs across devices.
-  num_shards: int = mesh.shape[data_axis]
+  num_shards: int = mesh.shape[data_axis_name]
   rngs = rngs.fork(split=num_shards)
-  shard_module(rngs, data_sharding(mesh, data_axis))
+  shard_module(rngs, data_sharding(mesh, data_axis_name))
 
   @nnx.jit(
       donate_argnums=(0, 1, 2, 4),
@@ -1295,7 +1434,7 @@ def data_parallel_train_with_rngs(
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
       grads, (aux, new_state) = shard_map_grads(
-          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis)(
+          packed_loss_fn, mesh, explicit_pmean=explicit_pmean, data_axis=data_axis_name)(
               module, (data, state), PSpecCache(*args, **kwargs))
 
       optimizer.update(module, grads)
@@ -1303,11 +1442,13 @@ def data_parallel_train_with_rngs(
       return aux, new_state
 
     sharded_grads_fn = sharded_grads(
-        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis)
+        loss_fn, explicit_pmean=explicit_pmean, data_axis=data_axis_name)
+
+    DS = data_spec(data_axis, name=data_axis_name)
 
     @nnx.shard_map(
-        in_specs=(PS(), PS(), PS(data_axis), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), PS(), DS, DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def update_fn(
@@ -1335,15 +1476,16 @@ def shard_map_loss_fn(
     module: ModT,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
 
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   @nnx.jit(
       donate_argnums=(2,),
@@ -1363,9 +1505,11 @@ def shard_map_loss_fn(
     else:
       _extra_out_specs = tuple(extra_out_specs)
 
+    DS = data_spec(data_axis, name=data_axis_name)
+
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def sharded_loss_fn(
@@ -1386,20 +1530,21 @@ def shard_map_loss_fn_with_rngs(
     rngs: nnx.Rngs,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, nnx.Rngs, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
-    data_axis: str = DATA_AXIS,
+    data_axis: int = 0,
+    data_axis_name: str = DATA_AXIS,
     extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
     extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
 
-  if data_axis not in mesh.axis_names:
-    raise ValueError(f'Axis name {data_axis} not in mesh axis names {mesh.axis_names}.')
+  if data_axis_name not in mesh.axis_names:
+    raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
   # Shard the Rngs across devices.
-  num_shards: int = mesh.shape[data_axis]
+  num_shards: int = mesh.shape[data_axis_name]
   rngs = rngs.fork(split=num_shards)
-  shard_module(rngs, data_sharding(mesh, data_axis))
+  shard_module(rngs, data_sharding(mesh, data_axis_name))
 
   @nnx.jit(
       donate_argnums=(1, 3),
@@ -1419,9 +1564,11 @@ def shard_map_loss_fn_with_rngs(
     else:
       _extra_out_specs = tuple(extra_out_specs)
 
+    DS = data_spec(data_axis, name=data_axis_name)
+
     @nnx.shard_map(
-        in_specs=(PS(), PS(data_axis), PS(data_axis), PS(data_axis)) + _extra_in_specs,
-        out_specs=(PS(data_axis), PS(data_axis)) + _extra_out_specs,
+        in_specs=(PS(), DS, DS, DS) + _extra_in_specs,
+        out_specs=(DS, DS) + _extra_out_specs,
         mesh=mesh,
     )
     def sharded_loss_fn(

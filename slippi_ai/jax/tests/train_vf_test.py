@@ -28,7 +28,7 @@ DEFAULT_CONFIG = train_vf.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=6,
     ),
     learner=train_vf.learner_lib.VFLearnerConfig(),
     runtime=train_vf.RuntimeConfig(
@@ -38,7 +38,7 @@ DEFAULT_CONFIG = train_vf.Config(
         num_eval_epochs=0.1,
     ),
     network=network_config,
-    compatible_policy=str(paths.JAX_IMITATION_CHECKPOINT),
+    compatible_policy=str(paths.JAX_POLICY_CHECKPOINT),
 )
 
 if __name__ == '__main__':

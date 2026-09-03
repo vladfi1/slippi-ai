@@ -6,14 +6,19 @@ Array = jax.Array | np.ndarray
 
 DEFAULT_HALFLIFE_SECONDS = 8
 
-def discount_from_halflife(halflife_seconds: float, fps: float = 60.0) -> float:
+def discount_from_halflife(
+    halflife_seconds: float,
+    frame_skip: int = 1,
+    fps: float = 60,
+) -> float:
   """Computes the per-frame discount factor corresponding to a given halflife."""
-  return 0.5 ** (1 / (halflife_seconds * fps))
+  return 0.5 ** (1 / (halflife_seconds * fps / frame_skip))
 
 def discounted_returns(
     rewards: Array,
     discounts: Array,
     bootstrap: Array,
+    dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
   """Computes discounted returns.
 
@@ -25,8 +30,9 @@ def discounted_returns(
   Returns:
     The discounted returns, of shape [T, B].
   """
-  rewards = rewards.astype(bootstrap.dtype)
-  discounts = discounts.astype(bootstrap.dtype)
+  rewards = rewards.astype(dtype)
+  discounts = discounts.astype(dtype)
+  bootstrap = bootstrap.astype(dtype)
 
   def scan_fn(acc, inputs):
     reward, discount = inputs

@@ -18,7 +18,7 @@ import sys
 from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
-    microbatch_fn, microbatched_grads, grad_with_aux_tuple,
+    microbatch_fn, microbatch_module, microbatched_grads, grad_with_aux_tuple,
 )
 
 
@@ -262,7 +262,7 @@ class MicrobatchFnTest(unittest.TestCase):
     data = jax.random.normal(jax.random.PRNGKey(0), (8, 4))
 
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=2)(module, data)
 
     self._assert_close(ref, mb)
 
@@ -272,7 +272,7 @@ class MicrobatchFnTest(unittest.TestCase):
     data = jax.random.normal(jax.random.PRNGKey(1), (4, 3))
 
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=4)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=4)(module, data)
 
     self._assert_close(ref, mb)
 
@@ -284,7 +284,7 @@ class MicrobatchFnTest(unittest.TestCase):
 
     for mbs in [1, 2, 3, 4, 6, 12]:
       with self.subTest(mbs=mbs):
-        mb = microbatch_fn(self._forward_fn, microbatch_size=mbs)(module, data)
+        mb = microbatch_module(self._forward_fn, microbatch_size=mbs)(module, data)
         self._assert_close(ref, mb)
 
   def test_preserves_output_shape(self):
@@ -292,7 +292,7 @@ class MicrobatchFnTest(unittest.TestCase):
     module = nnx.Linear(4, 3, rngs=nnx.Rngs(3))
     data = jax.random.normal(jax.random.PRNGKey(3), (6, 4))
     ref = self._forward_fn(module, data)
-    mb = microbatch_fn(self._forward_fn, microbatch_size=2)(module, data)
+    mb = microbatch_module(self._forward_fn, microbatch_size=2)(module, data)
     self.assertEqual(mb.shape, ref.shape)
 
   def test_multi_output(self):
@@ -305,7 +305,7 @@ class MicrobatchFnTest(unittest.TestCase):
       return y, jnp.sum(y, axis=-1)
 
     ref_y, ref_s = f(module, data)
-    mb_y, mb_s = microbatch_fn(f, microbatch_size=4)(module, data)
+    mb_y, mb_s = microbatch_module(f, microbatch_size=4)(module, data)
 
     self._assert_close(ref_y, mb_y)
     self._assert_close(ref_s, mb_s)
@@ -321,8 +321,51 @@ class MicrobatchFnTest(unittest.TestCase):
       return jax.vmap(jax.vmap(module))(x)
 
     ref = f(module, data)
-    mb = microbatch_fn(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
+    mb = microbatch_module(f, microbatch_size=2, input_batch_dims=1, output_batch_dims=1)(module, data)
     self._assert_close(ref, mb)
+
+
+class MicrobatchRngsTest(unittest.TestCase):
+  """An Rngs passed via nnx.StateAxes should draw fresh randomness per microbatch."""
+
+  def _run(self, rngs, data, microbatch_size):
+    # nnx.StateAxes({...: Carry}) threads the Rngs state across microbatches
+    # (carried), rather than broadcasting the same key to each one.
+    in_axes = (nnx.StateAxes({...: nnx.Carry}), 0)
+
+    def f(rngs: nnx.Rngs, data: jax.Array):
+      # One scalar draw per microbatch, broadcast over the microbatch rows so
+      # the output keeps a batch axis to un-microbatch.
+      x = jax.random.normal(rngs.params())
+      return jnp.full((data.shape[0],), x)
+
+    out = microbatch_fn(f, microbatch_size, input_batch_dims=in_axes)(rngs, data)
+    return out
+
+  def test_fresh_draw_per_microbatch(self):
+    batch, microbatch_size, feat = 12, 3, 4
+    num_microbatches = batch // microbatch_size
+    rngs = nnx.Rngs(0)
+    data = jax.random.normal(jax.random.PRNGKey(0), (batch, feat))
+
+    out = self._run(rngs, data, microbatch_size)
+    self.assertEqual(out.shape, (batch,))
+
+    # The per-microbatch scalar lives in column 0 of each microbatch.
+    per_microbatch = np.asarray(out).reshape(num_microbatches, microbatch_size)[:, 0]
+    # If the Rngs were broadcast instead of carried, every microbatch would draw
+    # the same key and these would all be identical.
+    self.assertEqual(len(np.unique(per_microbatch)), num_microbatches)
+
+  def test_advances_rngs_state(self):
+    """The caller's Rngs should have advanced after microbatching (state merged back)."""
+    rngs = nnx.Rngs(0)
+    data = jax.random.normal(jax.random.PRNGKey(1), (8, 4))
+
+    before = int(nnx.state(rngs)['default'].count[...])
+    self._run(rngs, data, microbatch_size=2)
+    after = int(nnx.state(rngs)['default'].count[...])
+    self.assertGreater(after, before)
 
 
 class MicrobatchedGradsTest(unittest.TestCase):

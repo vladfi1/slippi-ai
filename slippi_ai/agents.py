@@ -8,6 +8,7 @@ from slippi_ai.types import Game, Rank1, BoolArray
 from slippi_ai.data import NAME_DTYPE
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
 
+State = tp.Any
 RecurrentState = tp.TypeVar('RecurrentState')
 
 # TODO: find a better place for this
@@ -47,6 +48,10 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   @abc.abstractmethod
   def hidden_state(self) -> RecurrentState:
     """Returns the current hidden state."""
+
+  # @abc.abstractmethod
+  # def set_policy_state(self, state: State):
+  #   """Sets the current state."""
 
   @abc.abstractmethod
   def step(

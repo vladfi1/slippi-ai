@@ -32,7 +32,7 @@ from slippi_ai import (
     reward, utils, nametags, paths, observations, datasets, shared_arrays,
 )
 from slippi_ai.types import (
-    S, Game, game_array_to_nt, array_from_nt,
+    S, Game, Controller, game_array_to_nt, array_from_nt,
     BoolArray, FloatArray, Int32Array, Rank1,
     # Re-exported for backward compatibility; canonical home is types.py.
     Action, NAME_DTYPE, StateAction, Frames,
@@ -219,6 +219,52 @@ class Batch(NamedTuple, tp.Generic[S]):
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
 
+  def to_frames(
+    self,
+    frame_skip: int,
+    discount: float = 1.0,
+  ) -> Frames[S, Controller[S]]:
+    B, T = self.is_resetting.shape
+    assert self.reward.shape == (B, T - 1)
+
+    if T % frame_skip != 0:
+      raise ValueError(f"Unroll length {T} is not divisible by frame_skip {frame_skip}.")
+
+    sliced_reward = self.reward[:, frame_skip - 1:]
+    sliced_batch = self._replace(reward=sliced_reward)
+
+    def reshape(x: np.ndarray):
+      B, T = x.shape
+      return x.reshape(B, T // frame_skip, frame_skip)
+
+    reshaped = utils.cached_map_nt(Batch)(reshape, sliced_batch)
+
+    game = utils.cached_map_nt(Game)(lambda x: x[..., -1], reshaped.game)
+
+    flat_actions = utils.cached_flatten(Controller)(reshaped.game.p0.controller)
+    flat_unstacked_actions = [np.unstack(x, axis=-1) for x in flat_actions]
+    actions = [
+        utils.cached_unflatten(Controller, zipped)
+        for zipped in zip(*flat_unstacked_actions)]
+    assert len(actions) == frame_skip
+
+    is_resetting = reshaped.is_resetting.any(axis=-1)
+
+    discounts = discount ** np.arange(frame_skip)
+    reward = np.vecdot(reshaped.reward, discounts)
+
+    return Frames(
+        state_action=StateAction(
+            state=game,
+            action=actions,
+            name=reshaped.name[..., -1],
+            rating=reshaped.rating[..., -1],
+        ),
+        is_resetting=is_resetting,
+        reward=reward,
+    )
+
+
 class BatchWithMeta(NamedTuple, tp.Generic[S]):
   batch: Batch[S]
   meta: ChunkMeta
@@ -236,6 +282,13 @@ GAMES_DIR = 'games'
 META_PATH = 'meta.json'
 RATINGS_PATH = 'ratings.json'
 
+field = lambda f: dataclasses.field(default_factory=f)
+
+@dataclasses.dataclass
+class PartitionConfig:
+  index: int = 0
+  num_partitions: int = 1
+
 @dataclasses.dataclass
 class DatasetConfig:
   data_dir: Optional[str] = None  # required
@@ -248,6 +301,7 @@ class DatasetConfig:
   missing_rating_value: tp.Optional[float] = None
   rating_stddev: float = 50
 
+  train_partition: PartitionConfig = field(PartitionConfig)
   test_ratio: float = 0.1
   # comma-separated lists of characters, or "all"
   allowed_characters: str = ALL
@@ -489,6 +543,7 @@ def train_test_split(
     logging.warning("Only one replay found, using it for both train and test.")
     return replays, replays
 
+  # TODO: stable partition?
   rng = random.Random(config.seed)
   rng.shuffle(replays)
 
@@ -497,6 +552,9 @@ def train_test_split(
 
   train_replays = replays[num_test:]
   test_replays = replays[:num_test]
+
+  if config.train_partition.num_partitions > 1:
+    train_replays = train_replays[config.train_partition.index::config.train_partition.num_partitions]
 
   def add_mirrored(unmirrored: List[ReplayInfo]):
     mirrored = []

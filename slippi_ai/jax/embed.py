@@ -22,9 +22,9 @@ from slippi_ai import utils, types
 from slippi_ai.types import (
   Buttons, Controller, Game, Player, Stick,
   Randall, FoDPlatforms, Item, Items,
+  S, Action, StateAction,
 )
 from slippi_ai.controller_lib import LEGAL_BUTTONS
-from slippi_ai.data import Action, StateAction
 from slippi_ai.action_space import custom_v1 as cv1
 
 Array = jax.Array
@@ -753,27 +753,84 @@ class EmbedConfig(tp.Generic[Action]):
   def make_controller_embedding(self) -> Embedding[Controller, Action]:
     return self.controller.make_embedding()
 
-  def make_state_action_embedding(self, num_names: int):
+  def make_state_action_embedding(self, num_names: int, frame_skip: int = 1):
     return get_state_action_embedding(
         embed_game=self.make_game_embedding(),
         embed_action=self.make_controller_embedding(),
+        frame_skip=frame_skip,
         num_names=num_names,
         with_rating=self.with_rating,
     )
 
 NAME_DTYPE = np.int32
 
+class ListEmbedding(Embedding[list[In], list[Out]]):
+  """Embeds lists of items, e.g. for frame-skipped actions."""
+
+  def __init__(self, item_embedding: Embedding[In, Out], num_items: int):
+    self.item_embedding = item_embedding
+    self.num_items = num_items
+
+  @property
+  def dtype(self):
+    return self.item_embedding.dtype
+
+  @property
+  def size(self):
+    return self.item_embedding.size * self.num_items
+
+  def from_state(self, state: list[In]) -> list[Out]:
+    """Encodes a parsed state."""
+    return [self.item_embedding.from_state(s) for s in state]
+
+  def __call__(self, items: list[Out], **kwargs) -> Array:
+    if len(items) != self.num_items:
+      raise ValueError(f"Expected {self.num_items} items, got {len(items)}")
+    embedded_items = [self.item_embedding(item, **kwargs) for item in items]
+    return jnp.concatenate(embedded_items, axis=-1)
+
+  def map(self, f, *args: list[Out]) -> list[Out]:
+    if len(args) == 0:
+      return [self.item_embedding.map(f) for _ in range(self.num_items)]
+
+    for arg in args:
+      if len(arg) != self.num_items:
+        raise ValueError(f"Expected {self.num_items} items, got {len(arg)}")
+    zipped_args = list(zip(*args))
+    return [self.item_embedding.map(f, *zipped) for zipped in zipped_args]
+
+  def flatten(self, struct: list[Out]) -> Iterator[Any]:
+    for item in struct:
+      yield from self.item_embedding.flatten(item)
+
+  def unflatten(self, seq: Iterator[Any]) -> list[Out]:
+    return [self.item_embedding.unflatten(seq) for _ in range(self.num_items)]
+
+  def decode(self, out: list[Out]) -> list[In]:
+    """Inverse of `from_state`."""
+    return [self.item_embedding.decode(o) for o in out]
+
+  def dummy(self, shape: Sequence[int] = ()) -> list[Out]:
+    """A dummy value."""
+    return [self.item_embedding.dummy(shape) for _ in range(self.num_items)]
+
+  def dummy_embedding(self, shape: Sequence[int] = ()) -> list[Out]:
+    return [self.item_embedding.dummy_embedding(shape) for _ in range(self.num_items)]
+
+StateActionEmbedding = Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]
+
 embed_rating = FloatEmbedding("rating", scale=1e-3)
 
 def get_state_action_embedding(
     embed_game: Embedding[Game, Any],
     embed_action: Embedding[Controller, Action],
+    frame_skip: int,
     num_names: int,
     with_rating: bool = False,
-) -> Embedding[StateAction[tp.Any, Controller], StateAction[tp.Any, Action]]:
+) -> StateActionEmbedding:
   embedders = [
       ('state', embed_game),
-      ('action', embed_action),
+      ('action', ListEmbedding(embed_action, frame_skip)),
   ]
   if num_names > 0:
     embedders.append(('name', OneHotEmbedding(

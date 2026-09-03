@@ -7,6 +7,7 @@ from flax import nnx
 from melee.enums import Action
 
 from slippi_ai import data, types, utils
+from slippi_ai.data import Rank2
 from slippi_ai.jax import embed, networks, jax_utils, rl_lib
 from slippi_ai.jax.networks import RecurrentState
 
@@ -27,20 +28,23 @@ def player_respawn(player: types.Player) -> Array:
   return jnp.logical_and(actions[:-1] != respawn, actions[1:] == respawn)
 
 
-class ValueFunction(nnx.Module):
+class ValueFunction(nnx.Module, tp.Generic[types.Action]):
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       network_config: dict,
       num_names: int,
-      embed_config: embed.EmbedConfig,
+      embed_config: embed.EmbedConfig[types.Action],
+      frame_skip: int,
   ):
+    self.frame_skip = frame_skip
     self.network = networks.build_embed_network(
         rngs=rngs,
         embed_config=embed_config,
         num_names=num_names,
         network_config=network_config,
+        frame_skip=frame_skip,
     )
     self.value_head = nnx.Linear(self.network.output_size, 1, rngs=rngs)
 
@@ -60,7 +64,7 @@ class ValueFunction(nnx.Module):
 
   def loss(
       self,
-      frames: data.Frames,
+      frames: data.Frames[Rank2, types.Action],
       initial_state: RecurrentState,
       discount: float,
       discount_on_death: tp.Optional[float] = None,
@@ -222,21 +226,3 @@ class ValueFunction(nnx.Module):
         metrics=metrics,
     )
 
-
-class FakeValueFunction(nnx.Module):
-
-  def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    del batch_size, rngs
-    return ()
-
-  def loss(self, frames: data.Frames, initial_state, discount, **_):
-    del discount
-
-    outputs = ValueOutputs(
-        returns=jnp.zeros_like(frames.reward),
-        loss=jnp.array(0.0),
-        advantages=jnp.zeros_like(frames.reward),
-        metrics={},
-    )
-
-    return outputs, initial_state

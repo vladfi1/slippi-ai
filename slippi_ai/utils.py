@@ -255,13 +255,13 @@ def cached_unflatten(t: type[T], xs: tp.Sequence) -> T:
     raise ValueError(f'Expected {size} values to unflatten into {t}, got {len(xs)}')
   return unflatten_fn(xs, 0)
 
-def batch_nest_nt(nests: tp.Sequence[T]) -> T:
+def batch_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
-  return map_nt(stack, *nests)
+  return map_nt(lambda *xs: np.stack(xs, axis=axis), *nests)
 
 def concat_nest_nt(nests: tp.Sequence[T], axis: int = 0) -> T:
   # More efficient than batch_nest
-  return map_nt(lambda *xs: np.concatenate(xs, axis), *nests)
+  return map_nt(lambda *xs: np.concatenate(xs, axis=axis), *nests)
 
 def flatten_up_to(shallow_structure, input_structure, acc: list | None = None) -> list:
   if acc is None:

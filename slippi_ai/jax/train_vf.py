@@ -19,6 +19,7 @@ from slippi_ai import (
     observations as obs_lib,
     utils,
     data as data_lib,
+    paths,
     reward as reward_lib,
 )
 from slippi_ai.policies import Platform
@@ -52,15 +53,18 @@ class Config:
   runtime: RuntimeConfig = _field(RuntimeConfig)
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
+  toy_data: bool = False
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
   observation: obs_lib.ObservationConfig = _field(obs_lib.ObservationConfig)
   reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
   # Optionally use longer unroll length for less biased evaluation.
   test_unroll_multiplier: int = 1
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
 
   # Loads obs config and name map to be compatible with a given policy.
   compatible_policy: tp.Optional[str] = None
+  frame_skip: int = 1
 
   max_names: int = 16
 
@@ -79,13 +83,27 @@ class Config:
   version: int = 0
   platform: str = Platform.JAX.value
 
+  def __post_init__(self):
+    if self.toy_data:
+      logging.info('Overriding dataset config for toy data')
+      self.dataset.data_dir = str(paths.TOY_DATA_DIR)
+      self.dataset.meta_path = str(paths.TOY_META_PATH)
+      self.dataset.test_ratio = 0.5
+      self.dataset.allowed_opponents = 'all'
+      self.data.cached = True
+      self.data.num_workers = 0
+      self.runtime.log_interval = 15
+      self.runtime.num_evals_per_epoch = 0
+
   def make_compatible_with(self, policy_config: train_policy.Config):
     # RL training currently only encodes the gamestate once using the policy's
     # embed config, so the value function needs to use the same config.
     self.embed = policy_config.embed
     self.observation = policy_config.observation
     self.max_names = policy_config.max_names
-    self.dataset.copy_characteristics_from(policy_config.dataset)
+    self.frame_skip = policy_config.policy.frame_skip
+    if not self.toy_data:
+      self.dataset.copy_characteristics_from(policy_config.dataset)
     self.data.copy_characteristics_from(policy_config.data)
 
 
@@ -106,6 +124,10 @@ def check_compatibility(vf_state: dict, policy_state: dict) -> list[str]:
     errors.append(
         f'embed config mismatch: vf={vf_config.embed}'
         f' policy={policy_config.embed}')
+  if vf_config.frame_skip != policy_config.policy.frame_skip:
+    errors.append(
+        f'frame_skip mismatch: vf={vf_config.frame_skip}'
+        f' policy={policy_config.policy.frame_skip}')
   for key in data_lib.DatasetConfig.characteristic_keys():
     if getattr(vf_config.dataset, key) != getattr(policy_config.dataset, key):
       errors.append(
@@ -215,7 +237,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     restore_config = flag_utils.dataclass_from_dict(
         Config, restored_state['config'])
 
-    for key in ['network', 'embed', 'observation', 'max_names']:
+    for key in ['network', 'embed', 'observation', 'max_names', 'frame_skip']:
       current = getattr(config, key)
       previous = getattr(restore_config, key)
       if current != previous:
@@ -255,6 +277,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       network_config=config.network,
       num_names=config.max_names,
       embed_config=config.embed,
+      frame_skip=config.frame_skip,
   )
 
   mesh = jax_utils.get_mesh()
@@ -295,7 +318,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=1,
+      extra_frames=config.frame_skip,
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -396,6 +419,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' step={step_time:.3f}')
     print()
 
+  effective_unroll_length = (
+      config.data.unroll_length * config.test_unroll_multiplier // config.frame_skip)
   last_train_epoch_evaluated = train_epoch
 
   def maybe_eval(force: bool = False):
@@ -409,7 +434,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     per_step_eval_stats: list[dict] = []
 
     def time_mean(x: jax.Array, axis: int = 1) -> np.ndarray:
-      assert x.shape[axis] == config.data.unroll_length * config.test_unroll_multiplier
+      assert x.shape[axis] == effective_unroll_length
       return np.mean(np.asarray(x), axis=axis)
 
     start_time = time.perf_counter()

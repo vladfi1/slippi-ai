@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
-from slippi_ai.data import Batch, Frames, StateAction
+from slippi_ai.data import Batch, Frames, StateAction, Action, Rank2
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import value_function as vf_lib
 from slippi_ai.jax import jax_utils, rl_lib
@@ -49,17 +49,18 @@ def value_loss_fn(
   return loss, bm_metrics, final_states
 
 
-class VFLearner(nnx.Module):
+class VFLearner(nnx.Module, tp.Generic[Action]):
 
   def __init__(
       self,
-      value_function: vf_lib.ValueFunction,
+      value_function: vf_lib.ValueFunction[Action],
       config: VFLearnerConfig,
       mesh: jax.sharding.Mesh,
       data_sharding: jax.sharding.NamedSharding,
   ):
     self.value_function = value_function
-    self.discount = rl_lib.discount_from_halflife(config.reward_halflife)
+    self.discount = rl_lib.discount_from_halflife(
+        config.reward_halflife / value_function.frame_skip)
     self.config = config
     self.data_sharding = data_sharding
 
@@ -101,8 +102,8 @@ class VFLearner(nnx.Module):
 
   def _unroll_value_function(
       self,
-      value_function: vf_lib.ValueFunction,
-      bm_frames: Frames,
+      value_function: vf_lib.ValueFunction[Action],
+      bm_frames: Frames[Rank2, Action],
       initial_state: RecurrentState,
       *,
       unroll_batch_size: tp.Optional[int] = None,
@@ -114,16 +115,15 @@ class VFLearner(nnx.Module):
 
   def step(
       self,
-      batch: Batch,
+      batch: Batch[Rank2],
       initial_state: RecurrentState,
       train: bool = True,
   ) -> tuple[dict, RecurrentState]:
-    state_action = StateAction(
-        batch.game, batch.game.p0.controller, batch.name, batch.rating)
+    frames = batch.to_frames(self.value_function.frame_skip)
     frames = Frames(
-        state_action=self.value_function.network.encode(state_action),
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
+        state_action=self.value_function.network.encode(frames.state_action),
+        is_resetting=frames.is_resetting,
+        reward=frames.reward,
     )
     frames = jax_utils.device_put(frames, self.data_sharding)
 

@@ -115,6 +115,226 @@ def solve_zero_sum_nash_qpax(
       debug=debug,
       **kwargs)
 
+class Player2NashLP(optimization.ConstrainedOptimizationProblem[PayoffMatrix, jax.Array]):
+  """Player 2's LP for finding the Nash equilibrium via the simplex method.
+
+  Reduces the zero-sum Nash problem to an LP in three steps:
+
+  1. Eliminate the normalization constraint via unnormalized variables.
+     Player 2's Nash LP is: min v s.t. A p2 <= v*1_m, p2 >= 0, 1^T p2 = 1.
+     Let shift = min(A) - 1 so A_shifted = A - shift has all entries >= 1.
+     Because both players use probability vectors, the shifted game value is
+     v_shifted = v - shift > 0. Substituting z = p2 / v_shifted gives:
+       A_shifted z <= 1_m    (divide the Nash constraint by v_shifted)
+       1^T z = 1/v_shifted   (automatically satisfied at the LP optimum)
+     Player 2 minimizes v_shifted = 1/(1^T z), equivalently maximizes 1^T z.
+     The normalization equality drops out, leaving a pure inequality LP with
+     z=0 as a feasible initial point (slacks = 1_m >= 0, no Phase I needed).
+
+  2. Recover p1 from LP duality.
+     The dual of max 1^T z s.t. A_shifted z <= 1_m, z >= 0 is:
+       min 1_m^T y s.t. A_shifted^T y >= 1_n, y >= 0.
+     Substituting w = p1 / v_shifted into player 1's Nash LP yields exactly
+     this dual, so the optimal dual variables y = w are the unnormalized p1.
+     In the simplex tableau, ineq_dual[i] = y[i] (shadow price of constraint i).
+     Hence p1 = ineq_dual / sum(ineq_dual).
+
+  3. Recover the game value.
+     At the optimum, 1^T z* = 1/v_shifted, so v = 1/sum(z) + shift.
+
+  Variables: z [N2] (unnormalized p2; z >= 0 is maintained structurally by the
+  simplex solver and must NOT be listed as explicit constraints).
+  """
+
+  def initial_variables(self, parameters: PayoffMatrix) -> jax.Array:
+    _, d2 = parameters.shape
+    return jnp.zeros([d2], dtype=parameters.dtype)
+
+  def objective(self, parameters: PayoffMatrix, variables: jax.Array) -> jax.Array:
+    del parameters
+    return -jnp.sum(variables)  # minimize -sum(z) = maximize sum(z)
+
+  def constraint_violations(self, parameters: PayoffMatrix, variables: jax.Array) -> jax.Array:
+    z = variables
+    # Shift payoff matrix so all entries >= 1; then A*z <= 1_m defines the LP.
+    shift = jnp.min(parameters) - jnp.ones([], dtype=parameters.dtype)
+    A = parameters - shift
+    return jnp.matvec(A, z) - jnp.ones([parameters.shape[0]], dtype=parameters.dtype)
+
+  def equality_violations(self, parameters: PayoffMatrix, variables: jax.Array) -> jax.Array:
+    del parameters
+    return jnp.zeros([0], dtype=variables.dtype)
+
+
+_player2_nash_lp = Player2NashLP()
+
+
+def _solve_nash_simplex_impl(
+    payoff_matrix: jax.Array,
+    *,
+    max_steps: int = 200,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using the simplex method.
+
+  Solves player 2's LP via Player2NashLP and recovers p1 from the dual variables.
+  The LP has a natural initial BFS (z=0), so no Phase I is needed.
+  """
+  dtype = payoff_matrix.dtype
+  z, ineq_dual, stats = optimization.solve_optimization_simplex_with_extras(
+      _player2_nash_lp, payoff_matrix,
+      max_steps=max_steps, expected_dtype=expected_dtype)
+
+  # z is the unnormalized p2 strategy; ineq_dual[i] is the shadow price for
+  # constraint (A_shifted @ z)[i] <= 1, which equals the dual weight for p1's pure strategy i.
+  sum_z = jnp.sum(z)
+  p2 = z / sum_z
+  p1 = ineq_dual / jnp.sum(ineq_dual)
+
+  # Value of the shifted game is 1/sum(z); undo the shift.
+  shift = jnp.min(payoff_matrix) - jnp.ones([], dtype=dtype)
+  v = sum_z ** -1 + shift
+
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), stats
+
+
+_simplex_static_argnames = ('max_steps', 'expected_dtype')
+
+_jitted_solve_nash_simplex = jax_utils.jit(
+    _solve_nash_simplex_impl,
+    static_argnames=_simplex_static_argnames)
+
+_batched_solve_nash_simplex = jax_utils.vmap1(
+    _solve_nash_simplex_impl,
+    static_argnames=_simplex_static_argnames)
+
+
+def solve_zero_sum_nash_simplex(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    max_steps: int = 200,
+    **kwargs,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using the simplex method (vmappable)."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_nash_simplex
+  elif jit:
+    solver = _jitted_solve_nash_simplex
+  else:
+    solver = _solve_nash_simplex_impl
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      max_steps=max_steps,
+      expected_dtype=payoff_matrix.dtype,
+      **kwargs)
+
+
+def _solve_nash_linrax_impl(
+    payoff_matrix: jax.Array,
+    *,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using linrax's LP solver."""
+  dtype = payoff_matrix.dtype
+  z, ineq_dual, stats = optimization.solve_optimization_linrax_with_extras(
+      _player2_nash_lp, payoff_matrix, expected_dtype=expected_dtype)
+
+  sum_z = jnp.sum(z)
+  p2 = z / sum_z
+  p1 = ineq_dual / jnp.sum(ineq_dual)
+
+  shift = jnp.min(payoff_matrix) - jnp.ones([], dtype=dtype)
+  v = sum_z ** -1 + shift
+
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), stats
+
+
+_linrax_static_argnames = ('expected_dtype',)
+
+_jitted_solve_nash_linrax = jax_utils.jit(
+    _solve_nash_linrax_impl,
+    static_argnames=_linrax_static_argnames)
+
+_batched_solve_nash_linrax = jax_utils.vmap1(
+    _solve_nash_linrax_impl,
+    static_argnames=_linrax_static_argnames)
+
+
+def solve_zero_sum_nash_linrax(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    **_,
+) -> tuple[NashVariables, dict]:
+  """Solve a zero-sum Nash equilibrium using linrax's LP solver."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_nash_linrax
+  elif jit:
+    solver = _jitted_solve_nash_linrax
+  else:
+    solver = _solve_nash_linrax_impl
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      expected_dtype=payoff_matrix.dtype)
+
+
+def _solve_nash_mpax_impl(
+    payoff_matrix: jax.Array,
+    *,
+    expected_dtype: tp.Optional[jnp.dtype] = None,
+    eps_abs: float = 1e-4,
+    eps_rel: float = 1e-4,
+) -> tuple[NashVariables, dict]:
+  """Solve zero-sum Nash equilibrium using mpax's r2HPDHG LP solver."""
+  dtype = payoff_matrix.dtype
+  z, ineq_dual, stats = optimization.solve_optimization_mpax_with_extras(
+      _player2_nash_lp, payoff_matrix,
+      expected_dtype=expected_dtype,
+      eps_abs=eps_abs, eps_rel=eps_rel)
+
+  sum_z = jnp.sum(z)
+  p2 = z / sum_z
+  p1 = ineq_dual / jnp.sum(ineq_dual)
+
+  shift = jnp.min(payoff_matrix) - jnp.ones([], dtype=dtype)
+  v = sum_z ** -1 + shift
+
+  return NashVariables(p1=p1, p2=p2, p1_nash_value=v), stats
+
+
+_mpax_static_argnames = ('expected_dtype', 'eps_abs', 'eps_rel')
+
+_jitted_solve_nash_mpax = jax_utils.jit(
+    _solve_nash_mpax_impl,
+    static_argnames=_mpax_static_argnames)
+
+_batched_solve_nash_mpax = jax_utils.vmap1(
+    _solve_nash_mpax_impl,
+    static_argnames=_mpax_static_argnames)
+
+
+def solve_zero_sum_nash_mpax(
+    payoff_matrix: np.ndarray | jax.Array,
+    *,
+    jit: bool = True,
+    **_,
+) -> tuple[NashVariables, dict]:
+  """Solve a zero-sum Nash equilibrium using mpax's r2HPDHG LP solver."""
+  if payoff_matrix.ndim == 3:
+    solver = _batched_solve_nash_mpax
+  elif jit:
+    solver = _jitted_solve_nash_mpax
+  else:
+    solver = _solve_nash_mpax_impl
+
+  return solver(
+      jnp.asarray(payoff_matrix),
+      expected_dtype=payoff_matrix.dtype)
+
+
 class NashSolver(tp.Protocol):
   def __call__(
       self,

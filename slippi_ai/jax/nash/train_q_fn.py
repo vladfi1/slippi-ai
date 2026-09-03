@@ -27,6 +27,7 @@ from slippi_ai import (
 from slippi_ai.nash import data as nash_data
 from slippi_ai.policies import Platform
 from slippi_ai.jax import (
+    rl_lib,
     saving,
     train_lib,
     jax_utils,
@@ -206,6 +207,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     config.observation = imitation_config.observation
     config.q_function.num_names = imitation_config.max_names
+    config.q_function.frame_skip = imitation_config.policy.frame_skip
     name_map = imitation_state['name_map']
     if config.delay is None:
       logging.info('setting delay from compatible policy: %d', imitation_config.policy.delay)
@@ -225,11 +227,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     if config.delay is None:
       raise ValueError('Must specify delay.')
 
+  frame_skip = config.q_function.frame_skip
+
   if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
+    unroll_batch_size = config.data.unroll_length // frame_skip
     logging.info(
         "Setting learner unroll batch size = %d to avoid OOMs during eval",
-        config.data.unroll_length)
-    config.learner.unroll_batch_size = config.data.unroll_length
+        unroll_batch_size)
+    config.learner.unroll_batch_size = unroll_batch_size
+
+  # Randomize windows to improve data diversity across epochs.
+  config.data.random_offset = frame_skip
 
   # Set wandb config after potential overrides from checkpoint or compatible policy.
   wandb.config.update(dataclasses.asdict(config))
@@ -261,7 +269,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   jax_utils.replicate_module(learner, mesh)
 
   logging.info("Network configuration")
-  logging.info(f'Using network: {config.q_function.network["name"]}')
+  logging.info(f'Using network: {config.q_function.core_net["name"]}')
 
   # Set up dataset for training on both sides of each replay
   config.dataset.swap = False
@@ -282,7 +290,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.q_function.num_names,
-      extra_frames=config.delay + 1,
+      extra_frames=config.delay + frame_skip,
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -296,6 +304,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     nash_source = nash_data.TwoPlayerDataSource(
         source=source,
         name_map=name_map,
+        frame_skip=frame_skip,
+        discount=rl_lib.discount_from_halflife(config.learner.reward_halflife),
     )
     exit_stack.callback(nash_source.shutdown)
     return nash_source
@@ -410,11 +420,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     per_step_eval_stats: list[dict] = []
 
-    # Stats have shape [B, 2, T]
-    def time_mean(x: jax.Array, axis: int = 2) -> np.ndarray:
-      assert x.shape[axis] == test_data_config.unroll_length
-      # Need to convert to numpy as np.mean will perform the computation in jax.
-      return np.mean(np.asarray(x), axis=axis)
+    # Stats have shape [B, 2]
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
@@ -422,7 +428,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     num_eval_steps = 0
     while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
       if test_stats_jax is not None:
-        test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+        test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
         per_step_eval_stats.append(test_stats_np)
       test_stats_jax, _ = test_manager.step()
 
@@ -432,7 +438,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         break
 
     assert test_stats_jax is not None
-    test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+    test_stats_np = utils.map_single_structure(np.asarray, test_stats_jax)
     per_step_eval_stats.append(test_stats_np)
 
     eval_stats = utils.batch_nest_nt(per_step_eval_stats)

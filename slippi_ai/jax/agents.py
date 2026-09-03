@@ -1,3 +1,4 @@
+import collections
 import enum
 import typing as tp
 
@@ -7,7 +8,7 @@ import numpy as np
 from flax import nnx
 
 from slippi_ai import utils, data, agents
-from slippi_ai.types import Game, S
+from slippi_ai.types import Game, S, BoolArray, Rank1
 from slippi_ai.data import StateAction
 from slippi_ai.policies import Platform
 from slippi_ai.controller_heads import SampleOutputs, ControllerType
@@ -63,10 +64,13 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     # Agents only work with the discretized action space; you will need
     # to call `decode` on the action before sending it to Dolphin.
     default_controller = self._policy.controller_head.dummy_controller([batch_size])
-    self._prev_controller = default_controller
+    self._prev_controller = [default_controller] * policy.frame_skip
 
     if rngs is None:
       rngs = nnx.Rngs(seed)
+
+    self._sample_outputs = collections.deque[SampleOutputs[ControllerType]]()
+    self._needs_reset: BoolArray[Rank1] = np.full([batch_size], False)
 
     def sample(
         policy: policies.Policy[ControllerType],
@@ -74,14 +78,14 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         rngs: nnx.Rngs,
         state_and_reset: tuple[Game, jax.Array],
         name_code: jax.Array,
-        prev_action: ControllerType,
+        prev_actions: list[ControllerType],
         prev_state: policies.RecurrentState,
-    ) -> tuple[SampleOutputs[ControllerType], policies.RecurrentState]:
+    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
       # Note: sample outputs are discretized by the controller_head.
       game, needs_reset = state_and_reset
       state_action = StateAction(
           state=game,
-          action=prev_action,
+          action=prev_actions,
           name=name_code,
           rating=jnp.full([self._batch_size], self._rating),
       )
@@ -128,10 +132,14 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
         rngs: nnx.Rngs,
         states_and_resets: list[tuple[Game[S], jax.Array]],  # time-indexed
         name_code: jax.Array,
-        prev_action: ControllerType,  # only for first step
+        prev_actions: list[ControllerType],  # only for first step
         initial_state: policies.RecurrentState,
-    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
+    ) -> tuple[list[SampleOutputs[ControllerType]], list[ControllerType], policies.RecurrentState]:
+      """Runs the policy once per element of `states_and_resets`.
 
+      Returns the flattened list of `len(states_and_resets) * frame_skip`
+      sample outputs, the prev_actions for the next call, and the final state.
+      """
       stacked_states_and_resets = jax.tree.map(
           lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
 
@@ -139,25 +147,27 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       def scan_fn(
           rngs: nnx.Rngs,
           state_and_reset: tuple[Game, jax.Array],
-          prev_action_and_state: tuple[ControllerType, policies.RecurrentState],
-      ) -> tuple[SampleOutputs[ControllerType], tuple[ControllerType, policies.RecurrentState]]:
+          prev_actions_and_state: tuple[list[ControllerType], policies.RecurrentState],
+      ) -> tuple[list[SampleOutputs[ControllerType]], tuple[list[ControllerType], policies.RecurrentState]]:
         gamestate, needs_reset = state_and_reset
-        prev_action, prev_state = prev_action_and_state
+        prev_actions, prev_state = prev_actions_and_state
         sample_outputs, new_state = sample(
-            policy, rngs, (gamestate, needs_reset), name_code, prev_action, prev_state)
-        return sample_outputs, (sample_outputs.controller_state, new_state)
+            policy, rngs, (gamestate, needs_reset), name_code, prev_actions, prev_state)
+        next_actions = [so.controller_state for so in sample_outputs]
+        return sample_outputs, (next_actions, new_state)
 
       length = len(states_and_resets)
 
-      stacked_sample_outputs, (_, final_state) = scan_fn(
-          rngs.fork(split=length), stacked_states_and_resets, (prev_action, initial_state))
+      stacked_sample_outputs, (next_actions, final_state) = scan_fn(
+          rngs.fork(split=length), stacked_states_and_resets,
+          (prev_actions, initial_state))
 
-      sample_outputs = [
-          utils.map_nt(lambda t: t[i], stacked_sample_outputs)
-          for i in range(length)
-      ]
+      sample_outputs: list[SampleOutputs[ControllerType]] = []
+      for i in range(length):
+        sample_outputs.extend(
+            jax.tree.map(lambda t, i=i: t[i], stacked_sample_outputs))
 
-      return sample_outputs, final_state
+      return sample_outputs, next_actions, final_state
 
     if dtype is not DType.FP32:
       multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
@@ -236,41 +246,78 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       needs_reset: agents.BoolArray,
   ) -> SampleOutputs[ControllerType]:
     """Sample an action and leave the output tree on device."""
-    game = self._policy.network.encode_game(game)
-    # Keep hidden state and prev_controller on device.
-    sample_fn = self._jitted_sample if self._compile else self._sample
-    sample_outputs, self._hidden_state = sample_fn(
-        (game, needs_reset), self._name_code, self._prev_controller, self._hidden_state)
+    self._needs_reset |= needs_reset
 
-    # Use donate_argnums?
-    self._prev_controller = sample_outputs.controller_state
+    if not self._sample_outputs:
+      game = self._policy.network.encode_game(game)
+      # Keep hidden state and prev_controller on device.
+      sample_fn = self._jitted_sample if self._compile else self._sample
+      sample_outputs, self._hidden_state = sample_fn(
+          (game, self._needs_reset), self._name_code,
+          self._prev_controller, self._hidden_state)
 
-    return sample_outputs
+      # Use donate_argnums?
+      self._prev_controller = [so.controller_state for so in sample_outputs]
+
+      sample_outputs = jax.copy_to_host_async(sample_outputs)
+      self._sample_outputs.extend(sample_outputs)
+
+      self._needs_reset[:] = False
+
+    return self._sample_outputs.popleft()
 
   def multi_step(
       self,
       states: list[tuple[Game, agents.BoolArray]],
   ) -> list[SampleOutputs[ControllerType]]:
-    states_and_resets = [
-        (self._policy.network.encode_game(game), needs_reset)
-        for game, needs_reset in states
-    ]
-    # Keep hidden state and _prev_controller on device.
-    multi_sample_fn = self._jitted_multi_sample if self._compile else self._multi_sample
-    sample_outputs, self._hidden_state = multi_sample_fn(
-        states_and_resets, self._name_code, self._prev_controller, self._hidden_state)
-
+    """Batched version of `step` over consecutive frames."""
+    sample_outputs = self.multi_step_device(states)
     for output in sample_outputs:
       jax.copy_to_host_async(output.controller_state)
-
-    self._prev_controller = sample_outputs[-1].controller_state
-
     return sample_outputs
 
+  def multi_step_device(
+      self,
+      states: list[tuple[Game, agents.BoolArray]],
+  ) -> list[SampleOutputs[ControllerType]]:
+    """Like `multi_step` but leaves the outputs on device.
 
-    sample_outputs = self.multi_step_stacked_device(states)
-    sample_outputs = jax.tree.map(np.asarray, sample_outputs)
-    sample_outputs = [
-        jax.tree.map(lambda t, i=i: t[i], sample_outputs)
-        for i in range(len(states))]
-    return sample_outputs
+    With frame_skip > 1 the policy is only called every frame_skip frames;
+    the remaining frames are served from the buffered outputs of the last
+    policy call, exactly as in `step_device`.
+    """
+    outputs: list[SampleOutputs[ControllerType]] = []
+
+    # Drain actions buffered from the previous policy call.
+    index = 0
+    while index < len(states) and self._sample_outputs:
+      _, needs_reset = states[index]
+      self._needs_reset |= needs_reset
+      outputs.append(self._sample_outputs.popleft())
+      index += 1
+
+    remaining = states[index:]
+    if not remaining:
+      return outputs
+
+    frame_skip = self._policy.frame_skip
+    # The policy is called on frames 0, frame_skip, 2 * frame_skip, ...
+    # Each call sees the resets accumulated since the previous call.
+    call_states: list[tuple[Game, agents.BoolArray]] = []
+    needs_reset = self._needs_reset.copy()
+    for i, (game, reset) in enumerate(remaining):
+      needs_reset |= reset
+      if i % frame_skip == 0:
+        call_states.append((self._policy.network.encode_game(game), needs_reset))
+        needs_reset = np.full_like(needs_reset, False)
+    # Resets from trailing frames carry over to the next policy call.
+    self._needs_reset = needs_reset
+
+    multi_sample_fn = self._jitted_multi_sample if self._compile else self._multi_sample
+    sample_outputs, self._prev_controller, self._hidden_state = multi_sample_fn(
+        call_states, self._name_code, self._prev_controller, self._hidden_state)
+
+    assert len(sample_outputs) >= len(remaining)
+    outputs.extend(sample_outputs[:len(remaining)])
+    self._sample_outputs.extend(sample_outputs[len(remaining):])
+    return outputs

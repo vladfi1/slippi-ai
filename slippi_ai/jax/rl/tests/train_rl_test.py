@@ -10,7 +10,8 @@ from slippi_ai import flag_utils, paths, reward as reward_lib
 from slippi_ai.jax.rl import run_lib, learner as learner_lib
 
 DEFAULT_CONFIG = run_lib.Config(
-    teacher=str(paths.JAX_IMITATION_CHECKPOINT),
+    teacher=str(paths.JAX_POLICY_CHECKPOINT),
+    value_function=str(paths.JAX_VF_CHECKPOINT),
     runtime=run_lib.RuntimeConfig(
         max_step=10,
         log_interval=0,
@@ -26,7 +27,7 @@ DEFAULT_CONFIG = run_lib.Config(
     actor=run_lib.ActorConfig(
         use_fake_envs=True,
         num_envs=2,
-        rollout_length=64,
+        rollout_length=60,
     ),
     agent=run_lib.AgentConfig(
         char=[melee.Character.FOX],

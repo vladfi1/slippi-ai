@@ -28,6 +28,8 @@ from slippi_ai.jax import train_policy
 def default_config() -> train_policy.Config:
   config = train_policy.Config()
 
+  config.policy.frame_skip = 3
+
   config.network['name'] = 'tx_like'
   config.network['tx_like'].update(
       hidden_size=1,
@@ -38,7 +40,8 @@ def default_config() -> train_policy.Config:
   )
 
   config.controller_head['name'] = 'autoregressive'
-  config.controller_head['autoregressive']['residual_size'] = 1
+  config.controller_head['autoregressive']['shared'] = True
+  config.controller_head['autoregressive']['component']['lstm']['hidden_size'] = 1
 
   config.embed.player.with_nana = False
   config.embed.items.type = embed_lib.ItemsType.SKIP

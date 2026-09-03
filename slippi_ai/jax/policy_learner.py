@@ -1,5 +1,6 @@
 
 import dataclasses
+import logging
 from typing import Optional
 import typing as tp
 import types
@@ -36,6 +37,7 @@ class LearnerConfig:
   smap_optimizer: bool = True
   pack_data: bool = False
   bf16: bool = False
+  remat: bool = False
 
 # TODO: move to jax_utils
 P = tp.ParamSpec('P')
@@ -93,32 +95,32 @@ def check_compute_dtypes(policy: Policy[ControllerType]) -> dict[str, str]:
 
   # Enhanced embed output before the compute_dtype cast
   results['enhanced_embed_out'] = str(
-      jax.eval_shape(policy.network._embed_module, dummy_sa).dtype)
+      jax_utils.eval_shape_method(policy.network._embed_module.__call__, dummy_sa).dtype)
 
   # After compute_dtype cast in _embed
   results['embed_out'] = str(
-      jax.eval_shape(policy.network._embed, dummy_sa).dtype)
+      jax_utils.eval_shape_method(policy.network._embed, dummy_sa).dtype)
 
   # Main network (TransformerLike) output
   init_state = policy.network.initial_state(B, rngs)
-  net_out, _ = jax.eval_shape(policy.network.step, dummy_sa, init_state)
+  net_out, _ = jax_utils.eval_shape_method(policy.network.step, dummy_sa, init_state)
   results['network_out'] = str(net_out.dtype)
 
   # Controller head encoder output
   from slippi_ai.jax import controller_heads
   ctrl_head = policy._controller_head
   if isinstance(ctrl_head, controller_heads.AutoRegressive):
-    residual = jax.eval_shape(ctrl_head.to_residual, net_out)
-    results['controller_head_residual'] = str(residual.dtype)
+    enc_out = jax_utils.eval_shape_method(ctrl_head.encoder.__call__, net_out)
+    enc_leaves = jax.tree_util.tree_leaves(enc_out)
+    if enc_leaves:
+      results['controller_head_encoder_out'] = str(enc_leaves[0].dtype)
 
   # ControllerRNN (if present)
   embed_mod = policy.network._embed_module
-  if isinstance(embed_mod, networks.EnhancedEmbedModule) and embed_mod._use_controller_rnn:
-    crnn = embed_mod._controller_rnn
-    crnn_out = jax.eval_shape(crnn, dummy_sa.action)
-    crnn_leaves = jax.tree_util.tree_leaves(crnn_out)
-    if crnn_leaves:
-      results['controller_rnn_out'] = str(crnn_leaves[0].dtype)
+  if isinstance(embed_mod, networks.EnhancedEmbedModule):
+    crnn = embed_mod._controller_rnns[0]
+    crnn_out = jax_utils.eval_shape_method(crnn.unroll, dummy_sa.action)
+    results['controller_rnn_out'] = str(crnn_out.dtype)
 
   return results
 
@@ -138,8 +140,11 @@ class PolicyLearner(nnx.Module):
 
     if config.bf16:
       dtypes = check_compute_dtypes(policy)
-      import logging
       logging.info('bf16 compute dtypes: %s', dtypes)
+
+    if config.remat:
+      logging.info('Enabling remat for policy')
+      self.policy.enable_remat()
 
     if config.lr_decay.steps is None:
       schedule = config.learning_rate

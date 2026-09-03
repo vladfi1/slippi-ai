@@ -4,6 +4,7 @@ import typing as tp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import tqdm
 
 from slippi_ai import utils
@@ -33,12 +34,16 @@ class QuadraticOptimizationProblem(optimization.ConstrainedOptimizationProblem[E
     return jnp.zeros([0], dtype=variables.dtype)
 
 
-def test_solve_quadratic_optimization(num_dims: int = 3):
+def run_quadratic_optimization(num_dims: int = 3):
   xs = np.arange(num_dims, dtype=np.float32)
   problem = QuadraticOptimizationProblem(xs)
   variables, _ = optimization.solve_optimization_interior_point_primal_dual(
       problem, Empty, error=1e-3, expected_dtype=jnp.float32)
   assert np.all(np.abs(np.asarray(variables)) < 1e-3)
+
+
+def test_solve_quadratic_optimization():
+  run_quadratic_optimization()
 
 CornerParams = jax.Array
 CornerVariables = jax.Array
@@ -60,7 +65,7 @@ class CornerOptimizationProblem(optimization.ConstrainedOptimizationProblem[Corn
 
 P = tp.ParamSpec('P')
 
-def test_solve_corner_optimization(
+def run_corner_optimization(
     max_size: int = 1,
     solver: optimization.Solver[CornerParams, CornerVariables, P] = optimization.solve_optimization_interior_point_primal_dual,
     *solver_args: P.args,
@@ -75,15 +80,13 @@ def test_solve_corner_optimization(
   expected = np.asarray(sizes)
 
   atol = solver_kwargs.get('error', 1e-2)
+  assert isinstance(atol, float), atol
   np.testing.assert_allclose(actual, expected, atol=atol)
 
 
-def kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
-  nonzero = p > 1e-6
-  safe_p = np.where(nonzero, p, 1)
-  safe_q = np.where(nonzero, q, 1)
-  log_ratio = np.log(safe_p / safe_q)
-  return np.sum(p * log_ratio, axis=-1)
+@pytest.mark.parametrize('is_linear', [True, False])
+def test_solve_corner_optimization(is_linear: bool):
+  run_corner_optimization(error=1e-3, max_size=3, is_linear=is_linear)
 
 
 def verify_nash(
@@ -91,20 +94,19 @@ def verify_nash(
     solution: nash.NashVariables,
     atol: float = 1e-1,
 ):
-  jax_p1 = np.asarray(solution.p1)
-  jax_p2 = np.asarray(solution.p2)
-  jax_nash_value = np.asarray(solution.p1_nash_value)
+  p1 = np.asarray(solution.p1)
+  p2 = np.asarray(solution.p2)
+  nash_value = np.asarray(solution.p1_nash_value)
 
-  p1, p2, nash_value = nash.solve_zero_sum_nash_pulp(payoff_matrix)
-  np.testing.assert_allclose(p1 @ payoff_matrix @ p2, nash_value, atol=1e-4)
+  # p1's worst-case payoff against the best pure-strategy response from p2
+  # must equal the Nash value (p1 guarantees at least v).
+  p1_worst = np.min(p1 @ payoff_matrix)
+  np.testing.assert_allclose(p1_worst, nash_value, atol=atol)
 
-  kl1 = kl_divergence(p1, jax_p1)
-  assert kl1 < atol, kl1
-
-  kl2 = kl_divergence(p2, jax_p2)
-  assert kl2 < atol, kl2
-
-  np.testing.assert_allclose(jax_nash_value, nash_value, atol=atol)
+  # p2's worst-case payoff against the best pure-strategy response from p1
+  # must also equal the Nash value (p2 holds p1 to at most v).
+  p2_worst = np.max(payoff_matrix @ p2)
+  np.testing.assert_allclose(p2_worst, nash_value, atol=atol)
 
 def run_nash_test(
     payoff_matrix: np.ndarray,
@@ -133,21 +135,23 @@ def run_nash_test(
   return stats
 
 
-def test_rps(dtype=np.float64, **kwargs):
+def run_rps(dtype=np.float64, solver=None, **kwargs):
+  if solver is None:
+    solver = nash.solve_zero_sum_nash_simplex
   payoff_matrix = np.array([
       [0, -1, 1],
       [1, 0, -1],
       [-1, 1, 0],
   ], dtype=dtype)
   with jax.enable_x64():
-    return run_nash_test(payoff_matrix, **kwargs)
+    return run_nash_test(payoff_matrix, solver=solver, **kwargs)
 
 
-def test_random_nash(
+def run_random_nash(
     size: tuple[int, int] = (3, 3),
     dtype: np.dtype = np.float64,
     batch_size: int = 0,
-    solver: tp.Optional[nash.NashSolver] = None,
+    solver: tp.Optional[nash.NashSolver] = None,  # defaults to simplex below
     multi_device: bool = False,
     **kwargs,
 ):
@@ -156,6 +160,9 @@ def test_random_nash(
   else:
     dims = size
   payoff_matrix = np.random.standard_normal(dims).astype(dtype)
+
+  if solver is None:
+    solver = nash.solve_zero_sum_nash_simplex
 
   with jax.enable_x64():
     if multi_device:
@@ -176,7 +183,7 @@ def random_nash_tests(
   all_stats = []
   solve_times = []
   for i in tqdm.trange(num_tests):
-    stats = test_random_nash(
+    stats = run_random_nash(
         batch_size=batch_size,
         solver=solver,
         **kwargs,
@@ -205,15 +212,16 @@ def random_nash_tests(
     print(f'{key}: {mean:.1e} ± {std:.1e}, [{min_value:.1e}, {max_value:.1e}]')
 
 def run_nash_tests(
+    dtype: type = np.float64,
     **solver_kwargs,
 ):
   solver_kwargs = dict(
     solver_kwargs,
-    dtype=np.float64,
+    dtype=dtype,
   )
 
   print('RPS')
-  test_rps(**solver_kwargs)
+  run_rps(**solver_kwargs)
 
   nash_kwargs = dict(
       solver_kwargs,
@@ -232,13 +240,54 @@ def run_nash_tests(
       **nash_kwargs,
   )
 
+# Solver configurations for the parametrized nash tests. Each entry maps a
+# readable test id (used as the pytest parametrize id) to the kwargs passed
+# through to the nash solver / run_nash_test.
+NASH_SOLVERS = {
+    'ippd_linear': dict(
+        solver=nash.solve_zero_sum_nash_ippd,
+        error=1e-5, max_steps=200, is_linear=True, atol=1e-1),
+    'ippd_nonlinear': dict(
+        solver=nash.solve_zero_sum_nash_ippd,
+        error=1e-5, max_steps=200, is_linear=False, atol=1e-1),
+    'simplex': dict(
+        solver=nash.solve_zero_sum_nash_simplex,
+        atol=1e-4),
+    'simplex_fp32': dict(
+        solver=nash.solve_zero_sum_nash_simplex,
+        atol=5e-3, dtype=np.float32),
+    'linrax': dict(
+        solver=nash.solve_zero_sum_nash_linrax,
+        atol=1e-4),
+    'linrax_fp32': dict(
+        solver=nash.solve_zero_sum_nash_linrax,
+        atol=5e-3, dtype=np.float32),
+    'mpax': dict(
+        solver=nash.solve_zero_sum_nash_mpax,
+        atol=5e-3, dtype=np.float32),
+}
+
+
+@pytest.mark.parametrize(
+    'solver_kwargs', NASH_SOLVERS.values(), ids=NASH_SOLVERS.keys())
+def test_rps(solver_kwargs: dict):
+  run_rps(**solver_kwargs)
+
+
+@pytest.mark.parametrize(
+    'solver_kwargs', NASH_SOLVERS.values(), ids=NASH_SOLVERS.keys())
+@pytest.mark.parametrize('batch_size', [0, 100], ids=['unbatched', 'batched'])
+def test_random_nash(solver_kwargs: dict, batch_size: int):
+  run_random_nash(size=(10, 11), batch_size=batch_size, **solver_kwargs)
+
+
 if __name__ == '__main__':
-  test_solve_quadratic_optimization()
+  run_quadratic_optimization()
 
   for is_linear in [True, False]:
     print(f'Testing with is_linear={is_linear}')
 
-    test_solve_corner_optimization(
+    run_corner_optimization(
         error=1e-3,
         max_size=3,
         is_linear=is_linear,
@@ -288,3 +337,23 @@ if __name__ == '__main__':
   #     solver=nash.solve_zero_sum_nash_qpax_fast,
   #     **qpax_fast_kwargs,
   # )
+
+  print('simplex')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_simplex,
+      atol=1e-4,
+      # jit=False,
+  )
+
+  print('linrax')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_linrax,
+      atol=1e-4,
+  )
+
+  print('mpax')
+  run_nash_tests(
+      solver=nash.solve_zero_sum_nash_mpax,
+      atol=1e-3,
+      dtype=np.float32,
+  )

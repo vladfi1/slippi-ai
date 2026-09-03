@@ -10,6 +10,7 @@ import fancyflags as ff
 from slippi_ai import flag_utils, paths
 from slippi_ai.jax import embed, saving, train_lib
 from slippi_ai.jax.nash import train_q_fn
+from skypilot import launch
 
 NET_NAME = 'tx_like'
 
@@ -17,8 +18,8 @@ def default_config():
   config = train_q_fn.Config()
 
   config.delay = 0
-  config.data.batch_size = 512
-  config.data.unroll_length = 80
+  config.data.batch_size = 256
+  config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
   config.data.num_workers = 2
   # config.data.unroll_chunks = 4
@@ -39,6 +40,7 @@ def default_config():
   q_fn.embed.items.type = embed.ItemsType.FLAT
   q_fn.embed.with_fod = True
   q_fn.embed.with_randall = True
+  q_fn.head.hidden_size = 1024
 
   config.dataset.mirror = False
   config.dataset.allowed_characters = 'fox'
@@ -54,16 +56,22 @@ if __name__ == '__main__':
   __spec__ = None
 
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
-  os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-  os.environ['TF_CUDA_MALLOC_ASYNC_SUPPORTED_PREALLOC'] = '-1'
+  # os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+  # os.environ['TF_CUDA_MALLOC_ASYNC_SUPPORTED_PREALLOC'] = '-1'
 
   # Flag parsing might be too late to set these env vars
   # CUDA_MALLOC_ASYNC = flags.DEFINE_bool(
   #     'cuda_malloc_async', False, 'Whether to use CUDA malloc async allocator')
 
-  NET = ff.DEFINE_dict(
-      'net',
-      name=ff.String(NET_NAME),
+  CORE_NET = ff.DEFINE_dict(
+      'core_net',
+      hidden_size=ff.Integer(1024),
+      num_layers=ff.Integer(1),
+      ffw_multiplier=ff.Integer(2),
+      recurrent_layer=ff.String('lstm'),
+  )
+  ACTION_NET = ff.DEFINE_dict(
+      'action_net',
       hidden_size=ff.Integer(512),
       num_layers=ff.Integer(1),
       ffw_multiplier=ff.Integer(2),
@@ -88,6 +96,8 @@ if __name__ == '__main__':
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_default(default_config()))
 
+  TAG_SUFFIX = flags.DEFINE_string('tag_suffix', None, 'Tag suffix to add to the experiment name')
+
   WANDB = ff.DEFINE_dict(
       'wandb',
       project=ff.String('slippi-ai'),
@@ -98,6 +108,9 @@ if __name__ == '__main__':
       dir=ff.String(None, 'directory to save logs'),
   )
 
+  flags.adopt_module_key_flags(launch)
+
+  @launch.wrap
   def main(_):
     config = flag_utils.dataclass_from_dict(train_q_fn.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
@@ -108,9 +121,6 @@ if __name__ == '__main__':
       imitation_config = flag_utils.dataclass_from_dict(
           train_lib.Config,
           saving.upgrade_config(imitation_state['config']))
-
-    net_config = dict(NET.value)
-    net = net_config.pop('name')
 
     char = CHAR.value
 
@@ -126,38 +136,57 @@ if __name__ == '__main__':
       char = CHAR.value
 
       if config.tag is None:
-        n = config.q_function.network[net]['num_layers']
-        h = net_config['hidden_size']
-        net_str = f"{n}x{h}"
+        parts = ['nq', char, f'd{config.delay}']
 
+        def net_str(net_config: dict):
+          n = net_config['num_layers']
+          h = net_config['hidden_size']
+          return f"{n}x{h}"
+
+        core_str = net_str(CORE_NET.value)
+        action_str = net_str(ACTION_NET.value)
         head_str = f"{config.q_function.head.num_layers}x{config.q_function.head.hidden_size}"
+        parts.extend(['c' + core_str, 'a' + action_str, 'qv' + head_str])
 
         if imitation_config is not None:
-          fs = imitation_config.observation.frame_skip.skip
+          fs = imitation_config.policy.frame_skip
         else:
-          fs = config.observation.frame_skip.skip
+          fs = config.q_function.frame_skip
+
         um = config.test_unroll_multiplier
         rh = int(config.learner.reward_halflife)
+        parts.extend([f'rfs{fs}', f'um{um}', f'rh{rh}'])
 
-        config.tag = f"nq_{char}_d{config.delay}_{net_str}_qv{head_str}_fs{fs}_um{um}_rh{rh}"
+        gae = config.learner.gae_lambda
+        if gae != 0:
+          parts.append(f'gae{gae:.1f}')
+
+        lr = config.learner.learning_rate
+        if lr != 1e-4:
+          parts.append(f'lr{lr:.0e}')
+
+        if EMBED.value['name'] == 'enhanced' and EMBED.value['enhanced']['use_controller_rnn']:
+          parts.append('crnn')
+
+        if TAG_SUFFIX.value is not None:
+          parts.append(TAG_SUFFIX.value)
+
+        config.tag = '_'.join(parts)
 
     config.dataset.allowed_characters = char
 
     embed_config = dict(EMBED.value)
     embed_name = embed_config['name']
-    embed_config['enhanced']['hidden_size'] = net_config['hidden_size'] // 4
+    embed_config['enhanced']['hidden_size'] = CORE_NET.value['hidden_size'] // 4
     embed_config['enhanced']['use_self_nana'] = char in ['popo', 'all']
 
-    def update_embed_config(config: dict):
-      config['name'] = embed_name
-      config[embed_name].update(embed_config[embed_name])
+    config.q_function.core_net['name'] = NET_NAME
+    config.q_function.core_net[NET_NAME].update(CORE_NET.value)
+    config.q_function.core_net['embed']['name'] = embed_name
+    config.q_function.core_net['embed'][embed_name].update(embed_config[embed_name])
 
-    def update_network_config(config: dict):
-      config['name'] = net
-      config[net].update(net_config)
-      update_embed_config(config['embed'])
-
-    update_network_config(config.q_function.network)
+    config.q_function.action_net['name'] = NET_NAME
+    config.q_function.action_net[NET_NAME].update(ACTION_NET.value)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:

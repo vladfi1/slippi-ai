@@ -77,6 +77,7 @@ def main(_):
       network_config=config.network,
       num_names=config.max_names,
       embed_config=config.embed,
+      frame_skip=config.frame_skip,
   )
 
   learner = learner_lib.VFLearner(

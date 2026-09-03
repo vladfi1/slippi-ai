@@ -1,5 +1,6 @@
 import abc
 import copy
+import logging
 import typing as tp
 
 import jax
@@ -12,13 +13,13 @@ from slippi_ai.controller_heads import (
     DistanceOutputs,
     ControllerType,
 )
-from slippi_ai import controller_heads
+from slippi_ai import controller_heads, utils
 
-from slippi_ai.jax import embed, jax_utils
+from slippi_ai.jax import embed, jax_utils, networks
 from slippi_ai.types import Controller
 
 Array = jax.Array
-
+T = tp.TypeVar('T')
 
 class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]):
 
@@ -27,19 +28,31 @@ class ControllerHead(nnx.Module, controller_heads.ControllerHead[ControllerType]
       self,
       rngs: nnx.Rngs | nnx.RngStream,
       inputs: Array,
-      prev_controller_state: ControllerType,
+      prev_controller_state: list[ControllerType],
       temperature: tp.Optional[float] = None,
-  ) -> SampleOutputs[ControllerType]:
+  ) -> list[SampleOutputs[ControllerType]]:
     """Sample a controller state given input features and previous state."""
 
   @abc.abstractmethod
+  def distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    """A struct of distances (generally, negative log probs)."""
+
   def distance(
       self,
       inputs: Array,
-      prev_controller_state: ControllerType,
-      target_controller_state: ControllerType,
-  ) -> DistanceOutputs[ControllerType]:
-    """A struct of distances (generally, negative log probs)."""
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[Array]:
+    """Only returns (frame-skipped) distances without per-component logits."""
+    return [
+      jax_utils.add_n(self.controller_embedding.flatten(do.distance))
+      for do in self.distance_outputs(inputs, prev_controller_state, target_controller_state)
+    ]
 
   @classmethod
   @abc.abstractmethod
@@ -80,8 +93,10 @@ class Independent(ControllerHead[ControllerType]):
       self,
       rngs: nnx.Rngs,
       input_size: int,
+      frame_skip: int,
       embed_controller: embed.Embedding[Controller, ControllerType],
   ):
+    del frame_skip
     self.embed_controller = embed_controller
     self.to_controller_input = nnx.Linear(
         input_size, self.embed_controller.size, rngs=rngs)
@@ -90,7 +105,7 @@ class Independent(ControllerHead[ControllerType]):
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
     return self.embed_controller
 
-  def controller_prediction(self, inputs, prev_controller_state) -> ControllerType:
+  def controller_prediction(self, inputs, prev_controller_state: ControllerType) -> ControllerType:
     controller_prediction = self.to_controller_input(inputs)
 
     # TODO: come up with a better way to do this that generalizes nicely across
@@ -102,83 +117,111 @@ class Independent(ControllerHead[ControllerType]):
     leaf_logits = jnp.split(controller_prediction, split_indices, axis=-1)
     return self.embed_controller.unflatten(iter(leaf_logits))
 
-  def sample(self, rngs, inputs, prev_controller_state, temperature=None):
-    logits = self.controller_prediction(inputs, prev_controller_state)
+  def sample(
+      self,
+      rngs: nnx.Rngs | nnx.RngStream,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      temperature: tp.Optional[float] = None,
+  ) -> list[SampleOutputs[ControllerType]]:
+    """Sample a controller state given input features and previous state."""
+    outputs: list[SampleOutputs[ControllerType]] = []
 
-    sample = self.embed_controller.map(
-        lambda e, l: e.sample(rngs, l, temperature=temperature), logits)
-    return SampleOutputs(controller_state=sample, logits=logits)
+    for prev in prev_controller_state:
+      logits = self.controller_prediction(inputs, prev)
+      sample = self.embed_controller.map(
+          lambda e, l: e.sample(rngs(), l, temperature=temperature), logits)
+      outputs.append(SampleOutputs(controller_state=sample, logits=logits))
 
-  def distance(self, inputs, prev_controller_state, target_controller_state):
-    logits = self.controller_prediction(inputs, prev_controller_state)
-    distance = self.embed_controller.map(
-        lambda e, l, t: e.distance(l, t), logits, target_controller_state)
-    return DistanceOutputs(distance=distance, logits=logits)
+    return outputs
 
+  def distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    """A struct of distances (generally, negative log probs)."""
+    outputs = []
+
+    for prev, target in zip(prev_controller_state, target_controller_state):
+      logits = self.controller_prediction(inputs, prev)
+      distance = self.embed_controller.map(
+          lambda e, l, t: e.distance(l, t), logits, target)
+      outputs.append(DistanceOutputs(distance=distance, logits=logits))
+
+    return outputs
+
+NetworkState = tuple[Array, networks.RecurrentState]
+
+class AutoRegressiveEncoder(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      network_config: dict,
+  ):
+    self.network = networks.construct_network(rngs, input_size, **network_config)
+
+  def __call__(self, inputs: Array) -> NetworkState:
+    batch_shape = inputs.shape[:-1]
+    state = self.network.initial_state(batch_shape, rngs=nnx.Rngs(0))
+    assert jax_utils.struct_dtype(state) == inputs.dtype
+    return self.network.step(inputs, state)
 
 class AutoRegressiveComponent(nnx.Module):
-  """Autoregressive residual component."""
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       embedder: embed.Embedding,
-      residual_size: int,
-      depth: int = 0,
+      network_config: dict,
   ):
     self.embedder = embedder
 
-    # Build encoder MLP
-    self._encoder = jax_utils.MLP(
-        rngs,
-        input_size=residual_size + embedder.size,
-        features=[residual_size] * depth + [embedder.distribution_size()],
-        activation=nnx.relu,
-        activate_final=False,
-    )
-
-    # The decoder doesn't need depth, because a single Linear decoding a one-hot
-    # has full expressive power over the output
-    self.decoder = nnx.Linear(
-        embedder.size, residual_size,
-        kernel_init=nnx.initializers.zeros_init(),
+    self.network = networks.construct_network(rngs, embedder.size, **network_config)
+    self.encoder = nnx.Linear(
+        self.network.output_size + embedder.size, embedder.distribution_size(),
         rngs=rngs)
 
   def sample(
       self,
       rng: jax.Array,
-      residual: Array,
+      residual: NetworkState,
       prev_raw: Array,
       **kwargs,
-  ) -> tp.Tuple[Array, SampleOutputs]:
+  ) -> tp.Tuple[NetworkState, SampleOutputs]:
+    output, state = residual
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
-    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    prev_embedding = self.embedder(prev_raw).astype(output.dtype)
+    input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
-    logits = self._encoder(input_)
+    logits = self.encoder(input_)
     # Sample the component
     sample = self.embedder.sample(rng, logits, **kwargs)
     # Condition future components on the current sample
-    sample_embedding = self.embedder(sample).astype(residual.dtype)
-    residual = residual + self.decoder(sample_embedding)
+    sample_embedding = self.embedder(sample).astype(output.dtype)
+    residual = self.network.step(sample_embedding, state)
     return residual, SampleOutputs(controller_state=sample, logits=logits)
 
   def distance(
       self,
-      residual: Array,
+      residual: NetworkState,
       prev_raw: Array,
       target_raw: Array,
-  ) -> tp.Tuple[Array, DistanceOutputs]:
+  ) -> tp.Tuple[NetworkState, DistanceOutputs]:
+    output, state = residual
     # Directly connect from the same component at time t-1
-    prev_embedding = self.embedder(prev_raw).astype(residual.dtype)
-    input_ = jnp.concatenate([residual, prev_embedding], axis=-1)
+    prev_embedding = self.embedder(prev_raw).astype(output.dtype)
+    input_ = jnp.concatenate([output, prev_embedding], axis=-1)
     # Project down to the size desired by the component
-    logits = self._encoder(input_)
+    logits = self.encoder(input_)
     # Compute the distance between prediction and target
     distance = self.embedder.distance(logits, target_raw)
     # Auto-regress using the target (aka teacher forcing)
-    target_embedding = self.embedder(target_raw).astype(residual.dtype)
-    residual = residual + self.decoder(target_embedding)
+    target_embedding = self.embedder(target_raw).astype(output.dtype)
+    residual = self.network.step(target_embedding, state)
     return residual, DistanceOutputs(distance=distance, logits=logits)
 
 
@@ -187,32 +230,50 @@ class AutoRegressive(ControllerHead[ControllerType]):
 
   @classmethod
   def default_config(cls):
+    network_config = networks.default_config()
+    del network_config['embed']  # no embed module
+    network_config['name'] = 'lstm'
+
     return dict(
-        residual_size=128,
-        component_depth=0,
-        remat=False,
+        component=network_config,
+        shared=True,
     )
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       input_size: int,
+      frame_skip: int,
       embed_controller: embed.Embedding[Controller, ControllerType],
-      residual_size: int,
-      component_depth: int,
+      component: dict,
       remat: bool = False,
+      shared: bool = True,
   ):
     self.embed_controller = embed_controller
-    self.to_residual = nnx.Linear(input_size, residual_size, rngs=rngs)
+    self.encoder = AutoRegressiveEncoder(rngs, input_size, component)
     self.embed_struct = self.embed_controller.map(lambda e: e)
     self.embed_flat = list(self.embed_controller.flatten(self.embed_struct))
-    self.remat = remat
-    self.res_blocks = nnx.List([
-        AutoRegressiveComponent(
-            rngs, e,
-            residual_size=residual_size, depth=component_depth)
-        for e in self.embed_flat
-    ])
+
+    # Remat used to be part of the config, but it should instead be set at
+    # runtime (i.e. post-initialization).
+    if remat:
+      logging.warning('Setting remat in the AutoRegressiveControllerHead config is deprecated, ignoring.')
+    self.remat = False
+
+    def build_res_blocks():
+      return nnx.List([
+          AutoRegressiveComponent(
+              rngs, e,
+              network_config=component)
+          for e in self.embed_flat
+      ])
+
+    if not shared:
+      raise NotImplementedError('Non-shared autoregressive controller heads are no longer supported.')
+
+    # Store as a list for compatibility with old checkpoints.
+    res_blocks = [build_res_blocks()]
+    self.res_blocks = nnx.List(res_blocks)
 
   @property
   def controller_embedding(self) -> embed.Embedding[Controller, ControllerType]:
@@ -221,40 +282,108 @@ class AutoRegressive(ControllerHead[ControllerType]):
   def sample(
       self,
       rngs: nnx.Rngs | nnx.RngStream,
-      inputs, prev_controller_state, temperature=None):
-    residual = self.to_residual(inputs)
-    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      temperature: tp.Optional[float] = None,
+  ) -> list[SampleOutputs[ControllerType]]:
+    residual = self.encoder(inputs)
 
-    sample_outputs: list[SampleOutputs] = []
-    for res_block, prev in zip(self.res_blocks, prev_controller_flat):
-      sample_fn = jax_utils.remat_method(res_block.sample) if self.remat else res_block.sample
-      residual, sample = sample_fn(
-          rngs(), residual, prev, temperature=temperature)
-      sample_outputs.append(sample)
+    stacked_prev_controller_state = utils.map_nt(
+      lambda *xs: jnp.stack(xs, axis=0), *prev_controller_state)
 
-    samples, logits = zip(*sample_outputs)
-    return SampleOutputs(
-        controller_state=self.embed_controller.unflatten(iter(samples)),
-        logits=self.embed_controller.unflatten(iter(logits)),
-    )
+    def single_action_sample(
+        res_blocks: tp.Iterable[AutoRegressiveComponent],
+        rngs: nnx.Rngs | nnx.RngStream,
+        prev_controller: ControllerType,
+        residual: NetworkState,
+    ):
+      prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
+      component_outputs: list[SampleOutputs] = []
+      for res_block, prev in zip(res_blocks, prev_controller_flat):
+        residual, sample = res_block.sample(rngs(), residual, prev, temperature=temperature)
+        component_outputs.append(sample)
 
-  def distance(self, inputs, prev_controller_state, target_controller_state):
-    residual = self.to_residual(inputs)
-    prev_controller_flat = list(self.embed_controller.flatten(prev_controller_state))
-    target_controller_flat = list(self.embed_controller.flatten(target_controller_state))
+      samples, logits = zip(*component_outputs)
+      return SampleOutputs(
+          controller_state=self.embed_controller.unflatten(iter(samples)),
+          logits=self.embed_controller.unflatten(iter(logits)),
+      ), residual
 
-    distance_outputs: list[DistanceOutputs] = []
-    for res_block, prev, target in zip(
-        self.res_blocks, prev_controller_flat, target_controller_flat):
-      distance_fn = jax_utils.remat_method(res_block.distance) if self.remat else res_block.distance
-      residual, distance = distance_fn(residual, prev, target)
-      distance_outputs.append(distance)
+    stacked_outputs, _ = nnx.scan(
+        single_action_sample,
+        in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        self.res_blocks[0], rngs.fork(split=len(prev_controller_state)),
+        stacked_prev_controller_state, residual)
 
-    distances, logits = zip(*distance_outputs)
-    return DistanceOutputs(
-        distance=self.embed_controller.unflatten(iter(distances)),
-        logits=self.embed_controller.unflatten(iter(logits)),
-    )
+    return jax_utils.unstack_pytree(stacked_outputs, axis=0)
+
+  def _distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+      output_fn: tp.Callable[[DistanceOutputs[ControllerType]], T],
+  ) -> list[T]:
+    if self.remat:
+      residual = jax.remat(self.encoder)(inputs)
+    else:
+      residual = self.encoder(inputs)
+
+    stack = lambda *xs: jnp.stack(xs, axis=0)
+    stacked_prev_controller_state = utils.map_nt(stack, *prev_controller_state)
+    stacked_target_controller_state = utils.map_nt(stack, *target_controller_state)
+
+    def single_action_distance(
+        res_blocks: tp.Iterable[AutoRegressiveComponent],
+        prev_controller: ControllerType,
+        target_controller: ControllerType,
+        residual: NetworkState,
+    ):
+      prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
+      target_controller_flat = list(self.embed_controller.flatten(target_controller))
+
+      component_distances: list[DistanceOutputs] = []
+      for res_block, prev, target in zip(
+          res_blocks, prev_controller_flat, target_controller_flat):
+        residual, distance = res_block.distance(residual, prev, target)
+        component_distances.append(distance)
+
+      distances, logits = zip(*component_distances)
+      distance_outputs = DistanceOutputs(
+          distance=self.embed_controller.unflatten(iter(distances)),
+          logits=self.embed_controller.unflatten(iter(logits)),
+      )
+      return output_fn(distance_outputs), residual
+
+    if self.remat:
+      single_action_distance = nnx.remat(single_action_distance)
+
+    stacked_outputs, _ = nnx.scan(
+        single_action_distance,
+        in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
+        self.res_blocks[0], stacked_prev_controller_state,
+        stacked_target_controller_state, residual)
+
+    return jax_utils.unstack_pytree(stacked_outputs, axis=0)
+
+  def distance_outputs(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[DistanceOutputs[ControllerType]]:
+    return self._distance_outputs(inputs, prev_controller_state, target_controller_state, lambda do: do)
+
+  def distance(
+      self,
+      inputs: Array,
+      prev_controller_state: list[ControllerType],
+      target_controller_state: list[ControllerType],
+  ) -> list[Array]:
+    return self._distance_outputs(
+        inputs, prev_controller_state, target_controller_state,
+        lambda do: jax_utils.add_n(self.controller_embedding.flatten(do.distance)))
+
 
 CONSTRUCTORS: dict[str, type[ControllerHead]] = dict(
     independent=Independent,
@@ -271,6 +400,7 @@ def construct(
     rngs: nnx.Rngs,
     input_size: int,
     embed_controller: embed.Embedding[Controller, ControllerType],
+    frame_skip: int,
     name: str,
     **config,
 ) -> ControllerHead[ControllerType]:
@@ -280,6 +410,7 @@ def construct(
     rngs: Random number generators for initialization.
     input_size: Size of the input features from the network.
     embed_controller: Controller embedding to use.
+    frame_skip: Number of frames to skip between controller updates.
     name: Name of the controller head type ('independent' or 'autoregressive').
     **config: Controller head-specific config dicts keyed by name.
 
@@ -292,5 +423,6 @@ def construct(
       rngs=rngs,
       input_size=input_size,
       embed_controller=embed_controller,
+      frame_skip=frame_skip,
   )
   return ch_type.construct(**kwargs)

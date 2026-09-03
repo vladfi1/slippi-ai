@@ -30,7 +30,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=6,
     ),
     runtime=train_q_fn.RuntimeConfig(
         log_interval=4,
@@ -39,7 +39,8 @@ DEFAULT_CONFIG = train_q_fn.Config(
         max_eval_steps=3,
     ),
     q_function=q_lib.QFunctionConfig(
-        network=network_config,
+        core_net=network_config,
+        action_net=network_config,
         embed=embed_lib.EmbedConfig(
             player=embed_lib.PlayerConfig(with_nana=False),
             items=embed_lib.ItemsConfig(type=embed_lib.ItemsType.SKIP),
@@ -49,7 +50,8 @@ DEFAULT_CONFIG = train_q_fn.Config(
             hidden_size=1,
         ),
     ),
-    delay=0,
+    test_unroll_multiplier=2,
+    compatible_policy=str(paths.JAX_POLICY_CHECKPOINT),
 )
 
 if __name__ == '__main__':

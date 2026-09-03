@@ -46,6 +46,8 @@ class TrainManager:
       self,
       learner: learner_lib.Learner,
       data_source: data_lib.AbstractDataSource,
+      *,
+      frame_skip: int,
       step_kwargs={},
       prefetch: int = 0,
       rngs: tp.Optional[nnx.Rngs] = None,
@@ -55,6 +57,7 @@ class TrainManager:
   ):
     self.learner = learner
     self.data_source = data_source
+    self.frame_skip = frame_skip
     self.rngs = rngs or nnx.Rngs(0)
     self.step_kwargs = step_kwargs
     self.data_profiler = utils.Profiler()
@@ -96,12 +99,7 @@ class TrainManager:
     if np.any(batch.is_resetting[:, 1:]):
       raise ValueError("Unexpected mid-episode reset.")
 
-    # Construct StateAction from raw batch data
-    state_action = data_lib.StateAction(
-        state=batch.game,
-        action=batch.game.p0.controller,
-        name=batch.name,
-    )
+    frames = batch.to_frames(self.frame_skip)
 
     # Encode frames using the policy's network
     # TODO: when prefetching, calling network.encode can result strange
@@ -110,13 +108,7 @@ class TrainManager:
     # I believe this is due to a race condition with flax's in-place Module
     # updates, which can briefly cause members of the modules to disappear.
     # This should be mitigated by the use of nnx.cached_partial in the Learner.
-    state_action = self._encode_state_action(state_action)
-
-    frames = data_lib.Frames(
-        state_action=state_action,
-        is_resetting=batch.is_resetting,
-        reward=batch.reward,
-    )
+    frames = frames._replace(state_action=self._encode_state_action(frames.state_action))
 
     # When combined with prefetching this eliminates MemcpyH2D gaps in xprof,
     # and empirically improves performance by ~10%.
@@ -190,6 +182,7 @@ def value_function_from_config(
       network_config=network_config,
       num_names=config.max_names,
       embed_config=config.embed,
+      frame_skip=config.policy.frame_skip,
   )
 
 
@@ -278,7 +271,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info(f'Using {comp}: {getattr(config, comp)["name"]}')
 
   # Randomize windows to improve data diversity across epochs.
-  config.data.random_offset = config.observation.frame_skip.skip
+  config.data.random_offset = config.policy.frame_skip
 
   wandb.config.update(dataclasses.asdict(config), allow_val_change=True)
 
@@ -351,7 +344,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       test_data_config=test_data_config,
       name_map=name_map,
       max_names=config.max_names,
-      extra_frames=policy.delay + 1,
+      extra_frames=policy.delay + policy.frame_skip,
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
@@ -379,13 +372,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       rngs=rngs,
       data_sharding=data_sharding,
       prefetch=runtime.prefetch,
+      frame_skip=config.policy.frame_skip,
   )
 
   train_manager = TrainManager(
-      learner, train_data, dict(train=True, compile=runtime.compile),
+      learner, train_data,
+      step_kwargs=dict(train=True, compile=runtime.compile),
       epoch_offset=train_epoch, **manager_kwargs)
   test_manager = TrainManager(
-      learner, test_data, dict(train=False, compile=runtime.compile),
+      learner, test_data,
+      step_kwargs=dict(train=False, compile=runtime.compile),
       **manager_kwargs)
 
   # TrainManager should probably be a proper context manager.

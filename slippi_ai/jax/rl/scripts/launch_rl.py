@@ -9,6 +9,7 @@ if __name__ == '__main__':
   import logging
   import os
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+  os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
 
   from absl import app, flags
   import fancyflags as ff
@@ -37,8 +38,12 @@ if __name__ == '__main__':
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
   CONFIG.dolphin.console_timeout=60
-  CONFIG.dolphin.infinite_time=False  # regularly randomize stages
-  CONFIG.dolphin.emulation_speed=0
+
+  CONFIG.dolphin.infinite_time = True  # TODO: make sure stages are uniformly sampled
+  CONFIG.dolphin.instant_match_restart = False  # Causes crashes :(
+  CONFIG.runtime.reset_every_n_steps = 0  # Needs non-leaking dolphin build
+
+  CONFIG.dolphin.emulation_speed = 0
   CONFIG.learner.learning_rate=3e-5
   CONFIG.learner.value_cost=1
   CONFIG.learner.policy_gradient_weight=PGW
@@ -46,6 +51,15 @@ if __name__ == '__main__':
   CONFIG.learner.ppo.num_batches=1
   CONFIG.learner.ppo.beta=3e-1
   CONFIG.learner.ppo.epsilon=1e-2
+
+  CONFIG.learner.ppo.num_batches = 1
+  CONFIG.learner.ppo.num_epochs = 1
+  CONFIG.learner.teacher_dtype = DType.FP16
+  CONFIG.learner.value_dtype = DType.FP32  # could be bf16
+  CONFIG.learner.policy_dtype = DType.FP16
+  CONFIG.agent.jax.dtype = DType.FP16
+  CONFIG.opponent.other.jax.dtype = DType.FP16
+
   # CONFIG.teacher=f'pickled_models/jax/{MODEL}'
   CONFIG.opponent.type=run_lib.OpponentType.SELF
   CONFIG.opponent.train=True
@@ -59,7 +73,6 @@ if __name__ == '__main__':
   CONFIG.agent.name=[NAME]
   CONFIG.agent.batch_steps=4
   CONFIG.runtime.burnin_steps_after_reset=5
-  CONFIG.runtime.reset_every_n_steps=512
   CONFIG.learner.optimizer_burnin_epochs=8
   CONFIG.learner.value_burnin_epochs=8
 
@@ -129,9 +142,6 @@ if __name__ == '__main__':
     else:
       char_tag = char_str
 
-    if config.agent.name is None:
-      config.agent.name = [MP] * len(config.agent.char)
-
     if config.agent.char is None:
       assert chars is not None
       config.agent.char = chars
@@ -145,6 +155,9 @@ if __name__ == '__main__':
       config.agent.name = [MP] * len(config.agent.char)
 
     delay = imitation_config.policy.delay
+    if delay == 0:
+      config.actor.num_env_steps = 0
+      config.agent.batch_steps = 0
 
     if config.runtime.tag is None:
       if config.opponent.type is run_lib.OpponentType.SELF:
@@ -168,7 +181,9 @@ if __name__ == '__main__':
       else:
         rstr = ''
 
-      config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}"
+      fs = imitation_config.policy.frame_skip
+
+      config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}_rfs{fs}"
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 

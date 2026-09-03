@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Test imitation learning training loop - JAX version."""
+"""Test q-policy learning training loop - JAX version."""
 
 from absl import app
 import wandb
@@ -7,18 +7,7 @@ import fancyflags as ff
 
 from slippi_ai import paths, flag_utils
 from slippi_ai import data as data_lib
-from slippi_ai.jax import networks
 from slippi_ai.jax.q import train_q_policy
-
-network_config = networks.default_config()
-network_config['name'] = 'tx_like'
-network_config['tx_like'].update(
-    hidden_size=1,
-    num_layers=1,
-    ffw_multiplier=4,
-    recurrent_layer='lstm',
-    activation='gelu',
-)
 
 DEFAULT_CONFIG = train_q_policy.Config(
     dataset=data_lib.DatasetConfig(
@@ -29,7 +18,7 @@ DEFAULT_CONFIG = train_q_policy.Config(
     data=data_lib.DataConfig(
         balance_characters=True,
         batch_size=2,
-        unroll_length=5,
+        unroll_length=6,
     ),
     runtime=train_q_policy.RuntimeConfig(
         log_interval=4,
@@ -37,7 +26,7 @@ DEFAULT_CONFIG = train_q_policy.Config(
         num_evals_per_epoch=2,
         max_eval_steps=3,
     ),
-    initialize_policies_from=str(paths.JAX_IMITATION_CHECKPOINT),
+    initialize_policies_from=str(paths.JAX_POLICY_CHECKPOINT),
     initialize_q_function_from=str(paths.JAX_Q_FN_CKPT),
 )
 
