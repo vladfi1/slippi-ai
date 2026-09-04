@@ -214,6 +214,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       raise ValueError('Must specify delay.')
 
   frame_skip = config.q_function.frame_skip
+  if config.delay % frame_skip != 0:
+    raise ValueError(
+        f'Delay {config.delay} must be divisible by frame_skip {frame_skip}.')
 
   if config.test_unroll_multiplier > 1 and config.learner.unroll_batch_size is None:
     unroll_batch_size = config.data.unroll_length // frame_skip

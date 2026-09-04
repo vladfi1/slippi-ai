@@ -265,6 +265,46 @@ class Batch(NamedTuple, tp.Generic[S]):
     )
 
 
+def delayed_frames(
+    frames: Frames[S, Action],
+    skip_delay: int,
+) -> Frames[S, Action]:
+  """Aligns time-major frames for a network that acts with delay.
+
+  Let the delay be D (in frame-skip units) and the unroll length U + D + 1,
+  the data source having overlapped consecutive chunks by D + 1 steps. Then
+  states [0, U] are paired with actions [D, U + D] and rewards [D, U + D - 1].
+  At step t the network sees state t together with the last committed action
+  (t + D) and predicts or scores action t + D + 1, whose return is counted
+  from reward t + D onward. Names and ratings stay aligned with the states.
+
+  Args:
+    frames: Time-major frames with T + 1 states and actions and T rewards.
+    skip_delay: The delay divided by the frame skip.
+
+  Returns:
+    Frames with T + 1 - D states and actions and T - D rewards.
+  """
+  if skip_delay == 0:
+    return frames
+
+  state_action = frames.state_action
+  unroll_length = frames.is_resetting.shape[0] - skip_delay
+  keep_states = lambda t: t[:unroll_length]
+  keep_actions = lambda t: t[skip_delay:]
+
+  state_action = utils.map_single_structure(keep_states, state_action)
+  state_action = state_action._replace(
+      action=utils.map_single_structure(keep_actions, frames.state_action.action))
+
+  return frames._replace(
+      state_action=state_action,
+      is_resetting=keep_states(frames.is_resetting),
+      # Only use rewards that follow actions.
+      reward=keep_actions(frames.reward),
+  )
+
+
 class BatchWithMeta(NamedTuple, tp.Generic[S]):
   batch: Batch[S]
   meta: ChunkMeta

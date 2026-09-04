@@ -149,24 +149,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     # actions being [D, U + D - 1]). The final hidden state should be the one
     # preceding timestep U, meaning we compute it from game states [0, U-1]. We
     # will use game state U to bootstrap the value function.
-
-    state_action = frames.state_action
-    # Includes "overlap" frame.
-    unroll_length = frames.is_resetting.shape[0] - self._skip_delay
-
-    frames = data.Frames(
-        state_action=data.StateAction(
-            state=jax.tree.map(
-                lambda t: t[:unroll_length], state_action.state),
-            action=jax.tree.map(
-                lambda t: t[self._skip_delay:], state_action.action),
-            name=state_action.name[self._skip_delay:],
-            rating=state_action.rating[self._skip_delay:],
-        ),
-        is_resetting=frames.is_resetting[:unroll_length],
-        # Only use rewards that follow actions.
-        reward=frames.reward[self._skip_delay:],
-    )
+    frames = data.delayed_frames(frames, self._skip_delay)
 
     unroll_outputs = self.unroll(frames, initial_state)
     metrics = unroll_outputs.metrics
