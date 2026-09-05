@@ -24,13 +24,7 @@ def default_config():
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
 
-  # Match Q RL reward config
   config.learner.reward_halflife = 4
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
 
   q_fn = config.q_function
   q_fn.embed.controller.type = embed.ControllerType.CUSTOM_V1.value
@@ -38,6 +32,10 @@ def default_config():
   q_fn.embed.items.type = embed.ItemsType.FLAT
   q_fn.embed.with_fod = True
   q_fn.embed.with_randall = True
+
+  q_fn.head.epinet.prior_scale = 0.2
+  config.learner.num_index_samples = 4
+  config.learner.eval_num_index_samples = 64
 
   config.dataset.mirror = False
   config.dataset.allowed_opponents = 'all'
@@ -72,7 +70,7 @@ if __name__ == '__main__':
       simple=dict(),
       enhanced=dict(
           rnn_cell=ff.String('lstm'),
-          use_controller_rnn=ff.Boolean(False),
+          use_controller_rnn=ff.Boolean(True),
       ),
   )
 
@@ -154,8 +152,8 @@ if __name__ == '__main__':
         if lr != 1e-4:
           parts.append(f'lr{lr:.0e}')
 
-        if EMBED.value['name'] == 'enhanced' and EMBED.value['enhanced']['use_controller_rnn']:
-          parts.append('crnn')
+        parts.append('epi')
+        parts.append(f'ps{config.q_function.head.epinet.prior_scale:.1f}')
 
         if TAG_SUFFIX.value is not None:
           parts.append(TAG_SUFFIX.value)

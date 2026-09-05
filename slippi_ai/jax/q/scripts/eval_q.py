@@ -1,7 +1,16 @@
 #!/usr/bin/env python
-"""Evaluate a Nash Q-function."""
+"""Evaluate a Q-function's argmax distribution over policy samples.
+
+Analogous to nash/scripts/eval_nash_q.py: runs a single evaluation (no
+training) of train_q_policy with a frozen sample policy and q-function. The
+main quantity of interest is the entropy of the distribution over sampled
+actions induced by the per-epistemic-index argmaxes, which measures how
+(un)certain the q-function is about the best action. Compare across
+q-functions by varying --config.initialize_q_function_from.
+"""
 
 import dataclasses
+import math
 import os
 
 os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
@@ -10,36 +19,27 @@ from absl import app, flags
 import wandb
 import fancyflags as ff
 
-from slippi_ai import flag_utils, paths, utils
+from slippi_ai import flag_utils, paths
 from slippi_ai.jax import saving, train_lib
-from slippi_ai.jax.nash import train_nash_policy
+from slippi_ai.jax.q import train_q_policy
+from slippi_ai.jax.q import q_policy_learner as learner_lib
 from slippi_ai.jax.agents import DType
 
 def default_config():
-  config = train_nash_policy.Config()
+  config = train_q_policy.Config()
 
-  config.runtime.max_step = 0
-  config.runtime.verbose_eval = True
-  config.runtime.run_single_eval = True
   config.runtime.max_eval_steps = 50
+  config.runtime.run_single_eval = True
+  config.runtime.verbose_eval = True
 
   config.data.batch_size = 256
   config.data.unroll_length = 84
   config.data.num_workers = 1
-  config.data.unroll_chunks = 4
 
-  # Match Nash RL reward config
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
-
-  config.learner.num_samples = 7
-  config.learner.eval_num_index_samples = 64
-
+  config.learner.num_samples = 3
+  config.learner.num_index_samples = 16
   config.learner.sample_policy_dtype = DType.FP16
-  config.learner.nash_policy_dtype = DType.FP16
+  config.learner.q_policy_dtype = DType.FP16
 
   config.dataset.mirror = False
   config.dataset.data_dir = os.environ.get("DATA_DIR")
@@ -61,14 +61,14 @@ if __name__ == '__main__':
       'wandb',
       project=ff.String('slippi-ai'),
       mode=ff.Enum('online', ['online', 'offline', 'disabled']),
-      group=ff.String('nash-eval'),
+      group=ff.String('q-eval'),
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
   )
 
   def main(_):
-    config = flag_utils.dataclass_from_dict(train_nash_policy.Config, CONFIG.value)
+    config = flag_utils.dataclass_from_dict(train_q_policy.Config, CONFIG.value)
 
     assert config.initialize_policies_from is not None
     imitation_state = saving.load_state_from_disk(config.initialize_policies_from)
@@ -87,6 +87,8 @@ if __name__ == '__main__':
       config.data.cached = True
       config.data.num_workers = 0
       config.runtime.max_eval_steps = 1
+      if config.tag is None:
+        config.tag = 'toy_eval'
     else:
       char = imitation_config.dataset.allowed_characters
 
@@ -94,10 +96,9 @@ if __name__ == '__main__':
         q_fn_name = os.path.basename(config.initialize_q_function_from)
         if q_fn_name == 'latest.pkl':
           q_fn_name = os.path.basename(os.path.dirname(config.initialize_q_function_from))
-        ns = config.learner.num_samples
-        if config.learner.include_action_taken_in_samples:
-          ns += 1
-        config.tag = f"{q_fn_name}_ns{ns}_eval"
+        config.tag = (
+            f'{q_fn_name}_ns{config.learner.num_samples}'
+            f'_ni{config.learner.num_index_samples}_eval')
 
     config.dataset.allowed_characters = char
 
@@ -111,20 +112,36 @@ if __name__ == '__main__':
         config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
-    mean_stats = train_nash_policy.train(config)
+    mean_stats = train_q_policy.train(config)
     assert mean_stats is not None
 
-    print(utils.map_nt(lambda x: f'{x:.3f}', mean_stats['nash']['entropy_above']))
+    q_fn_stats = mean_stats[learner_lib.Q_FUNCTION]
 
-    ps_stats = mean_stats['nash']['ps']
-    cutoffs = sorted(next(iter(ps_stats.values()))['above'].keys())
-    print('\t'.join(['count'] + list(map(str, cutoffs))))
+    num_actions = config.learner.num_samples
+    if config.learner.include_action_taken_in_samples:
+      num_actions += 1
 
-    for count in sorted(ps_stats.keys()):
-      cutoff_stats = ps_stats[count]['above']
-      cols = [f'{count}']
-      for cutoff in cutoffs:
-        cols.append(f'{cutoff_stats[cutoff]:.3f}')
-      print('\t'.join(cols))
+    print(f'=== {config.tag} ===')
+    # Entropy of the per-index argmax distribution; 0 means all epistemic
+    # indices agree on the best action. Also capped by the number of sampled
+    # indices at log(num_index_samples).
+    print(f'argmax entropy: {q_fn_stats["entropy"]:.4f}'
+          f' (max {math.log(num_actions):.4f} with {num_actions} actions)')
+
+    for key in [
+        'action_taken_is_optimal',
+        'optimal_advantages',
+        'sample_policy_advantages',
+        'q_bias',
+    ]:
+      print(f'{key}: {q_fn_stats[key]:.4f}')
+
+    print(f'q uev: {q_fn_stats["q"]["uev"]:.4f}'
+          f' (ensemble: {q_fn_stats["ensemble"]["q"]["uev"]:.4f})')
+
+    # Cross-entropy from the argmax distribution to the (imitation-initialized)
+    # q_policy; directly comparable to the argmax entropy above.
+    print(f'q_policy argmax cross-entropy:'
+          f' {mean_stats[learner_lib.Q_POLICY]["q_loss"]:.4f}')
 
   app.run(main)

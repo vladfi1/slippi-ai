@@ -46,8 +46,8 @@ if __name__ == '__main__':
   CONFIG.learner.learning_rate=3e-5
   CONFIG.learner.q_fn_learning_rate=1e-4
   CONFIG.learner.reward_halflife=4
-  CONFIG.learner.num_samples = 4
-  CONFIG.learner.sample_batch_size = 1
+  CONFIG.learner.num_samples = 7
+  CONFIG.learner.num_index_samples = 16
 
   # Policies have lower KL to fp32 in fp16 than bf16.
   # However, KL-based training is more stable in bf16 (whereas PPO prefers fp16 + loss scaling).
@@ -82,7 +82,7 @@ if __name__ == '__main__':
       'config',
       **flag_utils.get_flags_from_default(CONFIG))
 
-  KLW = flags.DEFINE_float('klw', 0, 'Weight on KL teacher loss')
+  KL = flags.DEFINE_float('kl', 0.1, 'Target KL divergence for teacher')
 
   TAG_SUFFIX = flags.DEFINE_string('tag_suffix', None, 'Suffix to add to the tag')
 
@@ -129,15 +129,14 @@ if __name__ == '__main__':
       config.actor.num_env_steps = 0
       config.agent.batch_steps = 0
 
-    klw = KLW.value
-    config.learner.kl_teacher_weight = klw
-    config.learner.reverse_kl_teacher_weight = klw
+    klt = KL.value
+    config.learner.target_teacher_kl = klt
+    config.learner.target_reverse_teacher_kl = klt
 
     if config.runtime.tag is None:
       parts = ['nrl', char_str, f'd{delay}']
 
-      if klw > 0:
-        parts.append(f'klw{klw:.0e}')
+      parts.append(f'klt{klt:.0e}')
 
       fs = imitation_config.policy.frame_skip
       ns = config.learner.num_samples
@@ -152,8 +151,8 @@ if __name__ == '__main__':
 
       ep = config.learner.epoch_length
       parts.append(f'ep{ep}')
-      if config.learner.weight_by_advantage:
-        parts.append('wba')
+      if not config.learner.weight_by_advantage:
+        parts.append('no-wba')
 
       if TAG_SUFFIX.value is not None:
         parts.append(TAG_SUFFIX.value)

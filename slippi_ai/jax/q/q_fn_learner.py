@@ -21,6 +21,14 @@ class LearnerConfig:
 
   unroll_batch_size: tp.Optional[int] = None
 
+  # Number of epistemic indices per trajectory to train on. The loss is linear
+  # in the expectation over indices, so this only affects gradient variance;
+  # it needs to be at least 2 for the epistemic metrics to be defined.
+  num_index_samples: int = 4
+  # Number of epistemic indices to evaluate with (also as an ensemble);
+  # defaults to num_index_samples.
+  eval_num_index_samples: tp.Optional[int] = None
+
 Loss = jax.Array
 Rank2 = tuple[int, int]
 
@@ -35,6 +43,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       delay: int,
       mesh: jax.sharding.Mesh,
       data_sharding: jax.sharding.NamedSharding,
+      rngs: tp.Optional[nnx.Rngs] = None,
       explicit_pmean: bool = False,
       smap_optimizer: bool = True,
   ):
@@ -47,6 +56,14 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       raise ValueError(
           f'Delay {delay} must be divisible by frame_skip {frame_skip}.')
     self.skip_delay = delay // frame_skip
+
+    if config.num_index_samples < 1:
+      raise ValueError('num_index_samples must be at least 1')
+    self.eval_num_index_samples = config.eval_num_index_samples
+    if self.eval_num_index_samples is None:
+      self.eval_num_index_samples = config.num_index_samples
+    if self.eval_num_index_samples < 1:
+      raise ValueError('eval_num_index_samples must be at least 1')
 
     learning_rate = config.learning_rate
     self.q_function_optimizer = nnx.Optimizer(
@@ -65,19 +82,24 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
         smap_optimizer=smap_optimizer,
     )
 
-    self.train_q_function = jax_utils.data_parallel_train(
+    if rngs is None:
+      rngs = nnx.Rngs(0)
+
+    self.train_q_function = jax_utils.data_parallel_train_with_rngs(
         module=self.q_function,
         optimizer=self.q_function_optimizer,
+        rngs=rngs.fork(),
         loss_fn=self._unroll_q_function,
         **sharding_kwargs,
-        static_argnames=['unroll_batch_size'],
+        static_argnames=['unroll_batch_size', 'num_index_samples'],
     )
 
-    self.run_q_function = jax_utils.shard_map_loss_fn(
+    self.run_q_function = jax_utils.shard_map_loss_fn_with_rngs(
         module=self.q_function,
+        rngs=rngs.fork(),
         loss_fn=self._unroll_q_function,
         mesh=mesh,
-        static_argnames=['unroll_batch_size'],
+        static_argnames=['unroll_batch_size', 'num_index_samples'],
     )
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
@@ -100,9 +122,11 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
       q_function: q_lib.QFunction[embed.Action],
       bm_frames: Frames[Rank2, embed.Action],  # [B, T]
       initial_state: RecurrentState,  # [B]
+      rngs: nnx.Rngs,
       *,
       unroll_batch_size: tp.Optional[int] = None,
       lambda_: float = 1.0,
+      num_index_samples: int = 1,
   ) -> tuple[Loss, dict, RecurrentState]:
     frames = jax.tree.map(jax_utils.swap_axes, bm_frames)
     frames = self._get_delayed_frames(frames)
@@ -112,7 +136,8 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     q_outputs, final_state = q_function.loss_batched(
         frames, initial_state, self.fs_discount, unroll_batch_size,
-        lambda_=lambda_)
+        lambda_=lambda_, rngs=rngs,
+        num_index_samples=num_index_samples)
 
     bm_loss = jnp.mean(q_outputs.loss, axis=0)  # [T, B] -> [B]
     bm_metrics = jax.tree.map(jax_utils.swap_axes, q_outputs.metrics)
@@ -130,9 +155,11 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
 
     if train:
       metrics, final_state = self.train_q_function(
-        frames, initial_state, lambda_=self.config.gae_lambda)
+        frames, initial_state, lambda_=self.config.gae_lambda,
+        num_index_samples=self.config.num_index_samples)
     else:
       metrics, final_state = self.run_q_function(
-        frames, initial_state, unroll_batch_size=self.config.unroll_batch_size)
+        frames, initial_state, unroll_batch_size=self.config.unroll_batch_size,
+        num_index_samples=self.eval_num_index_samples)
 
     return {Q_FUNCTION: metrics}, final_state

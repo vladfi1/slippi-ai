@@ -13,6 +13,7 @@ from absl import logging
 import numpy as np
 import jax
 from flax import nnx
+import tqdm
 import wandb
 
 from slippi_ai import (
@@ -46,6 +47,10 @@ class RuntimeConfig:
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # max steps to eval for (None for no limit)
+  verbose_eval: bool = False
+  save_best: bool = True
+  # Run a single evaluation (no training) and return the mean eval stats.
+  run_single_eval: bool = False
 
 @dataclasses.dataclass
 class AgentConfig:
@@ -87,9 +92,11 @@ class Config:
 
   dataset: data_lib.DatasetConfig = _field(data_lib.DatasetConfig)
   data: data_lib.DataConfig = _field(data_lib.DataConfig)
-  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig)
+  reward: reward_lib.RewardConfig = _field(reward_lib.RewardConfig.default)
 
   learner: learner_lib.LearnerConfig = _field(learner_lib.LearnerConfig)
+
+  remat: bool = True
 
   expt_root: str = 'experiments/q_policy'
   expt_dir: tp.Optional[str] = None
@@ -185,9 +192,10 @@ def print_losses(name: str, stats: dict):
 
   print(f'{name}: spl={spl:.4f} v_uev={v_uev:.4f} q_uev={q_uev:.4f} v_loss={v_loss:.4f} q_loss={q_loss:.4f} qpl={qpl:.4f}')
 
-def train(config: Config):
+def train(config: Config) -> tp.Optional[dict]:
+  """Returns the mean eval stats if run_single_eval is set."""
   with contextlib.ExitStack() as exit_stack:
-    _train(config, exit_stack)
+    return _train(config, exit_stack)
 
 def _train(config: Config, exit_stack: contextlib.ExitStack):
   tag = config.tag or train_lib.get_experiment_tag()
@@ -271,6 +279,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   assert name_map is not None
 
+  if config.remat:
+    q_policy.enable_remat()
 
   # Initialize q_function
   if restored:
@@ -307,6 +317,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       if q_fn_name_map[name] != code:
         raise ValueError(f'Name map mismatch for name {name}: {q_fn_name_map[name]} vs {code}')
 
+    del q_fn_state
   else:
     raise ValueError('Must initialize q_function from a checkpoint.')
 
@@ -376,15 +387,20 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   exit_stack.callback(train_manager.stop)
   exit_stack.callback(test_manager.stop)
 
-  print_losses('initial', train_manager.step()[0])
+  if not runtime.run_single_eval:
+    print_losses('initial', train_manager.step()[0])
 
   if restored:
     assert isinstance(restored_state, dict)  # appease type checker
     replicated_state = jax_utils.device_put(
         restored_state['state'], jax_utils.replicate_sharding(mesh))
     jax_utils.set_module_state(learner, replicated_state)
-    print_losses('post-restore', train_manager.step()[0])
-    del restored_state
+    # The restored state may be in a different dtype (e.g. from an fp32
+    # checkpoint saved before the dtype configs were changed).
+    learner.cast_module_dtypes()
+    if not runtime.run_single_eval:
+      print_losses('post-restore', train_manager.step()[0])
+    del restored_state, replicated_state
 
   # TODO: use orbax instead?
   def save(eval_loss=None):
@@ -471,12 +487,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   last_train_epoch_evaluated = 0.
 
   def maybe_eval(force: bool = False):
-    nonlocal best_eval_loss, last_train_epoch_evaluated
+    nonlocal last_train_epoch_evaluated
 
     train_epoch = train_manager.last_epoch
     if not force and (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1:
       return
     last_train_epoch_evaluated = train_epoch
+
+    return do_eval()
+
+  def do_eval() -> dict:
+    nonlocal best_eval_loss
 
     per_step_eval_stats: list[dict] = []
     metas: list[data_lib.ChunkMeta] = []
@@ -486,21 +507,34 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
+    prev_test_epoch = initial_test_epoch
     test_stats_jax = None
     num_eval_steps = 0
-    while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
-      # Get _previous_ step's stats to allow jax runahead
-      if test_stats_jax is not None:
-        test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
-        per_step_eval_stats.append(test_stats_np)
 
-      test_stats_jax, batch = test_manager.step()
-      metas.append(batch.meta)
+    with tqdm.tqdm(
+      total=runtime.max_eval_steps or runtime.num_eval_epochs,
+      disable=not runtime.verbose_eval,
+      unit='step' if runtime.max_eval_steps is not None else 'epoch',
+    ) as pbar:
+      while test_manager.last_epoch - initial_test_epoch < runtime.num_eval_epochs:
+        # Get _previous_ step's stats to allow jax runahead
+        if test_stats_jax is not None:
+          test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
+          per_step_eval_stats.append(test_stats_np)
 
-      # Optionally stop eval early
-      num_eval_steps += 1
-      if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
-        break
+        test_stats_jax, batch = test_manager.step()
+        metas.append(batch.meta)
+
+        if runtime.max_eval_steps is not None:
+          pbar.update(1)
+        else:
+          pbar.update(test_manager.last_epoch - prev_test_epoch)
+        prev_test_epoch = test_manager.last_epoch
+
+        # Optionally stop eval early
+        num_eval_steps += 1
+        if runtime.max_eval_steps is not None and num_eval_steps >= runtime.max_eval_steps:
+          break
 
     assert test_stats_jax is not None
     test_stats_np = utils.map_single_structure(time_mean, test_stats_jax)
@@ -548,7 +582,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     eval_loss = mean_stats[learner_lib.Q_POLICY]['total_loss']
 
     # Save if the eval loss is the best so far
-    if eval_loss < best_eval_loss:
+    if eval_loss < best_eval_loss and runtime.save_best:
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
@@ -561,11 +595,17 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
           f' num_batches={len(per_step_eval_stats)}')
     print()
 
+    return mean_stats
+
     # TODO: Log losses aggregated by name.
 
   start_time = time.time()
 
   train_profiler = utils.Profiler(burnin=0)
+
+  if runtime.run_single_eval:
+    runtime.save_best = False
+    return do_eval()
 
   while time.time() - start_time < runtime.max_runtime:
     with train_profiler:

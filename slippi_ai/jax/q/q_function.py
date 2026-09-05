@@ -10,27 +10,33 @@ from slippi_ai.jax import rl_lib
 from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import networks, jax_utils
 from slippi_ai.jax import embed as embed_lib
+from slippi_ai.jax import epinet as epinet_lib
 from slippi_ai.types import Controller, Action
 
 class QOutputs(tp.NamedTuple):
-  returns: jax.Array  # [T, B]
-  advantages: jax.Array  # [T, B]
-  values: jax.Array  # [T, B]
-  q_values: jax.Array  # [T, B]
-  loss: jax.Array
+  returns: jax.Array  # [N, T, B]
+  advantages: jax.Array  # [N, T, B]
+  values: jax.Array  # [N, T, B]
+  q_values: jax.Array  # [N, T, B]
+  loss: jax.Array  # [T, B]
   # hidden_states: RecurrentState  # [T, B]
-  metrics: dict
+  metrics: dict  # [T, B]
 
 class UnrollOutputs(tp.NamedTuple):
-  values: jax.Array  # [T, B]
-  q_values: jax.Array  # [T, B]
+  values: jax.Array  # [N, T, B]
+  q_values: jax.Array  # [N, T, B]
 
 Rank2 = tuple[int, int]
+
+epistemic_metrics = epinet_lib.epistemic_metrics
+
 
 @dataclasses.dataclass
 class HeadConfig:
   num_layers: int = 1
   hidden_size: int = 128
+  epinet: epinet_lib.EpinetConfig = dataclasses.field(
+      default_factory=epinet_lib.EpinetConfig)
 
 @dataclasses.dataclass
 class QFunctionConfig:
@@ -88,6 +94,11 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       activate_final=False,
     )
 
+    self.value_epinet = epinet_lib.Epinet(
+        rngs, self.core_net.output_size, 1, config.head.epinet)
+    self.q_epinet = epinet_lib.Epinet(
+        rngs, self.action_net.output_size, 1, config.head.epinet)
+
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> networks.RecurrentState:
     return self.core_net.initial_state(batch_size, rngs)
 
@@ -95,16 +106,33 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     x = self.embed_action(action)
     return x.astype(jax_utils.module_dtype(self))
 
-  def _values_from_outputs(self, outputs: jax.Array) -> jax.Array:
+  def sample_index(
+      self,
+      rngs: nnx.Rngs,
+      batch_shape: tuple[int, ...],
+  ) -> jax.Array:
+    """Samples epistemic indices z ~ N(0, I)."""
+    z = jax.random.normal(
+        rngs.epinet(), batch_shape + (self.config.head.epinet.index_dim,))
+    return z.astype(jax_utils.module_dtype(self))
+
+  def _values_from_outputs(
+      self,
+      outputs: jax.Array,  # [..., O_core]
+      z: jax.Array,  # [..., D_Z]
+  ) -> jax.Array:
     """[..., O_core] -> [...]"""
-    return jnp.squeeze(self.value_head(outputs), -1)
+    values = self.value_head(outputs) + self.value_epinet(outputs, z)
+    return jnp.squeeze(values, -1)
 
   def _q_values_from_outputs(
       self,
       outputs: jax.Array,  # [..., O_action]
       values: jax.Array,  # [...]
+      z: jax.Array,  # [..., D_Z]
   ) -> jax.Array:  # [...]
-    qs = jnp.squeeze(self.q_head(outputs), -1)
+    qs = self.q_head(outputs) + self.q_epinet(outputs, z)
+    qs = jnp.squeeze(qs, -1)
 
     if self.config.advantage_qs:
       return values + qs
@@ -120,48 +148,70 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     _, init_state = self.action_init.step(core_outputs, zero_state)
     return init_state
 
-  def q_values_from_action_state(
+  def q_values_from_core_outputs(
       self,
-      values: jax.Array,  # [...]
-      action_init_state: networks.RecurrentState,  # [..., H]
+      core_outputs: jax.Array,  # [T, B, O_core]
       actions: list[Action],  # frame_skip x [...]
-  ) -> jax.Array:  # [...]
+      rngs: nnx.Rngs,
+      num_index_samples: int,
+  ) -> jax.Array:  # [N, ...]
+    """Per-index q-values; the action_net is unrolled once, shared across indices."""
     embedded = [self._embed_action(a) for a in actions]
     stacked = jnp.stack(embedded, axis=0)  # [FS, ..., embed_size]
     reset = jnp.zeros(stacked.shape[:-1], dtype=bool)  # [FS, ...]
+    action_init_state = self._action_net_initial_state(core_outputs)
     outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
-    return self._q_values_from_outputs(outputs[-1], values)
 
-  def q_values_from_core_outputs(
-      self,
-      values: jax.Array,  # [...]
-      core_outputs: jax.Array,  # [..., O_core]
-      actions: list[Action],  # frame_skip x [...]
-  ) -> jax.Array:  # [...]
-    init_state = self._action_net_initial_state(core_outputs)
-    return self.q_values_from_action_state(values, init_state, actions)
+    zs = self.sample_index(
+        rngs, (num_index_samples, core_outputs.shape[1]))
+    values = nnx.vmap(
+      QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, core_outputs, zs)  # [N, T, B]
 
-  def multi_q_values_from_action_state(
+    return nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0),
+    )(self, outputs[-1], values, zs)
+
+  def multi_index_q_values_from_core_outputs(
       self,
-      values: jax.Array,  # [T, B]
-      action_init_state: networks.RecurrentState,  # [T, B, H]
+      core_outputs: jax.Array,  # [T, B, O_core]
       actions: list[Action],  # frame_skip x [S, T, B]
-      batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
-  ) -> jax.Array:  # [S, T, B]
+      rngs: nnx.Rngs,
+      num_index_samples: int,
+      batch_size: int = 0,  # 0 is equivalent to vmap
+  ) -> tuple[jax.Array, jax.Array]:  # [N, T, B], [N, S, T, B]
+    """Per-index q-values for multiple sampled action sequences."""
+
+    zs = self.sample_index(
+        rngs, (num_index_samples, core_outputs.shape[1]))
+    values = nnx.vmap(
+      QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, core_outputs, zs)  # [N, T, B]
+
     embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, E]
+    action_init_state = self._action_net_initial_state(core_outputs)
 
-    def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
-      # embedded_fs: [FS, T, B, E]
+    multi_index_head = nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0))
+
+    def process_one_sample(
+        q_function: QFunction[Action],
+        embedded_fs: jax.Array,  # [FS, T, B, E]
+    ) -> jax.Array:
       reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
-      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_init_state)
-      return self._q_values_from_outputs(outputs[-1], values)  # [T, B]
+      outputs, _ = q_function.action_net.unroll(
+          embedded_fs, reset, action_init_state)
+      return multi_index_head(q_function, outputs[-1], values, zs)  # [N, T, B]
 
-    return jax_utils.lax_map(
+    process_all_samples = jax_utils.lax_map_fn(
         process_one_sample,
-        action_inputs,
-        batch_size=batch_size,
+        microbatch_size=batch_size,
+        input_batch_dims=(None, 0),
+        output_batch_dims=1,
     )
+
+    return values, process_all_samples(self, action_inputs)  # [N, S, T, B]
 
   def unroll(
       self,
@@ -169,13 +219,26 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       is_resetting: jax.Array,  # [T, B]
       next_actions: list[Action],  # frame_skip x [T, B]
       initial_state: RecurrentState,  # [B]
+      zs: jax.Array,  # [N, B, D_Z]
   ) -> tuple[UnrollOutputs, RecurrentState]:
+    """Outputs have shape [N, T, B], one per epistemic index."""
     core_outputs, final_state = self.core_net.unroll(
         state_action, is_resetting, initial_state)
-    values = self._values_from_outputs(core_outputs)
 
-    q_values = self.q_values_from_core_outputs(
-        values, core_outputs, next_actions)
+    # The core_net and action_net don't depend on the epistemic index, so they
+    # are unrolled once; only the heads are evaluated per index.
+    values = nnx.vmap(
+        QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, core_outputs, zs)  # [N, T, B]
+
+    init_state = self._action_net_initial_state(core_outputs)
+    embedded = [self._embed_action(a) for a in next_actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, T, B, E]
+    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)
+    action_outputs, _ = self.action_net.unroll(stacked, reset, init_state)
+    q_values = nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0),
+    )(self, action_outputs[-1], values, zs)  # [N, T, B]
 
     return UnrollOutputs(values=values, q_values=q_values), final_state
 
@@ -185,8 +248,10 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,  # [B]
       discount: float,
       batch_size: int,  # batch size in time
+      rngs: nnx.Rngs,  # for sampling epistemic indices
       lambda_: float = 1.0,
       eval_lambdas: list[float] = [0],
+      num_index_samples: int = 1,
   ) -> tp.Tuple[QOutputs, RecurrentState]:
     total_unroll_length = frames.reward.shape[0]  # T
     num_batches, r = divmod(total_unroll_length, batch_size)
@@ -204,21 +269,31 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         lambda x: to_batched(x[1:]),
         frames.state_action.action)
 
+    # Epistemic indices are sampled once per batch element and shared across
+    # the whole unroll, including the bootstrap value, so that each index
+    # regresses to its own self-consistent targets.
+    zs = self.sample_index(
+        rngs, (num_index_samples, frames.reward.shape[1]))
+
+    time_axis = 1  # outputs are [N, T, B]
+
     # nnx will complain about trace levels if we use jax.lax.scan
     scan_fn = nnx.scan(
         nnx.remat(QFunction[Action].unroll),
-        in_axes=(None, 0, 0, 0, nnx.Carry),
-        out_axes=(0, nnx.Carry),
+        in_axes=(None, 0, 0, 0, nnx.Carry, None),
+        out_axes=(time_axis, nnx.Carry),
     )
 
     unroll_outputs, final_state = scan_fn(
-        self, state_action, is_resetting, next_actions, initial_state)
+        self, state_action, is_resetting, next_actions, initial_state, zs)
 
-    # Reshape outputs back to [T, B]
+    # Reshape outputs back to [N, T, B]
     def to_unbatched(x: jax.Array) -> jax.Array:
-      assert x.shape[0] == num_batches
-      assert x.shape[1] == batch_size
-      return x.reshape((total_unroll_length,) + x.shape[2:])
+      assert x.shape[time_axis] == num_batches
+      assert x.shape[time_axis + 1] == batch_size
+      return x.reshape(
+          x.shape[:time_axis] + (total_unroll_length,)
+          + x.shape[time_axis + 2:])
 
     unroll_outputs = utils.map_nt(to_unbatched, unroll_outputs)
     values, q_values = unroll_outputs
@@ -228,70 +303,116 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     last_output, _ = self.core_net.step_with_reset(
         last_state_action, last_is_resetting, final_state)
 
-    last_value = self._values_from_outputs(last_output)
+    last_value = nnx.vmap(
+        QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, last_output, zs)  # [N, B]
 
-    outputs = self._get_outputs(
-        frames=frames,
-        values=values,
-        q_values=q_values,
-        last_value=last_value,
-        discount=discount,
-        lambda_=lambda_,
-    )
-
+    outputs = self._ensemble_outputs(
+        frames, values, q_values, last_value, discount, lambda_)
     for eval_lambda in eval_lambdas:
-      eval_outputs = self._get_outputs(
-          frames=frames,
-          values=values,
-          q_values=q_values,
-          last_value=last_value,
-          discount=discount,
-          lambda_=eval_lambda,
-      )
+      eval_outputs = self._ensemble_outputs(
+          frames, values, q_values, last_value, discount, eval_lambda)
       outputs.metrics[f'lambda_{eval_lambda:.1f}'] = eval_outputs.metrics
 
     return outputs, final_state
 
-  def loss_and_action_state(
+  def loss_and_core_outputs(
       self,
       frames: data.Frames[Rank2, Action],  # [T + 1, B]
       initial_state: RecurrentState,
+      rngs: nnx.Rngs,
+      num_index_samples: int,
       discount: float,
       lambda_: float = 1.0,
-  ) -> tp.Tuple[QOutputs, RecurrentState, RecurrentState]:
-    """Returns (q_outputs, action_init_state, final_state).
+  ) -> tp.Tuple[QOutputs, jax.Array, RecurrentState]:
+    """Returns (q_outputs, core_outputs, final_state).
 
-    action_init_state has shape [T, B, H] (action_net initial state per step).
+    q_outputs include the epistemic index, except for the loss and metrics
+    which are averaged over the epistemic indices; see _ensemble_outputs.
+    core_outputs has shape [T, B, O_core].
     final_state is the core_net recurrent state after the last frame.
     """
     state_action_T = utils.map_nt(lambda x: x[:-1], frames.state_action)
     core_outputs, final_state = self.core_net.unroll(
         state_action_T, frames.is_resetting[:-1], initial_state)
 
-    values = self._values_from_outputs(core_outputs)
+    # The epistemic indices are shared across the whole unroll, including the
+    # bootstrap value, so that each index regresses to its own targets.
+    zs = self.sample_index(
+        rngs, (num_index_samples, core_outputs.shape[1]))
+    values = nnx.vmap(
+        QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, core_outputs, zs)  # [N, T, B]
 
     last_output, _ = self.core_net.step_with_reset(
         utils.map_nt(lambda x: x[-1], frames.state_action),
         frames.is_resetting[-1], final_state)
-    last_value = self._values_from_outputs(last_output)
+    last_value = nnx.vmap(
+        QFunction._values_from_outputs, in_axes=(None, None, 0),
+    )(self, last_output, zs)  # [N, B]
 
     action_init_state = self._action_net_initial_state(core_outputs)
 
     next_actions = jax.tree.map(
         lambda t: t[1:], frames.state_action.action)
-    q_values = self.q_values_from_action_state(
-        values, action_init_state, next_actions)
 
-    outputs = self._get_outputs(
-        frames=frames,
-        values=values,
-        q_values=q_values,
-        last_value=last_value,
-        discount=discount,
-        lambda_=lambda_,
+    # Like q_values_from_action_state, but pairing each index's q-head with
+    # its own value estimate.
+    embedded = [self._embed_action(a) for a in next_actions]
+    stacked = jnp.stack(embedded, axis=0)  # [FS, T, B, E]
+    reset = jnp.zeros(stacked.shape[:-1], dtype=bool)
+    action_outputs, _ = self.action_net.unroll(stacked, reset, action_init_state)
+    q_values = nnx.vmap(
+        QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0),
+    )(self, action_outputs[-1], values, zs)  # [N, T, B]
+
+    outputs = self._ensemble_outputs(
+        frames, values, q_values, last_value, discount, lambda_)
+
+    return outputs, core_outputs, final_state
+
+  def _ensemble_outputs(
+      self,
+      frames: data.Frames[Rank2, Action],
+      values: jax.Array,  # [N, T, B]
+      q_values: jax.Array,  # [N, T, B]
+      last_value: jax.Array,  # [N, B]
+      discount: float,
+      lambda_: float,
+  ) -> QOutputs:
+    """Merges ensemble metrics with indexed metrics.
+
+    The "regular" metrics are ensembled over the indices to be comparable
+    with previous non-epinet runs. The qs/vs/etc. are returned indexed. The
+    loss is also indexed, although it is averaged over the indices to maintain
+    the correct shape (note: this is not the ensemble loss).
+    """
+    outputs = nnx.vmap(
+        QFunction[Action]._get_outputs,
+        in_axes=(None, None, 0, 0, 0, None, None),
+    )(self, frames, values, q_values, last_value, discount, lambda_)
+    indexed_metrics = jax.tree.map(
+        lambda x: jnp.mean(x, axis=0), outputs.metrics)
+
+    ensemble_outputs = self._get_outputs(
+        frames, jnp.mean(values, axis=0), jnp.mean(q_values, axis=0),
+        jnp.mean(last_value, axis=0), discount, lambda_)
+    metrics = ensemble_outputs.metrics
+
+    for name, vs in [('v', values), ('q', q_values)]:
+      indexed_metrics[name].update(epistemic_metrics(vs))
+
+    advantages = q_values - values
+    indexed_metrics['advantage'] = dict(
+        mean=jnp.mean(advantages, axis=0),
+        **epistemic_metrics(advantages),
     )
 
-    return outputs, action_init_state, final_state
+    metrics['indexed'] = indexed_metrics
+    return outputs._replace(
+        loss=jnp.mean(outputs.loss, axis=0),  # [T, B]
+        metrics=metrics,
+    )
 
   def _get_outputs(
       self,

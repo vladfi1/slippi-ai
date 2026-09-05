@@ -21,7 +21,7 @@ if __name__ == '__main__':
   from slippi_ai import flag_utils
   from slippi_ai.jax import saving, train_lib
   from slippi_ai.jax.rl import run_lib as train_rl
-  from slippi_ai.jax.q import train_q_rl
+  from slippi_ai.jax.q import train_q_rl, train_q_fn
   from slippi_ai.jax.agents import DType
 
   PP = "Platinum Player"
@@ -46,8 +46,10 @@ if __name__ == '__main__':
   CONFIG.learner.learning_rate = 3e-5
   CONFIG.learner.q_fn_learning_rate = 1e-4
   CONFIG.learner.reward_halflife = 4
-  CONFIG.learner.num_samples = 4
+  CONFIG.learner.num_samples = 3  # 4 total
+  CONFIG.learner.num_index_samples = 16
   # CONFIG.learner.sample_batch_size = 1
+  CONFIG.learner.weight_by_advantage = True
 
   CONFIG.learner.sample_policy_dtype = DType.FP16
   CONFIG.learner.teacher_dtype = DType.FP16
@@ -72,7 +74,7 @@ if __name__ == '__main__':
       'config',
       **flag_utils.get_flags_from_default(CONFIG))
 
-  KLW = flags.DEFINE_float('klw', 0, 'Weight on KL teacher loss')
+  KL = flags.DEFINE_float('kl', 0.1, 'Target KL divergence for teacher')
 
   WANDB_FLAG = ff.DEFINE_dict(
       'wandb',
@@ -102,6 +104,14 @@ if __name__ == '__main__':
     imitation_state = saving.load_state_from_disk(teacher)
     imitation_config = flag_utils.dataclass_from_dict(
         train_lib.Config, imitation_state['config'])
+    del imitation_state
+
+    assert config.q_function is not None
+    q_fn_state = saving.load_state_from_disk(config.q_function)
+    q_fn_config = flag_utils.dataclass_from_dict(
+        train_q_fn.Config, q_fn_state['config'])
+    del q_fn_state
+
     char_str = imitation_config.dataset.allowed_characters
     chars = chars_from_string(char_str)
 
@@ -117,11 +127,13 @@ if __name__ == '__main__':
       config.actor.num_env_steps = 0
       config.agent.batch_steps = 0
 
-    klw = KLW.value
-    config.learner.kl_teacher_weight = klw
-    config.learner.reverse_kl_teacher_weight = klw
+    klt = KL.value
+    config.learner.target_teacher_kl = klt
+    config.learner.target_reverse_teacher_kl = klt
 
     if config.runtime.tag is None:
+      parts = ['qrl', char_str, f'd{delay}']
+
       if config.opponent.type is train_rl.OpponentType.SELF:
         if config.opponent.train:
           opp = 'ditto'
@@ -137,19 +149,31 @@ if __name__ == '__main__':
         opp = 'vs-fixed'
       else:
         raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
+      parts.append(opp)
 
-      fs = imitation_config.policy.frame_skip
+      parts.append(f"klt{klt:.0e}")
+
       ns = config.learner.num_samples
       if config.learner.include_action_taken_in_samples:
         ns += 1
-      klw_str = f"_klw{klw:.0e}" if klw > 0 else ""
-      ep = config.learner.epoch_length
 
-      lr = config.learner.learning_rate
+      parts.extend([
+        f"rfs{imitation_config.policy.frame_skip}",
+        f"ns{ns}",
+        f"ep{config.learner.epoch_length}",
+        f"lr{config.learner.learning_rate:.0e}",
+      ])
 
-      wba = f"_wba" if config.learner.weight_by_advantage else ""
-      gae = f"_gae{config.learner.gae_lambda:.1f}" if config.learner.gae_lambda != 1.0 else ""
-      config.runtime.tag = f"qrl_{char_str}_d{delay}_{opp}{klw_str}_rfs{fs}_ns{ns}_ep{ep}_lr{lr:.0e}{wba}{gae}"
+      if not config.learner.weight_by_advantage:
+        parts.append("nwba")
+
+      if config.learner.gae_lambda != 0.0:
+        parts.append(f"gae{config.learner.gae_lambda:.1f}")
+
+      ps = q_fn_config.q_function.head.epinet.prior_scale
+      parts.append(f"ps{ps:.1f}")
+
+      config.runtime.tag = "_".join(parts)
 
     wandb_kwargs = dict(WANDB_FLAG.value)
     if wandb_kwargs['name'] is None:
