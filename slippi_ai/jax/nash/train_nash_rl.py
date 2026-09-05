@@ -196,6 +196,7 @@ class LearnerManager(tp.Generic[Action]):
     fs_trajectory = FrameSkipTrajectory(
         states=state,
         name=trajectory.name[::self.frame_skip],
+        rating=trajectory.rating[::self.frame_skip],
         actions=actions,
         rewards=rewards,
         is_resetting=is_resetting,
