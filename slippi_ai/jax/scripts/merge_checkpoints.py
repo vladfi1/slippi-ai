@@ -27,7 +27,11 @@ OUTPUT = flags.DEFINE_string(
 OVERWRITE = flags.DEFINE_bool(
     'overwrite', False, 'Whether to overwrite the policy.')
 
-def main(_):
+def main(argv):
+  if len(argv) > 1:
+    raise app.UsageError(
+        f'Unexpected positional arguments: {argv[1:]}. '
+        'Use --policy and --value_function flags instead.')
   policy_state = saving.load_state_from_disk(POLICY.value)
   vf_state = saving.load_state_from_disk(VALUE_FUNCTION.value)
 
