@@ -108,6 +108,9 @@ if __name__ == '__main__':
         if gae != 0:
           config.tag += f"_gae{gae:.1f}"
 
+        if imitation_config.max_names == 0:
+          config.tag += "_noname"
+
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
       wandb_kwargs['name'] = config.tag

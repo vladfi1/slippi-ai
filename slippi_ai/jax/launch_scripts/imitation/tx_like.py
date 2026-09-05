@@ -150,6 +150,9 @@ if __name__ == '__main__':
         if config.embed.with_rating:
           parts.append('rating')
 
+        if config.max_names == 0:
+          parts.append('noname')
+
         config.tag = "_".join(parts)
 
     config.dataset.allowed_characters = char
