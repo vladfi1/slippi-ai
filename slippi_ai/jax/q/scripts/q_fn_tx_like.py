@@ -16,11 +16,10 @@ NET_NAME = 'tx_like'
 def default_config():
   config = train_q_fn.Config()
 
-  config.delay = 0
   config.data.batch_size = 512
   config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
-  config.data.num_workers = 2
+  config.data.num_workers = 4
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
 
@@ -42,7 +41,7 @@ def default_config():
   config.dataset.data_dir = os.environ.get("DATA_DIR")
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.runtime.log_interval = 300
-  config.runtime.num_evals_per_epoch = 8
+  config.runtime.num_evals_per_epoch = 4
 
   return config
 
@@ -105,6 +104,9 @@ if __name__ == '__main__':
       imitation_config = flag_utils.dataclass_from_dict(
           train_lib.Config,
           saving.upgrade_config(imitation_state['config']))
+
+      if config.delay is None:
+        config.delay = imitation_config.policy.delay
 
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)
