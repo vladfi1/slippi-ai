@@ -23,7 +23,7 @@ def default_config():
 
   config.data.batch_size = 512
   config.data.unroll_length = 84
-  config.data.num_workers = 1
+  config.data.num_workers = 2
   config.data.balance_characters = True
   config.data.unroll_chunks = 4
   config.learner.learning_rate = 1e-4
@@ -60,7 +60,7 @@ if __name__ == '__main__':
       'wandb',
       project=ff.String('slippi-ai'),
       mode=ff.Enum('online', ['online', 'offline', 'disabled']),
-      group=ff.String('q_learning'),
+      group=ff.String('q-policy'),
       name=ff.String(None),
       notes=ff.String(None),
       dir=ff.String(None, 'directory to save logs'),
@@ -116,7 +116,10 @@ if __name__ == '__main__':
         fs = imitation_config.policy.frame_skip
         parts.append(f"rfs{fs}")
 
-        parts.append(f"ns{config.learner.num_samples}")
+        ns = config.learner.num_samples
+        if config.learner.include_action_taken_in_samples:
+          ns += 1
+        parts.append(f"ns{ns}")
 
         idxs = config.learner.num_index_samples
         parts.append(f"is{idxs}")

@@ -7,7 +7,7 @@ from flax import nnx
 import optax
 
 from slippi_ai import utils
-from slippi_ai.data import Batch, Frames, Controller
+from slippi_ai.data import Batch, Frames, Controller, delayed_frames
 from slippi_ai.jax.agents import DType
 from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax.q import q_function as q_lib
@@ -110,8 +110,14 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     self.q_policy_imitation_weight = config.q_policy_imitation_weight
 
     self.delay = q_policy.delay
-    assert sample_policy.delay == self.delay
-    assert self.delay == 0
+    if sample_policy.delay != self.delay:
+      raise ValueError(
+          f'Sample policy delay {sample_policy.delay} does not match '
+          f'q_policy delay {self.delay}.')
+    if self.delay % self.frame_skip != 0:
+      raise ValueError(
+          f'Delay {self.delay} must be divisible by frame_skip {self.frame_skip}.')
+    self.skip_delay = self.delay // self.frame_skip
 
     self.cast_module_dtypes()
 
@@ -229,23 +235,7 @@ class Learner(nnx.Module, tp.Generic[embed.Action]):
     return initial_states
 
   def _get_delayed_frames(self, frames: Frames[Rank2, embed.Action]) -> Frames[Rank2, embed.Action]:
-    # delay == 0, so this is a no-op; kept for parity with nash.
-    state_action = frames.state_action
-    # Includes "overlap" frame.
-    unroll_length = frames.is_resetting.shape[0] - self.delay
-
-    return Frames(
-        state_action=embed.StateAction(
-            state=jax.tree.map(
-                lambda t: t[:unroll_length], state_action.state),
-            action=jax.tree.map(
-                lambda t: t[self.delay:], state_action.action),
-            name=state_action.name[:unroll_length],
-        ),
-        is_resetting=frames.is_resetting[:unroll_length],
-        # Only use rewards that follow actions.
-        reward=frames.reward[self.delay:],
-    )
+    return delayed_frames(frames, self.skip_delay)
 
   def _encode(
       self,

@@ -34,6 +34,7 @@ from slippi_ai.jax.embed import Action
 from slippi_ai.jax.q import (
     q_function as q_lib,
     q_policy_learner as learner_lib,
+    train_q_fn,
 )
 
 _field = utils.field
@@ -60,31 +61,6 @@ class AgentConfig:
   name: str = nametags.DEFAULT_NAME
   async_inference: bool = False
 
-@dataclasses.dataclass
-class RLEvaluatorConfig:
-  use: bool = False
-  # Seconds between evaluations. Note that the evaluator runs at around
-  # half real-time, so this should be ~20x the rollout length if you want
-  # to spend 10% of the time evaluating.
-  # TODO: try running in parallel with training (so evaluator must be on CPU)
-  interval_seconds: float = 15 * 60
-  runtime_seconds: float = 60
-
-  dolphin: dolphin_lib.DolphinConfig = _field(dolphin_lib.DolphinConfig)
-
-  # env
-  rollout_length: int = 600  # rollout chunk size
-  num_envs: int = 1
-  async_envs: bool = True
-  num_env_steps: int = 0
-  inner_batch_size: int = 1
-  use_fake_envs: bool = False
-  reset_every_n_evals: int = 1
-
-  agent: AgentConfig = _field(AgentConfig)
-  opponent: tp.Optional[str] = None
-  opponent_name: str = nametags.DEFAULT_NAME
-  gpu_inference: bool = True
 
 @dataclasses.dataclass
 class Config:
@@ -105,6 +81,11 @@ class Config:
   restore_path: tp.Optional[str] = None
   initialize_policies_from: tp.Optional[str] = None
   initialize_q_function_from: tp.Optional[str] = None
+
+  # Delay does not affect the network architecture, so the policies can be
+  # trained at a different delay than the imitation checkpoint. The q_function
+  # must have been trained at the resulting delay.
+  override_delay: tp.Optional[int] = None
 
   seed: int = 0
   version: int = saving.VERSION
@@ -253,17 +234,25 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Initialize policies
   if restored:
     assert isinstance(restored_state, dict)
+    imitation_config_dict = restored_state['imitation_config']
+    if config.override_delay is not None:
+      imitation_config_dict['policy']['delay'] = config.override_delay
     imitation_config = flag_utils.dataclass_from_dict(
-        train_lib.Config,
-        saving.upgrade_config(restored_state['imitation_config']))
+        train_lib.Config, saving.upgrade_config(imitation_config_dict))
     name_map = restored_state['name_map']
 
-    sample_policy = saving.policy_from_config_dict(restored_state['imitation_config'])
-    q_policy = saving.policy_from_config_dict(restored_state['imitation_config'])
+    sample_policy = saving.policy_from_config_dict(imitation_config_dict)
+    q_policy = saving.policy_from_config_dict(imitation_config_dict)
 
   elif config.initialize_policies_from:
     logging.info(f'Initializing policies from {config.initialize_policies_from}')
     imitation_state = saving.load_state_from_disk(config.initialize_policies_from)
+
+    if config.override_delay is not None:
+      logging.info(
+          'Overriding imitation delay %d with %d',
+          imitation_state['config']['policy']['delay'], config.override_delay)
+      imitation_state['config']['policy']['delay'] = config.override_delay
 
     sample_policy = saving.load_policy_from_state(imitation_state)
     q_policy = saving.load_policy_from_state(imitation_state)
@@ -285,6 +274,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   # Initialize q_function
   if restored:
     assert isinstance(restored_state, dict)
+    q_function_config = flag_utils.dataclass_from_dict(
+        train_q_fn.Config, restored_state['q_function_config'])
     q_function = q_lib.q_function_from_config(
         restored_state['q_function_config']['q_function'])
     # q_function_optimizer_state = None
@@ -298,7 +289,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     jax_utils.set_module_state(q_function, q_fn_state['state']['q_function'])
     # q_function_optimizer_state = q_fn_state['state']['q_function_optimizer']
 
-    from slippi_ai.jax.q import train_q_fn
     q_function_config = flag_utils.dataclass_from_dict(
         train_q_fn.Config, q_fn_state['config'])
 

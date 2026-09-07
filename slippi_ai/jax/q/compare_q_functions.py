@@ -28,7 +28,7 @@ import numpy as np
 import tqdm
 
 from slippi_ai import flag_utils, utils, data as data_lib
-from slippi_ai.data import Batch, Frames
+from slippi_ai.data import Batch, Frames, delayed_frames
 from slippi_ai.jax import saving, jax_utils, rl_lib, train_policy
 from slippi_ai.jax.policies import Policy
 from slippi_ai.jax.q import train_q_fn, q_function as q_lib
@@ -54,18 +54,27 @@ class Config:
   q_function_b: tp.Optional[str] = None
 
   num_samples: int = 8
-  # 0 means vmap over all samples at once (see multi_q_values_from_action_state).
+  # 0 means vmap over all samples at once (see multi_index_q_values_from_core_outputs).
   sample_batch_size: int = 0
   # Whether to include the action actually taken among the ranked actions.
   include_action_taken: bool = True
 
   # Only affects QOutputs.returns/advantages, which we don't use here, but
-  # loss_and_action_state requires a discount.
+  # loss_and_core_outputs requires a discount.
   reward_halflife: float = 4
+
+  # Number of epistemic indices to average over; the ensemble mean is the
+  # point estimate of each q-function's values.
+  num_index_samples: int = 4
 
   num_steps: int = 20  # number of batches to evaluate
   jit_compile: bool = True
   seed: int = 0
+
+  # Delay does not affect the network architecture, so a policy checkpoint can
+  # be evaluated at a different delay than it was trained at. Mainly useful for
+  # testing with the delay-0 demo policy; the q-functions' delays must match.
+  override_delay: tp.Optional[int] = None
 
 
 def load_q_function(path: str) -> tuple[q_lib.QFunction, train_q_fn.Config]:
@@ -276,7 +285,10 @@ class Comparator(nnx.Module):
     assert q_function_b.frame_skip == self.frame_skip
 
     self.delay = sample_policy.delay
-    assert self.delay == 0, 'Only delay == 0 is supported.'
+    if self.delay % self.frame_skip != 0:
+      raise ValueError(
+          f'Delay {self.delay} must be divisible by frame_skip {self.frame_skip}.')
+    self.skip_delay = self.delay // self.frame_skip
 
     self.discount = rl_lib.discount_from_halflife(
         config.reward_halflife, frame_skip=self.frame_skip)
@@ -284,6 +296,9 @@ class Comparator(nnx.Module):
     self.num_samples = config.num_samples
     self.include_action_taken = config.include_action_taken
     self.sample_batch_size = config.sample_batch_size
+    self.num_index_samples = config.num_index_samples
+    if self.num_index_samples < 1:
+      raise ValueError('num_index_samples must be at least 1')
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> dict:
     return {
@@ -313,27 +328,25 @@ class Comparator(nnx.Module):
       q_function: q_lib.QFunction,
       frames: Frames,  # time-major, encoded for this q-function
       initial_state,
-      policy_samples: list,  # frame_skip x [S, T, B]
+      actions: list,  # frame_skip x [S, T, B], including the action taken
+      rngs: nnx.Rngs,  # for the epistemic indices
   ):
-    q_outputs, action_init_state, final_state = q_function.loss_and_action_state(
-        frames, initial_state, self.discount)
+    q_outputs, core_outputs, final_state = q_function.loss_and_core_outputs(
+        frames, initial_state, rngs, self.num_index_samples, self.discount)
 
-    sample_q_values = q_function.multi_q_values_from_action_state(
-        values=q_outputs.values,
-        action_init_state=action_init_state,
-        actions=policy_samples,
+    _, indexed_q_values = q_function.multi_index_q_values_from_core_outputs(
+        core_outputs=core_outputs,
+        actions=actions,
+        rngs=rngs,
+        num_index_samples=self.num_index_samples,
         batch_size=self.sample_batch_size,
-    )  # [S, T, B]
+    )  # [N, S, T, B]
 
-    if self.include_action_taken:
-      # q_outputs.q_values is the q-value of the action actually taken; the
-      # taken action is the same for both q-functions, so this index aligns.
-      sample_q_values = jnp.concatenate(
-          [sample_q_values,
-           jnp.expand_dims(q_outputs.q_values, axis=_SAMPLE_AXIS)],
-          axis=_SAMPLE_AXIS)
+    # The ensemble (mean over epistemic indices) is the point estimate.
+    sample_q_values = jnp.mean(indexed_q_values, axis=0)  # [S, T, B]
+    values = jnp.mean(q_outputs.values, axis=0)  # [T, B]
 
-    return sample_q_values, q_outputs.values, final_state
+    return sample_q_values, values, final_state
 
   def step(
       self,
@@ -342,8 +355,11 @@ class Comparator(nnx.Module):
   ) -> tuple[dict, dict]:
     final_states = {}
 
+    # Time-major, aligned for delay: at index t the sample policy's output and
+    # the q-functions' action state both refer to the action at t + D + 1.
     frames = {
-        k: jax.tree.map(jax_utils.swap_axes, v) for k, v in bm_frames.items()
+        k: delayed_frames(jax.tree.map(jax_utils.swap_axes, v), self.skip_delay)
+        for k, v in bm_frames.items()
     }
 
     # Unroll the sample policy and draw num_samples actions per frame.
@@ -366,12 +382,25 @@ class Comparator(nnx.Module):
     policy_samples = sample(
         self.sample_policy, self.rngs.fork(split=self.num_samples))
 
+    actions = policy_samples
+    if self.include_action_taken:
+      # The taken action is the same for both q-functions, so this index
+      # aligns; scoring it alongside the samples shares the epistemic indices.
+      actions = utils.map_nt(
+          lambda samples, action_taken: jnp.concatenate(
+              [samples, jnp.expand_dims(action_taken[1:], axis=_SAMPLE_AXIS)],
+              axis=_SAMPLE_AXIS),
+          policy_samples, sp_frames.state_action.action)  # frame_skip x [S + 1, T, B]
+
+    # Both q-functions see the same epistemic indices, so a q-function compared
+    # against itself agrees perfectly.
+    index_key = self.rngs.epinet()
     qa, va, final_states[Q_FUNCTION_A] = self._q_values_for_samples(
         self.q_function_a, frames[Q_FUNCTION_A],
-        initial_states[Q_FUNCTION_A], policy_samples)
+        initial_states[Q_FUNCTION_A], actions, nnx.Rngs(epinet=index_key))
     qb, vb, final_states[Q_FUNCTION_B] = self._q_values_for_samples(
         self.q_function_b, frames[Q_FUNCTION_B],
-        initial_states[Q_FUNCTION_B], policy_samples)
+        initial_states[Q_FUNCTION_B], actions, nnx.Rngs(epinet=index_key))
 
     metrics = rank_agreement(qa, qb)
     metrics.update(value_agreement(qa, qb, va, vb))
@@ -394,6 +423,8 @@ def compare(config: Config) -> dict[str, float]:
 
   # Load policy.
   policy_state = saving.load_state_from_disk(config.sample_policy)
+  if config.override_delay is not None:
+    policy_state['config']['policy']['delay'] = config.override_delay
   sample_policy = saving.load_policy_from_state(policy_state)
   policy_config = flag_utils.dataclass_from_dict(
       train_policy.Config, saving.upgrade_config(policy_state['config']))
@@ -425,6 +456,8 @@ def compare(config: Config) -> dict[str, float]:
       'frame_skip', sample_policy.frame_skip, q_function_a.frame_skip)
   _check_compatible(
       'frame_skip', sample_policy.frame_skip, q_function_b.frame_skip)
+  _check_compatible('delay', sample_policy.delay, q_config_a.delay)
+  _check_compatible('delay', sample_policy.delay, q_config_b.delay)
 
   comparator = Comparator(
       config=config,

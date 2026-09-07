@@ -1,11 +1,23 @@
 # Plan: delay support for the JAX Q-function code
 
-Status: phase 1 done (2026-09-04); phases 2 and 3 pending.
+Status: phases 1 and 2 done (2026-09-04, 2026-09-06); phase 3 pending.
 
 Phase 1 landed `data.delayed_frames`, used it from `Policy.imitation_loss` and
 `q/q_fn_learner.py`, added the divisibility check in `q/train_q_fn.py`, and
 added `tests/delayed_frames_test.py`. Smoke tests `q/tests/train_q_fn.py` and
 `jax/tests/train_policy_test.py` pass at delay 0 and 3.
+
+Phase 2 swapped the stubs in `q/q_policy_learner.py` and
+`q/compare_q_functions.py` for the helper and added `override_delay` to
+`q/train_q_policy.py` and `q/compare_q_functions.py`. The comparator was also
+ported to the epinet Q-function API (it still called the removed
+`loss_and_action_state`) and now scores both q-functions with the same
+epistemic indices so that self-comparison is exact. Verified by training a
+delay-3 toy Q-function with `q/tests/train_q_fn.py --config.delay=3` and
+feeding its checkpoint to `q/tests/train_q_policy.py` and
+`q/tests/compare_q_functions.py` with `--config.override_delay=3`; both also
+reject a delay-0 Q-function at delay 3, and the Q-policy run restores from its
+own checkpoint.
 
 ## Semantics
 
