@@ -70,8 +70,15 @@ class ActorConfig:
   def get_inner_batch_size(self) -> int:
     if self.inner_batch_size == -1:
       cpu_count = os.cpu_count()
-      if cpu_count is not None:
-        return self.num_envs // cpu_count
+      if cpu_count is None:
+        raise OSError('Could not determine CPU count for inner_batch_size=-1')
+
+      if self.num_envs % cpu_count != 0:
+        raise ValueError(
+            f'num_envs={self.num_envs} must be divisible by CPU count={cpu_count} '
+            'for inner_batch_size=-1')
+
+      return self.num_envs // cpu_count
 
     return self.inner_batch_size
 

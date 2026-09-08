@@ -1,6 +1,6 @@
 # Plan: delay support for the JAX Q-function code
 
-Status: phases 1 and 2 done (2026-09-04, 2026-09-06); phase 3 pending.
+Status: all three phases done (2026-09-04, 2026-09-06, 2026-09-07).
 
 Phase 1 landed `data.delayed_frames`, used it from `Policy.imitation_loss` and
 `q/q_fn_learner.py`, added the divisibility check in `q/train_q_fn.py`, and
@@ -18,6 +18,16 @@ feeding its checkpoint to `q/tests/train_q_policy.py` and
 `q/tests/compare_q_functions.py` with `--config.override_delay=3`; both also
 reject a delay-0 Q-function at delay 3, and the Q-policy run restores from its
 own checkpoint.
+
+Phase 3 gave `FrameSkipConverter` a `skip_delay` overlap buffer, switched
+`q/train_q_rl.py` to that converter (it previously had its own copy of the
+frame-skip conversion, which did not zero rewards across game boundaries),
+applied `data.delayed_frames` once in `q/rl_learner.py` and carried the sample
+policy's hidden state in the learner. `tests/frame_skip_converter_test.py`
+checks that consecutive delayed windows are contiguous and that actions,
+rewards and actor logits line up with `data.delayed_frames`. Verified with
+`q/tests/train_q_rl.py` at delay 0 and, with a delay-3 toy Q-function
+checkpoint and `--config.override_delay=3`, at delay 3.
 
 ## Semantics
 

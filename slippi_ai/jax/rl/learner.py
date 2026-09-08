@@ -106,6 +106,13 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
   Keeps the trailing (frame_skip - 1) actions and reset flags across calls so
   that consecutive rollouts form one continuous frame-skipped sequence. Also
   computes rewards from the game states.
+
+  With a nonzero `skip_delay` (the policy delay divided by the frame skip) it
+  also keeps the trailing `skip_delay` frame-skip steps of each trajectory and
+  prepends them to the next one, so that `data.delayed_frames` can drop those
+  steps again without shortening the rollout or desynchronizing the learner's
+  carried hidden states. The very first trajectory is padded with copies of
+  its initial state and dummy actions; burn-in absorbs that window.
   """
 
   def __init__(
@@ -114,18 +121,73 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
       batch_size: int,
       dummy_sample_outputs: SampleOutputs[ControllerType],
       reward_config: reward_lib.RewardConfig,
+      skip_delay: int = 0,
   ):
     self.frame_skip = frame_skip
     self.batch_size = batch_size
+    self.skip_delay = skip_delay
     self._reward_kwargs = dataclasses.asdict(reward_config)
+    self._dummy_sample_outputs = dummy_sample_outputs
     self._prev_actions = [dummy_sample_outputs] * (frame_skip - 1)
     self._prev_is_resetting = np.full([frame_skip - 1, batch_size], False)
+    # Trailing skip_delay frame-skip steps of the previous trajectory.
+    self._delay_buffer: tp.Optional[FrameSkipTrajectory[ControllerType]] = None
+
+  def _initial_delay_buffer(
+      self,
+      trajectory: FrameSkipTrajectory[ControllerType],
+  ) -> FrameSkipTrajectory[ControllerType]:
+    """Pads the first trajectory with its initial state and dummy actions."""
+    tile_first = lambda x: np.repeat(x[:1], self.skip_delay, axis=0)
+    tile_dummy = lambda x: np.repeat(x[np.newaxis], self.skip_delay, axis=0)
+    return trajectory._replace(
+        states=utils.map_single_structure(tile_first, trajectory.states),
+        name=tile_first(trajectory.name),
+        rating=tile_first(trajectory.rating),
+        actions=[
+            utils.map_nt(tile_dummy, self._dummy_sample_outputs)
+            for _ in range(self.frame_skip)
+        ],
+        rewards=np.zeros([self.skip_delay, self.batch_size], dtype=np.float32),
+        is_resetting=np.full([self.skip_delay, self.batch_size], False),
+    )
+
+  def _prepend_delay_buffer(
+      self,
+      trajectory: FrameSkipTrajectory[ControllerType],
+  ) -> FrameSkipTrajectory[ControllerType]:
+    if self._delay_buffer is None:
+      self._delay_buffer = self._initial_delay_buffer(trajectory)
+
+    concat = lambda x, y: np.concatenate([x, y], axis=0)
+    buffer = self._delay_buffer
+    trajectory = trajectory._replace(
+        states=utils.map_nt(concat, buffer.states, trajectory.states),
+        name=concat(buffer.name, trajectory.name),
+        rating=concat(buffer.rating, trajectory.rating),
+        actions=utils.map_nt(concat, buffer.actions, trajectory.actions),
+        rewards=concat(buffer.rewards, trajectory.rewards),
+        is_resetting=concat(buffer.is_resetting, trajectory.is_resetting),
+    )
+
+    # The final state is repeated at the start of the next trajectory, so keep
+    # the skip_delay steps before it along with the rewards leading up to it.
+    keep_states = lambda x: x[-self.skip_delay - 1:-1]
+    keep_rewards = lambda x: x[-self.skip_delay:]
+    self._delay_buffer = trajectory._replace(
+        states=utils.map_single_structure(keep_states, trajectory.states),
+        name=keep_states(trajectory.name),
+        rating=keep_states(trajectory.rating),
+        actions=utils.map_nt(keep_states, trajectory.actions),
+        rewards=keep_rewards(trajectory.rewards),
+        is_resetting=keep_states(trajectory.is_resetting),
+    )
+    return trajectory
 
   def convert(
       self,
       trajectory: evaluators.Trajectory[Rank2, ControllerType, RecurrentState],
   ) -> FrameSkipTrajectory[ControllerType]:
-    assert not trajectory.delayed_actions, 'Not implemented'
     frame_skip = self.frame_skip
 
     # Previous actions for time steps [-FS+1, -1]
@@ -160,7 +222,7 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
     rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
     rewards = rewards.reshape((-1, frame_skip, self.batch_size)).sum(axis=1)
 
-    return FrameSkipTrajectory(
+    fs_trajectory = FrameSkipTrajectory(
         states=states,
         name=trajectory.name[::frame_skip],
         rating=trajectory.rating[::frame_skip],
@@ -168,8 +230,15 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
         rewards=rewards,
         is_resetting=is_resetting,
         initial_state=trajectory.initial_state,
+        # Note: with delay, these are the actions that the next rollout will
+        # contain, so the learner doesn't need them.
         delayed_actions=trajectory.delayed_actions,
     )
+
+    if self.skip_delay > 0:
+      fs_trajectory = self._prepend_delay_buffer(fs_trajectory)
+
+    return fs_trajectory
 
 
 class LearnerState(tp.NamedTuple):
