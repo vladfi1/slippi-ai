@@ -147,6 +147,11 @@ class LearnerManager(tp.Generic[Action]):
 
     fs_trajectory = self._converter.convert(trajectory)
 
+    # Transfer the trajectory to the device once. Left as numpy, every jitted
+    # learner call would upload it again while the previous call's temp
+    # buffers are still in flight, fragmenting the allocator arena.
+    fs_trajectory = jax.device_put(fs_trajectory)
+
     # Remove unsupported metrics from sim env
     timings.pop('completed_games', None)
 

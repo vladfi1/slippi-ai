@@ -274,6 +274,11 @@ class LearnerManager(tp.Generic[Action]):
           initial_state=cast_floats(
               fs_trajectory.initial_state, dtype=self._learner_dtype))
 
+    # Transfer the trajectory to the device once. Left as numpy, every jitted
+    # learner call would upload it again while the previous call's temp
+    # buffers are still in flight, fragmenting the allocator arena.
+    fs_trajectory = jax.device_put(fs_trajectory)
+
     return fs_trajectory, trajectory, timings
 
   def unroll(self):
