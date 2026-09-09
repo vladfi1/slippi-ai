@@ -422,6 +422,15 @@ class ExperimentManager:
             initial_state=run_lib.cast_floats(
                 fs_trajectory.initial_state, dtype=self._learner_dtype))
 
+    # Transfer each trajectory to its learner's device once. Left as numpy,
+    # every jitted learner call (teacher unroll, value-function step, each PPO
+    # epoch) would re-copy the ~1.4 GiB trajectory while the previous call's
+    # multi-GiB temp buffer is still in flight, leaving small chunks in the
+    # middle of the BFC arena; the next contiguous temp allocation then fails
+    # with plenty of total memory free (RESOURCE_EXHAUSTED in jit_ppo_epoch).
+    for port, agent in self._agents.items():
+      fs_trajectories[port] = jax.device_put(fs_trajectories[port], agent.device)
+
     return fs_trajectories, trajectories, timings
 
   def unroll(self):

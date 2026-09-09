@@ -100,6 +100,36 @@ class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
         initial_state=0,
     )
 
+@functools.partial(jax.jit, static_argnames=('frame_skip', 'num_steps'))
+def _fold_actions(
+    prev_actions: list[SampleOutputs[ControllerType]],  # (FS - 1) x [B]
+    actions: SampleOutputs[ControllerType],  # [U + 1, B]
+    delayed_actions: list[SampleOutputs[ControllerType]],  # D x [B]
+    frame_skip: int,
+    num_steps: int,  # U / FS
+) -> tuple[list[SampleOutputs[ControllerType]], list[SampleOutputs[ControllerType]]]:
+  """Splits the per-frame action sequence into frame-skip slots.
+
+  Returns the FS slots of actions for time steps [0, U/FS + Ds], each
+  [U/FS + Ds + 1, B], and the actions for time steps [U-FS+1, U-1], which
+  precede the next rollout.
+  """
+  expand = lambda x: x[jnp.newaxis]
+  # Full action sequence for time steps [-FS+1, U+D].
+  full = utils.map_nt(
+      lambda *xs: jnp.concatenate(xs, axis=0),
+      *utils.map_nt(expand, prev_actions),
+      actions,
+      *utils.map_nt(expand, delayed_actions),
+  )
+  slots = [
+      utils.map_nt(lambda t: t[i::frame_skip], full)
+      for i in range(frame_skip)
+  ]
+  next_prev = utils.map_nt(lambda x: x[num_steps], slots[:-1])
+  return slots, next_prev
+
+
 class FrameSkipConverter(tp.Generic[ControllerType]):
   """Converts per-frame rollout Trajectories into FrameSkipTrajectories.
 
@@ -140,26 +170,12 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
     num_frames = trajectory.is_resetting.shape[0] - 1  # U
     num_steps = num_frames // frame_skip  # U / FS
 
-    # Previous actions for time steps [-FS+1, -1]
-    prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
-    # Queued actions for time steps [U+1, U+D]
-    delayed_actions = utils.map_nt(
-        lambda x: x[np.newaxis], trajectory.delayed_actions)
-
-    # Create full action sequence for time steps [-FS+1, U+D]
-    actions = utils.map_nt(
-        lambda *xs: np.concatenate(xs, axis=0),
-        *prev_actions,
-        trajectory.actions,
-        *delayed_actions,
-    )
-    # Split into skipped (previous) actions for time steps [0, U/FS + Ds]
-    actions = [
-        utils.map_nt(lambda t: t[i::frame_skip], actions)
-        for i in range(frame_skip)
-    ]
-    # Actions for time steps [U-FS+1, U-1], which precede the next rollout.
-    self._prev_actions = utils.map_nt(lambda x: x[num_steps], actions[:-1])
+    # The actor keeps its SampleOutputs on device; fold them there rather
+    # than through numpy, which would copy them to the host and then have
+    # every jitted learner call upload them again.
+    actions, self._prev_actions = _fold_actions(
+        self._prev_actions, trajectory.actions, trajectory.delayed_actions,
+        frame_skip=frame_skip, num_steps=num_steps)
 
     states = utils.map_single_structure(
         lambda x: x[::frame_skip], trajectory.states)
