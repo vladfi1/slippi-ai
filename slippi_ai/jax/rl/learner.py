@@ -81,11 +81,12 @@ class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
   states: Game[Rank2]  # [U/FS + 1, B]
   name: np.ndarray[Rank2, np.dtype[np.int32]]  # [U/FS + 1, B]
   rating: FloatArray[Rank2]  # [U/FS + 1, B]
-  actions: list[SampleOutputs[ControllerType]]  # FS * [U/FS + 1, B]
+  # The trailing Ds = D/FS steps are the actions the actor has queued but not
+  # yet applied; see get_delayed_frames.
+  actions: list[SampleOutputs[ControllerType]]  # FS * [U/FS + Ds + 1, B]
   rewards: FloatArray[Rank2]  # [U/FS, B]
   is_resetting: BoolArray[Rank2]  # [U/FS + 1, B]
   initial_state: RecurrentState  # [B]
-  delayed_actions: list[SampleOutputs[ControllerType]]  # D x [B]
 
   @classmethod
   def batch_dims(cls) -> tp.Self:
@@ -97,7 +98,6 @@ class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
         rewards=1,
         is_resetting=1,
         initial_state=0,
-        delayed_actions=0,
     )
 
 class FrameSkipConverter(tp.Generic[ControllerType]):
@@ -107,12 +107,9 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
   that consecutive rollouts form one continuous frame-skipped sequence. Also
   computes rewards from the game states.
 
-  With a nonzero `skip_delay` (the policy delay divided by the frame skip) it
-  also keeps the trailing `skip_delay` frame-skip steps of each trajectory and
-  prepends them to the next one, so that `data.delayed_frames` can drop those
-  steps again without shortening the rollout or desynchronizing the learner's
-  carried hidden states. The very first trajectory is padded with copies of
-  its initial state and dummy actions; burn-in absorbs that window.
+  With delay D = skip_delay * frame_skip, the actor's D queued actions are
+  appended to the action sequence, giving skip_delay more action steps than
+  states; get_delayed_frames realigns them.
   """
 
   def __init__(
@@ -127,84 +124,42 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
     self.batch_size = batch_size
     self.skip_delay = skip_delay
     self._reward_kwargs = dataclasses.asdict(reward_config)
-    self._dummy_sample_outputs = dummy_sample_outputs
     self._prev_actions = [dummy_sample_outputs] * (frame_skip - 1)
     self._prev_is_resetting = np.full([frame_skip - 1, batch_size], False)
-    # Trailing skip_delay frame-skip steps of the previous trajectory.
-    self._delay_buffer: tp.Optional[FrameSkipTrajectory[ControllerType]] = None
-
-  def _initial_delay_buffer(
-      self,
-      trajectory: FrameSkipTrajectory[ControllerType],
-  ) -> FrameSkipTrajectory[ControllerType]:
-    """Pads the first trajectory with its initial state and dummy actions."""
-    tile_first = lambda x: np.repeat(x[:1], self.skip_delay, axis=0)
-    tile_dummy = lambda x: np.repeat(x[np.newaxis], self.skip_delay, axis=0)
-    return trajectory._replace(
-        states=utils.map_single_structure(tile_first, trajectory.states),
-        name=tile_first(trajectory.name),
-        rating=tile_first(trajectory.rating),
-        actions=[
-            utils.map_nt(tile_dummy, self._dummy_sample_outputs)
-            for _ in range(self.frame_skip)
-        ],
-        rewards=np.zeros([self.skip_delay, self.batch_size], dtype=np.float32),
-        is_resetting=np.full([self.skip_delay, self.batch_size], False),
-    )
-
-  def _prepend_delay_buffer(
-      self,
-      trajectory: FrameSkipTrajectory[ControllerType],
-  ) -> FrameSkipTrajectory[ControllerType]:
-    if self._delay_buffer is None:
-      self._delay_buffer = self._initial_delay_buffer(trajectory)
-
-    concat = lambda x, y: np.concatenate([x, y], axis=0)
-    buffer = self._delay_buffer
-    trajectory = trajectory._replace(
-        states=utils.map_nt(concat, buffer.states, trajectory.states),
-        name=concat(buffer.name, trajectory.name),
-        rating=concat(buffer.rating, trajectory.rating),
-        actions=utils.map_nt(concat, buffer.actions, trajectory.actions),
-        rewards=concat(buffer.rewards, trajectory.rewards),
-        is_resetting=concat(buffer.is_resetting, trajectory.is_resetting),
-    )
-
-    # The final state is repeated at the start of the next trajectory, so keep
-    # the skip_delay steps before it along with the rewards leading up to it.
-    keep_states = lambda x: x[-self.skip_delay - 1:-1]
-    keep_rewards = lambda x: x[-self.skip_delay:]
-    self._delay_buffer = trajectory._replace(
-        states=utils.map_single_structure(keep_states, trajectory.states),
-        name=keep_states(trajectory.name),
-        rating=keep_states(trajectory.rating),
-        actions=utils.map_nt(keep_states, trajectory.actions),
-        rewards=keep_rewards(trajectory.rewards),
-        is_resetting=keep_states(trajectory.is_resetting),
-    )
-    return trajectory
 
   def convert(
       self,
       trajectory: evaluators.Trajectory[Rank2, ControllerType, RecurrentState],
   ) -> FrameSkipTrajectory[ControllerType]:
     frame_skip = self.frame_skip
+    delay = self.skip_delay * frame_skip
+    if len(trajectory.delayed_actions) != delay:
+      raise ValueError(
+          f'Expected {delay} delayed actions for skip_delay {self.skip_delay} '
+          f'and frame_skip {frame_skip}, got {len(trajectory.delayed_actions)}.')
+    num_frames = trajectory.is_resetting.shape[0] - 1  # U
+    num_steps = num_frames // frame_skip  # U / FS
 
     # Previous actions for time steps [-FS+1, -1]
     prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
+    # Queued actions for time steps [U+1, U+D]
+    delayed_actions = utils.map_nt(
+        lambda x: x[np.newaxis], trajectory.delayed_actions)
 
-    # Create full action sequence for time steps [-FS+1, U]
+    # Create full action sequence for time steps [-FS+1, U+D]
     actions = utils.map_nt(
         lambda *xs: np.concatenate(xs, axis=0),
         *prev_actions,
         trajectory.actions,
+        *delayed_actions,
     )
-    # Split into skipped (previous) actions for time steps [0, U / FS]
+    # Split into skipped (previous) actions for time steps [0, U/FS + Ds]
     actions = [
         utils.map_nt(lambda t: t[i::frame_skip], actions)
         for i in range(frame_skip)
     ]
-    self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
+    # Actions for time steps [U-FS+1, U-1], which precede the next rollout.
+    self._prev_actions = utils.map_nt(lambda x: x[num_steps], actions[:-1])
 
     states = utils.map_single_structure(
         lambda x: x[::frame_skip], trajectory.states)
@@ -222,7 +177,7 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
     rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
     rewards = rewards.reshape((-1, frame_skip, self.batch_size)).sum(axis=1)
 
-    fs_trajectory = FrameSkipTrajectory(
+    return FrameSkipTrajectory(
         states=states,
         name=trajectory.name[::frame_skip],
         rating=trajectory.rating[::frame_skip],
@@ -230,15 +185,7 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
         rewards=rewards,
         is_resetting=is_resetting,
         initial_state=trajectory.initial_state,
-        # Note: with delay, these are the actions that the next rollout will
-        # contain, so the learner doesn't need them.
-        delayed_actions=trajectory.delayed_actions,
     )
-
-    if self.skip_delay > 0:
-      fs_trajectory = self._prepend_delay_buffer(fs_trajectory)
-
-    return fs_trajectory
 
 
 class LearnerState(tp.NamedTuple):
@@ -252,50 +199,66 @@ class LearnerOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
 
 
 def get_frames(trajectory: FrameSkipTrajectory[ControllerType]) -> data.Frames[Rank2, ControllerType]:
-  """Gives time-major frames with actions taken."""
+  """Gives time-major frames with the actions actually taken.
+
+  Drops the actor's queued (delayed) actions, so state t is paired with
+  action t, the one applied to reach it; used by the value function.
+  """
+  num_states = trajectory.is_resetting.shape[0]
   state_action = data.StateAction(
       state=trajectory.states,
-      action=[so.controller_state for so in trajectory.actions],
+      action=[
+          utils.map_nt(lambda t: t[:num_states], so.controller_state)
+          for so in trajectory.actions],
       name=trajectory.name,
       rating=trajectory.rating,
   )
   return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
+
+
+def get_so_frames(
+    trajectory: FrameSkipTrajectory[ControllerType],
+) -> Frames[Rank2, SampleOutputs[ControllerType]]:
+  """Gives time-major frames whose actions are the actor's full SampleOutputs."""
+  state_action = StateAction[Rank2, SampleOutputs[ControllerType]](
+      state=trajectory.states,
+      action=trajectory.actions,
+      name=trajectory.name,
+      rating=trajectory.rating,
+  )
+  return Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
 
 def get_delayed_frames(
     trajectory: FrameSkipTrajectory[ControllerType],
-) -> data.Frames[Rank2, ControllerType]:
-  """Gives time-major frames with delayed actions, for teacher/policy unroll."""
-  delay = len(trajectory.delayed_actions)
+    skip_delay: int,
+) -> Frames[Rank2, SampleOutputs[ControllerType]]:
+  """Aligns a trajectory for networks that act with delay.
 
-  if delay == 0:
-    return get_frames(trajectory)
+  With skip-delay Ds the converter has appended the actor's Ds queued action
+  steps, so the trajectory holds states [0, T] and actions [0, T + Ds]. As in
+  data.delayed_frames, state t is paired with action t + Ds, the last one the
+  actor had committed when it saw state t, and the returned rewards are those
+  following the paired actions, [Ds, T - 1]. The last Ds transitions thus have
+  no reward yet; Q-function losses skip them. The actions keep the actor's
+  logits so that they line up with the policy outputs.
+  """
+  frames = get_so_frames(trajectory)
+  num_states = frames.is_resetting.shape[0]
+  num_actions = frames.state_action.action[0].controller_state
+  num_actions = jax.tree.leaves(num_actions)[0].shape[0]
+  if num_actions != num_states + skip_delay:
+    raise ValueError(
+        f'Expected {num_states + skip_delay} action steps for {num_states} '
+        f'states and skip_delay {skip_delay}, got {num_actions}.')
+  if skip_delay == 0:
+    return frames
 
-  raise NotImplementedError("Delayed frames not implemented yet.")
+  keep = lambda t: t[skip_delay:]
+  state_action = frames.state_action._replace(
+      action=utils.map_single_structure(keep, frames.state_action.action))
+  return frames._replace(state_action=state_action, reward=keep(frames.reward))
 
-  # Extract controller states from delayed actions, each is [B, ...]
-  delayed_cs = [sa.controller_state for sa in trajectory.delayed_actions]
-
-  # Add time dimension: [B, ...] -> [1, B, ...]
-  delayed_cs_with_time = utils.map_single_structure(
-      lambda x: x[np.newaxis], delayed_cs)
-
-  # Concatenate: [T+1, B, ...] + D * [1, B, ...] -> [T+1+D, B, ...]
-  # Then take [delay:] to align -> [T+1, B, ...]
-  actions = jax.tree.map(
-      lambda *ts: jnp.concatenate(ts, axis=0),
-      *[so.controller_state for so in trajectory.actions],
-      *delayed_cs_with_time,
-  )
-  actions = jax.tree.map(lambda t: t[delay:], actions)
-
-  state_action = data.StateAction(
-      state=trajectory.states,
-      action=actions,
-      name=trajectory.name,
-      rating=trajectory.rating,
-  )
-  return data.Frames(state_action, trajectory.is_resetting, trajectory.rewards)
 
 def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Frames[Rank2, ControllerType]:
   return Frames(
@@ -303,6 +266,7 @@ def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Fram
           state=frames.state_action.state,
           action=[so.controller_state for so in frames.state_action.action],
           name=frames.state_action.name,
+          rating=frames.state_action.rating,
       ),
       is_resetting=frames.is_resetting,
       reward=frames.reward,
@@ -349,6 +313,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     self.policy = policy
     self.teacher = teacher
     self.value_function = value_function
+
+    if teacher.delay != policy.delay:
+      raise ValueError(
+          f'Teacher delay {teacher.delay} does not match policy delay '
+          f'{policy.delay}.')
+    # Delay in frame-skipped steps; the policy checks divisibility.
+    self.skip_delay = policy.skip_delay
 
     self._controller_embedding = policy.controller_head.controller_embedding
 
@@ -503,7 +474,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: RecurrentState,
   ) -> tuple[jax_utils.Loss, ControllerType, RecurrentState]:
-    teacher_frames = get_delayed_frames(trajectory)
+    teacher_frames = from_so_frames(
+        get_delayed_frames(trajectory, self.skip_delay))
     outputs = teacher.unroll(teacher_frames, initial_state)
     loss = -jax_utils.add_n(outputs.log_probs) / len(outputs.log_probs) # unused
     logits = batch_fs([do.logits for do in outputs.distances])
@@ -544,43 +516,44 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
   ) -> tp.Tuple[jax_utils.Loss, dict]:
     """Computes policy gradients for one PPO step.
 
-    Value function outputs are for [0, U] while policy outputs are for
-    [D, U+D]. This means we can only train on steps [D, U].
+    With skip-delay Ds the policy at state t predicts action t + Ds + 1 (see
+    get_delayed_frames), which the value function credits with advantage
+    t + Ds. Advantages exist for steps [0, T), so the policy is trained on
+    states [0, T - Ds), the same T' = T - Ds steps for which the delayed frames
+    hold rewards.
 
     Args:
-      outputs: Pre-computed teacher and value function outputs.
+      policy: The policy being trained.
+      advantages: Value function advantages, [T, B].
+      teacher_logits: Teacher logits aligned with the policy, [T, FS, B].
       trajectory: The collected trajectory.
 
     Returns:
-      Tuple of (gradients, metrics dict).
+      Tuple of (loss, metrics dict).
     """
-    delay = policy.delay  # D
-    remove_first = lambda t: t[delay:] if delay > 0 else t
-    remove_last = lambda t: t[:t.shape[0] - delay] if delay > 0 else t
-    assert delay == 0
+    skip_delay = self.skip_delay  # Ds
+    frames = get_delayed_frames(trajectory, skip_delay)
+    num_valid = frames.reward.shape[0]  # T'
+    keep = lambda t: t[:num_valid + 1]
 
-    # Advantages from [0, U]: take [D, U] -> U-D steps.
-    advantages = jax.lax.stop_gradient(advantages[delay:])
+    # Advantages [0, T) -> [Ds, T).
+    advantages = jax.lax.stop_gradient(advantages[skip_delay:])
 
-    # Teacher logits: [D, U+D] -> truncate last D -> [D, U].
+    # Teacher outputs for states [0, T) -> [0, T').
     # Note: no stop_gradient needed since teacher has no trainable variables.
-    teacher_logits = remove_last(teacher_logits)
+    teacher_logits = utils.map_nt(lambda t: t[:num_valid], teacher_logits)
 
-    # Policy frames: states [0, U-D+1], actions [D, U+1].
-    policy_frames = Frames[Rank2, ControllerType](
-        state_action=StateAction(
-            state=utils.map_nt(remove_last, trajectory.states),
-            action=utils.map_nt(remove_first, [so.controller_state for so in trajectory.actions]),
-            name=remove_last(trajectory.name),
-            rating=remove_last(trajectory.rating),
-        ),
-        is_resetting=remove_last(trajectory.is_resetting),
-        reward=remove_first(trajectory.rewards),
+    # Policy frames: states [0, T'], actions [Ds, Ds + T'], rewards T'.
+    policy_frames = from_so_frames(frames)
+    policy_frames = policy_frames._replace(
+        state_action=utils.map_nt(keep, policy_frames.state_action),
+        is_resetting=keep(policy_frames.is_resetting),
     )
 
-    # Actor (old policy) logits and log probs for steps [D+1, U+1].
+    # Actor (old policy) outputs for the actions it predicted at states
+    # [0, T'), namely actions [Ds + 1, Ds + T'].
     actor_outputs = utils.map_single_structure(
-        lambda t: t[1 + delay:], batch_fs(trajectory.actions))
+        lambda t: t[1:num_valid + 1], batch_fs(frames.state_action.action))
     actor_log_probs = jax.lax.stop_gradient(
         self._get_log_prob(actor_outputs.logits, actor_outputs.controller_state))
 

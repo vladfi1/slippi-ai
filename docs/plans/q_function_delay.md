@@ -19,15 +19,33 @@ feeding its checkpoint to `q/tests/train_q_policy.py` and
 reject a delay-0 Q-function at delay 3, and the Q-policy run restores from its
 own checkpoint.
 
-Phase 3 gave `FrameSkipConverter` a `skip_delay` overlap buffer, switched
-`q/train_q_rl.py` to that converter (it previously had its own copy of the
-frame-skip conversion, which did not zero rewards across game boundaries),
-applied `data.delayed_frames` once in `q/rl_learner.py` and carried the sample
-policy's hidden state in the learner. `tests/frame_skip_converter_test.py`
-checks that consecutive delayed windows are contiguous and that actions,
-rewards and actor logits line up with `data.delayed_frames`. Verified with
-`q/tests/train_q_rl.py` at delay 0 and, with a delay-3 toy Q-function
-checkpoint and `--config.override_delay=3`, at delay 3.
+Phase 3 (2026-09-08) took the delayed-actions route after all: the
+`FrameSkipConverter` appends the actor's `D` queued actions to the action
+sequence (validated against `skip_delay`), giving `Ds` more action steps than
+states, and `rl/learner.py:get_delayed_frames` pairs state `t` with action
+`t + Ds` and keeps the rewards `[Ds, T - 1]`, carrying the actor's
+`SampleOutputs` so that the actor logits come out aligned. All recurrent
+networks therefore unroll over the same states as the actor and the sample
+policy starts from `trajectory.initial_state` again. The price is that the
+last `Ds` transitions of each rollout have no reward yet, so
+`QFunction.loss_and_core_outputs` infers `T'` from the number of rewards,
+unrolls over all `T` steps (so values, q-values and hidden state stay
+full-length), and computes the loss on the first `T'` steps bootstrapping from
+the value at `T'`. `q/train_q_rl.py` uses the shared converter (it previously
+had its own copy that did not zero rewards across game boundaries).
+`tests/frame_skip_converter_test.py` checks the folded actions and the
+`get_delayed_frames` alignment. Verified with `q/tests/train_q_rl.py` at delay
+0 and, with a delay-3 toy Q-function checkpoint and
+`--config.override_delay=3`, at delay 3.
+
+PPO delay support (lost in the April 2026 frame-skip rewrite, which added
+`assert delay == 0`) was then revived on the same mechanism (2026-09-08): the
+PPO converters pass `skip_delay`, the teacher unrolls on
+`get_delayed_frames`, the value function on `get_frames` (which drops the
+queued actions), and `ppo_loss` trains the policy on the first `T' = T - Ds`
+states, pairing them with advantages `[Ds, T)` and the actor's outputs for
+actions `[Ds + 1, Ds + T']`. Verified with `rl/tests/train_rl_test.py` and
+`rl/tests/train_two_test.py` at delays 0, 3 and 6 (frame skip 3).
 
 ## Semantics
 
@@ -95,27 +113,22 @@ Files: `slippi_ai/jax/q/q_policy_learner.py`, `slippi_ai/jax/q/train_q_policy.py
 Files: `slippi_ai/jax/q/rl_learner.py`, `slippi_ai/jax/q/train_q_rl.py`, and
 `FrameSkipConverter` in `slippi_ai/jax/rl/learner.py`.
 
-Rollouts are contiguous windows with no overlap, so applying the delayed slice
-directly would shorten each rollout by `Ds` steps and leave carried hidden
-states `Ds` steps behind the next rollout. Use an overlap buffer rather than
-the `delayed_actions` route sketched in `rl/learner.py:get_delayed_frames`:
+Rollouts are contiguous windows with no overlap, so the offline slice can't be
+applied as is. Two options were considered:
 
-- Have the frame-skip converter retain the trailing `Ds` frame-skip steps of
-  the previous trajectory (sampled outputs, reset flags, rewards) and prepend
-  them to the next one, like it already does for frame skip's trailing actions.
-- Apply the delayed slice once to the whole frame-skip trajectory. Every
-  downstream unroll (including actor-KL logits) then works unchanged and the
-  Q-function loses no training steps.
-- Carry the sample policy's hidden state in the learner like the other modules
-  instead of reading it from the trajectory.
-- Drop the `delayed_actions` asserts; the queued actions are exactly the ones
-  the next rollout contains.
-- Mid-rollout resets contaminate the `Ds` steps before each game boundary with
-  next-game rewards. A validity mask can be a follow-up.
-- The first rollout needs padding for the buffer; burn-in absorbs the one
-  garbage window.
-- Test with the RL smoke test plus `override_delay`; requires a delay-3 toy
-  Q-function checkpoint.
+- Overlap buffer: have the converter prepend the trailing `Ds` steps of the
+  previous rollout. The Q-function loses no steps, but every unroll then
+  starts `Ds` steps before the actor's rollout, so the learner must carry the
+  sample policy's hidden state itself and pad the first window. This was
+  implemented first (commit `f0ad7d4b`) and then replaced.
+- Delayed actions (chosen): fold the actor's queued actions into the action
+  sequence, so state `t` pairs with action `t + Ds` over the actor's own
+  states. Hidden states stay aligned with the actor, at the cost of the last
+  `Ds` transitions of each rollout having no reward; the Q-function loss
+  slices them off (about `Ds / T` of its data per rollout).
+
+Either way, mid-rollout resets contaminate the `Ds` steps before each game
+boundary with next-game rewards; a validity mask can be a follow-up.
 
 ## Follow-ups and validation
 

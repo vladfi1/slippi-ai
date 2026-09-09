@@ -14,13 +14,16 @@ from slippi_ai.jax import epinet as epinet_lib
 from slippi_ai.types import Controller, Action
 
 class QOutputs(tp.NamedTuple):
-  returns: jax.Array  # [N, T, B]
-  advantages: jax.Array  # [N, T, B]
+  # If the frames have fewer rewards than transitions (online RL with delay),
+  # returns, advantages, loss and metrics only cover the T' <= T transitions
+  # with rewards; values and q_values always cover all T.
+  returns: jax.Array  # [N, T', B]
+  advantages: jax.Array  # [N, T', B]
   values: jax.Array  # [N, T, B]
   q_values: jax.Array  # [N, T, B]
-  loss: jax.Array  # [T, B]
+  loss: jax.Array  # [T', B]
   # hidden_states: RecurrentState  # [T, B]
-  metrics: dict  # [T, B]
+  metrics: dict  # [T', B]
 
 class UnrollOutputs(tp.NamedTuple):
   values: jax.Array  # [N, T, B]
@@ -331,10 +334,21 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     which are averaged over the epistemic indices; see _ensemble_outputs.
     core_outputs has shape [T, B, O_core].
     final_state is the core_net recurrent state after the last frame.
+
+    The frames may carry fewer rewards (T') than transitions (T), as happens
+    online with delay where the last transitions' rewards haven't happened
+    yet. The networks still unroll over all T steps, but the loss and its
+    metrics cover only the first T', bootstrapping from the value at step T'.
     """
     state_action_T = utils.map_nt(lambda x: x[:-1], frames.state_action)
     core_outputs, final_state = self.core_net.unroll(
         state_action_T, frames.is_resetting[:-1], initial_state)
+
+    num_steps = core_outputs.shape[0]  # T
+    num_valid = frames.reward.shape[0]  # T'
+    if not 0 < num_valid <= num_steps:
+      raise ValueError(
+          f'Expected between 1 and {num_steps} rewards, got {num_valid}.')
 
     # The epistemic indices are shared across the whole unroll, including the
     # bootstrap value, so that each index regresses to its own targets.
@@ -344,12 +358,15 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         QFunction._values_from_outputs, in_axes=(None, None, 0),
     )(self, core_outputs, zs)  # [N, T, B]
 
-    last_output, _ = self.core_net.step_with_reset(
-        utils.map_nt(lambda x: x[-1], frames.state_action),
-        frames.is_resetting[-1], final_state)
-    last_value = nnx.vmap(
-        QFunction._values_from_outputs, in_axes=(None, None, 0),
-    )(self, last_output, zs)  # [N, B]
+    if num_valid == num_steps:
+      last_output, _ = self.core_net.step_with_reset(
+          utils.map_nt(lambda x: x[-1], frames.state_action),
+          frames.is_resetting[-1], final_state)
+      last_value = nnx.vmap(
+          QFunction._values_from_outputs, in_axes=(None, None, 0),
+      )(self, last_output, zs)  # [N, B]
+    else:
+      last_value = values[:, num_valid]
 
     action_init_state = self._action_net_initial_state(core_outputs)
 
@@ -366,8 +383,13 @@ class QFunction(nnx.Module, tp.Generic[Action]):
         QFunction._q_values_from_outputs, in_axes=(None, None, 0, 0),
     )(self, action_outputs[-1], values, zs)  # [N, T, B]
 
+    valid_frames = frames._replace(
+        is_resetting=frames.is_resetting[:num_valid + 1])
     outputs = self._ensemble_outputs(
-        frames, values, q_values, last_value, discount, lambda_)
+        valid_frames, values[:, :num_valid], q_values[:, :num_valid],
+        last_value, discount, lambda_)
+    # Only the loss and its metrics are restricted to the rewarded steps.
+    outputs = outputs._replace(values=values, q_values=q_values)
 
     return outputs, core_outputs, final_state
 

@@ -22,13 +22,15 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-from slippi_ai import data, utils
+from slippi_ai import utils
 from slippi_ai.types import Action, Frames
 from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax import embed, rl_lib, jax_utils, saving
 from slippi_ai.jax.agents import DType
 from slippi_ai.jax.q import q_function as q_lib
-from slippi_ai.jax.rl.learner import FrameSkipTrajectory, get_frames, MBKwargs
+from slippi_ai.jax.rl.learner import (
+    FrameSkipTrajectory, MBKwargs, from_so_frames, get_delayed_frames,
+)
 
 T = tp.TypeVar('T')
 Rank2 = tuple[int, int]
@@ -185,8 +187,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     if self.delay % self.frame_skip != 0:
       raise ValueError(
           f'Delay {self.delay} must be divisible by frame_skip {self.frame_skip}.')
-    # The frame-skip converter prepends the trailing skip_delay steps of the
-    # previous trajectory; `data.delayed_frames` realigns them in `step`.
+    # The frame-skip converter appends the actor's skip_delay queued action
+    # steps; `get_delayed_frames` realigns them in `step`.
     self.skip_delay = self.delay // self.frame_skip
 
     jax_utils.cast_module_state_to_dtype(
@@ -353,18 +355,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
 
   def initial_state(self, batch_size: int, rngs: nnx.Rngs) -> RecurrentState:
-    # The sample policy's state is carried here rather than taken from the
-    # actor (trajectory.initial_state), since with delay the learner's unroll
-    # starts skip_delay steps before the actor's rollout.
     initial_states = {
-        SAMPLE_POLICY: self.policy.initial_state(batch_size, rngs),
         Q_FUNCTION: self.q_function.initial_state(batch_size, rngs),
         TEACHER: self.teacher.initial_state(batch_size, rngs),
         Q_POLICY: self.q_policy.initial_state(batch_size, rngs),
+        # (sample) policy state is supplied by the actor (trajectory.initial_state)
     }
 
     dtypes = {
-        SAMPLE_POLICY: self.config.sample_policy_dtype,
         Q_FUNCTION: self.config.q_fn_dtype,
         TEACHER: self.config.teacher_dtype,
         Q_POLICY: self.config.q_policy_dtype,
@@ -404,6 +402,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     action = frames.state_action.action
     prev_action = utils.map_nt(lambda t: t[:-1], action)
 
+    # sample policy initial states come from the actor which might be in a different dtype
+    initial_states = jax_utils.cast_floats_to_dtype(
+        initial_states, self.config.sample_policy_dtype.dtype)
     sample_policy_outputs = sample_policy.unroll_with_outputs(frames, initial_states)
 
     # Because the action space is too large, we compute a finite subsample
@@ -701,28 +702,24 @@ class Learner(nnx.Module, tp.Generic[Action]):
       step: int,
       train: bool = True,
   ) -> tuple[dict, dict[str, RecurrentState]]:
-    # The frame-skip converter extended the trajectory by prepending the
-    # trailing skip_delay steps of the previous rollout. The unroll starts at
-    # those prepended states, each paired with the action committed skip_delay
-    # steps later and the rewards that follow it; the trailing skip_delay
-    # states are dropped (they return at the front of the next rollout). All
-    # unrolls below then see exactly what the actor saw when it acted.
-    frames = data.delayed_frames(get_frames(trajectory), self.skip_delay)
-    frames = jax_utils.device_put(frames)
-    # Logits of the (delayed) actions taken; aligned with frames' actions.
-    actor_logits = [
-        utils.map_nt(lambda t: t[self.skip_delay:], so.logits)
-        for so in trajectory.actions
-    ]
+    # Pairs each state with the actions the actor had committed when it saw
+    # that state (see get_delayed_frames), so every unroll below sees exactly
+    # what the actor saw and starts from the actor's own hidden state. The
+    # actor logits come out aligned with the policy outputs. The last
+    # skip_delay transitions have no rewards yet; the Q-function loss skips
+    # them.
+    so_frames = get_delayed_frames(trajectory, self.skip_delay)
+    frames = jax_utils.device_put(from_so_frames(so_frames))
+    actor_logits = [so.logits for so in so_frames.state_action.action]
 
     final_states = dict(initial_states)
     metrics = {}
 
     (
       metrics[SAMPLE_POLICY],
-      final_states[SAMPLE_POLICY],
+      _,
       policy_samples,
-    ) = self.step_sample_policy(frames, initial_states[SAMPLE_POLICY])
+    ) = self.step_sample_policy(frames, trajectory.initial_state)
 
     (
       metrics[Q_FUNCTION],

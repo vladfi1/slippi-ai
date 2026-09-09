@@ -348,6 +348,7 @@ class ExperimentManager:
             dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
                 [batch_size]),
             reward_config=learner._config.reward,
+            skip_delay=learner.skip_delay,
         )
         for port, learner in self._learners.items()
     }

@@ -201,7 +201,6 @@ class LearnerManager(tp.Generic[Action]):
         rewards=rewards,
         is_resetting=is_resetting,
         initial_state=trajectory.initial_state,
-        delayed_actions=trajectory.delayed_actions,
     )
 
     # Remove unsupported metrics from sim env

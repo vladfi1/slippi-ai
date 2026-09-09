@@ -235,6 +235,7 @@ class LearnerManager(tp.Generic[Action]):
         dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
             [self.batch_size]),
         reward_config=config.learner.reward,
+        skip_delay=learner.skip_delay,
     )
 
     with self.reset_profiler:

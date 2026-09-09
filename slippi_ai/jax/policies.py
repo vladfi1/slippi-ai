@@ -66,6 +66,11 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     return self._delay
 
   @property
+  def skip_delay(self) -> int:
+    """Delay in frame-skipped steps."""
+    return self._skip_delay
+
+  @property
   def frame_skip(self) -> int:
     return self._frame_skip
 
