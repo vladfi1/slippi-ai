@@ -36,6 +36,7 @@ def make_source() -> data.DataSource:
       batch_size=FLAGS.batch_size,
       unroll_length=FLAGS.unroll_length,
       extra_frames=1,
+      seed=FLAGS.seed,
   )
 
 

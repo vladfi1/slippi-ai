@@ -8,6 +8,15 @@ import numpy as np
 
 from slippi_ai.jax import jax_utils
 
+try:
+  # linrax.optim builds jnp arrays at import time (linprog's default args).
+  # If the module were first imported inside a jitted function, those arrays
+  # would be tracers of that trace and leak into every later call, so import
+  # it eagerly here rather than lazily in solve_lp_linrax.
+  import linrax.optim as _linrax_optim
+except ImportError:
+  _linrax_optim = None
+
 Parameters = tp.TypeVar('Parameters')
 Variables = tp.TypeVar('Variables')
 
@@ -1058,7 +1067,9 @@ def solve_lp_linrax(
   Returns (x_opt, ineq_dual, stats) where ineq_dual[i] is the dual variable
   for constraint i (shadow price of G[i,:] x <= h[i]).
   """
-  from linrax.optim import linprog
+  if _linrax_optim is None:
+    raise ImportError('linrax is required for solve_lp_linrax.')
+  linprog = _linrax_optim.linprog
 
   m, n = G.shape
   if expected_dtype is not None:
