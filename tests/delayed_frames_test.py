@@ -53,6 +53,24 @@ class DelayedFramesTest(unittest.TestCase):
     # Rewards follow the delayed actions.
     np.testing.assert_array_equal(delayed.reward, t[:-1] + skip_delay)
 
+  def test_keep_prefix_rewards(self):
+    unroll_length, skip_delay, batch_size = 5, 2, 3
+    frames = _make_frames(
+        unroll_length + skip_delay + 1, batch_size, frame_skip=1, with_rating=True)
+    delayed = data.delayed_frames(frames, skip_delay, keep_prefix_rewards=True)
+    dropped = data.delayed_frames(frames, skip_delay)
+
+    # Same states and actions as the default alignment.
+    np.testing.assert_array_equal(
+        delayed.state_action.state, dropped.state_action.state)
+    np.testing.assert_array_equal(
+        delayed.state_action.action[0], dropped.state_action.action[0])
+    np.testing.assert_array_equal(delayed.is_resetting, dropped.is_resetting)
+    # Rewards keep their original index, one per state transition.
+    self.assertEqual(delayed.reward.shape, (unroll_length, batch_size))
+    t = np.broadcast_to(np.arange(unroll_length)[:, np.newaxis], (unroll_length, batch_size))
+    np.testing.assert_array_equal(delayed.reward, t)
+
   def test_missing_rating(self):
     frames = _make_frames(6, 1, frame_skip=1, with_rating=False)
     delayed = data.delayed_frames(frames, 2)
