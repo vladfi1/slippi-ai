@@ -24,6 +24,7 @@ jobs:
       run: |
         pip install -r jax-requirements.txt
         pip install .[train,tf,jax]
+        pip install pytest  # imported by slippi_ai/jax/nash/optimization_test.py
         sudo apt update
         sudo apt install -y zipmerge
 
