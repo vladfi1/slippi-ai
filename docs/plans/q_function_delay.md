@@ -133,7 +133,10 @@ boundary with next-game rewards; a validity mask can be a follow-up.
 ## Follow-ups and validation
 
 - The nash learners have identical stubs and the same frame-skip bug; port them
-  once the helper exists.
+  once the helper exists. Done for `nash/q_fn_learner.py` and
+  `nash/train_q_fn.py` (2026-09-14), verified with
+  `nash/tests/train_q_fn.py --config.delay=3`; `nash/nash_policy_learner.py`
+  still carries its stub behind `assert delay == 0`.
 - Validation: train a Q-function at netplay-typical delay on real data; expect
   value loss to rise vs delay 0 while `uev_delta` stays positive. Then train a
   Q-policy at that delay and evaluate against its teacher at the same delay.

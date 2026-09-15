@@ -17,7 +17,6 @@ NET_NAME = 'tx_like'
 def default_config():
   config = train_q_fn.Config()
 
-  config.delay = 0
   config.data.batch_size = 256
   config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
@@ -59,7 +58,7 @@ if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
 
-  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.95'
   # os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
   # os.environ['TF_CUDA_MALLOC_ASYNC_SUPPORTED_PREALLOC'] = '-1'
 
@@ -125,6 +124,9 @@ if __name__ == '__main__':
       imitation_config = flag_utils.dataclass_from_dict(
           train_lib.Config,
           saving.upgrade_config(imitation_state['config']))
+
+      if config.delay is None:
+        config.delay = imitation_config.policy.delay
 
     char = CHAR.value
 

@@ -288,16 +288,18 @@ def delayed_frames(
   if skip_delay == 0:
     return frames
 
-  state_action = frames.state_action
   unroll_length = frames.is_resetting.shape[0] - skip_delay
-  keep_states = lambda t: t[:unroll_length]
-  keep_actions = lambda t: t[skip_delay:]
+  keep_states = lambda x: x[:unroll_length]
+  keep_actions = lambda x: x[skip_delay:]
 
-  state_action = utils.map_single_structure(keep_states, state_action)
-  state_action = state_action._replace(
-      action=utils.map_single_structure(keep_actions, frames.state_action.action))
+  state_action = StateAction(
+      state=utils.cached_map_nt(Game)(keep_states, frames.state_action.state),
+      action=utils.map_single_structure(keep_actions, frames.state_action.action),
+      name=keep_states(frames.state_action.name),
+      rating=keep_states(frames.state_action.rating),
+  )
 
-  return frames._replace(
+  return Frames(
       state_action=state_action,
       is_resetting=keep_states(frames.is_resetting),
       # Only use rewards that follow actions.

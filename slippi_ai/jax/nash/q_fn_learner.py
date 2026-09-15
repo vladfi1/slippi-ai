@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-from slippi_ai import utils
+from slippi_ai.data import delayed_frames
 from slippi_ai.nash.data import TwoPlayerBatch, batch_to_frames
 from slippi_ai.types import Frames, Controller, S, Action
 from slippi_ai.jax.policies import RecurrentState
@@ -54,7 +54,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
     self.config = config
     self.q_function = q_function
     self.delay = delay
-    assert delay == 0
+
+    frame_skip = q_function.frame_skip
+    if delay % frame_skip != 0:
+      raise ValueError(
+          f'Delay {delay} must be divisible by frame_skip {frame_skip}.')
+    self.skip_delay = delay // frame_skip
+
     if config.num_index_samples < 1:
       raise ValueError('num_index_samples must be at least 1')
     self.eval_num_index_samples = config.eval_num_index_samples
@@ -103,20 +109,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     return self.q_function.initial_state(batch_size, rngs)
 
   def _get_delayed_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
-    state_action = frames.state_action
-    unroll_length = frames.is_resetting.shape[0] - self.delay
-
-    return Frames[S, Action](
-        state_action=embed.StateAction(
-            state=jax.tree.map(
-                lambda t: t[:unroll_length], state_action.state),
-            action=jax.tree.map(
-                lambda t: t[self.delay:], state_action.action),
-            name=state_action.name[:unroll_length],
-        ),
-        is_resetting=frames.is_resetting[:unroll_length],
-        reward=frames.reward[self.delay:],
-    )
+    return delayed_frames(frames, self.skip_delay)
 
   def _encode_frames(
       self, frames: Frames[S, Controller],
