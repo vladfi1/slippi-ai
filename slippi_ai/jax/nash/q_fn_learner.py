@@ -109,7 +109,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     return self.q_function.initial_state(batch_size, rngs)
 
   def _get_delayed_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
-    return delayed_frames(frames, self.skip_delay)
+    # Returns are counted from reward t rather than t + skip_delay, so that
+    # the q-function can score chains of actions that replace the committed
+    # ones (see docs/plans/nash_policy_delay.md).
+    return delayed_frames(frames, self.skip_delay, keep_prefix_rewards=True)
 
   def _encode_frames(
       self, frames: Frames[S, Controller],

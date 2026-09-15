@@ -268,6 +268,7 @@ class Batch(NamedTuple, tp.Generic[S]):
 def delayed_frames(
     frames: Frames[S, Action],
     skip_delay: int,
+    keep_prefix_rewards: bool = False,
 ) -> Frames[S, Action]:
   """Aligns time-major frames for a network that acts with delay.
 
@@ -278,9 +279,17 @@ def delayed_frames(
   (t + D) and predicts or scores action t + D + 1, whose return is counted
   from reward t + D onward. Names and ratings stay aligned with the states.
 
+  With keep_prefix_rewards the rewards are [0, U - 1] instead, so that the
+  return at step t is counted from reward t and includes the rewards that
+  follow the committed actions [t + 1, t + D]. These are a constant when
+  scoring a single action, but not when scoring chains of actions that
+  replace the committed ones (see docs/plans/nash_policy_delay.md).
+
   Args:
     frames: Time-major frames with T + 1 states and actions and T rewards.
     skip_delay: The delay divided by the frame skip.
+    keep_prefix_rewards: Whether to keep the rewards between state t and the
+      delayed action t + D.
 
   Returns:
     Frames with T + 1 - D states and actions and T - D rewards.
@@ -292,18 +301,30 @@ def delayed_frames(
   keep_states = lambda x: x[:unroll_length]
   keep_actions = lambda x: x[skip_delay:]
 
+  # Not cached_map_nt(Game): that walks the static Game type, but the
+  # q-function learners encode before slicing, and the embedding fills in
+  # fields it doesn't use (e.g. the players' controller and nana, skipped
+  # items) with (), which the static walk can't rebuild. The structural map
+  # follows whatever nest is actually present.
+  state = utils.map_single_structure(keep_states, frames.state_action.state)
+
   state_action = StateAction(
-      state=utils.cached_map_nt(Game)(keep_states, frames.state_action.state),
+      state=state,
       action=utils.map_single_structure(keep_actions, frames.state_action.action),
       name=keep_states(frames.state_action.name),
       rating=keep_states(frames.state_action.rating),
   )
 
+  if keep_prefix_rewards:
+    reward = frames.reward[:unroll_length - 1]
+  else:
+    # Only use rewards that follow actions.
+    reward = keep_actions(frames.reward)
+
   return Frames(
       state_action=state_action,
       is_resetting=keep_states(frames.is_resetting),
-      # Only use rewards that follow actions.
-      reward=keep_actions(frames.reward),
+      reward=reward,
   )
 
 
