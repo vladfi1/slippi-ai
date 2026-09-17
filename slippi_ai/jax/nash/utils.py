@@ -120,6 +120,32 @@ def indexed_nash_metrics(
   return mixture_probs, metrics
 
 
+def nash_solution_probs(
+    nash_solution,  # nash.NashVariables with leaves [N, T, B, ...]
+) -> tuple[jax.Array, jax.Array]:
+  """The per-index nash distributions [N, T, B, 2, S] (re-normalized for
+  numerical stability) and nash values [N, T, B, 2] of a nash solution."""
+  nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)
+  nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)
+  nash_values = jnp.stack([
+      nash_solution.p1_nash_value, -nash_solution.p1_nash_value
+  ], axis=-1)
+  return nash_probs, nash_values
+
+
+def merge_players(xs: T, ys: T) -> T:
+  """Pairs each player of one two-player nest with the other player of
+  another: [..., 2, ...] x [..., 2, ...] -> [2, ..., 2, ...], stacking
+  (x1 vs y2) and (y1 vs x2) along a new leading axis."""
+  def merge(x: jax.Array, y: jax.Array) -> jax.Array:
+    x1, x2 = jnp.unstack(x, axis=2)
+    y1, y2 = jnp.unstack(y, axis=2)
+    x1_vs_y2 = jnp.stack([x1, y2], axis=2)
+    y1_vs_x2 = jnp.stack([y1, x2], axis=2)
+    return jnp.stack([x1_vs_y2, y1_vs_x2], axis=0)
+  return jax.tree.map(merge, xs, ys)
+
+
 class NashPayoffDiagnostics(tp.NamedTuple):
   metrics: dict  # index-averaged, [...] (batch-shaped)
   nash_vs_mean: jax.Array  # [N, ..., 2] per-index
