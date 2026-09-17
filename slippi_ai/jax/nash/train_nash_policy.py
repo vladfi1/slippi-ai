@@ -334,9 +334,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   elif restored:
     assert isinstance(restored_state, dict)
+    # The checkpoint saves the q-function trainer's full config.
     q_fn_config = flag_utils.dataclass_from_dict(
-        q_lib.QFunctionConfig, restored_state['q_function_config'])
-    q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config)
+        train_q_fn.Config, restored_state['q_function_config'])
+    q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config.q_function)
     # q_function_optimizer_state = None
 
   else:
