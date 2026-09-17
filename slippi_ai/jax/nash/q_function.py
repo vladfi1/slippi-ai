@@ -11,7 +11,7 @@ from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import networks, jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import epinet as epinet_lib
-from slippi_ai.types import Controller, Action
+from slippi_ai.types import Controller, Action, SkipAction
 
 class QOutputs(tp.NamedTuple):
   returns: jax.Array  # [N, T, B, 2]
@@ -25,6 +25,17 @@ class QOutputs(tp.NamedTuple):
 class UnrollOutputs(tp.NamedTuple):
   values: jax.Array  # [N, T, B, 2]
   q_values: jax.Array  # [N, T, B, 2]
+
+class CoreOutputs(tp.NamedTuple):
+  """Per-step outputs of scan_core; see ensemble_outputs for the loss."""
+  core_outputs: jax.Array  # [T, B, 2, O_core]
+  core_states: RecurrentState  # [T, B, 2], the core_net state after each step
+  action_init_state: RecurrentState  # [T, B, 2, H]
+  final_state: RecurrentState  # [B, 2], after the last step (== core_states[-1])
+  values: jax.Array  # [N, T, B, 2] per epistemic index
+  q_values: jax.Array  # [N, T, B, 2] of the actions taken, per epistemic index
+  last_value: jax.Array  # [N, B, 2], the bootstrap value at step T
+  zs: jax.Array  # [N, B, 1, D_Z]
 
 # Rank2 = tuple[int, int]
 Rank3 = tuple[int, int, int]
@@ -287,31 +298,45 @@ class QFunction(nnx.Module, tp.Generic[Action]):
   def multi_index_q_values_from_action_state(
       self,
       values: jax.Array,  # [N, T, B, 2] per-index values
-      action_init_state: networks.RecurrentState,  # [T, B, 2, H]
-      actions: list[Action],  # frame_skip x [S, T, B, 2]
+      action_init_state: networks.RecurrentState,  # [T, B, 2, H] or [S, T, B, 2, H]
+      actions: SkipAction[Action],  # frame_skip x [S, T, B, 2]
       zs: jax.Array,  # [N, B, 1, D_Z]
       batch_size: tp.Optional[int] = 0,  # 0 is equivalent to vmap
+      per_sample_init: bool = False,
   ) -> jax.Array:  # [N, S, S, T, B, 2]  ([index, p0-idx, p1-idx, ...])
     """Like multi_q_values_from_action_state, but per epistemic index.
 
     The action_net is unrolled once per sample and shared across indices; only
     the q-head is evaluated per index. The values must be the per-index values
     computed with the same zs (e.g. from loss_and_action_state).
+
+    With per_sample_init, action_init_state has a leading sample axis (e.g.
+    from chain_action_init_state), so that each sample's action is scored
+    from its own core state.
     """
     embedded = [self._embed_action(a) for a in actions]  # frame_skip x [S, T, B, 2, E]
     action_inputs = jnp.stack(embedded, axis=1)  # [S, FS, T, B, 2, E]
 
-    def process_one_sample(embedded_fs: jax.Array) -> jax.Array:
-      # embedded_fs: [FS, T, B, 2, E]
+    def process_one_sample(
+        embedded_fs: jax.Array,  # [FS, T, B, 2, E]
+        init_state: networks.RecurrentState,  # [T, B, 2, H]
+    ) -> jax.Array:
       reset = jnp.zeros(embedded_fs.shape[:-1], dtype=bool)
-      outputs, _ = self.action_net.unroll(embedded_fs, reset, action_init_state)
+      outputs, _ = self.action_net.unroll(embedded_fs, reset, init_state)
       return outputs[-1]  # [T, B, 2, O]
 
-    action_outputs = jax_utils.lax_map(
-        process_one_sample,
-        action_inputs,
-        batch_size=batch_size,
-    )
+    if per_sample_init:
+      action_outputs = jax_utils.lax_map(
+          lambda args: process_one_sample(*args),
+          (action_inputs, action_init_state),
+          batch_size=batch_size,
+      )
+    else:
+      action_outputs = jax_utils.lax_map(
+          lambda embedded_fs: process_one_sample(embedded_fs, action_init_state),
+          action_inputs,
+          batch_size=batch_size,
+      )
     p0_outputs, p1_outputs = jnp.unstack(action_outputs, axis=-2)  # [S, T, B, O]
 
     num_samples = action_outputs.shape[0]
@@ -431,11 +456,11 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     # [B, 2] batch shape, giving per-index values with one base-head pass.
     last_value = self._values_from_outputs(last_output, zs)  # [N, B, 2]
 
-    outputs = self._ensemble_outputs(
+    outputs = self.ensemble_outputs(
         frames, values, q_values, last_value, discount, lambda_)
 
     for eval_lambda in eval_lambdas:
-      eval_outputs = self._ensemble_outputs(
+      eval_outputs = self.ensemble_outputs(
           frames, values, q_values, last_value, discount, eval_lambda)
       outputs.metrics[f'lambda_{eval_lambda:.1f}'] = eval_outputs.metrics
 
@@ -484,14 +509,96 @@ class QFunction(nnx.Module, tp.Generic[Action]):
     q_values = self.indexed_q_values_from_action_state(
         values, action_init_state, next_actions, zs)  # [N, T, B, 2]
 
-    outputs = self._ensemble_outputs(
+    outputs = self.ensemble_outputs(
         frames, values, q_values, last_value, discount, lambda_)
 
     return outputs, action_init_state, final_state, zs
 
-  def _ensemble_outputs(
+  def scan_core(
       self,
-      frames: data.Frames[Rank3, Action],
+      frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
+      initial_state: RecurrentState,
+      rngs: nnx.Rngs,  # for sampling epistemic indices
+      num_index_samples: int = 1,
+  ) -> CoreOutputs:
+    """The per-step half of loss_and_action_state.
+
+    Runs the core_net over the T steps of frames and scores the actions
+    taken, returning everything per step: the core_net's outputs and hidden
+    states (which allow re-running it from any step, see
+    chain_action_init_state), the per-index values and q-values, and the
+    bootstrap value at step T. The caller turns these into the loss with
+    ensemble_outputs, possibly on a slice of the steps.
+    """
+    state_action_T = utils.map_nt(lambda x: x[:-1], frames.state_action)
+    core_outputs, core_states = self.core_net.scan(
+        state_action_T, frames.is_resetting[:-1], initial_state)
+    final_state = jax.tree.map(lambda x: x[-1], core_states)
+
+    zs = self.sample_index(
+        rngs, (num_index_samples, frames.reward.shape[1], 1))
+
+    values = self._indexed_values_from_outputs(core_outputs, zs)  # [N, T, B, 2]
+
+    last_output, _ = self.core_net.step_with_reset(
+        utils.map_nt(lambda x: x[-1], frames.state_action),
+        frames.is_resetting[-1], final_state)
+    last_value = self._values_from_outputs(last_output, zs)  # [N, B, 2]
+
+    action_init_state = self._action_net_initial_state(core_outputs)
+
+    next_actions = jax.tree.map(
+        lambda t: t[1:], frames.state_action.action)
+    q_values = self.indexed_q_values_from_action_state(
+        values, action_init_state, next_actions, zs)  # [N, T, B, 2]
+
+    return CoreOutputs(
+        core_outputs=core_outputs,
+        core_states=core_states,
+        action_init_state=action_init_state,
+        final_state=final_state,
+        values=values,
+        q_values=q_values,
+        last_value=last_value,
+        zs=zs,
+    )
+
+  def chain_action_init_state(
+      self,
+      hidden_states: RecurrentState,  # [T', B, 2], core_net states to re-run from
+      inputs: list[data.StateAction[Rank3, Action]],  # Ds x [T', B, 2]
+      resets: list[jax.Array],  # Ds x [T', B, 2]
+      prefix: list[SkipAction[Action]],  # Ds x (frame_skip x [T', B, 2])
+  ) -> RecurrentState:  # [T', B, 2, H]
+    """Re-runs the core_net over a chain prefix and returns the action_net
+    initial state at the last step, from which the chain's final action can be
+    scored (e.g. with indexed_q_values_from_action_state).
+
+    This is the q-function's counterpart of nash/utils.py:chain_log_prob:
+    starting from the hidden states after index t - Ds, step the core_net on
+    the real inputs at indices [t - Ds + 1, t] with the chain's first Ds
+    actions in place of the real ones. The output at index t then conditions
+    on the whole prefix, so the returned state scores the last action as
+    Q(s_<=t, a_<=t; chain). Requires Ds >= 1; with Ds = 0 the action_init_state
+    of scan_core already is the right state.
+    """
+    if len(prefix) != len(inputs) or not prefix:
+      raise ValueError(
+          f'Expected a nonempty prefix of length {len(inputs)}, got {len(prefix)}.')
+
+    # TODO: use scan
+    hidden_state = hidden_states
+    outputs = None
+    for state_action, reset, action in zip(inputs, resets, prefix):
+      outputs, hidden_state = self.core_net.step_with_reset(
+          state_action._replace(action=action), reset, hidden_state)
+
+    assert outputs is not None
+    return self._action_net_initial_state(outputs)
+
+  def ensemble_outputs(
+      self,
+      frames: data.Frames[Rank3, Action],  # [T + 1, B, 2]
       values: jax.Array,  # [N, T, B, 2]
       q_values: jax.Array,  # [N, T, B, 2]
       last_value: jax.Array,  # [N, B, 2]
@@ -499,6 +606,9 @@ class QFunction(nnx.Module, tp.Generic[Action]):
       lambda_: float,
   ) -> QOutputs:
     """Combines per-index predictions into ensemble QOutputs.
+
+    The frames only need their rewards and is_resetting; the values and
+    q_values must line up with the frames' steps (e.g. both sliced).
 
     The loss and metrics are averaged over the sampled indices, while the
     mean prediction over indices is evaluated as an ensemble; its metrics

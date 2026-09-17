@@ -36,6 +36,15 @@ class UnrollWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   final_state: RecurrentState  # [B]
   metrics: dict  # mixed
 
+
+class ScanWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
+  """Like UnrollWithOutputs, with the network's state after every step."""
+  imitation_loss: Array  # [T, B]
+  outputs: Array  # [T, B, O] network outputs, the controller head's inputs
+  hidden_states: RecurrentState  # [T, B], the state after each step
+  final_state: RecurrentState  # [B], == hidden_states[-1]
+  metrics: dict  # mixed
+
 Rank2 = tuple[int, int]
 
 class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
@@ -200,6 +209,48 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
         imitation_loss=policy_loss,
         distances=distance_outputs,
         outputs=outputs,
+        final_state=final_state,
+        metrics=metrics,
+    )
+
+  def scan_with_outputs(
+      self,
+      frames: data.Frames[S, ControllerType],
+      initial_state: RecurrentState,
+  ) -> ScanWithOutputs[S, ControllerType]:
+    """Like unroll_with_outputs, but also returns the per-step hidden states.
+
+    These allow re-running the network from any step, e.g. over a chain of
+    sampled actions (see slippi_ai/jax/nash/utils.py).
+    """
+    inputs = utils.map_nt(lambda t: t[:-1], frames.state_action)
+    outputs, hidden_states = self.network.scan(
+        inputs, frames.is_resetting[:-1], initial_state)
+    final_state = jax.tree.map(lambda x: x[-1], hidden_states)
+
+    action = frames.state_action.action
+    prev_action = utils.map_nt(lambda t: t[:-1], action)
+    next_action = utils.map_nt(lambda t: t[1:], action)
+
+    distance_outputs = self._controller_head.distance_outputs(
+        outputs, prev_action, next_action)
+    losses = [
+        jax_utils.add_n(jax.tree.leaves(do.distance))
+        for do in distance_outputs]
+    policy_loss = jax_utils.add_n(losses) / len(losses)
+
+    metrics = dict(
+        loss=policy_loss,
+        controller={
+            i: types.nt_to_nest(do.distance)
+            for i, do in enumerate(distance_outputs)
+        },
+    )
+
+    return ScanWithOutputs(
+        imitation_loss=policy_loss,
+        outputs=outputs,
+        hidden_states=hidden_states,
         final_state=final_state,
         metrics=metrics,
     )

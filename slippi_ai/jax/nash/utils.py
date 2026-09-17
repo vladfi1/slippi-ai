@@ -2,10 +2,12 @@ import typing as tp
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from slippi_ai import utils
 from slippi_ai.jax import jax_utils
-from slippi_ai.types import Action
+from slippi_ai.jax.policies import Policy
+from slippi_ai.types import Action, Frames, StateAction, S, SkipAction
 
 T = tp.TypeVar('T')
 
@@ -200,3 +202,164 @@ def nash_payoff_diagnostics(
       nash_vs_mean=nash_vs_mean,
       nash_advantage=nash_advantage,
   )
+
+
+# Chains of actions for delayed nash training (docs/plans/nash_policy_delay.md).
+#
+# With skip-delay Ds, the game at index t is over chains of Ds + 1 actions
+# replacing the committed actions [t + 1, t + Ds + 1]. In the delayed-frames
+# alignment (data.delayed_frames) the action at index j is the original action
+# j + Ds, so a chain at index t replaces the delayed-frame actions
+# [t - Ds + 1, t + 1]. A chain is scored or sampled by re-running the network
+# from its hidden state after index t - Ds over the real inputs at indices
+# [t - Ds + 1, t] with the chain's first Ds actions in place of the real ones,
+# after which the network's output at index t predicts or scores the last
+# action. Indices t < Ds have no such hidden state within the chunk, so the
+# game is over the T' = T - Ds valid indices t = Ds + t' for t' in [0, T').
+# The nash policy trainer overlaps consecutive chunks by Ds extra steps so
+# that a chunk's first Ds indices are the previous chunk's last Ds valid ones
+# (nothing is lost), and the learner carries the hidden state after index
+# T' - 1, where the next chunk starts.
+#
+# Shapes below: T is the number of (delayed) steps in a chunk, T' = T - Ds
+# the number of valid indices, and "..." the batch shape ([B, 2] for
+# two-player frames). Chains are lists of skip_delay + 1 actions, each a list
+# of frame_skip controllers, whose leaves are [T', ...] for a single chain
+# and [S, T', ...] for S sampled chains (the sample axis is the leading one).
+
+type Chain[Action] = list[SkipAction[Action]]  # (skip_delay + 1) x (frame_skip x Controller)
+
+
+def time_slices(nest: T, length: int, offsets: tp.Iterable[int]) -> list[T]:
+  """Slices [offset, offset + length) along the leading (time) axis.
+
+  Args:
+    nest: Leaves of shape [T, ...].
+    length: Length of each slice.
+    offsets: Starting index of each slice.
+
+  Returns:
+    One nest per offset, with leaves of shape [length, ...].
+  """
+  return [jax.tree.map(lambda x: x[o:o + length], nest) for o in offsets]
+
+
+def flatten_chain(chain: Chain[Action]) -> list[Action]:
+  """Flattens a chain into its (skip_delay + 1) * frame_skip controllers."""
+  return [controller for action in chain for controller in action]
+
+
+class ChainContext(tp.NamedTuple, tp.Generic[S, T, Action]):
+  """What a network needs to re-run over a chain at each valid index.
+
+  All leaves have leading shape [T', ...], one entry per valid index
+  t = Ds + t'. To re-run at index t, start from hidden_states (after index
+  t - Ds), sample or score the chain's first action against outputs, then
+  for k in [0, Ds) step the network on inputs[k] with the chain's k-th action
+  in place of the real one and sample or score the (k + 1)-th action against
+  the new output. See sample_chain and chain_log_prob.
+  """
+  outputs: jax.Array  # [T', ..., O] network outputs at index t - Ds
+  hidden_states: T  # [T', ...] hidden states after index t - Ds
+  prev_action: SkipAction[Action]  # [T', ...] the (real) action at index t - Ds
+  inputs: list[StateAction[S, Action]]  # Ds x [T', ...] real inputs at indices [t - Ds + 1, t]
+  resets: list[jax.Array]  # Ds x [T', ...] is_resetting at indices [t - Ds + 1, t]
+
+
+def chain_context(
+    outputs: jax.Array,  # [T, ..., O]
+    hidden_states: T,  # [T, ...]
+    frames: Frames[S, Action],  # T + 1 states and actions, T rewards
+    skip_delay: int,
+) -> ChainContext[S, T, Action]:
+  """Builds the ChainContext from a network's scan over T steps of frames."""
+  num_valid = frames.reward.shape[0] - skip_delay
+  keep = lambda x: x[:num_valid]
+  return ChainContext(
+      outputs=keep(outputs),
+      hidden_states=jax.tree.map(keep, hidden_states),
+      prev_action=jax.tree.map(keep, frames.state_action.action),
+      inputs=time_slices(
+          frames.state_action, num_valid, range(1, skip_delay + 1)),
+      resets=time_slices(
+          frames.is_resetting, num_valid, range(1, skip_delay + 1)),
+  )
+
+
+def taken_chain(
+    frames: Frames[S, Action],  # T + 1 states and actions, T rewards
+    skip_delay: int,
+) -> Chain[Action]:  # leaves [T', ...]
+  """The chain of actions actually taken at each valid index t, i.e. the
+  frames' actions at indices [t - Ds + 1, t + 1]."""
+  num_valid = frames.reward.shape[0] - skip_delay
+  return time_slices(
+      frames.state_action.action, num_valid, range(1, skip_delay + 2))
+
+
+def sample_chain(
+    policy: Policy[Action],
+    rngs: nnx.Rngs,
+    context: ChainContext[S, T, Action],
+) -> Chain[Action]:  # leaves [T', ...]
+  """Samples a chain from the policy by re-running it on its own samples.
+
+  Each of the Ds + 1 actions is sampled from the network's output at index
+  t - Ds + k given the previous (sampled) action, exactly as the policy
+  would act online; only the states are the real ones. With Ds = 0 this is
+  a single head sample from context.outputs.
+  """
+  outputs = context.outputs
+  hidden_state = context.hidden_states
+  prev_action = context.prev_action
+  chain: Chain[Action] = []
+
+  # TODO: use scan
+  for k in range(len(context.inputs) + 1):
+    # The k-th action, from the output at index t - Ds + k.
+    sample_outputs = policy.controller_head.sample(rngs, outputs, prev_action)
+    action = [so.controller_state for so in sample_outputs]
+    chain.append(action)
+    if k < len(context.inputs):
+      # Advance to index t - Ds + k + 1 with the sampled action as input.
+      outputs, hidden_state = policy.network.step_with_reset(
+          context.inputs[k]._replace(action=action),
+          context.resets[k], hidden_state)
+    prev_action = action
+
+  return chain
+
+
+def chain_log_prob(
+    policy: Policy[Action],
+    context: ChainContext[S, T, Action],
+    chain: Chain[Action],  # leaves [T', ...]
+) -> jax.Array:  # [T', ...]
+  """Log-probability of a chain under the policy, re-running it on the chain.
+
+  Mirrors sample_chain: the k-th action is scored against the network's
+  output at index t - Ds + k given the previous action. Each action's
+  log-prob is the mean over its frame-skipped controllers (as in the
+  policy's imitation loss); the chain's is their sum. With the chain
+  actually taken this equals the sum of the per-step imitation log-probs
+  over indices [t - Ds, t] (tests/nash_chain_test.py).
+  """
+  outputs = context.outputs
+  hidden_state = context.hidden_states
+  prev_action = context.prev_action
+  total = None
+
+  for k, action in enumerate(chain):
+    # Distance (negative log-prob) of the k-th action at index t - Ds + k.
+    distances = policy.controller_head.distance(outputs, prev_action, action)
+    distance = jax_utils.add_n(distances) / len(distances)
+    total = distance if total is None else total + distance
+    if k < len(context.inputs):
+      # Advance to index t - Ds + k + 1 with the chain's action as input.
+      outputs, hidden_state = policy.network.step_with_reset(
+          context.inputs[k]._replace(action=action),
+          context.resets[k], hidden_state)
+    prev_action = action
+
+  assert total is not None
+  return -total
