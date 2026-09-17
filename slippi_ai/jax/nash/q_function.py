@@ -11,6 +11,7 @@ from slippi_ai.jax.networks import RecurrentState
 from slippi_ai.jax import networks, jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import epinet as epinet_lib
+from slippi_ai.jax.nash import utils as nash_utils
 from slippi_ai.types import Controller, Action, SkipAction
 
 class QOutputs(tp.NamedTuple):
@@ -565,36 +566,24 @@ class QFunction(nnx.Module, tp.Generic[Action]):
 
   def chain_action_init_state(
       self,
-      hidden_states: RecurrentState,  # [T', B, 2], core_net states to re-run from
-      inputs: list[data.StateAction[Rank3, Action]],  # Ds x [T', B, 2]
-      resets: list[jax.Array],  # Ds x [T', B, 2]
-      prefix: list[SkipAction[Action]],  # Ds x (frame_skip x [T', B, 2])
+      context: nash_utils.ChainContext[Rank3, RecurrentState, Action],
+      chain: tp.Sequence[SkipAction[Action]],  # at least Ds x (frame_skip x [T', B, 2])
   ) -> RecurrentState:  # [T', B, 2, H]
-    """Re-runs the core_net over a chain prefix and returns the action_net
-    initial state at the last step, from which the chain's final action can be
-    scored (e.g. with indexed_q_values_from_action_state).
+    """Re-runs the core_net over a chain's first Ds actions and returns the
+    action_net initial state at the last step, from which the chain's final
+    action can be scored (e.g. with indexed_q_values_from_action_state).
 
     This is the q-function's counterpart of nash/utils.py:chain_log_prob:
-    starting from the hidden states after index t - Ds, step the core_net on
-    the real inputs at indices [t - Ds + 1, t] with the chain's first Ds
-    actions in place of the real ones. The output at index t then conditions
-    on the whole prefix, so the returned state scores the last action as
-    Q(s_<=t, a_<=t; chain). Requires Ds >= 1; with Ds = 0 the action_init_state
-    of scan_core already is the right state.
+    starting from the core_net's outputs and hidden states after index
+    t - Ds (see scan_core), step it on the real inputs at indices
+    [t - Ds + 1, t] with the chain's first Ds actions in place of the real
+    ones. The output at index t then conditions on the whole prefix, so the
+    returned state scores the last action as Q(s_<=t, a_<=t; chain). With
+    Ds = 0 nothing is re-run and this is the action_init_state of the
+    context's outputs.
     """
-    if len(prefix) != len(inputs) or not prefix:
-      raise ValueError(
-          f'Expected a nonempty prefix of length {len(inputs)}, got {len(prefix)}.')
-
-    # TODO: use scan
-    hidden_state = hidden_states
-    outputs = None
-    for state_action, reset, action in zip(inputs, resets, prefix):
-      outputs, hidden_state = self.core_net.step_with_reset(
-          state_action._replace(action=action), reset, hidden_state)
-
-    assert outputs is not None
-    return self._action_net_initial_state(outputs)
+    steps = context.rerun_chain(self.core_net, chain)
+    return self._action_net_initial_state(steps[-1].outputs)
 
   def ensemble_outputs(
       self,
