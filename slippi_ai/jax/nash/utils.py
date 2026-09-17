@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai import utils
-from slippi_ai.jax import jax_utils
+from slippi_ai.jax import jax_utils, networks
 from slippi_ai.jax.policies import Policy
 from slippi_ai.types import Action, Frames, StateAction, S, SkipAction
 
@@ -249,6 +249,13 @@ def flatten_chain(chain: Chain[Action]) -> list[Action]:
   return [controller for action in chain for controller in action]
 
 
+class RerunStep(tp.NamedTuple, tp.Generic[Action]):
+  """A network's output at one index of a chain re-run, with the action it
+  was fed there (the previous action in the chain)."""
+  outputs: jax.Array  # [T', ..., O]
+  prev_action: SkipAction[Action]  # [T', ...]
+
+
 class ChainContext(tp.NamedTuple, tp.Generic[S, T, Action]):
   """What a network needs to re-run over a chain at each valid index.
 
@@ -257,13 +264,56 @@ class ChainContext(tp.NamedTuple, tp.Generic[S, T, Action]):
   t - Ds), sample or score the chain's first action against outputs, then
   for k in [0, Ds) step the network on inputs[k] with the chain's k-th action
   in place of the real one and sample or score the (k + 1)-th action against
-  the new output. See sample_chain and chain_log_prob.
+  the new output. See rerun.
   """
   outputs: jax.Array  # [T', ..., O] network outputs at index t - Ds
   hidden_states: T  # [T', ...] hidden states after index t - Ds
   prev_action: SkipAction[Action]  # [T', ...] the (real) action at index t - Ds
   inputs: list[StateAction[S, Action]]  # Ds x [T', ...] real inputs at indices [t - Ds + 1, t]
   resets: list[jax.Array]  # Ds x [T', ...] is_resetting at indices [t - Ds + 1, t]
+
+  @property
+  def skip_delay(self) -> int:
+    return len(self.inputs)
+
+  def rerun(
+      self,
+      network: networks.StateActionNetwork[Action],
+      act: tp.Callable[[int, jax.Array, SkipAction[Action]], SkipAction[Action]],
+  ) -> list[RerunStep[Action]]:
+    """Re-runs the network over a chain chosen one action at a time.
+
+    Starting from the output and hidden state at index t - Ds, for k in
+    [0, Ds) the chain's k-th action is act(k, outputs, prev_action), given
+    the output at index t - Ds + k and the action before it, and the network
+    is then stepped on inputs[k] with that action in place of the real one
+    (honouring resets[k]). Returns the Ds + 1 outputs at indices [t - Ds, t],
+    each paired with the action the network was fed there, i.e. what the
+    chain's k-th action is sampled or scored against; the last output
+    conditions on the whole chain prefix. With Ds = 0 nothing is re-run and
+    the single step is the context's own output and previous action.
+    """
+    step = RerunStep(self.outputs, self.prev_action)
+    hidden_state = self.hidden_states
+    steps = [step]
+    for k, (inputs, reset) in enumerate(zip(self.inputs, self.resets)):
+      action = act(k, step.outputs, step.prev_action)
+      outputs, hidden_state = network.step_with_reset(
+          inputs._replace(action=action), reset, hidden_state)
+      step = RerunStep(outputs, action)
+      steps.append(step)
+    return steps
+
+  def rerun_chain(
+      self,
+      network: networks.StateActionNetwork[Action],
+      chain: tp.Sequence[SkipAction[Action]],  # at least Ds actions
+  ) -> list[RerunStep[Action]]:
+    """Re-runs the network over a given chain's first Ds actions."""
+    if len(chain) < self.skip_delay:
+      raise ValueError(
+          f'Expected at least {self.skip_delay} actions, got {len(chain)}.')
+    return self.rerun(network, lambda k, outputs, prev_action: chain[k])
 
 
 def chain_context(
@@ -309,24 +359,17 @@ def sample_chain(
   would act online; only the states are the real ones. With Ds = 0 this is
   a single head sample from context.outputs.
   """
-  outputs = context.outputs
-  hidden_state = context.hidden_states
-  prev_action = context.prev_action
   chain: Chain[Action] = []
 
-  # TODO: use scan
-  for k in range(len(context.inputs) + 1):
-    # The k-th action, from the output at index t - Ds + k.
+  def sample(k: int, outputs: jax.Array, prev_action: SkipAction[Action]):
+    del k
     sample_outputs = policy.controller_head.sample(rngs, outputs, prev_action)
-    action = [so.controller_state for so in sample_outputs]
-    chain.append(action)
-    if k < len(context.inputs):
-      # Advance to index t - Ds + k + 1 with the sampled action as input.
-      outputs, hidden_state = policy.network.step_with_reset(
-          context.inputs[k]._replace(action=action),
-          context.resets[k], hidden_state)
-    prev_action = action
+    chain.append([so.controller_state for so in sample_outputs])
+    return chain[-1]
 
+  steps = context.rerun(policy.network, sample)
+  # The last action, from the output at index t.
+  sample(len(chain), *steps[-1])
   return chain
 
 
@@ -344,22 +387,16 @@ def chain_log_prob(
   actually taken this equals the sum of the per-step imitation log-probs
   over indices [t - Ds, t] (tests/nash_chain_test.py).
   """
-  outputs = context.outputs
-  hidden_state = context.hidden_states
-  prev_action = context.prev_action
-  total = None
+  if len(chain) != context.skip_delay + 1:
+    raise ValueError(
+        f'Expected a chain of {context.skip_delay + 1} actions, got {len(chain)}.')
+  steps = context.rerun_chain(policy.network, chain)
 
-  for k, action in enumerate(chain):
-    # Distance (negative log-prob) of the k-th action at index t - Ds + k.
-    distances = policy.controller_head.distance(outputs, prev_action, action)
-    distance = jax_utils.add_n(distances) / len(distances)
-    total = distance if total is None else total + distance
-    if k < len(context.inputs):
-      # Advance to index t - Ds + k + 1 with the chain's action as input.
-      outputs, hidden_state = policy.network.step_with_reset(
-          context.inputs[k]._replace(action=action),
-          context.resets[k], hidden_state)
-    prev_action = action
+  distances = []
+  for step, action in zip(steps, chain):
+    controller_distances = policy.controller_head.distance(
+        step.outputs, step.prev_action, action)
+    distances.append(
+        jax_utils.add_n(controller_distances) / len(controller_distances))
 
-  assert total is not None
-  return -total
+  return -jax_utils.add_n(distances)

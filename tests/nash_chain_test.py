@@ -1,5 +1,6 @@
 """Tests for the action-chain helpers in slippi_ai.jax.nash.utils."""
 
+import pickle
 import unittest
 
 import numpy as np
@@ -7,8 +8,10 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from slippi_ai import data, paths
-from slippi_ai.jax import saving
+from slippi_ai import data, flag_utils, paths
+from slippi_ai.jax import jax_utils, saving
+from slippi_ai.jax.nash import train_q_fn
+from slippi_ai.jax.nash import q_function as q_lib
 from slippi_ai.jax.nash import utils as nash_utils
 
 
@@ -134,6 +137,54 @@ class ChainRerunTest(unittest.TestCase):
         per_step[k:k + num_valid] for k in range(skip_delay + 1))
     np.testing.assert_allclose(
         np.asarray(log_prob), np.asarray(expected), rtol=1e-4, atol=1e-4)
+
+  def test_q_function_taken_chain_matches_scan(self):
+    """The q-function's re-run over the chain actually taken reproduces the
+    action_net initial states of its main scan (at every skip-delay)."""
+    unroll_length, batch_size = 7, 3
+    with open(paths.JAX_NASH_Q_FN_CKPT, 'rb') as f:
+      q_fn_state = pickle.load(f)
+    q_fn_config = flag_utils.dataclass_from_dict(
+        train_q_fn.Config, q_fn_state['config'])
+    q_function = q_lib.build_q_function(nnx.Rngs(0), q_fn_config.q_function)
+    jax_utils.set_module_state(
+        q_function, jax.tree.map(jnp.asarray, q_fn_state['state']['q_function']))
+    frame_skip = q_function.frame_skip
+
+    num_states = unroll_length + 1
+    shape = (num_states, batch_size, 2)
+    state_action = q_function.core_net.dummy(shape)
+    key = jax.random.key(0)
+
+    def randomize(x):
+      nonlocal key
+      if not hasattr(x, 'dtype') or not jnp.issubdtype(x.dtype, jnp.floating):
+        return x
+      key, subkey = jax.random.split(key)
+      return jax.random.normal(subkey, x.shape, x.dtype)
+
+    state_action = jax.tree.map(randomize, state_action)
+    state_action = state_action._replace(
+        action=[q_function.embed_action.dummy(shape) for _ in range(frame_skip)])
+    frames = data.Frames(
+        state_action=state_action,
+        is_resetting=jnp.zeros(shape, dtype=bool),
+        reward=jnp.zeros((unroll_length, batch_size, 2), dtype=jnp.float32),
+    )
+
+    initial_state = q_function.initial_state(batch_size, nnx.Rngs(0))
+    core = q_function.scan_core(frames, initial_state, rngs=nnx.Rngs(1))
+
+    for skip_delay in [0, 2]:
+      context = nash_utils.chain_context(
+          core.core_outputs, core.core_states, frames, skip_delay)
+      chain = nash_utils.taken_chain(frames, skip_delay)
+      action_init = q_function.chain_action_init_state(context, chain)
+      expected = jax.tree.map(lambda x: x[skip_delay:], core.action_init_state)
+      jax.tree.map(
+          lambda a, b: np.testing.assert_allclose(
+              np.asarray(a), np.asarray(b), rtol=1e-4, atol=1e-4),
+          action_init, expected)
 
 
 if __name__ == '__main__':
