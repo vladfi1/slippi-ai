@@ -1,6 +1,7 @@
 # Plan: delay support for nash q-policy training via action chains
 
-Status: Phases 1-3 implemented (2026-09-15); Phase 4 is proposed. Builds on
+Status: Phases 1-3 implemented (2026-09-15) and the restructuring
+follow-ups done (2026-09-16); Phase 4 is proposed. Builds on
 `docs/plans/q_function_delay.md`, which ported the delayed-frames alignment to
 `nash/q_fn_learner.py`.
 
@@ -139,15 +140,15 @@ Files: `slippi_ai/jax/nash/nash_policy_learner.py`,
 
 Implementation notes: `Policy.scan_with_outputs` and
 `QFunction.scan_core` expose the per-index hidden states;
-`nash_utils.chain_context`, `sample_chain`, `chain_log_prob` and
-`taken_chain` are the re-run helpers; `QFunction.chain_action_init_state`
-re-runs the core net over a chain prefix and
-`multi_index_q_values_from_action_state(per_sample_init=True)` scores the
-last actions from per-sample core states. At `Ds = 0` the learner takes the
-old code path (no re-run, shared core state). `QFunction.scan_core` returns
-the per-step values and `ensemble_outputs` turns a slice of them into the
-loss, so the learner computes the q-function loss on the valid indices only
-and slices the imitation losses the same way.
+`nash_utils.ChainContext.rerun` is the one re-run loop, over which
+`sample_chain`, `chain_log_prob` and `QFunction.chain_action_init_state`
+are thin wrappers, and `multi_index_q_values_from_action_state(
+per_sample_init=True)` scores the last actions from per-sample core states.
+At `Ds = 0` the re-run is empty, so the same code path serves every delay.
+`QFunction.scan_core` returns the per-step values and `ensemble_outputs`
+turns a slice of them into the loss, so the learner computes the q-function
+loss on the valid indices only and slices the imitation losses the same
+way. `nash_utils.ChunkLayout` holds the chunk geometry (see the follow-ups).
 
 Validation: `tests/nash_chain_test.py` checks the slicing alignment on
 index-valued frames and that re-running the toy policy over the chain it
@@ -166,10 +167,14 @@ Files: `slippi_ai/jax/nash/train_nash_policy.py`.
 - Add `override_delay` (as `train_q_rl.py` has) so the delay-0 toy imitation
   checkpoint can be used at delay 3 in tests; the saved nash policy config
   records the effective delay.
-- `extra_frames = frame_skip + 2 * delay`: the chunk has `U + 2 Ds + 1`
-  steps, the delayed slice keeps states `[0, U + Ds]`, actions
-  `[Ds, U + 2 Ds]` and rewards `[0, U + Ds - 1]`, and the game covers indices
-  `[Ds, U + Ds)`.
+- `extra_frames = frame_skip + 2 * delay` (`ChunkLayout.extra_frames`, which
+  the trainer asks the learner for): the chunk has `U + 2 Ds + 1` steps, the
+  delayed slice keeps states `[0, U + Ds]`, actions `[Ds, U + 2 Ds]` and
+  rewards `[0, U + Ds - 1]`, and the game covers indices `[Ds, U + Ds)`.
+- The q-function is passed to `run_nash_policy_qs` as its module rather
+  than closed over by the nash-policy unroll (as it was before delay), so
+  its state is traced and can be updated in place, which is what Phase 4
+  needs to train it alongside the nash policy.
 
 Validation: a `delay=3` toy q-function (`nash/tests/train_q_fn.py
 --config.delay=3`) chained into `nash/tests/train_nash_policy.py
@@ -187,39 +192,47 @@ delayed alignment and the Phase 2 machinery applies unchanged. With prefix
 rewards every one of the `T` rewards pairs with a state, so unlike the Q-RL
 case no transitions are lost; only the bootstrap needs the queued actions.
 
-## Optional follow-ups: restructuring
+## Restructuring follow-ups (done 2026-09-16)
 
-The chain machinery works but spreads the same ideas over several places.
+The chain machinery worked but spread the same ideas over several places.
 In rough order of payoff:
 
 1. **One re-run loop.** `nash_utils.sample_chain`, `nash_utils.chain_log_prob`
-   and `QFunction.chain_action_init_state` are the same loop: start from the
+   and `QFunction.chain_action_init_state` were the same loop: start from the
    per-index states, step a network over the context's inputs with the
-   chain's actions, and do something with each output. A
-   `ChainContext.rerun(network, actions)` generator yielding the output at
-   each step would reduce the three to one, and the q-function's version
-   would no longer need its own `inputs` and `resets` arguments.
-2. **Drop the `Ds = 0` special case in the q-function unroll.** It only
-   exists to reuse the shared-init path. If `chain_action_init_state` accepted
-   an empty prefix (returning the action-init state of the given core
-   outputs), the unroll would always use `per_sample_init=True`, and the
-   matching branch in the nash-policy diagnostics disappears. The action net
-   already runs once per sample, so the cost is unchanged.
-3. **A `ChunkLayout` object.** `_get_delayed_frames`, `_num_valid`,
-   `_game_steps`, `_carried_state`, the `time_slices` calls and the trainer's
-   `extra_frames` formula all encode one layout (unroll length, `Ds`, where
-   the game window sits, where the next chunk starts). One small object built
-   from `skip_delay` offering `delayed_frames`, `game_slice`,
-   `carried_state`, `context` and `extra_frames` would let the trainer ask
-   the learner for the overlap, and the RL learner could reuse it (Phase 4).
-4. **Name the q-function unroll's outputs.** `QFunctionOutputs` is a
-   positional 8-tuple; a NamedTuple with a parallel NamedTuple of partition
-   specs would let `step` unpack by name.
-5. **Split `_unroll_nash_policy`.** It has three concerns: building the
-   regression target (nash probs, mixture, subsampling) into a `NashTargets`
-   tuple, the chain cross-entropy, and the nash-policy-versus-nash diagnostic,
-   which closes over a dozen locals and would be clearer as a method with
-   explicit inputs. Its `merge` helper is generic enough for `nash_utils`.
+   chain's actions, and do something with each output. Done:
+   `ChainContext.rerun(network, act)` steps the network over a chain chosen
+   one action at a time by `act(k, outputs, prev_action)` and returns the
+   `Ds + 1` per-index `(outputs, prev_action)` steps (`rerun_chain` for a
+   known chain); the three are wrappers over it, and the q-function's
+   version takes the `ChainContext` built from its `scan_core` outputs
+   instead of its own `inputs` and `resets` arguments. A generator was
+   considered but the sampler needs to feed each sampled action back, which
+   a callback expresses more plainly than `send`.
+2. **Drop the `Ds = 0` special case in the q-function unroll.** Done: with
+   an empty prefix `chain_action_init_state` returns the action-init state
+   of the context's outputs, the unroll always uses `per_sample_init=True`,
+   and the matching branch in the nash-policy diagnostics is gone. The
+   q-function unroll passes its per-step core outputs and states through
+   (`QFunctionOutputs.core_outputs`, `core_states`) so the diagnostics can
+   rebuild the context. `tests/nash_chain_test.py` checks that the toy
+   q-function's re-run over the chain actually taken reproduces its scan's
+   action-init states at `Ds = 0` and `2`.
+3. **A `ChunkLayout` object.** Done: `nash_utils.ChunkLayout(delay,
+   frame_skip)` offers `extra_frames`, `delayed_frames`, `num_valid`,
+   `game_slice`, `carried_state`, `context` and `taken_chain`; the learner
+   holds one and the trainer asks it for the chunk overlap. The RL learner
+   can reuse it (Phase 4).
+4. **Name the q-function unroll's outputs.** Done: `QFunctionOutputs` with
+   a parallel `QFunctionOutputSpecs`. Note jax only matches a pytree prefix
+   of the same named-tuple type, so the specs are converted with
+   `as_prefix()` where they serve as an input spec.
+5. **Split `_unroll_nash_policy`.** Done: `_nash_targets` builds the
+   regression target (nash mixture, subsampling, diagnostics of the nash
+   solution) into a `NashTargets` tuple and `_chain_cross_entropy` scores
+   the chains against it; the nash-policy-versus-nash diagnostic was already
+   its own method (item 6). `nash_utils.nash_solution_probs` and
+   `nash_utils.merge_players` hold the shared pieces.
 6. **Score the nash policy's chain in a q-function step.** Done
    (2026-09-16): the nash-policy loss returns its sampled chain and
    `_nash_policy_qs`, a separate sharded function on the q-function, scores
@@ -229,9 +242,13 @@ In rough order of payoff:
    per-sample core re-run in the q-function unroll also had to become an
    nnx-aware map with the q-function as an argument. The diagnostic now uses
    all S samples regardless of `subsample`.
-7. **Measure `scan` versus `unroll`.** The three networks now use `scan`,
-   which steps per-timestep cells, where `unroll` may use a fused recurrent
-   kernel. Worth measuring on the GPU before a long run.
+7. **Measure `scan` versus `unroll`.** Done: both lower to the same
+   per-step `nnx.scan` (`jax_utils.dynamic_rnn` and `scan_rnn`); `scan`
+   only additionally stacks the per-step states. Measured on an RTX PRO
+   5000 (`tx_like`, LSTM, 84 steps, batch 256 or 512 x 2 players, hidden
+   1024 x 1 layer or 512 x 2 layers): forward and gradient times agree
+   within noise (for example 43 vs 42 ms forward and 121 vs 121 ms with
+   gradients at hidden 1024, batch 512). Nothing to recover here.
 
 ## Issues and risks
 
