@@ -96,10 +96,19 @@ class QFunctionOutputSpecs(tp.NamedTuple):
   q_values: PS
   zs: PS
 
-  def as_prefix(self) -> QFunctionOutputs:
+  def as_prefix(self) -> tp.Self:
     """As a pytree prefix of a QFunctionOutputs (which must have the same
     named-tuple type for jax to match them)."""
-    return QFunctionOutputs(*self)
+    return QFunctionOutputs(*self)  # type: ignore
+
+
+class NashTargets(tp.NamedTuple, tp.Generic[Action]):
+  """The nash_policy's regression target at each game index."""
+  mixture_probs: jax.Array  # [T', B, 2, K] mixture over epistemic indices
+  chains: nash_utils.Chain[Action]  # leaves [K, T', B, 2], the K chains
+  num_samples: int  # K
+  microbatch_size: int  # for mapping over the K chains
+  metrics: dict  # [T', B, ...]
 
 
 class ShardingKwargs(tp.TypedDict):
@@ -311,9 +320,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
             policy_samples, q_specs.as_prefix(), nash_chain, nash_solution),
         extra_out_specs=None,
     )
-    self.run_nash_policy_qs = jax_utils.shard_map_loss_fn_with_rngs(
+    self.run_nash_policy_qs = jax_utils.shard_map_loss_fn(
         module=self.q_function,
-        rngs=rngs,
         loss_fn=self._nash_policy_qs,
         mesh=mesh,
         **nash_policy_qs_specs,
@@ -409,7 +417,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
       *,
       num_index_samples: int,
-  ) -> tuple[Loss, tp.Any]:  # (loss, *QFunctionOutputs)
+  ) -> tuple[Loss, ...]:  # (loss, *QFunctionOutputs)
     """Unrolls the q_function and scores every pair of sampled chains.
 
     Returns the q_function's own loss over the game indices (as a
@@ -625,70 +633,9 @@ class Learner(nnx.Module, tp.Generic[Action]):
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
 
-    # Diagnostics are computed per epistemic index and averaged; the loss
-    # regresses to the mixture of the per-index nash distributions.
-    index_mean = lambda x: jnp.mean(x, axis=0)
-
     chains, num_samples = self._chains(policy_samples, frames)
     del policy_samples
-
-    # TODO: this could belong in the sample policy unroll
-    unique_fraction = nash_utils.compute_unique_fraction(
-        nash_utils.flatten_chain(chains))
-
-    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [N, T', B, 2, S]
-    nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)  # re-normalize for numerical stability
-
-    # The regression target is the mixture over epistemic indices.
-    mixture_probs, indexed_metrics = nash_utils.indexed_nash_metrics(nash_probs)
-
-    nash_values = jnp.stack([
-        nash_solution.p1_nash_value, -nash_solution.p1_nash_value
-    ], axis=-1)  # [N, T', B, 2]
-
-    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T', B, S, S]
-    diagnostics = nash_utils.nash_payoff_diagnostics(
-        payoff_matrices, nash_probs, nash_values)
-
-    # Computed before any subsampling reorders the sample axis: the action
-    # taken is the last sample.
-    action_taken_nash_prob = None
-    if self.config.include_action_taken_in_samples:
-      action_taken_nash_prob = jax.lax.index_in_dim(
-          mixture_probs, index=-1, axis=-1, keepdims=False)  # [T', B, 2]
-
-    nash_policy_mbs = self.config.sample_batch_size
-
-    # Save on computation by only training on the highest probability subsample.
-    if self.config.subsample:
-      if self.config.subsample > num_samples:
-        raise ValueError(f'subsample {self.config.subsample} is greater than num_samples {num_samples}')
-
-      # Select by mixture probability; subset the per-index distributions with
-      # the same indices so the diagnostics below stay consistent.
-      indices = jnp.argsort(
-          mixture_probs, axis=-1, descending=True)[..., :self.config.subsample]
-      mixture_probs = jnp.take_along_axis(mixture_probs, indices, axis=-1)
-      mixture_probs = mixture_probs / jnp.sum(mixture_probs, axis=-1, keepdims=True)  # re-normalize
-
-      nash_probs = jnp.take_along_axis(
-          nash_probs, jnp.expand_dims(indices, 0), axis=-1)  # [N, T', B, 2, K]
-      nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)
-
-      indices = jnp.moveaxis(indices, -1, _SAMPLE_AXIS)  # [K, T', B, 2]
-
-      def take_samples(x: jax.Array) -> jax.Array:  # [S, T', B, 2, ...] -> [K, ...]
-        # Broadcast the indices over any trailing (e.g. hidden) dims.
-        idx = jnp.reshape(indices, indices.shape + (1,) * (x.ndim - indices.ndim))
-        return jnp.take_along_axis(x, idx, axis=_SAMPLE_AXIS)
-
-      chains = utils.map_nt(take_samples, chains)
-      num_samples = self.config.subsample
-
-      if self.config.subsample < nash_policy_mbs:
-        nash_policy_mbs = 0
-      elif nash_policy_mbs > 0 and self.config.subsample % nash_policy_mbs != 0:
-        raise ValueError(f'subsample {self.config.subsample} is not divisible by sample_batch_size {nash_policy_mbs}')
+    targets = self._nash_targets(chains, num_samples, q_values, nash_solution)
 
     nash_policy_outputs = nash_policy.scan_with_outputs(
         frames, initial_states)
@@ -697,32 +644,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     context = self.layout.context(
         nash_policy_outputs.outputs, nash_policy_outputs.hidden_states, frames)
 
-    # Note that this inefficiently recomputes the controller head encoder
-    # outputs for each sample.
-    def nash_policy_distance_fn(
-        nash_policy: Policy[Action], /,
-        chain: nash_utils.Chain[Action],  # leaves [T', B, 2]
-    ) -> jax.Array:  # [T', B, 2]
-      return -nash_utils.chain_log_prob(nash_policy, context, chain)
-
-    if nash_policy_mbs > 0:
-      batch_distance_fn = jax_utils.lax_map_fn(
-          nnx.remat(nash_policy_distance_fn),
-          microbatch_size=nash_policy_mbs,
-          input_batch_dims=(None, 0),
-          output_batch_dims=0,
-      )
-    else:
-      batch_distance_fn = nnx.vmap(
-          nash_policy_distance_fn,
-          in_axes=(None, 0), out_axes=0,
-      )
-
-    nash_policy_log_probs = -batch_distance_fn(nash_policy, chains)
-    nash_policy_log_probs = jnp.moveaxis(nash_policy_log_probs, _SAMPLE_AXIS, -1)  # [T', B, 2, S]
-    # Cross-entropy to the mixture over epistemic indices of the per-index
-    # nash distributions.
-    nash_cross_entropy = -jnp.vecdot(mixture_probs, nash_policy_log_probs, axis=-1)  # [T', B, 2]
+    nash_cross_entropy = self._chain_cross_entropy(
+        nash_policy, context, targets)  # [T', B, 2]
 
     losses = [
         self.config.nash_weight * nash_cross_entropy,
@@ -731,19 +654,14 @@ class Learner(nnx.Module, tp.Generic[Action]):
     nash_policy_total_loss = jax_utils.add_n(losses)
 
     metrics = dict(
-        indexed_metrics,
+        targets.metrics,
         nash_cross_entropy=nash_cross_entropy,
         imitation_loss=nash_policy_imitation_loss,
         total_loss=nash_policy_total_loss,
-        unique_fraction=unique_fraction,
     )
-    metrics.update(diagnostics.metrics)
 
     # Sampled as the nash_policy would act online; scored in _nash_policy_qs.
     nash_policy_chain = nash_utils.sample_chain(nash_policy, rngs, context)
-
-    if action_taken_nash_prob is not None:
-      metrics['action_taken_nash_prob'] = action_taken_nash_prob
 
     bm_loss = jnp.mean(nash_policy_total_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
@@ -754,12 +672,109 @@ class Learner(nnx.Module, tp.Generic[Action]):
         self.layout.carried_state(nash_policy_outputs.hidden_states, frames),
         nash_policy_chain)
 
+  def _nash_targets(
+      self,
+      chains: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
+      num_samples: int,  # S
+      q_values: jax.Array,  # [N, S, S, T', B, 2]
+      nash_solution: nash.NashVariables,  # [N, T', B]
+  ) -> NashTargets:
+    """Builds the regression target from the nash solution.
+
+    The target is the mixture over epistemic indices of the per-index nash
+    distributions over the S chains, optionally restricted to the K =
+    subsample most likely chains (re-normalized). Also computes the
+    diagnostics of the nash solution itself (its metrics are per epistemic
+    index and averaged).
+    """
+    # TODO: this could belong in the sample policy unroll
+    unique_fraction = nash_utils.compute_unique_fraction(
+        nash_utils.flatten_chain(chains))
+
+    nash_probs, nash_values = nash_utils.nash_solution_probs(nash_solution)
+    mixture_probs, metrics = nash_utils.indexed_nash_metrics(nash_probs)
+    metrics['unique_fraction'] = unique_fraction
+
+    payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T', B, S, S]
+    diagnostics = nash_utils.nash_payoff_diagnostics(
+        payoff_matrices, nash_probs, nash_values)
+    metrics.update(diagnostics.metrics)
+
+    # Computed before any subsampling reorders the sample axis: the action
+    # taken is the last sample.
+    if self.config.include_action_taken_in_samples:
+      metrics['action_taken_nash_prob'] = jax.lax.index_in_dim(
+          mixture_probs, index=-1, axis=-1, keepdims=False)  # [T', B, 2]
+
+    microbatch_size = self.config.sample_batch_size
+
+    # Save on computation by only training on the highest probability subsample.
+    if self.config.subsample:
+      if self.config.subsample > num_samples:
+        raise ValueError(f'subsample {self.config.subsample} is greater than num_samples {num_samples}')
+
+      indices = jnp.argsort(
+          mixture_probs, axis=-1, descending=True)[..., :self.config.subsample]
+      mixture_probs = jnp.take_along_axis(mixture_probs, indices, axis=-1)
+      mixture_probs = mixture_probs / jnp.sum(mixture_probs, axis=-1, keepdims=True)  # re-normalize
+
+      indices = jnp.moveaxis(indices, -1, _SAMPLE_AXIS)  # [K, T', B, 2]
+      chains = utils.map_nt(
+          lambda x: jnp.take_along_axis(x, indices, axis=_SAMPLE_AXIS), chains)
+      num_samples = self.config.subsample
+
+      if self.config.subsample < microbatch_size:
+        microbatch_size = 0
+      elif microbatch_size > 0 and self.config.subsample % microbatch_size != 0:
+        raise ValueError(f'subsample {self.config.subsample} is not divisible by sample_batch_size {microbatch_size}')
+
+    return NashTargets(
+        mixture_probs=mixture_probs,
+        chains=chains,
+        num_samples=num_samples,
+        microbatch_size=microbatch_size,
+        metrics=metrics,
+    )
+
+  def _chain_cross_entropy(
+      self,
+      nash_policy: Policy[Action],
+      context: nash_utils.ChainContext,  # from the nash_policy's scan
+      targets: NashTargets,
+  ) -> jax.Array:  # [T', B, 2]
+    """Cross-entropy from the target mixture over chains to the
+    nash_policy's chain log-probs."""
+
+    # Note that this inefficiently recomputes the controller head encoder
+    # outputs for each sample.
+    def nash_policy_distance_fn(
+        nash_policy: Policy[Action], /,
+        chain: nash_utils.Chain[Action],  # leaves [T', B, 2]
+    ) -> jax.Array:  # [T', B, 2]
+      return -nash_utils.chain_log_prob(nash_policy, context, chain)
+
+    if targets.microbatch_size > 0:
+      batch_distance_fn = jax_utils.lax_map_fn(
+          nnx.remat(nash_policy_distance_fn),
+          microbatch_size=targets.microbatch_size,
+          input_batch_dims=(None, 0),
+          output_batch_dims=0,
+      )
+    else:
+      batch_distance_fn = nnx.vmap(
+          nash_policy_distance_fn,
+          in_axes=(None, 0), out_axes=0,
+      )
+
+    log_probs = -batch_distance_fn(nash_policy, targets.chains)
+    log_probs = jnp.moveaxis(log_probs, _SAMPLE_AXIS, -1)  # [T', B, 2, K]
+    return -jnp.vecdot(targets.mixture_probs, log_probs, axis=-1)
+
   def _nash_policy_qs(
       self,
       q_function: q_lib.QFunction[Action],
       bm_frames: Frames[nash_data.Rank3, Action],  # encoded for the q_function
       initial_states: RecurrentState,  # unused, passed through
-      rngs: nnx.Rngs,  # unused
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
       q_outputs: QFunctionOutputs,
       nash_policy_chain: nash_utils.Chain[Action],  # leaves [T', B, 2]
@@ -769,7 +784,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
     (per-index) nash distributions over the sampled chains, under the
     q_function. Uses all S samples, regardless of subsampling in training.
     """
-    del rngs
     values = q_outputs.values
     sample_action_init = q_outputs.sample_action_init
     q_values = q_outputs.q_values
@@ -781,11 +795,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     chains, _ = self._chains(policy_samples, frames)
     del policy_samples
 
-    nash_probs = jnp.stack([nash_solution.p1, nash_solution.p2], axis=-2)  # [N, T', B, 2, S]
-    nash_probs = nash_probs / jnp.sum(nash_probs, axis=-1, keepdims=True)
-    nash_values = jnp.stack([
-        nash_solution.p1_nash_value, -nash_solution.p1_nash_value
-    ], axis=-1)  # [N, T', B, 2]
+    nash_probs, nash_values = nash_utils.nash_solution_probs(nash_solution)
     payoff_matrices = nash_utils.mixed_payoff_matrices(q_values)  # [N, T', B, S, S]
     diagnostics = nash_utils.nash_payoff_diagnostics(
         payoff_matrices, nash_probs, nash_values)
@@ -811,20 +821,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
       opponent_action_init, opponent_last_action = opponent
 
       # Line up nash policy vs the other policy samples.
-      def merge(nps: jax.Array, ps: jax.Array):
-        # nps and ps are [T', B, 2, ...]
-        np1, np2 = jnp.unstack(nps, axis=2)
-        p1, p2 = jnp.unstack(ps, axis=2)
-
-        np1_vs_p2 = jnp.stack([np1, p2], axis=2)
-        p1_vs_np2 = jnp.stack([p1, np2], axis=2)
-
-        return jnp.stack([np1_vs_p2, p1_vs_np2], axis=0)  # [2, T', B, 2, ...]
-
-      merged_action_init = jax.tree.map(
-          merge, nash_policy_action_init, opponent_action_init)
-      merged_actions = utils.map_nt(  # [2, T', B, 2]
-          merge, nash_policy_last_action, opponent_last_action)
+      merged_action_init = nash_utils.merge_players(
+          nash_policy_action_init, opponent_action_init)  # [2, T', B, 2, H]
+      merged_actions = nash_utils.merge_players(
+          nash_policy_last_action, opponent_last_action)  # [2, T', B, 2]
 
       def q_fn(
           action_init_state: RecurrentState,  # [T', B, 2, H]
