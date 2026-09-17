@@ -71,17 +71,35 @@ QValues = jax.Array
 # Chains (nash_utils.Chain) are (Ds + 1) x frame_skip nested lists of
 # controllers with leaves [S, T', B, 2]; time-major ("tm") arrays put T first,
 # batch-major ("bm") ones put B first.
-QFunctionOutputs = tuple[
-    Loss,  # [B]
-    Metrics,  # [B]
-    RecurrentState,  # final state [B]
-    Values,  # [N, T', B, 2] per epistemic index
-    RecurrentState,  # per-sample action_init_state [S, T', B, 2, H]
-    jax.Array,  # core_net outputs [T, B, 2, O_core]
-    RecurrentState,  # core_net states after each step [T, B, 2]
-    QValues,  # [N, S, S, T', B, 2] per epistemic index
-    jax.Array,  # zs [N, B, 1, D_Z] epistemic indices
-]
+
+class QFunctionOutputs(tp.NamedTuple):
+  """What the q_function unroll hands to the nash solver, the nash_policy
+  unroll and the nash_policy diagnostics (besides its loss)."""
+  metrics: Metrics  # [B]
+  final_state: RecurrentState  # carried state [B]
+  values: Values  # [N, T', B, 2] per epistemic index
+  sample_action_init: RecurrentState  # per-sample action_init_state [S, T', B, 2, H]
+  core_outputs: jax.Array  # core_net outputs [T, B, 2, O_core]
+  core_states: RecurrentState  # core_net states after each step [T, B, 2]
+  q_values: QValues  # [N, S, S, T', B, 2] per epistemic index
+  zs: jax.Array  # [N, B, 1, D_Z] epistemic indices
+
+
+class QFunctionOutputSpecs(tp.NamedTuple):
+  """Partition specs of QFunctionOutputs."""
+  metrics: PS
+  final_state: PS
+  values: PS
+  sample_action_init: PS
+  core_outputs: PS
+  core_states: PS
+  q_values: PS
+  zs: PS
+
+  def as_prefix(self) -> QFunctionOutputs:
+    """As a pytree prefix of a QFunctionOutputs (which must have the same
+    named-tuple type for jax to match them)."""
+    return QFunctionOutputs(*self)
 
 
 class ShardingKwargs(tp.TypedDict):
@@ -189,11 +207,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     NB = PS(None, DATA_AXIS)  # [N, B, ...]
 
     policy_samples = TMS
-    vs = NTM  # values [N, T, B, 2]
-    sample_action_init = TMS  # [S, T, B, 2, H]
-    q_core = TM  # core_net outputs and states [T, B, 2, ...]
-    qs = NTMSS  # [N, S, S, T, B, 2]
-    zs_spec = NB  # [N, B, 1, D_Z]
+    q_specs = QFunctionOutputSpecs(
+        metrics=BM,
+        final_state=BM,
+        values=NTM,
+        sample_action_init=TMS,
+        core_outputs=TM,
+        core_states=TM,
+        q_values=NTMSS,
+        zs=NB,
+    )
+    qs = q_specs.q_values
     nash_solution = NTM  # [N, T, B]
     metrics = BM
 
@@ -213,9 +237,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
         **sample_policy_specs,
     )
 
+    # The metrics and final state are the loss function's standard outputs.
     q_function_specs = ShardingSpecs(
         extra_in_specs=(policy_samples,),
-        extra_out_specs=(vs, sample_action_init, q_core, q_core, qs, zs_spec),
+        extra_out_specs=q_specs[2:],
     )
 
     # Keep q_function in fp32 so we can distinguish small differences in
@@ -283,8 +308,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # nash_policy's loss.
     nash_policy_qs_specs = ShardingSpecs(
         extra_in_specs=(
-            policy_samples, vs, sample_action_init, q_core, q_core,
-            nash_chain, qs, zs_spec, nash_solution),
+            policy_samples, q_specs.as_prefix(), nash_chain, nash_solution),
         extra_out_specs=None,
     )
     self.run_nash_policy_qs = jax_utils.shard_map_loss_fn_with_rngs(
@@ -385,15 +409,11 @@ class Learner(nnx.Module, tp.Generic[Action]):
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
       *,
       num_index_samples: int,
-  ) -> QFunctionOutputs:
+  ) -> tuple[Loss, tp.Any]:  # (loss, *QFunctionOutputs)
     """Unrolls the q_function and scores every pair of sampled chains.
 
-    Returns the q_function's own loss and metrics over the game indices (as
-    diagnostics; it is not trained here), the carried state, and what the
-    nash solver and the nash_policy unroll need: the per-index values, the
-    per-sample action_net initial states after each chain's prefix, the
-    core_net's per-step outputs and states (to re-run it from), the
-    [N, S, S, T', B, 2] chain-pair q-values, and the epistemic indices.
+    Returns the q_function's own loss over the game indices (as a
+    diagnostic; it is not trained here) followed by the QFunctionOutputs.
     """
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
@@ -466,10 +486,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0), metrics)
 
-    return (
-        bm_loss, bm_metrics, layout.carried_state(core.core_states, frames),
-        values, sample_action_init, core.core_outputs, core.core_states,
-        q_values, zs)
+    outputs = QFunctionOutputs(
+        metrics=bm_metrics,
+        final_state=layout.carried_state(core.core_states, frames),
+        values=values,
+        sample_action_init=sample_action_init,
+        core_outputs=core.core_outputs,
+        core_states=core.core_states,
+        q_values=q_values,
+        zs=zs,
+    )
+    return (bm_loss, *outputs)
 
   def _compute_nash(
       self,
@@ -734,13 +761,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_states: RecurrentState,  # unused, passed through
       rngs: nnx.Rngs,  # unused
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
-      values: jax.Array,  # [N, T', B, 2]
-      sample_action_init: RecurrentState,  # [S, T', B, 2, H]
-      core_outputs: jax.Array,  # [T, B, 2, O_core]
-      core_states: RecurrentState,  # [T, B, 2]
+      q_outputs: QFunctionOutputs,
       nash_policy_chain: nash_utils.Chain[Action],  # leaves [T', B, 2]
-      q_values: jax.Array,  # [N, S, S, T', B, 2]
-      zs: jax.Array,  # [N, B, 1, D_Z]
       nash_solution: nash.NashVariables,  # [N, T', B]
   ) -> tuple[Loss, dict, RecurrentState]:
     """Diagnostics: how the nash_policy's sampled chain fares against the
@@ -748,6 +770,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     q_function. Uses all S samples, regardless of subsampling in training.
     """
     del rngs
+    values = q_outputs.values
+    sample_action_init = q_outputs.sample_action_init
+    q_values = q_outputs.q_values
+    zs = q_outputs.zs
     frames = nash_utils.bm_to_tm(bm_frames)
     frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
     index_mean = lambda x: jnp.mean(x, axis=0)
@@ -765,7 +791,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
         payoff_matrices, nash_probs, nash_values)
 
     # The q_function's core state after the nash_policy chain's prefix.
-    context = self.layout.context(core_outputs, core_states, frames)
+    context = self.layout.context(
+        q_outputs.core_outputs, q_outputs.core_states, frames)
     nash_policy_action_init = q_function.chain_action_init_state(
         context, nash_policy_chain)
 
@@ -872,14 +899,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
       initial_state: RecurrentState,
       policy_samples: nash_utils.Chain,
       train: bool = True,
-  ):
+  ) -> QFunctionOutputs:
     frames = self._encode(self.q_function.core_net, zipped_frames)
 
     num_index_samples = self.config.num_index_samples
     if not train:
       num_index_samples = self.config.eval_num_index_samples or num_index_samples
 
-    return self.run_q_function(frames, initial_state, policy_samples, num_index_samples=num_index_samples)
+    outputs = self.run_q_function(
+        frames, initial_state, policy_samples,
+        num_index_samples=num_index_samples)
+    return QFunctionOutputs(*outputs)
 
   @jax.profiler.annotate_function
   def step_nash_policy(
@@ -901,21 +931,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
       zipped_frames: nash_data.ZippedFrames,  # [B, 2, T]
       initial_state: RecurrentState,  # q_function state, unused
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
-      values: jax.Array,  # [N, T', B, 2]
-      sample_action_init: RecurrentState,  # [S, T', B, 2, H]
-      core_outputs: jax.Array,  # [T, B, 2, O_core]
-      core_states: RecurrentState,  # [T, B, 2]
+      q_outputs: QFunctionOutputs,
       nash_policy_chain: nash_utils.Chain[Action],  # leaves [T', B, 2]
-      q_values: jax.Array,  # [N, S, S, T', B, 2]
-      zs: jax.Array,  # [N, B, 1, D_Z]
       nash_solution: nash.NashVariables,  # [N, T', B]
   ) -> tuple[dict, RecurrentState]:
     """Returns the diagnostics and the (passed-through) q_function state; the
     input state is donated, so the caller must keep the returned one."""
     frames = self._encode(self.q_function.core_net, zipped_frames)
     return self.run_nash_policy_qs(
-        frames, initial_state, policy_samples, values, sample_action_init,
-        core_outputs, core_states, nash_policy_chain, q_values, zs,
+        frames, initial_state, policy_samples, q_outputs, nash_policy_chain,
         nash_solution)
 
   def step(
@@ -935,22 +959,15 @@ class Learner(nnx.Module, tp.Generic[Action]):
     ) = self.step_sample_policy(
         zipped_frames, initial_states[SAMPLE_POLICY])
 
-    (
-      metrics[Q_FUNCTION],
-      final_states[Q_FUNCTION],
-      values,
-      sample_action_init,
-      core_outputs,
-      core_states,
-      q_values,
-      zs,
-    ) = self.step_q_function(
+    q_outputs = self.step_q_function(
         zipped_frames, initial_states[Q_FUNCTION], policy_samples)
+    metrics[Q_FUNCTION] = q_outputs.metrics
+    final_states[Q_FUNCTION] = q_outputs.final_state
 
     (
       nash_variables,
       metrics[NASH],
-    ) = self.compute_nash(q_values)
+    ) = self.compute_nash(q_outputs.q_values)
 
     (
       metrics[NASH_POLICY],
@@ -958,14 +975,13 @@ class Learner(nnx.Module, tp.Generic[Action]):
       nash_policy_chain,
     ) = self.step_nash_policy(
         zipped_frames, initial_states[NASH_POLICY], policy_samples,
-        q_values, nash_variables, train=train)
+        q_outputs.q_values, nash_variables, train=train)
 
     if self.config.compute_nash_policy_qs:
       # The q_function's state is donated and passed through.
       nash_policy_qs_metrics, final_states[Q_FUNCTION] = self.step_nash_policy_qs(
           zipped_frames, final_states[Q_FUNCTION], policy_samples,
-          values, sample_action_init, core_outputs, core_states,
-          nash_policy_chain, q_values, zs, nash_variables)
+          q_outputs, nash_policy_chain, nash_variables)
       metrics[NASH_POLICY].update(nash_policy_qs_metrics)
 
     return metrics, final_states
