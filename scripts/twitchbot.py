@@ -89,6 +89,9 @@ BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
 
 DEFAULT_AGENT = flags.DEFINE_string('default_agent', None, 'Name of default agent.')
 
+COSTUME = flags.DEFINE_integer(
+    'costume', 0, 'Costume index for the bot when playing against humans.')
+
 BOTMATCH_REPLAY_DIR = flags.DEFINE_string(
     'botmatch_replay_dir', 'Replays/BotMatch',
     'Base directory for user bot-match replays.')
@@ -378,6 +381,7 @@ class Session:
       extra_dolphin_kwargs: dict = {},
       stages: Optional[list[melee.Stage]] = None,
       run_on_cpu: bool = False,
+      costume: Optional[int] = None,
   ):
     if run_on_cpu:
       eval_lib.disable_gpus()
@@ -396,7 +400,10 @@ class Session:
     dolphin_kwargs = dolphin_config.to_kwargs()
     dolphin_kwargs.update(extra_dolphin_kwargs)
 
-    player = dolphin_lib.AI(character=agent_config.character)
+    player = dolphin_lib.AI(
+        character=agent_config.character,
+        costume=costume,
+    )
     dolphin = dolphin_lib.Dolphin(
         players={port: player},
         **dolphin_kwargs,
@@ -564,6 +571,7 @@ class Bot(commands.Bot):
       bot2: Optional[str] = None,
       auto_delay: int = 18,
       default_agent: Optional[str] = None,
+      costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
       botmatch_max_games: int = 10,
   ):
@@ -586,6 +594,7 @@ class Bot(commands.Bot):
     self._bots_lock_minutes = bots_lock_minutes
 
     self._auto_delay = auto_delay
+    self._costume = costume
     self._botmatch_replay_dir = botmatch_replay_dir
     self._botmatch_max_games = botmatch_max_games
 
@@ -1049,6 +1058,7 @@ class Bot(commands.Bot):
         extra_dolphin_kwargs=extra_dolphin_kwargs,
         stages=stages,
         run_on_cpu=self.run_on_cpu,
+        costume=self._costume,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
@@ -1377,6 +1387,7 @@ def main(_):
       bot=BOT.value,
       bot2=BOT2.value,
       default_agent=DEFAULT_AGENT.value,
+      costume=COSTUME.value,
       botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
       botmatch_max_games=BOTMATCH_MAX_GAMES.value,
   )
