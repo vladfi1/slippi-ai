@@ -250,13 +250,14 @@ class InvalidGameError(Exception):
 # Training-layer types: used by networks, policies, learners, etc.
 
 Action = TypeVar('Action')
+type SkipAction[Action] = list[Action]  # frame_skip x Controller
 
 NAME_DTYPE = np.int32
 
 class StateAction(NamedTuple, Generic[S, Action]):
   state: Game[S]
   # Previous player actions, length = frame skip
-  action: list[Action]
+  action: SkipAction[Action]
 
   # Extras; these should probably go in a dictionary.
 

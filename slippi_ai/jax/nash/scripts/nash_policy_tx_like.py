@@ -22,16 +22,8 @@ def default_config():
 
   config.data.batch_size = 512
   config.data.unroll_length = 84
-  config.data.num_workers = 2
-  config.data.unroll_chunks = 4
+  config.data.num_workers = 1
   config.learner.learning_rate = 3e-5
-
-  # Match Nash RL reward config
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
 
   config.learner.num_samples = 3
 
@@ -105,11 +97,10 @@ if __name__ == '__main__':
         chh = ch_config['component'][NET_NAME]['hidden_size']
         fs = imitation_config.policy.frame_skip
         ns = config.learner.num_samples
+        if config.learner.include_action_taken_in_samples:
+          ns += 1
 
         config.tag = f"np_{char}_d{d}_{n}x{h}_ch{chn}x{chh}_rfs{fs}_ns{ns}"
-
-        if config.learner.bf16:
-          config.tag += '_bf16'
 
     config.dataset.allowed_characters = char
 
