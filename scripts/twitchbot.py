@@ -50,6 +50,11 @@ BOT_SESSION_INTERVAL = flags.DEFINE_float(
     'bot_session_interval', 1,
     'minutes before starting a bot session, negative means disabled')
 
+BOTS_LOCK_MINUTES = flags.DEFINE_float(
+    'bots_lock_minutes', 15,
+    'Minutes after !bots during which only the initiator or a mod can'
+    ' change the bots.')
+
 # Bot settings
 _DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
     infinite_time=False,
@@ -477,7 +482,7 @@ EXTRA_HELP_MESSAGE = """
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !reset: Stop the bot and start a new game with the same agent.
 !stages: Specify a space-separated list of stages to play on.
-!bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream.
+!bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream. Locks the bots for {bots_lock_minutes} minutes or until you !relinquish.
 !about: Print some info about the this AI.
 """
 
@@ -554,6 +559,7 @@ class Bot(commands.Bot):
       menu_timeout: float = 3,  # in minutes
       stream: bool = True,
       bot_session_interval: float = 1, # in minutes
+      bots_lock_minutes: float = 15,
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
       auto_delay: int = 18,
@@ -577,6 +583,7 @@ class Bot(commands.Bot):
     self._menu_timeout = menu_timeout
     self._stream = stream
     self._bot_session_interval = bot_session_interval
+    self._bots_lock_minutes = bots_lock_minutes
 
     self._auto_delay = auto_delay
     self._botmatch_replay_dir = botmatch_replay_dir
@@ -586,6 +593,10 @@ class Bot(commands.Bot):
     self._streaming_against: Optional[str] = None
     self._last_stream_time: Optional[float] = None
     self._bot_session: Optional[BotSession] = None  # actually RemoteBotSession
+    # Who last ran !bots and when (for !status), and when their lock expires.
+    self._bots_set_by: Optional[str] = None
+    self._bots_set_time: Optional[datetime.datetime] = None
+    self._bots_lock_until: Optional[datetime.datetime] = None
 
     self.lock = threading.RLock()
 
@@ -597,6 +608,8 @@ class Bot(commands.Bot):
         bot_code=user_json['connectCode'],
         botmatch_max_games=botmatch_max_games,
     )
+    self.extra_help_message = EXTRA_HELP_MESSAGE.format(
+        bots_lock_minutes=bots_lock_minutes)
 
     self._models_path = models_path
     self._default_agent = default_agent
@@ -659,7 +672,7 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def more(self, ctx: commands.Context):
-    for line in EXTRA_HELP_MESSAGE.split('\n'):
+    for line in self.extra_help_message.split('\n'):
       await ctx.send(line)
 
   @commands.command()
@@ -1141,6 +1154,14 @@ class Bot(commands.Bot):
     }
 
     with self.lock:
+      if not ctx.author.is_mod and ctx.author.name != self._bots_set_by:
+        remaining = self._bots_lock_remaining()
+        if remaining is not None:
+          await ctx.send(
+              f'{self._bots_set_by} has the bots for another'
+              f' {format_td(remaining)} (or until they !relinquish).')
+          return
+
       bot_configs: dict[int, AgentConfig] = {}
       for port, name in bot_names.items():
         agent_config = self._agents.get(name)
@@ -1150,9 +1171,41 @@ class Bot(commands.Bot):
         bot_configs[port] = agent_config
 
       self._bot_configs = bot_configs
+      # A new initiator gets a fresh timer; the same user re-running !bots
+      # (while still holding the lock) keeps their existing one.
+      if ctx.author.name != self._bots_set_by or self._bots_lock_remaining() is None:
+        now = datetime.datetime.now()
+        self._bots_set_by = ctx.author.name
+        self._bots_set_time = now
+        self._bots_lock_until = now + datetime.timedelta(
+            minutes=self._bots_lock_minutes)
 
       self._stop_bot_session()
       await self._maybe_start_bot_session()
+
+  def _bots_lock_remaining(self) -> Optional[datetime.timedelta]:
+    """Time left on the !bots lock, or None if the bots aren't locked."""
+    if self._bots_lock_until is None:
+      return None
+    remaining = self._bots_lock_until - datetime.datetime.now()
+    if remaining <= datetime.timedelta(0):
+      return None
+    return remaining
+
+  @commands.command()
+  async def relinquish(self, ctx: commands.Context):
+    with self.lock:
+      if self._bots_lock_remaining() is None:
+        await ctx.send('The bots aren\'t locked; anyone can use !bots.')
+        return
+
+      if not ctx.author.is_mod and ctx.author.name != self._bots_set_by:
+        await ctx.send(
+            f'Only {self._bots_set_by} or a mod can relinquish the bots.')
+        return
+
+      self._bots_lock_until = None
+      await ctx.send('Bots relinquished; anyone can now use !bots.')
 
   def _get_opponent_config(self, name: str) -> AgentConfig:
     return self._requested_agent_configs.get(name, self._default_agent_config)
@@ -1167,7 +1220,15 @@ class Bot(commands.Bot):
       if self._bot_session:
         bot1 = self._bot_configs[1].name
         bot2 = self._bot_configs[2].name
-        await ctx.send(f'{bot1} vs. {bot2} on stream.')
+        message = f'{bot1} vs. {bot2} on stream'
+        if self._bots_set_by is not None and self._bots_set_time is not None:
+          playing_for = format_td(datetime.datetime.now() - self._bots_set_time)
+          message += f' (set by {self._bots_set_by}, playing for {playing_for}'
+          remaining = self._bots_lock_remaining()
+          if remaining is not None:
+            message += f', locked for {format_td(remaining)} more'
+          message += ')'
+        await ctx.send(message + '.')
 
       if not self._sessions:
         await ctx.send('No active sessions.')
@@ -1312,6 +1373,7 @@ def main(_):
       agent_kwargs=AGENT.value,
       stream=STREAM.value,
       bot_session_interval=BOT_SESSION_INTERVAL.value,
+      bots_lock_minutes=BOTS_LOCK_MINUTES.value,
       bot=BOT.value,
       bot2=BOT2.value,
       default_agent=DEFAULT_AGENT.value,
