@@ -117,8 +117,8 @@ class ShardingKwargs(tp.TypedDict):
   smap_optimizer: bool
 
 class ShardingSpecs(tp.TypedDict):
-  extra_in_specs: tp.Optional[tp.Sequence[PS]]
-  extra_out_specs: tp.Optional[tp.Sequence[PS]]
+  extra_in_specs: tp.Optional[jax_utils.Specs]
+  extra_out_specs: tp.Optional[jax_utils.Specs]
 
 SAMPLE_POLICY = 'sample_policy'
 Q_FUNCTION = 'q_function'
