@@ -10,7 +10,7 @@ import optax
 
 from slippi_ai import utils
 from slippi_ai.types import S, Frames, Action, SkipAction
-from slippi_ai.data import Rank2, delayed_frames
+from slippi_ai.data import Rank2
 from slippi_ai.jax.policies import Policy, RecurrentState
 from slippi_ai.jax import embed, rl_lib, jax_utils, networks
 from slippi_ai.jax.jax_utils import PS, DATA_AXIS
@@ -164,7 +164,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
           f'nash policy frame skip {nash_policy.frame_skip}.')
     # With delay, the game at each index is over chains of skip_delay + 1
     # actions; see docs/plans/nash_policy_delay.md and nash_utils.
-    self.skip_delay = nash_policy.skip_delay
+    self.layout = nash_utils.ChunkLayout(self.delay, nash_policy.frame_skip)
+    self.skip_delay = self.layout.skip_delay
 
     jax_utils.replicate_module(self, mesh)
 
@@ -312,29 +313,6 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return state
 
-  def _get_delayed_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
-    # Prefix rewards are kept so that chains with different prefixes are
-    # scored on the rewards those prefixes earn; the q_function must have been
-    # trained the same way (nash/q_fn_learner.py).
-    return delayed_frames(frames, self.skip_delay, keep_prefix_rewards=True)
-
-  def _num_valid(self, frames: Frames[S, Action]) -> int:
-    return frames.reward.shape[0] - self.skip_delay
-
-  def _game_steps(self, x: tp.Any) -> tp.Any:
-    """Keeps the valid indices [Ds, T) of a per-step (time-major) nest,
-    [T, ...] -> [T', ...]."""
-    return jax.tree.map(lambda t: t[self.skip_delay:], x)
-
-  def _carried_state(
-      self,
-      hidden_states: RecurrentState,  # [T, B, 2]
-      num_valid: int,
-  ) -> RecurrentState:  # [B, 2]
-    """The hidden state to continue from on the next chunk, which starts at
-    index T' (the first Ds indices of each chunk overlap the previous one)."""
-    return jax.tree.map(lambda x: x[num_valid - 1], hidden_states)
-
   def _chains(
       self,
       policy_samples: nash_utils.Chain[Action],  # leaves [S, T', B, 2]
@@ -347,7 +325,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     """
     num_samples = self.num_samples
     if self.config.include_action_taken_in_samples:
-      taken = nash_utils.taken_chain(frames, self.skip_delay)
+      taken = self.layout.taken_chain(frames)
       policy_samples = utils.map_nt(
           lambda samples, action_taken: jnp.concatenate(
               [samples, jnp.expand_dims(action_taken, axis=_SAMPLE_AXIS)],
@@ -369,12 +347,12 @@ class Learner(nnx.Module, tp.Generic[Action]):
     and the sampled chains with leaves [S, T', B, 2].
     """
     frames = nash_utils.bm_to_tm(bm_frames)
-    frames = self._get_delayed_frames(frames)  # T + 1 = U + Ds + 1 states
+    frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
 
     sample_policy_outputs = sample_policy.scan_with_outputs(frames, initial_states)
-    context = nash_utils.chain_context(
+    context = self.layout.context(
         sample_policy_outputs.outputs, sample_policy_outputs.hidden_states,
-        frames, self.skip_delay)
+        frames)
 
     # Because the action space is too large, we compute a finite subsample
     # using the sample_policy. With delay, each sample is a chain of actions.
@@ -385,17 +363,16 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     policy_samples = sample(sample_policy, rngs.fork(split=self.num_samples))
 
-    imitation_loss = self._game_steps(sample_policy_outputs.imitation_loss)
+    imitation_loss = self.layout.game_slice(sample_policy_outputs.imitation_loss)
     bm_loss = jnp.mean(imitation_loss, axis=[0, 2])
     bm_metrics = utils.map_single_structure(
       lambda x: jnp.mean(x, axis=0),
-      self._game_steps(sample_policy_outputs.metrics))
+      self.layout.game_slice(sample_policy_outputs.metrics))
 
     return (
         bm_loss,
         bm_metrics,
-        self._carried_state(
-            sample_policy_outputs.hidden_states, self._num_valid(frames)),
+        self.layout.carried_state(sample_policy_outputs.hidden_states, frames),
         policy_samples,
     )
 
@@ -419,9 +396,8 @@ class Learner(nnx.Module, tp.Generic[Action]):
     [N, S, S, T', B, 2] chain-pair q-values, and the epistemic indices.
     """
     frames = nash_utils.bm_to_tm(bm_frames)
-    frames = self._get_delayed_frames(frames)  # T + 1 = U + Ds + 1 states
-    skip_delay = self.skip_delay
-    num_valid = self._num_valid(frames)
+    frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
+    layout = self.layout
     batch_size = self.config.sample_batch_size
 
     core = q_function.scan_core(
@@ -429,9 +405,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
     zs = core.zs
 
     # The loss and the game only cover the valid indices.
-    values = core.values[:, skip_delay:]  # [N, T', B, 2]
+    values = layout.game_slice(core.values, axis=1)  # [N, T', B, 2]
     q_outputs = q_function.ensemble_outputs(
-        self._game_steps(frames), values, core.q_values[:, skip_delay:],
+        layout.game_slice(frames), values,
+        layout.game_slice(core.q_values, axis=1),
         core.last_value, self.discount, lambda_=1.0)
 
     chains, num_samples = self._chains(policy_samples, frames)
@@ -440,8 +417,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     # Each chain's last action is scored by the action_net from the core
     # state after the chain's prefix: re-run the core_net over the real
     # inputs at indices [t - Ds + 1, t] with the chain's actions, per sample.
-    context = nash_utils.chain_context(
-        core.core_outputs, core.core_states, frames, skip_delay)
+    context = layout.context(core.core_outputs, core.core_states, frames)
 
     def init_for_chain(
         q_function: q_lib.QFunction[Action], /,
@@ -491,7 +467,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
       lambda x: jnp.mean(x, axis=0), metrics)
 
     return (
-        bm_loss, bm_metrics, self._carried_state(core.core_states, num_valid),
+        bm_loss, bm_metrics, layout.carried_state(core.core_states, frames),
         values, sample_action_init, core.core_outputs, core.core_states,
         q_values, zs)
 
@@ -620,9 +596,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     _nash_policy_qs scores against the nash distribution.
     """
     frames = nash_utils.bm_to_tm(bm_frames)
-    frames = self._get_delayed_frames(frames)  # T + 1 = U + Ds + 1 states
-    skip_delay = self.skip_delay
-    num_valid = self._num_valid(frames)
+    frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
 
     # Diagnostics are computed per epistemic index and averaged; the loss
     # regresses to the mixture of the per-index nash distributions.
@@ -691,11 +665,10 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     nash_policy_outputs = nash_policy.scan_with_outputs(
         frames, initial_states)
-    nash_policy_imitation_loss = self._game_steps(
+    nash_policy_imitation_loss = self.layout.game_slice(
         nash_policy_outputs.imitation_loss)  # [T', B, 2]
-    context = nash_utils.chain_context(
-        nash_policy_outputs.outputs, nash_policy_outputs.hidden_states,
-        frames, skip_delay)
+    context = self.layout.context(
+        nash_policy_outputs.outputs, nash_policy_outputs.hidden_states, frames)
 
     # Note that this inefficiently recomputes the controller head encoder
     # outputs for each sample.
@@ -751,7 +724,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
 
     return (
         bm_loss, bm_metrics,
-        self._carried_state(nash_policy_outputs.hidden_states, num_valid),
+        self.layout.carried_state(nash_policy_outputs.hidden_states, frames),
         nash_policy_chain)
 
   def _nash_policy_qs(
@@ -776,7 +749,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
     """
     del rngs
     frames = nash_utils.bm_to_tm(bm_frames)
-    frames = self._get_delayed_frames(frames)  # T + 1 = U + Ds + 1 states
+    frames = self.layout.delayed_frames(frames)  # T + 1 = U + Ds + 1 states
     index_mean = lambda x: jnp.mean(x, axis=0)
 
     chains, _ = self._chains(policy_samples, frames)
@@ -792,8 +765,7 @@ class Learner(nnx.Module, tp.Generic[Action]):
         payoff_matrices, nash_probs, nash_values)
 
     # The q_function's core state after the nash_policy chain's prefix.
-    context = nash_utils.chain_context(
-        core_outputs, core_states, frames, self.skip_delay)
+    context = self.layout.context(core_outputs, core_states, frames)
     nash_policy_action_init = q_function.chain_action_init_state(
         context, nash_policy_chain)
 

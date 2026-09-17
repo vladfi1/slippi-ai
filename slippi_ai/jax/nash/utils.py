@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from slippi_ai import utils
+from slippi_ai.data import delayed_frames
 from slippi_ai.jax import jax_utils, networks
 from slippi_ai.jax.policies import Policy
 from slippi_ai.types import Action, Frames, StateAction, S, SkipAction
@@ -345,6 +346,74 @@ def taken_chain(
   num_valid = frames.reward.shape[0] - skip_delay
   return time_slices(
       frames.state_action.action, num_valid, range(1, skip_delay + 2))
+
+
+class ChunkLayout:
+  """Where the chain game sits in a chunk of frames.
+
+  The data source overlaps consecutive chunks by extra_frames so that, after
+  the delayed alignment (data.delayed_frames, keeping the prefix rewards),
+  a chunk has T = U + Ds steps: U is the unroll length and the first Ds
+  indices are the previous chunk's last Ds valid ones. Networks unroll over
+  all T steps, the chain game and every loss cover the U valid indices
+  [Ds, T) (game_slice), and the learner carries the hidden state after
+  index U - 1 (carried_state), where the next chunk starts. Nothing is lost
+  and no index is counted twice. With Ds = 0 everything is the identity.
+  """
+
+  def __init__(self, delay: int, frame_skip: int):
+    if delay % frame_skip != 0:
+      raise ValueError(
+          f'Delay {delay} must be divisible by frame_skip {frame_skip}.')
+    self.delay = delay
+    self.frame_skip = frame_skip
+    self.skip_delay = delay // frame_skip
+
+  @property
+  def extra_frames(self) -> int:
+    """Frames by which the data source overlaps consecutive chunks: the
+    frame-skip overlap frame, the delayed alignment's delay frames, and
+    another delay frames of history for the chain game."""
+    return self.frame_skip + 2 * self.delay
+
+  def delayed_frames(self, frames: Frames[S, Action]) -> Frames[S, Action]:
+    """The delayed alignment of a chunk; T + 1 = U + Ds + 1 states.
+
+    Prefix rewards are kept so that chains with different prefixes are
+    scored on the rewards those prefixes earn; the q_function must have been
+    trained the same way (nash/q_fn_learner.py).
+    """
+    return delayed_frames(frames, self.skip_delay, keep_prefix_rewards=True)
+
+  def num_valid(self, frames: Frames[S, Action]) -> int:
+    """U, the number of valid indices of (delayed) frames."""
+    return frames.reward.shape[0] - self.skip_delay
+
+  def game_slice(self, x: T, axis: int = 0) -> T:
+    """Keeps the valid indices [Ds, T) of a per-step nest along axis,
+    [..., T, ...] -> [..., U, ...]."""
+    return jax.tree.map(
+        lambda t: jax.lax.slice_in_dim(t, self.skip_delay, None, axis=axis), x)
+
+  def carried_state(
+      self,
+      hidden_states: T,  # [T, ...] a network's state after each step
+      frames: Frames[S, Action],  # the (delayed) frames it was run on
+  ) -> T:  # [...]
+    """The hidden state to continue from on the next chunk, which starts at
+    index U (the first Ds indices of each chunk overlap the previous one)."""
+    return jax.tree.map(lambda x: x[self.num_valid(frames) - 1], hidden_states)
+
+  def context(
+      self,
+      outputs: jax.Array,  # [T, ..., O]
+      hidden_states: T,  # [T, ...]
+      frames: Frames[S, Action],
+  ) -> ChainContext[S, T, Action]:
+    return chain_context(outputs, hidden_states, frames, self.skip_delay)
+
+  def taken_chain(self, frames: Frames[S, Action]) -> Chain[Action]:
+    return taken_chain(frames, self.skip_delay)
 
 
 def sample_chain(

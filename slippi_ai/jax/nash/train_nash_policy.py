@@ -383,9 +383,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       dataset_config=config.dataset,
       train_data_config=config.data,
       name_map=name_map,
-      # The delayed alignment needs delay extra frames; the chain game needs
-      # another delay frames of history (see nash/utils.py).
-      extra_frames=frame_skip + 2 * nash_policy.delay,
+      extra_frames=learner.layout.extra_frames,
       observation_config=imitation_config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
