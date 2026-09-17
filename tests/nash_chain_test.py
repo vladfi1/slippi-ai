@@ -77,6 +77,33 @@ class ChainAlignmentTest(unittest.TestCase):
     flat = nash_utils.flatten_chain(chain)
     self.assertEqual(len(flat), (skip_delay + 1) * frame_skip)
 
+  def test_chunk_layout(self):
+    delay, frame_skip, unroll_length, batch_size = 4, 2, 5, 3
+    layout = nash_utils.ChunkLayout(delay, frame_skip)
+    self.assertEqual(layout.skip_delay, 2)
+    self.assertEqual(layout.extra_frames, frame_skip + 2 * delay)
+    with self.assertRaises(ValueError):
+      nash_utils.ChunkLayout(3, 2)
+
+    # A chunk of U + 2 Ds + 1 states, as the data source provides.
+    chunk = _index_frames(
+        unroll_length + 2 * layout.skip_delay + 1, batch_size, frame_skip)
+    frames = layout.delayed_frames(chunk)
+    self.assertEqual(layout.num_valid(frames), unroll_length)
+    # States [0, U + Ds], rewards [0, U + Ds - 1]; the game covers [Ds, U + Ds).
+    num_steps = unroll_length + layout.skip_delay
+    self.assertEqual(frames.reward.shape[0], num_steps)
+    np.testing.assert_array_equal(
+        layout.game_slice(frames.reward)[:, 0],
+        np.arange(layout.skip_delay, num_steps))
+    np.testing.assert_array_equal(
+        layout.game_slice(frames.reward[np.newaxis], axis=1)[0, :, 0],
+        np.arange(layout.skip_delay, num_steps))
+    # The next chunk starts at index U, so the state after index U - 1 is
+    # carried.
+    hidden = {'h': np.arange(num_steps)}
+    self.assertEqual(layout.carried_state(hidden, frames)['h'], unroll_length - 1)
+
   def test_zero_delay(self):
     frames = _index_frames(5, 1, 1)
     context = nash_utils.chain_context(np.arange(4), None, frames, 0)
