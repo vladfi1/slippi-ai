@@ -1348,6 +1348,9 @@ def train_fn_with_rngs(
   return cached_partial(jit_train, module, optimizer, rngs)
 
 
+type Specs = tp.Sequence[PS | Specs]
+
+
 def data_parallel_train(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
@@ -1355,8 +1358,8 @@ def data_parallel_train(
     mesh: jax.sharding.Mesh,
     data_axis: int = 0,
     data_axis_name: str = DATA_AXIS,
-    extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
-    extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
+    extra_in_specs: tp.Optional[Specs] = None,
+    extra_out_specs: tp.Optional[Specs] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
     explicit_pmean: bool = False,
     smap_optimizer: bool = True,
@@ -1646,15 +1649,14 @@ def data_parallel_train_with_rngs(
 
   return cached_partial(train, module, optimizer, rngs)
 
-
 def shard_map_loss_fn(
     module: ModT,
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tp.Tuple[Loss, AuxT, State, *Outputs]],
     mesh: jax.sharding.Mesh,
     data_axis: int = 0,
     data_axis_name: str = DATA_AXIS,
-    extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
-    extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
+    extra_in_specs: tp.Optional[Specs] = None,
+    extra_out_specs: tp.Optional[Specs] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
@@ -1707,8 +1709,8 @@ def shard_map_loss_fn_with_rngs(
     mesh: jax.sharding.Mesh,
     data_axis: int = 0,
     data_axis_name: str = DATA_AXIS,
-    extra_in_specs: tp.Optional[tp.Sequence[PS]] = None,
-    extra_out_specs: tp.Optional[tp.Sequence[PS]] = None,
+    extra_in_specs: tp.Optional[Specs] = None,
+    extra_out_specs: tp.Optional[Specs] = None,
     static_argnames: tp.Optional[tp.Iterable[str]] = None,
 ):
   """Shard-mapped loss function for data-parallel training."""
