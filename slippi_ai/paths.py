@@ -12,6 +12,8 @@ JAX_IMITATION_CHECKPOINT = CHECKPOINTS_DIR / 'jax_demo'
 JAX_VF_CHECKPOINT = CHECKPOINTS_DIR / 'jax_vf_demo'
 JAX_POLICY_CHECKPOINT = CHECKPOINTS_DIR / 'jax_policy_demo'
 JAX_MERGED_CHECKPOINT = CHECKPOINTS_DIR / 'jax_merged_demo'
+# Policy with delay = frame_skip = 3, for the q and nash tests.
+JAX_FS_POLICY_CHECKPOINT = CHECKPOINTS_DIR / 'fs_demo'
 
 # Checkpoints from before the frame-skip refactor (residual controller head).
 JAX_IMITATION_CHECKPOINT_LEGACY = CHECKPOINTS_DIR / 'jax_demo_legacy'

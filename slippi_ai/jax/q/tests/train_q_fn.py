@@ -57,7 +57,7 @@ DEFAULT_CONFIG = train_q_fn.Config(
         ),
     ),
     test_unroll_multiplier=2,
-    compatible_policy=str(paths.JAX_POLICY_CHECKPOINT),
+    compatible_policy=str(paths.JAX_FS_POLICY_CHECKPOINT),
 )
 
 if __name__ == '__main__':
