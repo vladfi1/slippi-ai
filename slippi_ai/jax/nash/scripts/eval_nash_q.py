@@ -3,6 +3,7 @@
 
 import dataclasses
 import os
+import pickle
 
 os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
 
@@ -12,7 +13,7 @@ import fancyflags as ff
 
 from slippi_ai import flag_utils, paths, utils
 from slippi_ai.jax import saving, train_lib
-from slippi_ai.jax.nash import train_nash_policy
+from slippi_ai.jax.nash import train_nash_policy, train_q_fn
 from slippi_ai.jax.agents import DType
 
 def default_config():
@@ -26,14 +27,6 @@ def default_config():
   config.data.batch_size = 256
   config.data.unroll_length = 84
   config.data.num_workers = 1
-  config.data.unroll_chunks = 4
-
-  # Match Nash RL reward config
-  config.reward.damage_ratio = 0.01
-  config.reward.ledge_grab_penalty = 0.02
-  config.reward.stalling_penalty = 0.1
-  config.reward.stalling_threshold = 50
-  config.reward.approaching_factor = 1e-3
 
   config.learner.num_samples = 7
   config.learner.eval_num_index_samples = 64
@@ -78,6 +71,15 @@ if __name__ == '__main__':
     del imitation_state
 
     assert config.initialize_q_function_from is not None
+    with open(config.initialize_q_function_from, 'rb') as f:
+      q_fn_config = flag_utils.dataclass_from_dict(
+          train_q_fn.Config, pickle.load(f)['config'])
+
+    # Fail before loading any data; the trainer checks this too.
+    if q_fn_config.delay != imitation_config.policy.delay:
+      raise ValueError(
+          f'Q-function delay {q_fn_config.delay} does not match the '
+          f'imitation policy delay {imitation_config.policy.delay}')
 
     if TOY_DATA.value:
       config.dataset.data_dir = str(paths.TOY_DATA_DIR)

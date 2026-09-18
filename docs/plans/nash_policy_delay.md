@@ -164,9 +164,11 @@ Files: `slippi_ai/jax/nash/train_nash_policy.py`.
 - Keep the `q_fn_config.delay == imitation_config.policy.delay` check.
   Nash q-function checkpoints from before 2026-09-15 with nonzero delay were
   trained on dropped prefix rewards and must not be used for chains.
-- Add `override_delay` (as `train_q_rl.py` has) so the delay-0 toy imitation
-  checkpoint can be used at delay 3 in tests; the saved nash policy config
-  records the effective delay.
+- No `override_delay` (unlike `train_q_rl.py`): the policies are trained at
+  the imitation checkpoint's delay, which must match the q-function's. For
+  tests at delay 3, make a delay-3 toy imitation checkpoint by loading the
+  delay-0 one, setting `config['policy']['delay'] = 3` and pickling it again
+  (delay does not affect the network architecture).
 - `extra_frames = frame_skip + 2 * delay` (`ChunkLayout.extra_frames`, which
   the trainer asks the learner for): the chunk has `U + 2 Ds + 1` steps, the
   delayed slice keeps states `[0, U + Ds]`, actions `[Ds, U + 2 Ds]` and
@@ -177,9 +179,11 @@ Files: `slippi_ai/jax/nash/train_nash_policy.py`.
   needs to train it alongside the nash policy.
 
 Validation: a `delay=3` toy q-function (`nash/tests/train_q_fn.py
---config.delay=3`) chained into `nash/tests/train_nash_policy.py
---config.override_delay=3 --config.initialize_q_function_from=...` trains and
-evaluates on CPU (skip-delay 1); `nash_cross_entropy` is about twice the
+--config.delay=3`) and a delay-3 toy imitation checkpoint chained into
+`nash/tests/train_nash_policy.py --config.initialize_policies_from=...
+--config.initialize_q_function_from=...` train and evaluate on CPU
+(skip-delay 1); `nash/scripts/eval_nash_q.py --toy_data` evaluates the same
+pair and rejects a q-function whose delay differs from the imitation policy's; `nash_cross_entropy` is about twice the
 delay-0 value, as expected for two-action chains; the run restores from its
 own checkpoint.
 
