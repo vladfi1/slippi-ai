@@ -115,11 +115,6 @@ class Config:
   initialize_policies_from: tp.Optional[str] = None
   initialize_q_function_from: tp.Optional[str] = None
 
-  # Delay does not affect the network architecture, so the policies can be
-  # trained at a different delay than the imitation checkpoint. The q_function
-  # must have been trained at the resulting delay.
-  override_delay: tp.Optional[int] = None
-
   seed: int = 0
   version: int = saving.VERSION
   platform: str = Platform.JAX.value
@@ -260,8 +255,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   if restored:
     assert isinstance(restored_state, dict)
     imitation_config_dict = restored_state['imitation_config']
-    if config.override_delay is not None:
-      imitation_config_dict['policy']['delay'] = config.override_delay
     imitation_config = flag_utils.dataclass_from_dict(
         train_lib.Config, saving.upgrade_config(imitation_config_dict))
     name_map = restored_state['name_map']
@@ -272,12 +265,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   elif config.initialize_policies_from:
     logging.info(f'Initializing policies from {config.initialize_policies_from}')
     imitation_state = saving.load_state_from_disk(config.initialize_policies_from)
-
-    if config.override_delay is not None:
-      logging.info(
-          'Overriding imitation delay %d with %d',
-          imitation_state['config']['policy']['delay'], config.override_delay)
-      imitation_state['config']['policy']['delay'] = config.override_delay
 
     sample_policy = saving.load_policy_from_state(imitation_state)
     nash_policy = saving.load_policy_from_state(imitation_state)
