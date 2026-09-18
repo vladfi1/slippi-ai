@@ -22,7 +22,7 @@ DEFAULT_CONFIG = compare_q_functions.Config(
         batch_size=2,
         unroll_length=6,
     ),
-    sample_policy=str(paths.JAX_POLICY_CHECKPOINT),
+    sample_policy=str(paths.JAX_FS_POLICY_CHECKPOINT),
     # The only standard demo q-function; comparing it against itself should
     # yield perfect ordering agreement (a sanity check on the pipeline).
     q_function_a=str(paths.JAX_Q_FN_CKPT),

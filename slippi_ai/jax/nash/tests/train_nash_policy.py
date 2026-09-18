@@ -27,7 +27,7 @@ DEFAULT_CONFIG = train_nash_policy.Config(
         num_evals_per_epoch=2,
         max_eval_steps=3,
     ),
-    initialize_policies_from=str(paths.JAX_POLICY_CHECKPOINT),
+    initialize_policies_from=str(paths.JAX_FS_POLICY_CHECKPOINT),
     initialize_q_function_from=str(paths.JAX_NASH_Q_FN_CKPT),
 )
 

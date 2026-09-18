@@ -15,7 +15,7 @@ from slippi_ai.jax.q import rl_learner
 from slippi_ai.jax.rl import run_lib
 
 DEFAULT_CONFIG = train_q_rl.Config(
-  teacher=str(paths.JAX_POLICY_CHECKPOINT),
+  teacher=str(paths.JAX_FS_POLICY_CHECKPOINT),
   q_function=str(paths.JAX_Q_FN_CKPT),
   runtime=train_q_rl.RuntimeConfig(
     max_step=5,

@@ -17,6 +17,7 @@ POLICY_CHECKPOINTS = {
     'legacy_policy': paths.JAX_POLICY_CHECKPOINT_LEGACY,
     'imitation': paths.JAX_IMITATION_CHECKPOINT,
     'policy': paths.JAX_POLICY_CHECKPOINT,
+    'fs_policy': paths.JAX_FS_POLICY_CHECKPOINT,
 }
 
 BATCH_SIZE = 2
