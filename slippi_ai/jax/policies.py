@@ -40,6 +40,7 @@ class UnrollWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
 class ScanWithOutputs(tp.NamedTuple, tp.Generic[S, ControllerType]):
   """Like UnrollWithOutputs, with the network's state after every step."""
   imitation_loss: Array  # [T, B]
+  distances: list[DistanceOutputs[ControllerType]]  # Struct of [T, B]
   outputs: Array  # [T, B, O] network outputs, the controller head's inputs
   hidden_states: RecurrentState  # [T, B], the state after each step
   final_state: RecurrentState  # [B], == hidden_states[-1]
@@ -249,6 +250,7 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
 
     return ScanWithOutputs(
         imitation_loss=policy_loss,
+        distances=distance_outputs,
         outputs=outputs,
         hidden_states=hidden_states,
         final_state=final_state,

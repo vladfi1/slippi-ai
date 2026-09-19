@@ -231,7 +231,7 @@ class LearnerManager(tp.Generic[Action]):
     self.frame_skip = learner.policy.frame_skip
     self._converter = learner_lib.FrameSkipConverter(
         frame_skip=self.frame_skip,
-        batch_size=self.batch_size,
+        batch_shape=(self.batch_size,),
         dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
             [self.batch_size]),
         reward_config=config.learner.reward,
