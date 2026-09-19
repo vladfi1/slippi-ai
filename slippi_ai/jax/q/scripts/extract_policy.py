@@ -9,10 +9,11 @@ from slippi_ai import saving
 
 SRC = flags.DEFINE_string(
     'src', 'models/q/policy',
-    'Path to the directory containing the models to strip')
+    'Model file to strip, or a directory of them to strip recursively.')
 DST = flags.DEFINE_string(
     'dst', 'stripped_models/jax/q_policy',
-    'Path to the directory to save the stripped models')
+    'Where to save the stripped models: a file path if --src is a file, '
+    'otherwise a directory mirroring --src.')
 VERBOSE = flags.DEFINE_bool(
     'verbose', False, 'Prints out the models that are stripped')
 
@@ -36,7 +37,33 @@ def needs_copy(src, dst):
 
   return src_time > dst_time
 
+def extract_file(src_path: str, dst_path: str) -> bool:
+  """Strips src_path into dst_path; returns whether anything was written."""
+  if not needs_copy(src_path, dst_path):
+    return False
+
+  combined_state = saving.load_state_from_disk(src_path)
+  combined_state = extract_q_policy(combined_state)
+
+  dst_dir = os.path.dirname(dst_path)
+  if dst_dir:
+    os.makedirs(dst_dir, exist_ok=True)
+
+  with open(dst_path, 'wb') as f:
+    pickle.dump(combined_state, f)
+
+  return True
+
 def run(src: str, dst: str, verbose: bool = False):
+  if os.path.isfile(src):
+    if os.path.isdir(dst):
+      raise ValueError(
+          f'--src {src} is a file, so --dst {dst} must be a file path, '
+          'but it is an existing directory.')
+    if extract_file(src, dst) and verbose:
+      print(f'Stripped {src} -> {dst}')
+    return
+
   for dirpath, dirnames, filenames in os.walk(src):
     rel_dir = os.path.relpath(dirpath, src)
     dst_dir = os.path.join(dst, rel_dir)
@@ -46,16 +73,7 @@ def run(src: str, dst: str, verbose: bool = False):
       src_path = os.path.join(dirpath, filename)
       dst_path = os.path.join(dst_dir, filename)
 
-      if not needs_copy(src_path, dst_path):
-        continue
-
-      combined_state = saving.load_state_from_disk(src_path)
-      combined_state = extract_q_policy(combined_state)
-
-      with open(dst_path, 'wb') as f:
-        pickle.dump(combined_state, f)
-
-      if verbose:
+      if extract_file(src_path, dst_path) and verbose:
         rel_path = os.path.relpath(src_path, src)
         print(f'Stripped {rel_path}')
 
