@@ -2,6 +2,7 @@
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
 import math
+import os
 import typing as tp
 
 if __name__ == '__main__':
@@ -38,7 +39,9 @@ if __name__ == '__main__':
   NUM_ENV_STEPS = flags.DEFINE_integer(
       'num_env_steps', 0, 'Number of environment steps to batch.')
   INNER_BATCH_SIZE = flags.DEFINE_integer(
-      'inner_batch_size', 1, 'Number of environments to run sequentially.')
+      'inner_batch_size', -1,
+      'Number of environments to run sequentially per worker; -1 means '
+      'num_envs / cpu_count (one worker per CPU), or 1 when num_envs < cpu_count.')
   SWAP_PORTS = flags.DEFINE_boolean('swap_ports', True, 'Swap half of env ports.')
 
   USE_GPU = flags.DEFINE_boolean('use_gpu', True, 'Use GPU for inference.')
@@ -107,7 +110,23 @@ if __name__ == '__main__':
           f'win_rate={stage_wins / len(stage_games):.3f} '
           f'avg_frames={sum(stage_lengths) / len(stage_lengths):.1f}')
 
+  def get_inner_batch_size() -> int:
+    inner_batch_size = INNER_BATCH_SIZE.value
+    if inner_batch_size != -1:
+      return inner_batch_size
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+      raise OSError('Could not determine CPU count for inner_batch_size=-1')
+    if NUM_ENVS.value < cpu_count:
+      return 1
+    if NUM_ENVS.value % cpu_count != 0:
+      raise ValueError(
+          f'num_envs={NUM_ENVS.value} must be divisible by '
+          f'CPU count={cpu_count} for inner_batch_size=-1')
+    return NUM_ENVS.value // cpu_count
+
   def main(_):
+    inner_batch_size = get_inner_batch_size()
     player_kwargs = {
         1: PLAYER.value,
         2: PLAYER.value if SELF_PLAY.value else OPPONENT.value,
@@ -138,7 +157,7 @@ if __name__ == '__main__':
     if ASYNC_ENVS.value:
       env_kwargs.update(
           num_steps=NUM_ENV_STEPS.value,
-          inner_batch_size=INNER_BATCH_SIZE.value,
+          inner_batch_size=inner_batch_size,
       )
 
     if NUM_GAMES.value and not SIM_ENVS.value:
@@ -180,7 +199,7 @@ if __name__ == '__main__':
           rollout_length=chunk_length,
           use_fake_envs=FAKE_ENVS.value,
           async_envs=ASYNC_ENVS.value,
-          inner_batch_size=INNER_BATCH_SIZE.value,
+          inner_batch_size=inner_batch_size,
           # When burnin is enabled, mirror the behavior during RL training.
           keep_agent_outputs_on_device=BURNIN.value,
       )
