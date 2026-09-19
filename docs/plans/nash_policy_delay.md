@@ -1,9 +1,9 @@
 # Plan: delay support for nash q-policy training via action chains
 
-Status: Phases 1-3 implemented (2026-09-15) and the restructuring
-follow-ups done (2026-09-16); Phase 4 is proposed. Builds on
-`docs/plans/q_function_delay.md`, which ported the delayed-frames alignment to
-`nash/q_fn_learner.py`.
+Status: Phases 1-3 implemented (2026-09-15), the restructuring
+follow-ups done (2026-09-16) and Phase 4 (online nash RL) done (2026-09-18).
+Builds on `docs/plans/q_function_delay.md`, which ported the delayed-frames
+alignment to `nash/q_fn_learner.py`.
 
 ## The chain game
 
@@ -186,14 +186,54 @@ policy's; `nash_cross_entropy` is about twice the
 delay-0 value, as expected for two-action chains; the run restores from its
 own checkpoint.
 
-## Phase 4 (follow-up): online nash RL
+## Phase 4: online nash RL (done)
 
-`nash/rl_learner.py` and `train_nash_rl.py` assert `not
-trajectory.delayed_actions`. With the actor's queued actions folded into the
-trajectory as the PPO/Q-RL converters do, `get_delayed_frames` gives the same
-delayed alignment and the Phase 2 machinery applies unchanged. With prefix
-rewards every one of the `T` rewards pairs with a state, so unlike the Q-RL
-case no transitions are lost; only the bootstrap needs the queued actions.
+Files: `slippi_ai/jax/nash/chain_game.py`, `slippi_ai/jax/nash/rl_learner.py`,
+`slippi_ai/jax/nash/train_nash_rl.py`, `slippi_ai/jax/rl/learner.py`,
+`tests/frame_skip_converter_test.py`.
+
+- **Shared chain game.** The chain machinery of Phase 2 now lives in
+  `chain_game.ChainGame` (sample chains from the sample policy, score every
+  pair of chains with the q-function, build the nash targets, chain
+  cross-entropy, nash-policy-versus-nash diagnostics) together with
+  `QFunctionOutputs` and `NashTargets`. The offline learner delegates to it
+  after its batch-major-to-time-major and delayed-frames conversions; the RL
+  learner composes the same pieces with its teacher KL terms. `ChainGame` is
+  a plain object holding the `ChunkLayout` and sampling configuration, and
+  takes the networks as arguments so the nnx transforms inside see them as
+  arguments rather than closures.
+- **Delayed alignment.** `FrameSkipConverter` folds the actor's queued
+  actions into the trajectory as for PPO/Q-RL, and `get_delayed_frames` gets
+  a `keep_prefix_rewards` option matching `data.delayed_frames`, so every
+  one of the `T` rewards pairs with a state; only the bootstrap uses the
+  queued actions. The nash converter also keeps the within-step reward
+  discount of the offline data pipeline (`discount` option) and now zeroes
+  rewards across game boundaries like the other RL learners.
+- **Chunk overlap online.** The chain game needs the hidden state `Ds`
+  steps before each index, which the actor's initial state does not provide
+  for a rollout's first `Ds` steps. The converter's `overlap_steps` option
+  prepends the previous rollout's last `Ds` steps (states, actions, rewards,
+  resets), giving each rollout exactly the offline `ChunkLayout`: `T = U +
+  Ds` steps, the game and every loss on `[Ds, T)`, and every network's state
+  carried from after index `U - 1`. Consequently the learner carries the
+  sample policy's state itself instead of taking the actor's (they agree, as
+  the actor runs the same policy). The very first rollout has nothing to
+  prepend and is `Ds` steps shorter, so its first `Ds` indices host no game
+  and the learner's functions compile once more for that shape; nothing else
+  is special-cased.
+- **Losses on the game indices.** The q-function trains on the `U` valid
+  indices (each transition exactly once across rollouts). The nash policy's
+  teacher KLs, actor KL and entropy are on the one-step distributions at
+  the game indices conditioned on the actions actually taken, as at delay 0;
+  the nash-policy-versus-nash diagnostics run in a separate q-function step
+  as offline. `post_update`'s actor KL is sliced the same way.
+
+Validation: `nash/tests/train_nash_rl.py` (the `fs_demo` policy, delay =
+frame_skip = 3, and its toy nash q-function, fake envs) is re-enabled;
+`tests/frame_skip_converter_test.py` covers the prefix rewards, the
+within-step discount, the overlap and multi-dimensional batch shapes; the
+offline nash-policy test and `tests/nash_chain_test.py` are unchanged by the
+refactor.
 
 ## Restructuring follow-ups (done 2026-09-16)
 
@@ -225,7 +265,7 @@ In rough order of payoff:
    frame_skip)` offers `extra_frames`, `delayed_frames`, `num_valid`,
    `game_slice`, `carried_state`, `context` and `taken_chain`; the learner
    holds one and the trainer asks it for the chunk overlap. The RL learner
-   can reuse it (Phase 4).
+   reuses it (Phase 4).
 4. **Name the q-function unroll's outputs.** Done: `QFunctionOutputs` with
    a parallel `QFunctionOutputSpecs`. Note jax only matches a pytree prefix
    of the same named-tuple type, so the specs are converted with

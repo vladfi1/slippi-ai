@@ -1,9 +1,5 @@
 #!/usr/bin/env python
-"""Test Nash RL training loop with fake envs.
-
-Disabled: the test checkpoints now use delay 3, which nash RL doesn't handle
-yet. Re-enable once train_nash_rl supports delayed actions.
-"""
+"""Test Nash RL training loop with fake envs (delay = frame_skip = 3)."""
 
 import os
 
@@ -54,9 +50,6 @@ if __name__ == '__main__':
     'config', **flag_utils.get_flags_from_default(DEFAULT_CONFIG))
 
   def main(_):
-    print('Skipping: nash RL does not support delay yet (see module docstring).')
-    return
-
     wandb.init(mode='offline')
     config = flag_utils.dataclass_from_dict(train_nash_rl.Config, CONFIG.value)
     train_nash_rl.run(config)

@@ -35,6 +35,7 @@ from slippi_ai.jax.nash import (
   train_q_fn,
 )
 from slippi_ai.jax.rl import run_lib
+from slippi_ai.jax.rl import learner as learner_lib
 from slippi_ai.jax.rl.learner import FrameSkipTrajectory
 
 Rank3 = tuple[int, int, int]
@@ -131,19 +132,24 @@ class LearnerManager(tp.Generic[Action]):
     self.reset_profiler = utils.Profiler(burnin=0)
 
     self.frame_skip = learner.policy.frame_skip
-
-    self._prev_actions = [
-        learner.policy.controller_head.dummy_sample_outputs([self.batch_size, 2])
-    ] * (self.frame_skip - 1)
-    self._prev_is_resetting = np.full([self.frame_skip - 1, self.batch_size, 2], False)
+    # Folds the per-frame rollouts into frame-skipped steps with the actor's
+    # queued (delayed) actions, and overlaps consecutive rollouts by
+    # skip_delay steps for the chain game (see rl_learner).
+    self._converter = learner_lib.FrameSkipConverter(
+        frame_skip=self.frame_skip,
+        batch_shape=(self.batch_size, 2),
+        dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
+            [self.batch_size, 2]),
+        reward_config=config.reward,
+        skip_delay=learner.skip_delay,
+        overlap_steps=learner.skip_delay,
+        discount=learner.discount,
+    )
 
     for _ in range(self._burnin):
       self._burnin_step()
 
   def _rollout(self):
-    # TODO: might be better to do trajectory manipulation in jax, as parts of
-    # the data are already on device (e.g. actions and initial state)
-
     trajectories, metrics = self.actor.rollout(self._rollout_length)
     if len(trajectories) == 1:
       assert trajectories[self._ports[0]].is_resetting.shape[1] == 2 * self.batch_size
@@ -154,60 +160,17 @@ class LearnerManager(tp.Generic[Action]):
     else:
       raise ValueError(f'Expected 1 or 2 trajectories, got {len(trajectories)}')
 
-    assert not trajectory.delayed_actions, 'Not implemented'
+    fs_trajectory = self._converter.convert(trajectory)
 
-    # Previous actions for time steps [-FS+1, -1]
-    prev_actions = utils.map_nt(lambda x: x[np.newaxis], self._prev_actions)
-
-    # Create full action sequence of length for time steps [-FS+1, U]
-    actions = utils.map_nt(
-        lambda *xs: np.concatenate(xs, axis=0),
-        *prev_actions,
-        trajectory.actions,
-    )
-    # Split into skipped (previous) actions for time steps [0, U / FS]
-    actions = [
-        utils.map_nt(lambda t: t[i::self.frame_skip], actions)
-        for i in range(self.frame_skip)
-    ]
-    # Note: actions are not owned by the rollout worker so we don't need to
-    # make a copy here.
-    self._prev_actions = utils.map_nt(lambda x: x[-1], actions[:-1])
-
-    state = utils.map_single_structure(
-      lambda x: x[::self.frame_skip], trajectory.states)
-
-    is_resetting = np.concatenate([
-        self._prev_is_resetting,
-        trajectory.is_resetting,
-    ], axis=0)
-    self._prev_is_resetting = is_resetting[-self.frame_skip:-1]
-    is_resetting = is_resetting.reshape(
-      (-1, self.frame_skip, self.batch_size, 2)).any(axis=1)
-
-    rewards = reward_lib.compute_rewards(
-        trajectory.states,
-        **dataclasses.asdict(self._config.reward))
-    rewards = rewards.reshape((-1, self.frame_skip, self.batch_size, 2))
-    discounts = self._learner.discount ** np.arange(self.frame_skip)
-
-    rewards = np.sum(rewards * np.expand_dims(discounts, axis=[1, 2]), axis=1)
-
-    fs_trajectory = FrameSkipTrajectory(
-        states=state,
-        name=trajectory.name[::self.frame_skip],
-        rating=trajectory.rating[::self.frame_skip],
-        actions=actions,
-        rewards=rewards,
-        is_resetting=is_resetting,
-        initial_state=trajectory.initial_state,
-    )
+    # Transfer the trajectory to the device once. Left as numpy, every jitted
+    # learner call would upload it again while the previous call's temp
+    # buffers are still in flight, fragmenting the allocator arena.
+    fs_trajectory = jax.device_put(fs_trajectory)
 
     # Remove unsupported metrics from sim env
     metrics.pop('completed_games', None)
 
     return fs_trajectory, metrics
-
 
   def _burnin_step(self):
     trajectory, _ = self._rollout()

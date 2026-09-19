@@ -344,7 +344,7 @@ class ExperimentManager:
     self._converters = {
         port: learner_lib.FrameSkipConverter(
             frame_skip=learner.policy.frame_skip,
-            batch_size=batch_size,
+            batch_shape=(batch_size,),
             dummy_sample_outputs=learner.policy.controller_head.dummy_sample_outputs(
                 [batch_size]),
             reward_config=learner._config.reward,

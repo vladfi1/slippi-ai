@@ -78,14 +78,21 @@ class LearnerConfig:
       logging.warning(f'Set default policy loss scale for FP16 to {self.policy_loss_scale} to stabilize training.')
 
 class FrameSkipTrajectory(tp.NamedTuple, tp.Generic[ControllerType]):
-  states: Game[Rank2]  # [U/FS + 1, B]
-  name: np.ndarray[Rank2, np.dtype[np.int32]]  # [U/FS + 1, B]
-  rating: FloatArray[Rank2]  # [U/FS + 1, B]
+  """A rollout in frame-skipped steps; see FrameSkipConverter.
+
+  With an overlap of O steps (FrameSkipConverter.overlap_steps) the first O
+  steps repeat the end of the previous trajectory, so T = U/FS + O below;
+  the initial_state is still the actor's at the start of the new rollout,
+  i.e. before step O.
+  """
+  states: Game[Rank2]  # [T + 1, B]
+  name: np.ndarray[Rank2, np.dtype[np.int32]]  # [T + 1, B]
+  rating: FloatArray[Rank2]  # [T + 1, B]
   # The trailing Ds = D/FS steps are the actions the actor has queued but not
   # yet applied; see get_delayed_frames.
-  actions: list[SampleOutputs[ControllerType]]  # FS * [U/FS + Ds + 1, B]
-  rewards: FloatArray[Rank2]  # [U/FS, B]
-  is_resetting: BoolArray[Rank2]  # [U/FS + 1, B]
+  actions: list[SampleOutputs[ControllerType]]  # FS * [T + Ds + 1, B]
+  rewards: FloatArray[Rank2]  # [T, B]
+  is_resetting: BoolArray[Rank2]  # [T + 1, B]
   initial_state: RecurrentState  # [B]
 
   @classmethod
@@ -130,32 +137,52 @@ def _fold_actions(
   return slots, next_prev
 
 
+def _concat_time(*xs):
+  """Concatenates along the time axis, on the device the leaves live on."""
+  if isinstance(xs[0], jax.Array):
+    return jnp.concatenate(xs, axis=0)
+  return np.concatenate(xs, axis=0)
+
+
 class FrameSkipConverter(tp.Generic[ControllerType]):
   """Converts per-frame rollout Trajectories into FrameSkipTrajectories.
 
   Keeps the trailing (frame_skip - 1) actions and reset flags across calls so
   that consecutive rollouts form one continuous frame-skipped sequence. Also
-  computes rewards from the game states.
+  computes rewards from the game states, summing each step's frame_skip
+  per-frame rewards with the within-step discount.
 
   With delay D = skip_delay * frame_skip, the actor's D queued actions are
   appended to the action sequence, giving skip_delay more action steps than
   states; get_delayed_frames realigns them.
+
+  With overlap_steps = O > 0, each trajectory is prepended with the last O
+  steps of the previous one (states, actions, rewards and reset flags), so
+  that a learner can start its unrolls O steps before the new rollout, e.g.
+  to re-run networks over chains of actions (slippi_ai/jax/nash). The first
+  trajectory has nothing to prepend and is O steps shorter than the rest.
   """
 
   def __init__(
       self,
       frame_skip: int,
-      batch_size: int,
+      batch_shape: tuple[int, ...],
       dummy_sample_outputs: SampleOutputs[ControllerType],
       reward_config: reward_lib.RewardConfig,
       skip_delay: int = 0,
+      overlap_steps: int = 0,
+      discount: float = 1.0,  # per-frame discount within a step
   ):
     self.frame_skip = frame_skip
-    self.batch_size = batch_size
+    self.batch_shape = tuple(batch_shape)
     self.skip_delay = skip_delay
+    self.overlap_steps = overlap_steps
     self._reward_kwargs = dataclasses.asdict(reward_config)
+    self._discounts = discount ** np.arange(frame_skip, dtype=np.float32)
     self._prev_actions = [dummy_sample_outputs] * (frame_skip - 1)
-    self._prev_is_resetting = np.full([frame_skip - 1, batch_size], False)
+    self._prev_is_resetting = np.full(
+        [frame_skip - 1, *self.batch_shape], False)
+    self._overlap: tp.Optional[FrameSkipTrajectory[ControllerType]] = None
 
   def convert(
       self,
@@ -186,14 +213,15 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
     ], axis=0)
     self._prev_is_resetting = is_resetting[-frame_skip:-1]
     is_resetting = is_resetting.reshape(
-        (-1, frame_skip, self.batch_size)).any(axis=1)
+        (-1, frame_skip, *self.batch_shape)).any(axis=1)
 
     rewards = reward_lib.compute_rewards(trajectory.states, **self._reward_kwargs)
     # Don't reward transitions across game boundaries.
     rewards = np.where(trajectory.is_resetting[1:], 0.0, rewards)
-    rewards = rewards.reshape((-1, frame_skip, self.batch_size)).sum(axis=1)
+    rewards = rewards.reshape((-1, frame_skip, *self.batch_shape))
+    rewards = np.tensordot(self._discounts, rewards, axes=([0], [1]))
 
-    return FrameSkipTrajectory(
+    fs_trajectory = FrameSkipTrajectory(
         states=states,
         name=trajectory.name[::frame_skip],
         rating=trajectory.rating[::frame_skip],
@@ -201,6 +229,46 @@ class FrameSkipConverter(tp.Generic[ControllerType]):
         rewards=rewards,
         is_resetting=is_resetting,
         initial_state=trajectory.initial_state,
+    )
+
+    if self.overlap_steps > 0:
+      fs_trajectory = self._with_overlap(fs_trajectory, num_steps)
+
+    return fs_trajectory
+
+  def _with_overlap(
+      self,
+      fs_trajectory: FrameSkipTrajectory[ControllerType],
+      num_steps: int,  # U / FS
+  ) -> FrameSkipTrajectory[ControllerType]:
+    """Prepends the previous trajectory's last overlap_steps steps and keeps
+    this one's for the next call."""
+    overlap = self._overlap
+
+    # Steps [U - O, U) of this rollout, the last ones before its final state.
+    keep = lambda x: x[num_steps - self.overlap_steps:num_steps]
+    self._overlap = FrameSkipTrajectory(
+        states=utils.map_single_structure(keep, fs_trajectory.states),
+        name=keep(fs_trajectory.name),
+        rating=keep(fs_trajectory.rating),
+        actions=utils.map_nt(keep, fs_trajectory.actions),
+        rewards=keep(fs_trajectory.rewards),
+        is_resetting=keep(fs_trajectory.is_resetting),
+        initial_state=(),
+    )
+
+    if overlap is None:
+      return fs_trajectory
+
+    prepend = lambda old, new: utils.map_nt(_concat_time, old, new)
+    return FrameSkipTrajectory(
+        states=prepend(overlap.states, fs_trajectory.states),
+        name=prepend(overlap.name, fs_trajectory.name),
+        rating=prepend(overlap.rating, fs_trajectory.rating),
+        actions=prepend(overlap.actions, fs_trajectory.actions),
+        rewards=prepend(overlap.rewards, fs_trajectory.rewards),
+        is_resetting=prepend(overlap.is_resetting, fs_trajectory.is_resetting),
+        initial_state=fs_trajectory.initial_state,
     )
 
 
@@ -248,6 +316,7 @@ def get_so_frames(
 def get_delayed_frames(
     trajectory: FrameSkipTrajectory[ControllerType],
     skip_delay: int,
+    keep_prefix_rewards: bool = False,
 ) -> Frames[Rank2, SampleOutputs[ControllerType]]:
   """Aligns a trajectory for networks that act with delay.
 
@@ -258,6 +327,10 @@ def get_delayed_frames(
   following the paired actions, [Ds, T - 1]. The last Ds transitions thus have
   no reward yet; Q-function losses skip them. The actions keep the actor's
   logits so that they line up with the policy outputs.
+
+  With keep_prefix_rewards all T rewards are kept instead, so that the
+  return at step t is counted from reward t (see data.delayed_frames); the
+  nash learners score chains of actions this way.
   """
   frames = get_so_frames(trajectory)
   num_states = frames.is_resetting.shape[0]
@@ -273,7 +346,8 @@ def get_delayed_frames(
   keep = lambda t: t[skip_delay:]
   state_action = frames.state_action._replace(
       action=utils.map_single_structure(keep, frames.state_action.action))
-  return frames._replace(state_action=state_action, reward=keep(frames.reward))
+  reward = frames.reward if keep_prefix_rewards else keep(frames.reward)
+  return frames._replace(state_action=state_action, reward=reward)
 
 
 def from_so_frames(frames: Frames[Rank2, SampleOutputs[ControllerType]]) -> Frames[Rank2, ControllerType]:
