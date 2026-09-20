@@ -107,6 +107,12 @@ class SessionStatus:
 
 Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
 
+@dataclasses.dataclass
+class LoadedModel:
+  mtime: float  # file modification time when loaded
+  state: dict  # trimmed to the keys shown by !config
+  summary: eval_lib.AgentSummary
+
 class AgentConfig(abc.ABC):
 
   @property
@@ -622,6 +628,9 @@ class Bot(commands.Bot):
 
     self._models_path = models_path
     self._default_agent = default_agent
+    # Cache of loaded model states, keyed by model name. Each entry holds the
+    # file mtime it was loaded at, the (trimmed) state, and its summary.
+    self._loaded_models: dict[str, LoadedModel] = {}
     self._reload_models()
 
     if bot is None:
@@ -688,13 +697,58 @@ class Bot(commands.Bot):
   async def about(self, ctx: commands.Context):
     await ctx.send(ABOUT_MESSAGE)
 
-  def _reload_models(self):
+  def _refresh_loaded_models(self) -> int:
+    """Loads models that are new or newer than the cached version.
+
+    Models whose files have been removed are dropped from the cache.
+    Returns the number of models (re)loaded.
+    """
+    keys = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
+    num_loaded = 0
+
+    current_models = set(os.listdir(self._models_path))
+    for model in list(self._loaded_models):
+      if model not in current_models:
+        logging.info(f'Model {model} removed from disk')
+        del self._loaded_models[model]
+
+    for model in sorted(current_models):
+      path = os.path.join(self._models_path, model)
+      mtime = os.path.getmtime(path)
+
+      loaded = self._loaded_models.get(model)
+      if loaded is not None and loaded.mtime >= mtime:
+        continue
+
+      logging.info(f'Loading model {model}')
+      state = saving.load_state_from_disk(path)
+      state = {k: state[k] for k in keys if k in state}
+      self._loaded_models[model] = LoadedModel(
+          mtime=mtime,
+          state=state,
+          summary=eval_lib.AgentSummary.from_state(state),
+      )
+      num_loaded += 1
+
+    return num_loaded
+
+  def _reload_models(self) -> int:
+    """Rebuilds the agent tables, loading only new or updated model files.
+
+    Returns the number of models (re)loaded from disk.
+    """
+    num_loaded = self._refresh_loaded_models()
+
     self._special_agents: list[str] = []
     self._agents: dict[str, AgentConfig] = {}
 
     # For inspection by the !config command
-    self._model_configs: dict[str, dict] = {}
-    keys = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
+    self._model_configs: dict[str, dict] = {
+        model: loaded.state for model, loaded in self._loaded_models.items()
+    }
+    summaries: dict[str, eval_lib.AgentSummary] = {
+        model: loaded.summary for model, loaded in self._loaded_models.items()
+    }
 
     def add_agent(agent_config: AgentConfig):
       if agent_config.name in self._agents:
@@ -704,13 +758,7 @@ class Bot(commands.Bot):
     regular_multiname_agents: list[tuple[str, list[str]]] = []
 
     # Regular agents
-    for model in os.listdir(self._models_path):
-      path = os.path.join(self._models_path, model)
-      state = saving.load_state_from_disk(path)
-      state = {k: state[k] for k in keys if k in state}
-      self._model_configs[model] = state
-
-      summary = eval_lib.AgentSummary.from_state(state)
+    for model, summary in summaries.items():
       if len(summary.characters) == 1:
         add_agent(self._single_agent(model=model))
       else:
@@ -739,8 +787,8 @@ class Bot(commands.Bot):
           names_to_str(models) + '-' + names_to_str(char_tuple))
 
     # imitation agents
-    imitation_models = eval_lib.get_imitation_agents(
-        self._models_path, delay=self._auto_delay)
+    imitation_models = eval_lib.get_imitation_agents_from_summaries(
+        summaries, delay=self._auto_delay)
 
     imitation_names = []
     for char, model in imitation_models.items():
@@ -758,8 +806,8 @@ class Bot(commands.Bot):
 
     # auto agents
     self._auto_agents: dict[melee.Character, AutoAgent] = {}
-    matchup_table = eval_lib.build_matchup_table(
-        self._models_path, delay=self._auto_delay)
+    matchup_table = eval_lib.build_matchup_table_from_summaries(
+        summaries, delay=self._auto_delay)
     auto_names = []
     for character in matchup_table:
       agent_config = self._auto_agent(character)
@@ -784,10 +832,13 @@ class Bot(commands.Bot):
 
       self._default_agent_config = self._auto_agents[default_char]
 
+    return num_loaded
+
   @commands.command()
   async def reload(self, ctx: commands.Context):
     with self.lock:
-      self._reload_models()
+      num_loaded = self._reload_models()
+    await ctx.send(f'Loaded {num_loaded} new or updated models.')
     await self.agents_full(ctx)
 
   @commands.command()
