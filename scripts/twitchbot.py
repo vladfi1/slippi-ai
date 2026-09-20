@@ -483,7 +483,7 @@ RemoteGpuSession = ray.remote(**GPU_KWARGS)(Session)
 
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
-!agents[_full]: List available agents to play against. The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker, and the medium-* agents are in the middle.
+!agents [<char> [<opp>]]: List available agents to play against, e.g. "!agents fox falco" lists fox agents trained vs. falco (use "all" for any). The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker, and the medium-* agents are in the middle.
 !agent <name>: Select an agent to play against.
 !botmatch <agent1> [<agent2>]: Start an off-stream bot-vs-bot match ({botmatch_max_games} games).
 !more: Show extra commands.
@@ -522,6 +522,56 @@ def format_td(td: datetime.timedelta) -> str:
 
 auto_prefix = 'auto-'
 imitation_prefix = 'basic-'
+
+# Convenience aliases on top of the lowercased melee.Character names.
+CHARACTER_ALIASES = {
+    'puff': melee.Character.JIGGLYPUFF,
+    'falcon': melee.Character.CPTFALCON,
+    'ics': melee.Character.POPO,
+    'icies': melee.Character.POPO,
+    'ganon': melee.Character.GANONDORF,
+    'gnw': melee.Character.GAMEANDWATCH,
+}
+
+def parse_character(name: str) -> Optional[melee.Character]:
+  name = name.lower()
+  if name in CHARACTER_ALIASES:
+    return CHARACTER_ALIASES[name]
+  return eval_lib.data.name_to_character.get(name)
+
+@dataclasses.dataclass
+class AgentInfo:
+  character: melee.Character
+  opponents: frozenset[melee.Character]
+  # For "special" agents named <group>-<character> (multi-character models
+  # and imitation agents), the group prefix; None for regular agents.
+  group: Optional[str] = None
+  # Whether the underlying model is an imitation model.
+  imitation: bool = False
+
+def names_to_str(names: tp.Sequence[str]) -> str:
+  if len(names) > 1:
+    return "[" + ",".join(names) + "]"
+  return names[0]
+
+def group_special_agents(pairs: tp.Iterable[tuple[str, str]]) -> list[str]:
+  """Compresses (group, character) pairs into "[groups]-[characters]" strings.
+
+  Characters that share the same set of groups are merged into one entry.
+  """
+  chars_by_group: dict[str, list[str]] = {}
+  for group, char_name in pairs:
+    chars_by_group.setdefault(group, []).append(char_name)
+
+  groups_by_chars: dict[tuple[str, ...], list[str]] = {}
+  for group, char_names in chars_by_group.items():
+    key = tuple(sorted(char_names))
+    groups_by_chars.setdefault(key, []).append(group)
+
+  return [
+      names_to_str(sorted(groups)) + '-' + names_to_str(char_tuple)
+      for char_tuple, groups in groups_by_chars.items()
+  ]
 
 def parse_auto_char(agent: str) -> Optional[melee.Character]:
   if not agent.startswith(auto_prefix):
@@ -741,6 +791,9 @@ class Bot(commands.Bot):
 
     self._special_agents: list[str] = []
     self._agents: dict[str, AgentConfig] = {}
+    # Character played, opponents trained against, and special-agent group,
+    # for filtering and grouping in !agents.
+    self._agent_infos: dict[str, AgentInfo] = {}
 
     # For inspection by the !config command
     self._model_configs: dict[str, dict] = {
@@ -750,69 +803,69 @@ class Bot(commands.Bot):
         model: loaded.summary for model, loaded in self._loaded_models.items()
     }
 
-    def add_agent(agent_config: AgentConfig):
+    def add_agent(
+        agent_config: AgentConfig,
+        char: melee.Character,
+        opponents: tp.Iterable[melee.Character],
+        group: Optional[str] = None,
+        imitation: bool = False,
+    ):
       if agent_config.name in self._agents:
         logging.warning(f'Duplicate agents named {agent_config.name}')
       self._agents[agent_config.name] = agent_config
+      self._agent_infos[agent_config.name] = AgentInfo(
+          character=char, opponents=frozenset(opponents), group=group,
+          imitation=imitation)
 
-    regular_multiname_agents: list[tuple[str, list[str]]] = []
+    # (group, character name) pairs for the special agents.
+    special_pairs: list[tuple[str, str]] = []
 
     # Regular agents
     for model, summary in summaries.items():
+      imitation = summary.type is eval_lib.AgentType.IMITATION
       if len(summary.characters) == 1:
-        add_agent(self._single_agent(model=model))
+        add_agent(
+            self._single_agent(model=model),
+            char=summary.characters[0],
+            opponents=summary.opponents,
+            imitation=imitation)
       else:
-        char_names = []
         for char in summary.characters:
-          char_names.append(char.name.lower())
           agent_config = self._single_agent(
               model=model, char=char,
               name=model + '-' + char.name.lower())
-          add_agent(agent_config)
-
-        regular_multiname_agents.append((model, char_names))
-
-    models_by_chars: dict[tuple[str, ...], list[str]] = {}
-    for model, char_names in regular_multiname_agents:
-      key = tuple(sorted(char_names))
-      models_by_chars.setdefault(key, []).append(model)
-
-    def names_to_str(names: tp.Sequence[str]) -> str:
-      if len(names) > 1:
-        return "[" + ",".join(names) + "]"
-      return names[0]
-
-    for char_tuple, models in models_by_chars.items():
-      self._special_agents.append(
-          names_to_str(models) + '-' + names_to_str(char_tuple))
+          add_agent(
+              agent_config, char=char, opponents=summary.opponents,
+              group=model, imitation=imitation)
+          special_pairs.append((model, char.name.lower()))
 
     # imitation agents
     imitation_models = eval_lib.get_imitation_agents_from_summaries(
         summaries, delay=self._auto_delay)
 
-    imitation_names = []
+    imitation_group = imitation_prefix.rstrip('-')
     for char, model in imitation_models.items():
       agent_config = self._single_agent(
           model=model,
           char=char,
           name=imitation_prefix + char.name.lower(),
       )
-      add_agent(agent_config)
-      imitation_names.append(char.name.lower())
+      add_agent(
+          agent_config, char=char, opponents=summaries[model].opponents,
+          group=imitation_group, imitation=True)
+      special_pairs.append((imitation_group, char.name.lower()))
 
-    if len(imitation_names) > 0:
-      self._special_agents.append(
-          f'{imitation_prefix}[{",".join(imitation_names)}]')
+    self._special_agents.extend(group_special_agents(special_pairs))
 
     # auto agents
     self._auto_agents: dict[melee.Character, AutoAgent] = {}
     matchup_table = eval_lib.build_matchup_table_from_summaries(
         summaries, delay=self._auto_delay)
     auto_names = []
-    for character in matchup_table:
+    for character, opponent_table in matchup_table.items():
       agent_config = self._auto_agent(character)
       self._auto_agents[character] = agent_config
-      add_agent(agent_config)
+      add_agent(agent_config, char=character, opponents=opponent_table.keys())
       auto_names.append(character.name.lower())
 
     if len(auto_names) > 0:
@@ -863,7 +916,69 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents(self, ctx: commands.Context):
-    await send_list(ctx, sorted(self._special_agents))
+    """Lists agents, optionally filtered by character and opponent.
+
+    !agents: list the special (auto/basic/multi-character) agents.
+    !agents <char>: list all agents that play <char>.
+    !agents <char> <opp>: list all agents that play <char> vs. <opp>.
+    "all" may be used in place of either character.
+    Special agents are grouped as "[groups]-[characters]". Auto agents are
+    meta agents and raw imitation models are already listed as "basic", so
+    both are excluded from filtered lists.
+    """
+    words = tokens(ctx.message.content)[1:]
+
+    if len(words) == 0:
+      await send_list(ctx, sorted(self._special_agents))
+      return
+
+    if len(words) > 2:
+      await ctx.send('Usage: !agents [<character> [<opponent>]]')
+      return
+
+    filters: list[Optional[melee.Character]] = []
+    for word in words:
+      if word.lower() == 'all':
+        filters.append(None)
+        continue
+      char = parse_character(word)
+      if char is None:
+        await ctx.send(f'Unknown character "{word}".')
+        return
+      filters.append(char)
+
+    char = filters[0]
+    opponent = filters[1] if len(filters) > 1 else None
+
+    def matches(info: AgentInfo) -> bool:
+      if char is not None and info.character != char:
+        return False
+      if opponent is not None and opponent not in info.opponents:
+        return False
+      return True
+
+    special_pairs: list[tuple[str, str]] = []
+    regular_names: list[str] = []
+    for name, info in self._agent_infos.items():
+      # Auto agents are meta agents; leave them out of filtered lists.
+      if isinstance(self._agents[name], AutoAgent):
+        continue
+      if not matches(info):
+        continue
+      if info.group is not None:
+        special_pairs.append((info.group, info.character.name.lower()))
+      elif info.imitation:
+        # Imitation models are already listed under the "basic" group.
+        continue
+      else:
+        regular_names.append(name)
+
+    names = sorted(group_special_agents(special_pairs)) + sorted(regular_names)
+    if len(names) == 0:
+      await ctx.send('No matching agents.')
+      return
+
+    await send_list(ctx, names)
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
