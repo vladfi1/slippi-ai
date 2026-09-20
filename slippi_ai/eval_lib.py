@@ -756,15 +756,18 @@ class AgentSummary:
         opponents=opponents,
     )
 
-def get_imitation_agents(
-    models_path: str,
+def load_agent_summaries(models_path: str) -> dict[str, AgentSummary]:
+  return {
+      model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
+      for model in os.listdir(models_path)
+  }
+
+def get_imitation_agents_from_summaries(
+    agent_summaries: dict[str, AgentSummary],
     delay: tp.Optional[int],
 ) -> dict[melee.Character, str]:
-  models = os.listdir(models_path)
-
   imitation_agents = {}
-  for model in models:
-    summary = AgentSummary.from_checkpoint(os.path.join(models_path, model))
+  for model, summary in agent_summaries.items():
     if not summary.type is AgentType.IMITATION:
       continue
 
@@ -778,17 +781,17 @@ def get_imitation_agents(
 
   return imitation_agents
 
-def build_matchup_table(
-      models_path: str,
-      delay: int,
+def get_imitation_agents(
+    models_path: str,
+    delay: tp.Optional[int],
+) -> dict[melee.Character, str]:
+  return get_imitation_agents_from_summaries(
+      load_agent_summaries(models_path), delay)
+
+def build_matchup_table_from_summaries(
+    agent_summaries: dict[str, AgentSummary],
+    delay: int,
 ) -> dict[melee.Character, dict[melee.Character, str]]:
-  models = os.listdir(models_path)
-
-  agent_summaries = {
-      model: AgentSummary.from_checkpoint(os.path.join(models_path, model))
-      for model in models
-  }
-
   agent_summaries = {
       model: summary for model, summary in agent_summaries.items()
       if summary.delay == delay
@@ -826,6 +829,13 @@ def build_matchup_table(
       opponent_table.setdefault(opponent, model)
 
   return table
+
+def build_matchup_table(
+    models_path: str,
+    delay: int,
+) -> dict[melee.Character, dict[melee.Character, str]]:
+  return build_matchup_table_from_summaries(
+      load_agent_summaries(models_path), delay)
 
 class EnsembleAgent:
 
