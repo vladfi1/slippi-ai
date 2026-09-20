@@ -2,6 +2,7 @@
 
 """Train a model using imitation learning."""
 
+import logging
 import os
 
 os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
@@ -190,15 +191,21 @@ if __name__ == '__main__':
         n = arch_config.network[net]['num_layers']
         h = net_config['hidden_size']
 
-        rfs = f'rfs{config.policy.frame_skip}'
+        parts = [char, f'd{delay}{op}', f'tx{n}x{h}']
 
-        ch = arch_config.controller_head['autoregressive']['component']
-        assert ch['name'] == 'tx_like'
-        ch = ch['tx_like']
-        chn = ch['num_layers']
-        chs = ch['hidden_size']
+        rfs = config.policy.frame_skip
+        if rfs > 1:
+          assert arch_config.controller_head['name'] == 'autoregressive'
+          ch = arch_config.controller_head['autoregressive']['component']
+          assert ch['name'] == 'tx_like'
+          ch = ch['tx_like']
+          chn = ch['num_layers']
+          chs = ch['hidden_size']
 
-        parts = [char, f'd{delay}{op}', f'tx{n}x{h}', f'ch{chn}x{chs}', rfs]
+          parts.extend([f'ch{chn}x{chs}', f'rfs{rfs}'])
+        else:
+          logging.info('No frame skip, using legacy residual autoregressive controller head')
+          arch_config.controller_head['name'] = 'residual_autoregressive'
 
         if config.embed.with_rating:
           parts.append('rating')
