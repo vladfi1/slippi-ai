@@ -742,9 +742,13 @@ class AgentSummary:
         characters = [melee.Character(c) for c in rl_chars]
       opponents = characters
     elif 'agent_config' in combined_state:
-      # train_two is always one character
+      # train_two/train_many agents are always one character
       agent_type = AgentType.RL
-      opponents = [data.name_to_character[combined_state['opponent']]]
+      if 'opponents' in combined_state:  # train_many
+        opponent_names = combined_state['opponents']
+      else:  # train_two
+        opponent_names = [combined_state['opponent']]
+      opponents = [data.name_to_character[name] for name in opponent_names]
     else:
       agent_type = AgentType.IMITATION
       opponents = chars_from_string(config['dataset']['allowed_opponents'])

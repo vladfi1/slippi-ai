@@ -88,7 +88,7 @@ RL / Q-learning subpackages:
   `nash.py`/`optimization.py` (the equilibrium solvers), `nash_policy_learner.py`,
   `rl_learner.py`, and `train_*` scripts. `slippi_ai/nash/data.py` provides the
   `TwoPlayerDataSource`.
-- `jax/rl/` — self-play RL (`run_lib.py`, `train_two.py`).
+- `jax/rl/` — self-play RL (`run_lib.py`, `train_two.py`, `train_many.py`).
 - Each subpackage has `tests/` (smoke tests on toy data) and `scripts/` (launch
   configs); `experiments/` holds run outputs.
 
