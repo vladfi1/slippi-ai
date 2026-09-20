@@ -128,8 +128,8 @@ def _resolve_character(
     return allowed_chars[0]
 
   raise ValueError(
-      f'Port {port}: must specify --config.p{port}.char when teacher '
-      'allows multiple characters.')
+      f'Port {port}: must specify the character (--config.p{port}.char, or '
+      '--config.chars for train_many) when teacher allows multiple characters.')
 
 
 def _merge_value_function(rl_state: dict, vf_path: str, port: int):
@@ -164,7 +164,8 @@ class AgentManager:
   ):
     self.agent_config = agent_config
     self.port = port
-    self.enemy_port = ENEMY_PORTS[port]
+    # None for train_many, where "port" is an agent id rather than a port.
+    self.enemy_port = ENEMY_PORTS.get(port)
     self.expt_dir = expt_dir
     self.device = device
 
