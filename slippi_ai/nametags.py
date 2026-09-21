@@ -128,6 +128,7 @@ NAME_GROUPS = [
   ('Wizzrobe', 'WIZY#0'),
   ('Hungrybox', 'HBOX#305', 'hbox'),
   ('M2K', 'KOTU#737', 'CHU#352'),  # 9K replays, mostly Sheik
+  ('OkayP', 'OKAYP#69'),  # 2K replays
 ]
 
 NAME_MAP: dict[str, str] = {}
@@ -157,7 +158,7 @@ def name_encoder(name_map: dict[str, int]):
 
 BANNED_NAMES = {
     # Have asked not to be included in AI training
-    'Mang0', 'Wizzrobe', 'Hungrybox', 'M2K',
+    'Mang0', 'Wizzrobe', 'Hungrybox', 'M2K', 'OkayP',
 
     # Haven't asked yet, so don't train on for now.
     'Plup', 'Medz',
