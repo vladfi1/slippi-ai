@@ -27,6 +27,7 @@ RATING_OVERRIDES: dict[str, float] = {
     'Fecfec': 2600,
     'Trif': 3000,
     'Magi': 2900,
+    'DialM': 2800,
 }
 
 def ratings_path(root: str) -> str:
