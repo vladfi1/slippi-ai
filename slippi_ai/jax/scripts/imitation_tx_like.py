@@ -25,7 +25,7 @@ def default_config():
   config.policy.delay = 21
   config.data.batch_size=512
   config.data.unroll_length=84
-  config.data.num_workers=1
+  config.data.num_workers=2
   config.data.balance_characters=True
   config.learner.learning_rate=1e-4
 
@@ -66,7 +66,7 @@ def default_config():
   config.dataset.meta_path = os.environ.get("META_PATH")
   config.data.wds.cache_dir = './wds-cache'
   config.runtime.log_interval = 300
-  config.runtime.num_evals_per_epoch = 8
+  config.runtime.num_evals_per_epoch = 4
 
   return config
 
