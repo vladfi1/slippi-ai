@@ -608,6 +608,7 @@ def construct(
   ch_type = CONSTRUCTORS[name]
   head_config = config[name]
   if name == 'autoregressive' and 'residual_size' in head_config:
+    # TODO: put this into upgrade_config()
     # Checkpoints from before the frame-skip refactor used the residual head
     # under the 'autoregressive' name; keep them loadable.
     ch_type = ResidualAutoRegressive

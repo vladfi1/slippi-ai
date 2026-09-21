@@ -113,30 +113,38 @@ if __name__ == '__main__':
     config.network['embed'][embed_name].update(embed_config[embed_name])
 
     if not config.toy_data and config.tag is None:
+      parts = ['vf', char]
+
       ops = config.dataset.allowed_opponents
       if ops == 'all':
-        op = ''
+        pass
       elif ops == char:
-        op = '_ditto'
+        parts.append('_ditto')
       else:
-        op = f"_vs_{ops}"
-
-      rfs = imitation_config.policy.frame_skip
-      um = config.test_unroll_multiplier
+        parts.append(f"vs_{ops}")
 
       if embed_name == 'enhanced':
         embed = f"enhanced-{enhanced['hidden_size']}"
       else:
         embed = embed_name
 
-      config.tag = f"vf_{char}{op}_tx{n}x{h}_{embed}_rfs{rfs}_um{um}"
+      parts.extend([f'tx{n}x{h}', embed])
+
+      rfs = imitation_config.policy.frame_skip
+      if rfs > 1:
+        parts.append(f'rfs{rfs}')
+
+      um = config.test_unroll_multiplier
+      parts.append(f'um{um}')
 
       gae = config.learner.gae_lambda
       if gae != 0:
-        config.tag += f"_gae{gae:.1f}"
+        parts.append(f"gae{gae:.1f}")
 
-        if imitation_config.max_names == 0:
-          config.tag += "_noname"
+      if imitation_config.max_names == 0:
+        parts.append("noname")
+
+      config.tag = '_'.join(parts)
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
