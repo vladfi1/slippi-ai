@@ -845,10 +845,28 @@ class EnsembleAgent:
       models_path: str,
       opponent_port: int,
       delay: int,
+      agent_summaries: tp.Optional[dict[str, AgentSummary]] = None,
       **agent_kwargs,
   ):
+    """An agent that picks a model based on the opponent's character.
+
+    Args:
+      character: The character this agent plays.
+      models_path: Directory containing the model checkpoints.
+      opponent_port: The opponent's port.
+      delay: Only models with this delay are considered.
+      agent_summaries: Optional precomputed summaries keyed by model name
+        (relative to models_path). If None, they are loaded from models_path.
+      agent_kwargs: Passed through to `build_agent`.
+    """
     self._models_path = models_path
-    self.opponent_table = build_matchup_table(models_path, delay)[character]
+
+    if agent_summaries is None:
+      agent_summaries = load_agent_summaries(models_path)
+
+    # Maps opponent character to model name.
+    self.opponent_table: dict[melee.Character, str] = (
+        build_matchup_table_from_summaries(agent_summaries, delay)[character])
 
     self.opponent_port = opponent_port
     self._agent_kwargs = agent_kwargs.copy()
