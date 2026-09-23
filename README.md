@@ -11,7 +11,7 @@ The bot is available to play via netplay on my [twitch channel](https://twitch.t
 Download or `git clone` this repository. From the repository root:
 
 ```
-pip install -e ".[tf]"
+pip install -e ".[jax,tf]"
 
 python scripts/eval_two.py --p1.type human --p2.ai.path <path/to/trained/model> [--dolphin.copy_home_directory]
 
