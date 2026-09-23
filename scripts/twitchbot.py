@@ -226,12 +226,16 @@ class AutoAgent(AgentConfig):
       self,
       character: melee.Character,
       models_path: str,
+      agent_summaries: dict[str, eval_lib.AgentSummary],
       delay: int = 18,
       agent_kwargs: dict = {},
   ):
     self._character = character
     self._delay = delay
     self.models_path = models_path
+    # Cached model summaries keyed by model name, so that building the agent
+    # doesn't need to re-read every checkpoint from disk.
+    self.agent_summaries = agent_summaries
     self.agent_kwargs = agent_kwargs
 
   @property
@@ -261,6 +265,7 @@ class AutoAgent(AgentConfig):
         character=self.character,
         delay=self.delay,
         models_path=self.models_path,
+        agent_summaries=self.agent_summaries,
         port=port,
         opponent_port=opponent_port,
         controller=controller,
@@ -725,10 +730,15 @@ class Bot(commands.Bot):
         name=name or model,
     )
 
-  def _auto_agent(self, char: melee.Character) -> AutoAgent:
+  def _auto_agent(
+      self,
+      char: melee.Character,
+      agent_summaries: dict[str, eval_lib.AgentSummary],
+  ) -> AutoAgent:
     return AutoAgent(
         character=char,
         models_path=self._models_path,
+        agent_summaries=agent_summaries,
         delay=self._auto_delay,
         agent_kwargs=self.agent_kwargs,
     )
@@ -863,7 +873,7 @@ class Bot(commands.Bot):
         summaries, delay=self._auto_delay)
     auto_names = []
     for character, opponent_table in matchup_table.items():
-      agent_config = self._auto_agent(character)
+      agent_config = self._auto_agent(character, summaries)
       self._auto_agents[character] = agent_config
       add_agent(agent_config, char=character, opponents=opponent_table.keys())
       auto_names.append(character.name.lower())
