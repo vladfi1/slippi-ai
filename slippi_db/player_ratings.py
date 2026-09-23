@@ -10,6 +10,7 @@ import os
 import sqlite3
 from typing import Iterator, Optional
 
+from slippi_ai import nametags
 from slippi_db.utils import is_remote, FsspecFile
 
 # Ratings for the anonymized names in Fizzi's ranked dumps.
@@ -34,12 +35,22 @@ def ratings_path(root: str) -> str:
   return os.path.join(root, 'ratings.json')
 
 def load_ratings(path: str, with_fixed: bool = True) -> dict[str, float]:
-  """Load ratings.json; with_fixed also applies manual ratings/overrides."""
+  """Load ratings.json; with_fixed also applies manual ratings/overrides.
+
+  Keys are re-normalized through nametags on load: the file's keys reflect the
+  alias groups at the time it was written, so groups added since wouldn't
+  match. Collisions merge with max, as in fetch_player_ratings.
+  """
   if is_remote(path):
-    ratings = json.loads(FsspecFile(path).read().decode('utf-8'))
+    raw = json.loads(FsspecFile(path).read().decode('utf-8'))
   else:
     with open(path) as f:
-      ratings = json.load(f)
+      raw = json.load(f)
+
+  ratings: dict[str, float] = {}
+  for name, rating in raw.items():
+    name = nametags.normalize_name(name)
+    ratings[name] = max(rating, ratings.get(name, rating))
 
   if with_fixed:
     ratings.update(FIXED_RATINGS)

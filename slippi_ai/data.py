@@ -426,8 +426,7 @@ class DatasetConfig:
     return player_ratings.load_ratings(self.ratings_path)
 
   def get_ratings_fn(self) -> RatingFn:
-    ratings = self.load_ratings()
-    ratings = ratings or {}
+    ratings = self.load_ratings() or {}
 
     rng = random.Random(self.seed)
 
