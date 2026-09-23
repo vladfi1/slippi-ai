@@ -35,14 +35,15 @@ Phillip has played a number of top players:
 * [Moky](https://www.youtube.com/watch?v=1kviVflqXc4)
 * [Aklo](https://www.youtube.com/watch?v=OGOEqhMptq0)
 
-My [youtube channel](https://www.youtube.com/channel/UCzpDWSOtWpDaNPC91dqmPQg) also has some recordings and clips.
+My [youtube channel](https://www.youtube.com/channel/UCzpDWSOtWpDaNPC91dqmPQg) also has many more recordings and clips.
 
 ## Acknowledgements
 
-* Huge thanks to Fizzi for writing the fast-forward gecko code that significantly speeds up RL training, for providing most of the imitation training data in the form of anonymized ranked collections (link in the Slippi discord), and of course for giving us Slippi in the first place. Even prior to rollback netcode, slippi replays were what rekindled my interest in melee AI, and are what gave name to this repo.
-* Big thanks also to [altf4](https://github.com/altf4) for creating the [libmelee](https://github.com/altf4/libmelee) interface to slippi dolphin, making melee AI development accessible to everyone.
-* Thank you to the many players who have generously shared their replays.
-* Finally, a big thank you to my dad for proving the computing hardware used to train phillip.
+* Fizzi for writing the fast-forward gecko code that significantly speeds up RL training, for providing most of the imitation training data in the form of anonymized ranked collections (link in the Slippi discord), and of course for giving us Slippi in the first place. Even prior to rollback netcode, slippi replays were what rekindled my interest in melee AI, and are what gave name to this repo.
+* [altf4](https://github.com/altf4) for creating the [libmelee](https://github.com/altf4/libmelee) interface to slippi dolphin, making melee AI development accessible to everyone.
+* Enzyme for creating a decomp-based simulator that runs melee even faster than dolphin. He is also the creator of "Doubles Phillip" which you can check out on [discord](https://discord.gg/k7ZuNmh7ed).
+* The many players who have generously shared their replays.
+* My dad for proving the computing hardware used to train phillip.
 
 # Code Overview
 
