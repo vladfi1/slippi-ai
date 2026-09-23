@@ -119,6 +119,9 @@ NAME_GROUPS = [
   # DK
   ('DialM', 'ARTH#977', 'INCEL#67'),  # 11K replays
 
+  # Ganondorf
+  ('Mekk', 'MEKK#251', 'ONEGOD#0'),  # 14K replays
+
   # Ness
   ('MP3', 'MP#3', 'MP#435'),  # 30K replays
 
