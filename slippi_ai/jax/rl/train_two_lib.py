@@ -297,13 +297,26 @@ class AgentManager:
       f.write(pickled_state)
 
   def agent_kwargs(self) -> dict:
+    """Kwargs for eval_lib.build_delayed_agent.
+
+    The actors only need the policy, so the optimizer and value function state
+    are left out (a host copy of everything is ~700MB per agent per rollout
+    worker). The policy variables are device-resident references to the
+    learner's parameters, which the learner's first (buffer-donating) update
+    invalidates, so build the agent right away; build_delayed_agent copies
+    them.
+    """
     jax_kwargs = dataclasses.asdict(self.agent_config.jax)
     # Run inference on the same device as this port's learner, unless
     # explicitly overridden in the config.
     if jax_kwargs.get('device_index') is None and self.device is not None:
       jax_kwargs['device_index'] = jax.local_devices().index(self.device)
+    state = dict(
+        state=dict(policy=self.learner.policy_variables(to_numpy=False)),
+        **self.to_save,
+    )
     return dict(
-        state=self.get_state(),
+        state=state,
         compile=self.agent_config.compile,
         batch_steps=self.agent_config.batch_steps,
         async_inference=self.agent_config.async_inference,
@@ -540,9 +553,12 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   for port, *names in zip(PORTS, *name_combination_batch):
     port_to_names[port] = names
 
-  agent_kwargs = {port: agent.agent_kwargs() for port, agent in agents.items()}
-  for port, names in port_to_names.items():
-    agent_kwargs[port]['name'] = names
+  def get_agent_kwargs() -> dict[int, dict]:
+    # Built when the actor is; see AgentManager.agent_kwargs.
+    agent_kwargs = {port: agent.agent_kwargs() for port, agent in agents.items()}
+    for port, names in port_to_names.items():
+      agent_kwargs[port]['name'] = names
+    return agent_kwargs
 
   dolphin_kwargs = dict(
       players={
@@ -562,7 +578,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   build_actor: tp.Callable[[], evaluators.AbstractRolloutWorker]
   build_actor = lambda: evaluators.RolloutWorker(
-      agent_kwargs=agent_kwargs,
+      agent_kwargs=get_agent_kwargs(),
       dolphin_kwargs=dolphin_kwargs,
       env_kwargs=env_kwargs,
       num_envs=config.actor.num_envs,
@@ -596,7 +612,7 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
       # Unlike self-play, the two ports have distinct policies, so each gets
       # its own agent instead of a single one batched over both ports.
       return jax_rollout.JaxSimRolloutWorker(
-          agent_kwargs=agent_kwargs,
+          agent_kwargs=get_agent_kwargs(),
           dolphin_kwargs=dolphin_kwargs,
           num_envs=config.actor.num_envs,
           rollout_length=config.actor.rollout_length,
