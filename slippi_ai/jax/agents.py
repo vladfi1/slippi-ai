@@ -1,5 +1,6 @@
 import collections
 import enum
+import functools
 import typing as tp
 
 import jax
@@ -27,6 +28,118 @@ class DType(enum.Enum):
 
   def is_default(self):
     return self is DType.FP32
+
+SampleKwargs = tuple[tuple[str, tp.Any], ...]  # hashable dict
+
+
+def _sample(
+    policy: policies.Policy[ControllerType],
+    /,
+    rngs: nnx.Rngs,
+    state_and_reset: tuple[Game, jax.Array],
+    name_code: jax.Array,
+    rating: float,
+    prev_actions: list[ControllerType],
+    prev_state: policies.RecurrentState,
+    *,
+    sample_kwargs: SampleKwargs,
+) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
+  # Note: sample outputs are discretized by the controller_head.
+  game, needs_reset = state_and_reset
+  batch_size = needs_reset.shape[0]
+  state_action = StateAction(
+      state=game,
+      action=prev_actions,
+      name=name_code,
+      rating=jnp.full([batch_size], rating),
+  )
+  return policy.sample(
+      rngs, state_action, prev_state, needs_reset, **dict(sample_kwargs))
+
+
+class _SampleFns(tp.NamedTuple):
+  sample: tp.Callable
+  multi_sample: tp.Callable
+  jit_sample: tp.Callable
+  jit_multi_sample: tp.Callable
+
+
+@functools.lru_cache(maxsize=None)
+def _sample_fns(dtype: DType, pack_args: bool) -> _SampleFns:
+  """Sampling functions shared by all agents with the same settings.
+
+  nnx.jit caches compilations per function object and policy GraphDef, so
+  building these once (rather than per agent) lets agents whose policies share
+  a GraphDef (see saving.policy_from_config_dict) share compiled functions.
+  Anything that varies between such agents (batch size, rating, name codes)
+  is a jit argument rather than a closure variable.
+  """
+  # TODO: this shouldn't be necessay if we always make sure that the policy
+  # parameters are in the correct dtype.
+  sample = jax_utils.with_compute_dtype(_sample, dtype.dtype)
+
+  def multi_sample(
+      policy: policies.Policy[ControllerType],
+      /,
+      rngs: nnx.Rngs,
+      states_and_resets: list[tuple[Game[S], jax.Array]],  # time-indexed
+      name_code: jax.Array,
+      rating: float,
+      prev_actions: list[ControllerType],  # only for first step
+      initial_state: policies.RecurrentState,
+      *,
+      sample_kwargs: SampleKwargs,
+  ) -> tuple[list[SampleOutputs[ControllerType]], list[ControllerType], policies.RecurrentState]:
+    """Runs the policy once per element of `states_and_resets`.
+
+    Returns the flattened list of `len(states_and_resets) * frame_skip`
+    sample outputs, the prev_actions for the next call, and the final state.
+    """
+    stacked_states_and_resets = jax.tree.map(
+        lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
+
+    @nnx.scan(in_axes=(0, 0, nnx.Carry), out_axes=(0, nnx.Carry))
+    def scan_fn(
+        rngs: nnx.Rngs,
+        state_and_reset: tuple[Game, jax.Array],
+        prev_actions_and_state: tuple[list[ControllerType], policies.RecurrentState],
+    ) -> tuple[list[SampleOutputs[ControllerType]], tuple[list[ControllerType], policies.RecurrentState]]:
+      gamestate, needs_reset = state_and_reset
+      prev_actions, prev_state = prev_actions_and_state
+      sample_outputs, new_state = sample(
+          policy, rngs, (gamestate, needs_reset), name_code, rating,
+          prev_actions, prev_state, sample_kwargs=sample_kwargs)
+      next_actions = [so.controller_state for so in sample_outputs]
+      return sample_outputs, (next_actions, new_state)
+
+    length = len(states_and_resets)
+
+    stacked_sample_outputs, (next_actions, final_state) = scan_fn(
+        rngs.fork(split=length), stacked_states_and_resets,
+        (prev_actions, initial_state))
+
+    sample_outputs: list[SampleOutputs[ControllerType]] = []
+    for i in range(length):
+      sample_outputs.extend(
+          jax.tree.map(lambda t, i=i: t[i], stacked_sample_outputs))
+
+    return sample_outputs, next_actions, final_state
+
+  if dtype is not DType.FP32:
+    multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
+
+  jit_kwargs = dict(donate_argnums=(1, 6), static_argnames=('sample_kwargs',))
+  if pack_args:
+    jit_sample = jax_utils.packed_nnx_jit(
+        sample, pack_argnums=(2,), **jit_kwargs)
+    jit_multi_sample = jax_utils.packed_nnx_jit(
+        multi_sample, pack_argnums=(2,), **jit_kwargs)
+  else:
+    jit_sample = jax_utils.nnx_jit(sample, **jit_kwargs)
+    jit_multi_sample = jax_utils.nnx_jit(multi_sample, **jit_kwargs)
+
+  return _SampleFns(sample, multi_sample, jit_sample, jit_multi_sample)
+
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   """Wraps a Policy to track hidden state."""
@@ -72,29 +185,10 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     self._sample_outputs = collections.deque[SampleOutputs[ControllerType]]()
     self._needs_reset: BoolArray[Rank1] = np.full([batch_size], False)
 
-    def sample(
-        policy: policies.Policy[ControllerType],
-        /,
-        rngs: nnx.Rngs,
-        state_and_reset: tuple[Game, jax.Array],
-        name_code: jax.Array,
-        prev_actions: list[ControllerType],
-        prev_state: policies.RecurrentState,
-    ) -> tuple[list[SampleOutputs[ControllerType]], policies.RecurrentState]:
-      # Note: sample outputs are discretized by the controller_head.
-      game, needs_reset = state_and_reset
-      state_action = StateAction(
-          state=game,
-          action=prev_actions,
-          name=name_code,
-          rating=jnp.full([self._batch_size], self._rating),
-      )
-      return policy.sample(
-          rngs, state_action, prev_state, needs_reset, **sample_kwargs)
-
     if isinstance(dtype, str):
       dtype = DType(dtype)
     self._dtype = dtype
+    self._sample_kwargs: SampleKwargs = tuple(sorted(sample_kwargs.items()))
 
     jax_utils.cast_module_state_to_dtype(policy, dtype.dtype)
 
@@ -107,85 +201,24 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       self._prev_controller = jax.device_put(
           self._prev_controller, self._device)
 
-    # TODO: this shouldn't be necessay if we always make sure that the policy
-    # parameters are in the correct dtype.
-    sample = jax_utils.with_compute_dtype(sample, dtype.dtype)
-
-    self._sample = jax_utils.cached_partial(sample, policy, rngs)
+    fns = _sample_fns(dtype, pack_args)
+    self._sample = jax_utils.cached_partial(fns.sample, policy, rngs)
+    self._multi_sample = jax_utils.cached_partial(
+        fns.multi_sample, policy, rngs)
 
     if functionalize:
+      # Not shared between agents.
       self._jitted_sample = jax_utils.cached_functional_jit(
-          sample, policy, rngs, donate_argnums=(5,))
-    else:
-      if pack_args:
-        jitted_sample = jax_utils.packed_nnx_jit(
-            sample, donate_argnums=(1, 5), pack_argnums=(2,))
-      else:
-        jitted_sample = jax_utils.nnx_jit(sample, donate_argnums=(1, 5))
-
-      self._jitted_sample = jax_utils.cached_partial(
-          jitted_sample, policy, rngs)
-
-    def multi_sample(
-        policy: policies.Policy[ControllerType],
-        /,
-        rngs: nnx.Rngs,
-        states_and_resets: list[tuple[Game[S], jax.Array]],  # time-indexed
-        name_code: jax.Array,
-        prev_actions: list[ControllerType],  # only for first step
-        initial_state: policies.RecurrentState,
-    ) -> tuple[list[SampleOutputs[ControllerType]], list[ControllerType], policies.RecurrentState]:
-      """Runs the policy once per element of `states_and_resets`.
-
-      Returns the flattened list of `len(states_and_resets) * frame_skip`
-      sample outputs, the prev_actions for the next call, and the final state.
-      """
-      stacked_states_and_resets = jax.tree.map(
-          lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
-
-      @nnx.scan(in_axes=(0, 0, nnx.Carry), out_axes=(0, nnx.Carry))
-      def scan_fn(
-          rngs: nnx.Rngs,
-          state_and_reset: tuple[Game, jax.Array],
-          prev_actions_and_state: tuple[list[ControllerType], policies.RecurrentState],
-      ) -> tuple[list[SampleOutputs[ControllerType]], tuple[list[ControllerType], policies.RecurrentState]]:
-        gamestate, needs_reset = state_and_reset
-        prev_actions, prev_state = prev_actions_and_state
-        sample_outputs, new_state = sample(
-            policy, rngs, (gamestate, needs_reset), name_code, prev_actions, prev_state)
-        next_actions = [so.controller_state for so in sample_outputs]
-        return sample_outputs, (next_actions, new_state)
-
-      length = len(states_and_resets)
-
-      stacked_sample_outputs, (next_actions, final_state) = scan_fn(
-          rngs.fork(split=length), stacked_states_and_resets,
-          (prev_actions, initial_state))
-
-      sample_outputs: list[SampleOutputs[ControllerType]] = []
-      for i in range(length):
-        sample_outputs.extend(
-            jax.tree.map(lambda t, i=i: t[i], stacked_sample_outputs))
-
-      return sample_outputs, next_actions, final_state
-
-    if dtype is not DType.FP32:
-      multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
-
-    self._multi_sample = jax_utils.cached_partial(multi_sample, policy, rngs)
-
-    if functionalize:
+          fns.sample, policy, rngs, donate_argnums=(6,),
+          static_argnames=('sample_kwargs',))
       self._jitted_multi_sample = jax_utils.cached_functional_jit(
-          multi_sample, policy, rngs, donate_argnums=(5,))
+          fns.multi_sample, policy, rngs, donate_argnums=(6,),
+          static_argnames=('sample_kwargs',))
     else:
-      if pack_args:
-        jitted_multi_sample = jax_utils.packed_nnx_jit(
-            multi_sample, donate_argnums=(1, 5), pack_argnums=(2,))
-      else:
-        jitted_multi_sample = jax_utils.nnx_jit(multi_sample, donate_argnums=(1, 5))
-
+      self._jitted_sample = jax_utils.cached_partial(
+          fns.jit_sample, policy, rngs)
       self._jitted_multi_sample = jax_utils.cached_partial(
-          jitted_multi_sample, policy, rngs)
+          fns.jit_multi_sample, policy, rngs)
 
     self._hidden_state = self._policy.initial_state(batch_size, rngs)
     if dtype is not DType.FP32:
@@ -253,8 +286,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       # Keep hidden state and prev_controller on device.
       sample_fn = self._jitted_sample if self._compile else self._sample
       sample_outputs, self._hidden_state = sample_fn(
-          (game, self._needs_reset), self._name_code,
-          self._prev_controller, self._hidden_state)
+          (game, self._needs_reset), self._name_code, self._rating,
+          self._prev_controller, self._hidden_state,
+          sample_kwargs=self._sample_kwargs)
 
       # Use donate_argnums?
       self._prev_controller = [so.controller_state for so in sample_outputs]
@@ -315,7 +349,8 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
     multi_sample_fn = self._jitted_multi_sample if self._compile else self._multi_sample
     sample_outputs, self._prev_controller, self._hidden_state = multi_sample_fn(
-        call_states, self._name_code, self._prev_controller, self._hidden_state)
+        call_states, self._name_code, self._rating, self._prev_controller,
+        self._hidden_state, sample_kwargs=self._sample_kwargs)
 
     assert len(sample_outputs) >= len(remaining)
     outputs.extend(sample_outputs[:len(remaining)])

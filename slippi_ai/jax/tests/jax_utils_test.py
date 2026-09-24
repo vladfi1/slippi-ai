@@ -19,6 +19,7 @@ from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
     microbatch_fn, microbatch_module, microbatched_grads, grad_with_aux_tuple,
+    GraphDefCache, Opaque, packed_nnx_jit,
 )
 
 
@@ -446,6 +447,86 @@ class MicrobatchedGradsTest(unittest.TestCase):
     mb_grads, _ = microbatched_grads(_simple_loss_fn, microbatch_size=2)(module, data)
     for leaf in jax.tree.leaves(mb_grads):
       self.assertEqual(leaf.dtype, jnp.float32)
+
+
+class _ModuleWithStatic(nnx.Module):
+  """A module with a static attribute that is only equal to itself."""
+
+  def __init__(self, size: int, rngs: nnx.Rngs):
+    self.linear = nnx.Linear(size, size, rngs=rngs)
+    self.activation = lambda x: jax.nn.relu(x)
+
+  def __call__(self, x):
+    return self.activation(self.linear(x))
+
+
+class GraphDefCacheTest(unittest.TestCase):
+
+  def test_shares_compilation(self):
+    cache = GraphDefCache()
+    a = cache.canonicalize('key', _ModuleWithStatic(2, nnx.Rngs(0)))
+    b = _ModuleWithStatic(2, nnx.Rngs(1))
+    self.assertNotEqual(nnx.graphdef(a), nnx.graphdef(b))
+    b = cache.canonicalize('key', b)
+    self.assertEqual(nnx.graphdef(a), nnx.graphdef(b))
+
+    traces = []
+
+    @nnx.jit
+    def apply(module, x):
+      traces.append(None)
+      # Mutations must reach the canonicalized module.
+      module.linear.bias[...] += 1
+      return module(x)
+
+    x = jnp.ones([3, 2])
+    apply(a, x)
+    apply(b, x)
+    self.assertEqual(len(traces), 1)
+    np.testing.assert_array_equal(b.linear.bias[...], 1)
+    np.testing.assert_array_equal(a.linear.bias[...], 1)
+
+  def test_mismatch_raises(self):
+    cache = GraphDefCache()
+    cache.canonicalize('key', _ModuleWithStatic(2, nnx.Rngs(0)))
+    with self.assertRaises(ValueError):
+      cache.canonicalize('key', _ModuleWithStatic(3, nnx.Rngs(0)))
+
+
+class OpaqueTest(unittest.TestCase):
+
+  def test_hidden_from_graphdef(self):
+    self.assertEqual(Opaque(1), Opaque(2))
+    self.assertEqual(hash(Opaque(1)), hash(Opaque(2)))
+
+    class Module(nnx.Module):
+      def __init__(self, value):
+        self.linear = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+        self.value = Opaque(value)
+
+    self.assertEqual(nnx.graphdef(Module(1)), nnx.graphdef(Module(2)))
+
+
+class PackedNnxJitTest(unittest.TestCase):
+
+  def test_shared_across_batch_sizes(self):
+    traces = []
+
+    def f(module: nnx.Linear, arg: dict):
+      traces.append(None)
+      return module(arg['x']) + arg['y']
+
+    packed_f = packed_nnx_jit(f, pack_argnums=(1,))
+    module = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+
+    for batch_size in [2, 3, 2]:
+      arg = dict(
+          x=np.ones([batch_size, 2], np.float32),
+          y=np.arange(batch_size, dtype=np.float32)[:, None])
+      expected = module(arg['x']) + arg['y']
+      np.testing.assert_allclose(packed_f(module, arg), expected, rtol=1e-6)
+
+    self.assertEqual(len(traces), 2)
 
 
 if __name__ == '__main__':
