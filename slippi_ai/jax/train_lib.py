@@ -177,13 +177,22 @@ def value_function_from_config(
   if vf_config.separate_network_config:
     network_config = vf_config.network
 
-  return vf_lib.ValueFunction(
+  value_function = vf_lib.ValueFunction(
       rngs=rngs,
       network_config=network_config,
       num_names=config.max_names,
       embed_config=config.embed,
       frame_skip=config.policy.frame_skip,
   )
+
+  # Value functions with the same config share a GraphDef so that jitted
+  # functions are only compiled once for all of them; see
+  # jax_utils.GraphDefCache.
+  key = jax_utils.freeze(
+      (network_config, config.max_names, config.embed, config.policy.frame_skip))
+  return _VALUE_FUNCTION_GRAPHDEFS.canonicalize(key, value_function)
+
+_VALUE_FUNCTION_GRAPHDEFS = jax_utils.GraphDefCache()
 
 
 def train(config: Config):

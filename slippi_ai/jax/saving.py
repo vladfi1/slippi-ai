@@ -87,7 +87,7 @@ def policy_from_config_dict(config_dict: dict) -> policies.Policy:
   poliicy_config = dataclass_from_dict(policies.PolicyConfig, config_dict['policy'])
   rngs = nnx.Rngs(config_dict['seed'])
 
-  return policy_from_configs(
+  policy = policy_from_configs(
       network_config=config_dict['network'],
       controller_head_config=config_dict['controller_head'],
       embed_config=embed_config,
@@ -95,6 +95,16 @@ def policy_from_config_dict(config_dict: dict) -> policies.Policy:
       policy_config=poliicy_config,
       rngs=rngs,
   )
+
+  # Policies with the same config share a GraphDef so that jitted functions
+  # (e.g. agent inference and RL updates) are only compiled once for all of
+  # them; see jax_utils.GraphDefCache.
+  key = jax_utils.freeze(tuple(
+      config_dict[k] for k in
+      ['network', 'controller_head', 'embed', 'max_names', 'policy']))
+  return _POLICY_GRAPHDEFS.canonicalize(key, policy)
+
+_POLICY_GRAPHDEFS = jax_utils.GraphDefCache()
 
 # Take into account renaming of submodules when loading state dicts.
 _submodule_mappings = {
