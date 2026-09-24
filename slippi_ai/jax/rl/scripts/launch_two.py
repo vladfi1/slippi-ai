@@ -10,7 +10,7 @@ if __name__ == '__main__':
   import logging
   import os
 
-  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1'
+  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.95'
 
   from absl import app, flags
   import fancyflags as ff
