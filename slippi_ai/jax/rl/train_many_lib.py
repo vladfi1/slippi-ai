@@ -18,6 +18,7 @@ import dataclasses
 import itertools
 import logging
 import os
+import resource
 import typing as tp
 
 import melee
@@ -45,18 +46,6 @@ field = lambda f: dataclasses.field(default_factory=f)
 class RuntimeConfig(train_two_lib.RuntimeConfig):
   expt_root: str = 'experiments/jax/train_many'
 
-
-@dataclasses.dataclass
-class AgentConfig:
-  """Settings shared by all of the agents."""
-  name: list[str] = field(lambda: [nametags.DEFAULT_NAME])
-  compile: bool = True
-  batch_steps: int = 0
-  async_inference: bool = False
-  override_delay: tp.Optional[int] = None
-  jax: run_lib.JaxAgentConfig = field(run_lib.JaxAgentConfig)
-
-
 @dataclasses.dataclass
 class Config:
   runtime: RuntimeConfig = field(RuntimeConfig)
@@ -65,7 +54,7 @@ class Config:
   learner: learner_lib.LearnerConfig = field(
       train_two_lib.default_learner_config)
   actor: run_lib.ActorConfig = field(run_lib.ActorConfig)
-  agent: AgentConfig = field(AgentConfig)
+  agent: train_two_lib.AgentConfig = field(train_two_lib.AgentConfig)
 
   # One agent per teacher. May be omitted when restoring from expt_dir.
   teachers: list[str] = field(list)
@@ -82,6 +71,15 @@ class Config:
   # Rating to condition the agent on. Required when the teacher was trained
   # with ratings (embed.with_rating); ignored otherwise.
   ratings: list[float] = field(list)
+
+
+@dataclasses.dataclass
+class AgentSpec:
+  """Full per-agent settings. Can't be expressed as flags; for use from python
+  (see scripts/train_many_10.py), where it takes the place of Config.teachers,
+  Config.agent, Config.learner and the per-agent lists."""
+  agent: train_two_lib.AgentConfig
+  learner: learner_lib.LearnerConfig
 
 
 DEFAULT_CONFIG = Config()
@@ -107,7 +105,7 @@ def _per_agent(values: list[T], num_agents: int, name: str) -> list[tp.Optional[
   return list(values)
 
 
-def get_num_agents(config: Config, expt_dir: str) -> int:
+def get_num_agents(num_teachers: int, expt_dir: str) -> int:
   """The number of agents, which is recorded in expt_dir for restoring."""
   path = os.path.join(expt_dir, NUM_AGENTS_FILE)
   previous = None
@@ -115,7 +113,7 @@ def get_num_agents(config: Config, expt_dir: str) -> int:
     with open(path) as f:
       previous = int(f.read())
 
-  num_agents = len(config.teachers) or previous
+  num_agents = num_teachers or previous
   if not num_agents:
     raise ValueError('Must pass "teachers" if not restoring.')
   if previous is not None and previous != num_agents:
@@ -127,9 +125,8 @@ def get_num_agents(config: Config, expt_dir: str) -> int:
   return num_agents
 
 
-def get_agent_configs(
-    config: Config, num_agents: int) -> list[train_two_lib.AgentConfig]:
-  """Expands the config into a train_two-style config for each agent."""
+def get_agent_specs(config: Config, num_agents: int) -> list[AgentSpec]:
+  """Expands the (flag-friendly) config into full per-agent settings."""
   teachers = _per_agent(config.teachers, num_agents, 'teachers')
   value_functions = _per_agent(
       config.value_functions, num_agents, 'value_functions')
@@ -137,17 +134,21 @@ def get_agent_configs(
   ratings = _per_agent(config.ratings, num_agents, 'ratings')
 
   return [
-      train_two_lib.AgentConfig(
-          teacher=teachers[i],
-          value_function=value_functions[i],
-          name=list(config.agent.name),
-          rating=ratings[i],
-          char=chars[i],
-          compile=config.agent.compile,
-          batch_steps=config.agent.batch_steps,
-          async_inference=config.agent.async_inference,
-          override_delay=config.agent.override_delay,
-          jax=dataclasses.replace(config.agent.jax),
+      AgentSpec(
+          agent=train_two_lib.AgentConfig(
+              teacher=teachers[i],
+              value_function=value_functions[i],
+              name=list(config.agent.name),
+              rating=ratings[i],
+              char=chars[i],
+              compile=config.agent.compile,
+              batch_steps=config.agent.batch_steps,
+              async_inference=config.agent.async_inference,
+              override_delay=config.agent.override_delay,
+              jax=dataclasses.replace(config.agent.jax),
+          ),
+          # Learners don't mutate their config, so it's safe to share.
+          learner=config.learner,
       )
       for i in range(num_agents)
   ]
@@ -528,11 +529,44 @@ def make_worker_spec(
   return spec, sources
 
 
-def run(config: Config):
-  with contextlib.ExitStack() as exit_stack:
-    _run(config, exit_stack)
+def run(
+    config: Config,
+    agent_specs: tp.Optional[list[AgentSpec]] = None,
+):
+  """Trains the agents described by config, or by agent_specs if given.
 
-def _run(config: Config, exit_stack: contextlib.ExitStack):
+  With agent_specs, config.teachers, config.agent, config.learner and the
+  per-agent lists in config are ignored, except that config.learner.ppo and
+  config.learner.reward still govern the shared training loop and logging.
+  """
+  _raise_open_file_limit()
+  with contextlib.ExitStack() as exit_stack:
+    _run(config, exit_stack, agent_specs)
+
+
+def _raise_open_file_limit():
+  """Raises the soft open-file limit to the hard limit.
+
+  Every matchup's MultiprocessEnv allocates one POSIX shared-memory block per
+  array leaf of its observation and action buffers (~160 blocks), and the
+  parent keeps a file descriptor open for each one for the lifetime of the
+  env. With 55 matchups for 10 agents that is ~9000 descriptors, far above the
+  1024 soft limit that login shells typically get, which shows up as
+  "OSError: [Errno 24] Too many open files: '/psm_...'". The hard limit is
+  usually much higher (1M on systemd systems), and raising the soft limit up
+  to it needs no privileges.
+  """
+  soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+  if soft < hard:
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    logging.info('raised open file limit from %d to %d', soft, hard)
+
+
+def _run(
+    config: Config,
+    exit_stack: contextlib.ExitStack,
+    agent_specs: tp.Optional[list[AgentSpec]] = None,
+):
   tag = config.runtime.tag or jax_train_lib.get_experiment_tag()
   expt_dir = config.runtime.expt_dir
   if expt_dir is None:
@@ -541,16 +575,26 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   os.makedirs(expt_dir, exist_ok=True)
   logging.info('experiment directory: %s', expt_dir)
 
-  num_agents = get_num_agents(config, expt_dir)
+  if agent_specs is None:
+    num_agents = get_num_agents(len(config.teachers), expt_dir)
+    agent_specs = get_agent_specs(config, num_agents)
+  else:
+    num_agents = get_num_agents(len(agent_specs), expt_dir)
+
+  # The loop structure (rollouts per learner step) is shared by all agents.
+  for i, spec in enumerate(agent_specs):
+    if spec.learner.ppo.num_batches != config.learner.ppo.num_batches:
+      raise ValueError(
+          f'Agent {i + 1}: learner.ppo.num_batches must match config.learner.')
+
   agents = [
       AgentManager(
-          agent_config=agent_config,
+          agent_config=spec.agent,
           agent_id=i + 1,
           expt_dir=expt_dir,
-          # Learners don't mutate their config, so it's safe to share.
-          learner_config=config.learner,
+          learner_config=spec.learner,
       )
-      for i, agent_config in enumerate(get_agent_configs(config, num_agents))
+      for i, spec in enumerate(agent_specs)
   ]
 
   if config.actor.use_sim_envs:
@@ -710,8 +754,9 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
   step, = steps
 
   # TODO: flush logger at optimizer/value burnin boundaries
-  assert config.learner.optimizer_burnin_epochs == 0
-  assert config.learner.value_burnin_epochs == 0
+  for agent in agents:
+    assert agent.learner._config.optimizer_burnin_epochs == 0
+    assert agent.learner._config.value_burnin_epochs == 0
 
   logging.info('Main training loop')
 
