@@ -433,10 +433,13 @@ def make_worker_spec(
   port_names = dict(zip(PORTS, _cycle_name_pairs(
       pair[1].name, pair[2].name, num_envs)))
 
-  agent_kwargs: dict[int, dict] = {}
-  for port, agent in pair.items():
-    agent_kwargs[port] = agent.agent_kwargs()
-    agent_kwargs[port]['name'] = port_names[port]
+  def get_agent_kwargs() -> dict[int, dict]:
+    # Built when the worker is; see AgentManager.agent_kwargs.
+    agent_kwargs: dict[int, dict] = {}
+    for port, agent in pair.items():
+      agent_kwargs[port] = agent.agent_kwargs()
+      agent_kwargs[port]['name'] = port_names[port]
+    return agent_kwargs
 
   dolphin_kwargs = dict(
       players={
@@ -456,16 +459,10 @@ def make_worker_spec(
           f'inner_batch_size={actor_config.get_inner_batch_size()} '
           'for sim RL.')
 
-    rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
     if is_self_play:
-      # A single agent batched over both ports.
-      merged_kwargs = agent_kwargs[1].copy()
-      merged_kwargs['name'] = port_names[1] + port_names[2]
-      rollout_agent_kwargs = {PORTS: merged_kwargs}
       # The merged agent's trajectory is keyed by its first port.
       sources = {first: [Source(-1, 1, 2 * num_envs)]}
     else:
-      rollout_agent_kwargs = dict(agent_kwargs)
       sources = {
           first: [Source(-1, 1, num_envs)],
           second: [Source(-1, 2, num_envs)],
@@ -473,6 +470,16 @@ def make_worker_spec(
 
     def build() -> evaluators.AbstractRolloutWorker:
       from slippi_ai.sim_env import jax_rollout
+
+      agent_kwargs = get_agent_kwargs()
+      rollout_agent_kwargs: dict[int | tuple[int, ...], dict]
+      if is_self_play:
+        # A single agent batched over both ports.
+        merged_kwargs = agent_kwargs[1]
+        merged_kwargs['name'] = port_names[1] + port_names[2]
+        rollout_agent_kwargs = {PORTS: merged_kwargs}
+      else:
+        rollout_agent_kwargs = agent_kwargs
 
       return jax_rollout.JaxSimRolloutWorker(
           agent_kwargs=rollout_agent_kwargs,
@@ -508,7 +515,7 @@ def make_worker_spec(
       }
 
     build = lambda: evaluators.RolloutWorker(
-        agent_kwargs=agent_kwargs,
+        agent_kwargs=get_agent_kwargs(),
         dolphin_kwargs=dolphin_kwargs,
         env_kwargs=env_kwargs,
         num_envs=num_envs,
