@@ -387,6 +387,158 @@ def batch_fs(xs: list[T], axis: int = 1) -> T:
   return utils.map_nt(lambda *xs: jnp.stack(xs, axis=axis), *xs)
 
 
+class LossWeights(tp.NamedTuple):
+  """Loss weights that may differ between otherwise identical learners.
+
+  They are passed to the jitted PPO update as (dynamic) arguments rather than
+  read from the (static) LearnerConfig, so that such learners share compiled
+  functions; see Learner.
+  """
+  policy_gradient: float
+  actor_kl: float  # ppo.beta
+  teacher_kl: float
+  reverse_teacher_kl: float
+  entropy: float
+
+  @classmethod
+  def from_config(cls, config: LearnerConfig) -> 'LossWeights':
+    return cls(
+        policy_gradient=float(config.policy_gradient_weight),
+        actor_kl=float(config.ppo.beta),
+        teacher_kl=float(config.kl_teacher_weight),
+        reverse_teacher_kl=float(config.reverse_kl_teacher_weight),
+        entropy=float(config.entropy_weight),
+    )
+
+
+def _static_config(config: LearnerConfig) -> LearnerConfig:
+  """Clears the fields that LossWeights carries; see Learner."""
+  return dataclasses.replace(
+      config,
+      policy_gradient_weight=None,
+      kl_teacher_weight=None,
+      reverse_kl_teacher_weight=None,
+      entropy_weight=None,
+      ppo=dataclasses.replace(config.ppo, beta=None),
+  )
+
+
+# The jitted functions below are built by memoized factories, so that learners
+# with the same settings get the same function objects. Together with policies
+# and value functions that share a GraphDef (see saving.policy_from_config_dict
+# and train_lib.value_function_from_config) this makes nnx.jit compile each
+# function only once for all such learners.
+
+@functools.lru_cache(maxsize=None)
+def _policy_adam(learning_rate: float, burnin_epochs: int):
+  schedule = warmup_schedule(burnin_epochs, learning_rate)
+  return schedule, optax.adam(schedule)
+
+
+@functools.lru_cache(maxsize=None)
+def _value_adam(learning_rate: float):
+  return optax.adam(learning_rate)
+
+
+_TEACHER_BATCH_DIMS = dict(
+    input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
+    output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
+)
+_VALUE_BATCH_DIMS = dict(
+    input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
+    output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
+)
+
+
+def _unroll_teacher(
+    teacher: Policy[ControllerType],
+    trajectory: FrameSkipTrajectory[ControllerType],
+    initial_state: RecurrentState,
+    skip_delay: int,
+) -> tuple[jax_utils.Loss, ControllerType, RecurrentState]:
+  teacher_frames = from_so_frames(get_delayed_frames(trajectory, skip_delay))
+  outputs = teacher.unroll(teacher_frames, initial_state)
+  loss = -jax_utils.add_n(outputs.log_probs) / len(outputs.log_probs) # unused
+  logits = batch_fs([do.logits for do in outputs.distances])
+  return loss, logits, outputs.final_state
+
+
+class _TeacherFns(tp.NamedTuple):
+  unroll: tp.Callable  # python
+  jit_unroll: tp.Callable
+
+
+@functools.lru_cache(maxsize=None)
+def _teacher_fns(skip_delay: int, microbatch_size: int) -> _TeacherFns:
+  def unroll_teacher(teacher, trajectory, initial_state):
+    return _unroll_teacher(teacher, trajectory, initial_state, skip_delay)
+
+  mbkwargs = MBKwargs(microbatch_size=microbatch_size, **_TEACHER_BATCH_DIMS)
+  return _TeacherFns(
+      unroll=jax_utils.microbatch_module(
+          jax_utils.no_loss(unroll_teacher), **mbkwargs),
+      jit_unroll=jax_utils.jit_run_fn(unroll_teacher, **mbkwargs),
+  )
+
+
+def _unroll_vf(
+    value_function: vf_lib.ValueFunction[ControllerType],
+    trajectory: FrameSkipTrajectory[ControllerType],
+    initial_state: RecurrentState,
+    discount: float,
+    lambda_: float = 1.0,
+    advantage_lambda: tp.Optional[float] = None,
+) -> tuple[jax_utils.Loss, Metrics, RecurrentState, Advantage]:
+  value_frames = get_frames(trajectory)
+  outputs, final_state = value_function.loss(
+      value_frames, initial_state, discount, lambda_=lambda_,
+      advantage_lambda=advantage_lambda)
+  # b16 metrics are annoying to log and print
+  metrics = utils.map_single_structure(
+      lambda x: jnp.astype(x, jnp.float32), outputs.metrics)
+  return outputs.loss, metrics, final_state, outputs.advantages
+
+
+class _ValueFns(tp.NamedTuple):
+  jit_unroll: tp.Callable
+  train: tp.Callable  # python
+  jit_train: tp.Callable
+
+
+@functools.lru_cache(maxsize=None)
+def _value_fns(
+    discount: float,
+    gae_lambda: float,
+    advantage_lambda: tp.Optional[float],
+    microbatch_size: int,
+    dtype: DType,
+    loss_scale: tp.Optional[float],
+) -> _ValueFns:
+  # Train with gae_lambda targets while computing PPO advantages with
+  # advantage_lambda; evaluate with lambda=1 for unbiased value targets.
+  # Note: not functools.partials, as nnx.grad can't resolve the resulting
+  # keyword-only defaults in the signature.
+  def unroll_vf(value_function, trajectory, initial_state):
+    return _unroll_vf(value_function, trajectory, initial_state, discount)
+
+  def train_unroll_vf(value_function, trajectory, initial_state):
+    return _unroll_vf(
+        value_function, trajectory, initial_state, discount,
+        lambda_=gae_lambda, advantage_lambda=advantage_lambda)
+
+  unroll_vf = jax_utils.with_compute_dtype(unroll_vf, dtype.dtype)
+  train_unroll_vf = jax_utils.with_compute_dtype(train_unroll_vf, dtype.dtype)
+
+  mbkwargs = MBKwargs(microbatch_size=microbatch_size, **_VALUE_BATCH_DIMS)
+  return _ValueFns(
+      jit_unroll=jax_utils.jit_run_fn(unroll_vf, **mbkwargs),
+      train=jax_utils.train_fn(
+          train_unroll_vf, loss_scale=loss_scale, **mbkwargs),
+      jit_train=jax_utils.jit_train_fn(
+          train_unroll_vf, loss_scale=loss_scale, **mbkwargs),
+  )
+
+
 class Learner(nnx.Module, tp.Generic[ControllerType]):
   """Implements PPO for RL fine-tuning."""
 
@@ -398,7 +550,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       value_function: vf_lib.ValueFunction[ControllerType],
       device: tp.Optional[jax.Device] = None,
   ) -> None:
-    self._config = config
+    # Everything stored on this module other than arrays is part of its
+    # GraphDef, which nnx.jit uses as a compilation cache key. Learners that
+    # differ only in their loss weights should still share compiled
+    # functions, so those are kept out of the config and instead passed to
+    # the jitted functions as arguments.
+    self._loss_weights = jax_utils.Opaque(LossWeights.from_config(config))
+    self._config = _static_config(config)
     self._device = device
     self.policy = policy
     self.teacher = teacher
@@ -418,92 +576,27 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # Then for the next optimizer_burnin_epochs we train the policy for a
     # single epoch with learning_rate=0 to initialize the optimizer state.
 
-    self.policy_schedule = warmup_schedule(
-        config.optimizer_burnin_epochs,
-        config.learning_rate,
-    )
-
-    self.policy_optimizer = nnx.Optimizer(
-        policy,
-        optax.adam(self.policy_schedule),
-        wrt=nnx.Param)
+    self.policy_schedule, policy_tx = _policy_adam(
+        config.learning_rate, config.optimizer_burnin_epochs)
+    self.policy_optimizer = nnx.Optimizer(policy, policy_tx, wrt=nnx.Param)
     self.value_optimizer = nnx.Optimizer(
         self.value_function,
-        optax.adam(config.learning_rate),
+        _value_adam(config.learning_rate),
         wrt=nnx.Param)
 
     self.discount = rl_lib.discount_from_halflife(
         config.reward_halflife / policy.frame_skip)
 
-    mbs = self._config.microbatch_size
-
-    teacher_mbkwargs = MBKwargs(
-        microbatch_size=self._config.teacher_mbs,
-        input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
-        output_batch_dims=(_TEACHER_LOGITS_AXIS, _STATE_AXIS),
-    )
     jax_utils.cast_module_state_to_dtype(self.teacher, config.teacher_dtype.dtype)
-    self._unroll_teacher_mb = jax_utils.microbatch_module(
-        jax_utils.no_loss(self._unroll_teacher),
-        **teacher_mbkwargs
+    self._teacher_fns = _teacher_fns(self.skip_delay, config.teacher_mbs)
+    self._value_fns = _value_fns(
+        discount=self.discount,
+        gae_lambda=config.gae_lambda,
+        advantage_lambda=config.advantage_lambda,
+        microbatch_size=config.value_mbs,
+        dtype=config.value_dtype,
+        loss_scale=config.value_loss_scale,
     )
-    self.unroll_teacher = jax_utils.run_loss_fn(
-        self.teacher, self._unroll_teacher,
-        **teacher_mbkwargs,
-    )
-
-    value_mbkwargs = MBKwargs(
-        microbatch_size=self._config.value_mbs,
-        input_batch_dims=(_TRAJECTORY_AXES, _STATE_AXIS),
-        output_batch_dims=(_METRICS_AXIS, _STATE_AXIS, _ADVANTAGES_AXIS),
-    )
-    # Train with gae_lambda targets while computing PPO advantages with
-    # advantage_lambda; evaluate with lambda=1 for unbiased value targets.
-    unroll_vf = jax_utils.with_compute_dtype(
-        self._unroll_vf, config.value_dtype.dtype)
-    # Note: not a functools.partial, as nnx.grad can't resolve the resulting
-    # keyword-only defaults in the signature.
-    def train_unroll_vf_(
-        value_function: vf_lib.ValueFunction[ControllerType],
-        trajectory: FrameSkipTrajectory[ControllerType],
-        initial_state: RecurrentState,
-    ):
-      return self._unroll_vf(
-          value_function, trajectory, initial_state,
-          lambda_=config.gae_lambda,
-          advantage_lambda=config.advantage_lambda)
-
-    train_unroll_vf = jax_utils.with_compute_dtype(
-        train_unroll_vf_, config.value_dtype.dtype)
-    self._unroll_vf_mb = jax_utils.microbatch_module(
-        self._unroll_vf, **value_mbkwargs)
-    self.unroll_vf = jax_utils.run_loss_fn(
-        self.value_function,
-        unroll_vf,
-        **value_mbkwargs,
-    )
-    self._train_vf_mb = jax_utils.train_fn(
-        train_unroll_vf, loss_scale=self._config.value_loss_scale,
-        **value_mbkwargs)
-    self.train_vf = jax_utils.cached_train_fn(
-        self.value_function,
-        self.value_optimizer,
-        train_unroll_vf,
-        **value_mbkwargs,
-    )
-
-    jit_ppo_epoch = jax_utils.nnx_jit(
-        Learner[ControllerType].ppo_epoch,
-        donate_argnums=0,
-        static_argnames=['train'])
-    self.jit_ppo_epoch = jax_utils.cached_partial(jit_ppo_epoch, self)
-
-    fused_ppo = jax_utils.nnx_jit(
-        Learner[ControllerType]._ppo,
-        donate_argnums=0,
-        static_argnames=['num_epochs'],
-    )
-    self.fused_ppo = jax_utils.cached_partial(fused_ppo, self)
 
     if device is not None:
       # Commits all parameters and optimizer state, so subsequent computations
@@ -558,35 +651,39 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
         lambda e, l, a: e.distance(l, a), logits, action)
     return -self._sum_leaves(self._controller_embedding, distances)
 
-  def _unroll_teacher(
+  def unroll_teacher(
       self,
-      teacher: Policy[ControllerType],
       trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: RecurrentState,
-  ) -> tuple[jax_utils.Loss, ControllerType, RecurrentState]:
-    teacher_frames = from_so_frames(
-        get_delayed_frames(trajectory, self.skip_delay))
-    outputs = teacher.unroll(teacher_frames, initial_state)
-    loss = -jax_utils.add_n(outputs.log_probs) / len(outputs.log_probs) # unused
-    logits = batch_fs([do.logits for do in outputs.distances])
-    return loss, logits, outputs.final_state
+  ) -> tuple[ControllerType, RecurrentState]:
+    return self._teacher_fns.jit_unroll(self.teacher, trajectory, initial_state)
 
-  def _unroll_vf(
+  def unroll_vf(
       self,
-      value_function: vf_lib.ValueFunction[ControllerType],
       trajectory: FrameSkipTrajectory[ControllerType],
       initial_state: RecurrentState,
-      lambda_: float = 1.0,
-      advantage_lambda: tp.Optional[float] = None,
-  ) -> tuple[jax_utils.Loss, Metrics, RecurrentState, Advantage]:
-    value_frames = get_frames(trajectory)
-    outputs, final_state = value_function.loss(
-        value_frames, initial_state, self.discount, lambda_=lambda_,
-        advantage_lambda=advantage_lambda)
-    # b16 metrics are annoying to log and print
-    metrics = utils.map_single_structure(
-        lambda x: jnp.astype(x, jnp.float32), outputs.metrics)
-    return outputs.loss, metrics, final_state, outputs.advantages
+  ) -> tuple[Metrics, RecurrentState, Advantage]:
+    return self._value_fns.jit_unroll(
+        self.value_function, trajectory, initial_state)
+
+  def train_vf(
+      self,
+      trajectory: FrameSkipTrajectory[ControllerType],
+      initial_state: RecurrentState,
+  ) -> tuple[Metrics, RecurrentState, Advantage]:
+    return self._value_fns.jit_train(
+        self.value_function, self.value_optimizer, trajectory, initial_state)
+
+  def jit_ppo_epoch(
+      self,
+      advantages: list[jax.Array],
+      teacher_logits: list[ControllerType],
+      trajectories: list[FrameSkipTrajectory[ControllerType]],
+      weights: LossWeights,
+      train: bool = True,
+  ) -> dict:
+    return _jit_ppo_epoch(
+        self, advantages, teacher_logits, trajectories, weights, train=train)
 
   def unroll(
       self,
@@ -603,6 +700,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       advantages: jax.Array,
       teacher_logits: ControllerType,  # Already batched
       trajectory: FrameSkipTrajectory[ControllerType],
+      weights: LossWeights,
   ) -> tp.Tuple[jax_utils.Loss, dict]:
     """Computes policy gradients for one PPO step.
 
@@ -617,6 +715,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       advantages: Value function advantages, [T, B].
       teacher_logits: Teacher logits aligned with the policy, [T, FS, B].
       trajectory: The collected trajectory.
+      weights: Loss weights.
 
     Returns:
       Tuple of (loss, metrics dict).
@@ -680,11 +779,11 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     ppo_objective = jnp.minimum(rhos * fs_advantages, clipped_rhos * fs_advantages)
 
     loss = (
-        - self._config.policy_gradient_weight * ppo_objective
-        + self._config.ppo.beta * actor_kl
-        + self._config.kl_teacher_weight * teacher_kl
-        + self._config.reverse_kl_teacher_weight * reverse_teacher_kl
-        - self._config.entropy_weight * entropy
+        - weights.policy_gradient * ppo_objective
+        + weights.actor_kl * actor_kl
+        + weights.teacher_kl * teacher_kl
+        + weights.reverse_teacher_kl * reverse_teacher_kl
+        - weights.entropy * entropy
     )
 
     metrics = dict(
@@ -704,6 +803,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       advantages: list[jax.Array],
       teacher_logits: list[ControllerType],
       trajectories: list[FrameSkipTrajectory[ControllerType]],
+      weights: LossWeights,
       train: bool = True,
   ) -> dict:
     """One epoch of PPO: accumulate gradients over all trajectories."""
@@ -742,7 +842,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
           self.policy,
           batched_advantages,
           batched_logits,
-          batched_trajectories)
+          batched_trajectories,
+          weights=weights)
 
       grads_dict = nnx.to_pure_dict(grads)
       grad_norms = jax.tree.map(jnp.linalg.norm, grads_dict)
@@ -768,7 +869,9 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       run_ppo = jax_utils.microbatch_module(
           jax_utils.no_loss(ppo_loss),
           **mbkwargs)
-      (metrics,) = run_ppo(self.policy, batched_advantages, batched_logits, batched_trajectories)
+      (metrics,) = run_ppo(
+          self.policy, batched_advantages, batched_logits,
+          batched_trajectories, weights=weights)
 
     actor_kl = metrics['actor_kl']
     metrics['actor_kl'] = dict(
@@ -781,6 +884,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       self,
       trajectories: list[FrameSkipTrajectory[ControllerType]],
       initial_state: LearnerState,
+      weights: LossWeights,
       num_epochs: int,
       # set jit to false to jit-trace the whole thing
       jit: bool = False,
@@ -790,12 +894,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     if jit:
       unroll_teacher = self.unroll_teacher
       train_vf = self.train_vf
-      ppo_epoch = self.jit_ppo_epoch
     else:
-      unroll_teacher = jax_utils.partial(self._unroll_teacher_mb, self.teacher)
+      unroll_teacher = jax_utils.partial(self._teacher_fns.unroll, self.teacher)
       train_vf = jax_utils.partial(
-        self._train_vf_mb, self.value_function, self.value_optimizer)
-      ppo_epoch = self.ppo_epoch
+        self._value_fns.train, self.value_function, self.value_optimizer)
 
     timings: dict[str, float] = {}
 
@@ -837,13 +939,15 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     per_epoch_metrics = []
     for i in range(num_epochs):
       start = time.perf_counter()
-      epoch_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=True)
+      epoch_metrics = ppo_epoch(
+          advantages, teacher_logits, trajectories, weights, train=True)
       per_epoch_metrics.append(epoch_metrics)
       timings[f'ppo_{i}'] = time.perf_counter() - start
 
     # Final eval epoch (no gradient update) to measure post-update KL.
     start = time.perf_counter()
-    final_metrics = ppo_epoch(advantages, teacher_logits, trajectories, train=False)
+    final_metrics = ppo_epoch(
+        advantages, teacher_logits, trajectories, weights, train=False)
     per_epoch_metrics.append(final_metrics)
     timings[f'ppo_eval'] = time.perf_counter() - start
 
@@ -890,12 +994,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     else:
       num_epochs = self._config.ppo.num_epochs
 
+    weights = self._loss_weights.value
     if self._config.fused:
-      final_state, metrics = self.fused_ppo(
-          trajectories, initial_state, num_epochs)
+      final_state, metrics = _jit_fused_ppo(
+          self, trajectories, initial_state, weights, num_epochs)
     else:
       final_state, metrics = self._ppo(
-          trajectories, initial_state, num_epochs, jit=jit)
+          trajectories, initial_state, weights, num_epochs, jit=jit)
 
     metrics['reverted'] = False
 
@@ -932,3 +1037,10 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     state_dict = jax.tree.map(
         lambda x: jax.device_put(x, self._device), state_dict)
     jax_utils.set_module_state(self, state_dict)
+
+
+# Shared by all learners; see the note above _policy_adam.
+_jit_ppo_epoch = jax_utils.nnx_jit(
+    Learner.ppo_epoch, donate_argnums=0, static_argnames=['train'])
+_jit_fused_ppo = jax_utils.nnx_jit(
+    Learner._ppo, donate_argnums=0, static_argnames=['num_epochs'])

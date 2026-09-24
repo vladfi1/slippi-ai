@@ -1,6 +1,7 @@
 """JAX utilities."""
 
 import collections
+import dataclasses
 import functools
 import logging
 import math
@@ -724,6 +725,86 @@ annotate_function = _typed_transform(jax.profiler.annotate_function)
 device_put = _typed_transform(jax.device_put)
 device_get = _typed_transform(jax.device_get)
 
+
+class Opaque(tp.Generic[T]):
+  """Hides a per-instance python object stored on an nnx.Module.
+
+  nnx records every non-array attribute of a Module in its GraphDef, which
+  nnx.jit uses as part of its compilation cache key, so two structurally
+  identical modules only share compiled functions if all of their static
+  attributes compare equal. Wrapping an attribute in Opaque makes it compare
+  equal to any other Opaque, so it must only hold values that never affect a
+  traced computation (e.g. values that are passed to jit as arguments).
+  """
+
+  __slots__ = ('value',)
+
+  def __init__(self, value: T):
+    self.value = value
+
+  def __eq__(self, other):
+    return isinstance(other, Opaque)
+
+  def __hash__(self):
+    return 0
+
+  def __repr__(self):
+    return f'Opaque({self.value!r})'
+
+
+def freeze(x: tp.Any) -> tp.Hashable:
+  """Recursively converts a config-like structure into a hashable key."""
+  if dataclasses.is_dataclass(x) and not isinstance(x, type):
+    return (type(x).__qualname__, freeze(dataclasses.asdict(x)))
+  if isinstance(x, dict):
+    return tuple(sorted(
+        ((k, freeze(v)) for k, v in x.items()), key=lambda kv: repr(kv[0])))
+  if isinstance(x, (list, tuple)):
+    return tuple(freeze(v) for v in x)
+  if isinstance(x, (set, frozenset)):
+    return frozenset(freeze(v) for v in x)
+  if isinstance(x, np.ndarray):
+    return (x.dtype.str, x.shape, x.tobytes())
+  hash(x)  # Raises for anything we don't know how to freeze.
+  return x
+
+
+class GraphDefCache:
+  """Makes modules built from the same config share one GraphDef.
+
+  Static attributes such as embeddings and activation functions are compared
+  by identity, so modules built separately from the same config have unequal
+  GraphDefs and nnx.jit traces and compiles once for each of them. Rebuilding
+  the second module from the first one's GraphDef (keeping its own state)
+  makes the GraphDefs equal, so structurally identical modules share compiled
+  functions. Only use with keys that fully determine the module's static
+  attributes.
+  """
+
+  def __init__(self):
+    self._entries: dict[tp.Hashable, tuple[nnx.GraphDef, tp.Any]] = {}
+
+  @staticmethod
+  def _spec(state) -> tp.Hashable:
+    return (
+        jax.tree.structure(state),
+        tuple((x.shape, x.dtype) for x in jax.tree.leaves(state)),
+    )
+
+  def canonicalize(self, key: tp.Hashable, module: ModT) -> ModT:
+    """Returns module, rebuilt with the cached GraphDef for key if any."""
+    graphdef, state = nnx.split(module)
+    spec = self._spec(state)
+    entry = self._entries.get(key)
+    if entry is None:
+      self._entries[key] = (graphdef, spec)
+      return module
+    cached_graphdef, cached_spec = entry
+    if spec != cached_spec:
+      raise ValueError(
+          f'Module state does not match the cached GraphDef for key {key!r}')
+    return nnx.merge(cached_graphdef, state)
+
 def grad0(
     f: tp.Callable[tp.Concatenate[T, P], Loss],
 ) -> tp.Callable[tp.Concatenate[T, P], T]:
@@ -874,6 +955,12 @@ class ArgPacker[T]:
     self.dtypes = list(self.packed_sizes.keys())
     print('dtypes:', self.dtypes)
 
+  @staticmethod
+  def spec_key(arg: tp.Any) -> tp.Hashable:
+    """Identifies the structure, shapes and dtypes that pack accepts."""
+    leaves, structure = jax.tree.flatten(arg)
+    return structure, tuple((x.dtype, x.shape) for x in leaves)
+
   def pack(self, arg: T) -> PackedArg:
     if self.needs_init:
       self._init(arg)
@@ -919,11 +1006,21 @@ def packed_nnx_jit(
     batch_rank: int = 0,
     **jit_kwargs,
 ) -> tp.Callable[P, T]:
+  """nnx.jit that packs the given (numpy pytree) args into one array per dtype.
 
-  packers = [ArgPacker(batch_rank) for _ in pack_argnums]
+  Packing reduces dispatch overhead for arguments with many leaves. A packer
+  is kept for each distinct structure of a packed argument and passed to the
+  jitted function as a static argument, so one packed_nnx_jit can be shared by
+  callers with different batch sizes.
+  """
+  packers: dict[tuple[int, tp.Hashable], ArgPacker] = {}
 
-  @nnx.jit(**jit_kwargs)
-  def packed_func(*args, **kwargs) -> T:
+  static_argnames = jit_kwargs.pop('static_argnames', ())
+  if isinstance(static_argnames, str):
+    static_argnames = (static_argnames,)
+
+  @nnx.jit(static_argnames=(*static_argnames, 'packers'), **jit_kwargs)
+  def packed_func(*args, packers: tuple[ArgPacker, ...], **kwargs) -> T:
     args = list(args)
     for packer, argnum in zip(packers, pack_argnums):
       args[argnum] = packer.unpack(args[argnum])
@@ -933,10 +1030,17 @@ def packed_nnx_jit(
   @functools.wraps(func)
   def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
     packed_args = list(args)
-    for packer, argnum in zip(packers, pack_argnums):
-      packed_args[argnum] = packer.pack(packed_args[argnum])
+    used_packers = []
+    for argnum in pack_argnums:
+      arg = packed_args[argnum]
+      key = (argnum, ArgPacker.spec_key(arg))
+      packer = packers.get(key)
+      if packer is None:
+        packer = packers[key] = ArgPacker(batch_rank)
+      packed_args[argnum] = packer.pack(arg)
+      used_packers.append(packer)
 
-    return packed_func(*packed_args, **kwargs)
+    return packed_func(*packed_args, packers=tuple(used_packers), **kwargs)
 
   return wrapped
 
@@ -1264,13 +1368,13 @@ def microbatched_grads(
 
   return compute_grads
 
-def run_loss_fn(
-    module: ModT,
+def jit_run_fn(
     loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
     input_batch_dims: int | tuple = 0,
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     microbatch_size: int = 0,
-) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+) -> tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[AuxT, State, *Outputs]]:
+  """Jits a (microbatched) loss_fn, dropping the loss; see run_loss_fn."""
   run_fn = no_loss(loss_fn)
 
   if microbatch_size != 0:
@@ -1280,7 +1384,17 @@ def run_loss_fn(
         input_batch_dims=input_batch_dims,
         output_batch_dims=output_batch_dims)
 
-  jit_run = nnx_jit(run_fn, donate_argnums=(0, 2))
+  return nnx_jit(run_fn, donate_argnums=(0, 2))
+
+def run_loss_fn(
+    module: ModT,
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,  # doesn't include Loss
+    microbatch_size: int = 0,
+) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+  jit_run = jit_run_fn(
+      loss_fn, input_batch_dims, output_batch_dims, microbatch_size)
   return cached_partial(jit_run, module)
 
 def train_fn(
@@ -1310,6 +1424,19 @@ def train_fn(
 
   return train
 
+def jit_train_fn(
+    loss_fn: tp.Callable[tp.Concatenate[ModT, Data, State, P], tuple[Loss, AuxT, State, *Outputs]],
+    input_batch_dims: int | tuple = 0,
+    output_batch_dims: int | tuple = 0,  # doesn't include Loss
+    microbatch_size: int = 0,
+    loss_scale: tp.Optional[float] = None,
+) -> tp.Callable[tp.Concatenate[ModT, nnx.Optimizer[ModT], Data, State, P], tuple[AuxT, State, *Outputs]]:
+  """Jits a (microbatched) train step for loss_fn; see cached_train_fn."""
+  train = train_fn(
+      loss_fn, input_batch_dims, output_batch_dims, microbatch_size,
+      loss_scale=loss_scale)
+  return nnx_jit(train, donate_argnums=(0, 1, 3))
+
 def cached_train_fn(
     module: ModT,
     optimizer: nnx.Optimizer[ModT],
@@ -1318,9 +1445,8 @@ def cached_train_fn(
     output_batch_dims: int | tuple = 0,  # doesn't include Loss
     microbatch_size: int = 0,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
-
-  train = train_fn(loss_fn, input_batch_dims, output_batch_dims, microbatch_size)
-  jit_train = nnx_jit(train, donate_argnums=(0, 1, 3))
+  jit_train = jit_train_fn(
+      loss_fn, input_batch_dims, output_batch_dims, microbatch_size)
   return cached_partial(jit_train, module, optimizer)
 
 def train_fn_with_rngs(

@@ -7,7 +7,8 @@ import fancyflags as ff
 import wandb
 
 from slippi_ai import flag_utils, paths, reward as reward_lib
-from slippi_ai.jax.rl import run_lib, learner as learner_lib, train_many_lib
+from slippi_ai.jax.rl import (
+    run_lib, learner as learner_lib, train_many_lib, train_two_lib)
 
 DEFAULT_CONFIG = train_many_lib.Config(
     runtime=train_many_lib.RuntimeConfig(
@@ -28,7 +29,7 @@ DEFAULT_CONFIG = train_many_lib.Config(
         num_envs=1,
         rollout_length=64,
     ),
-    agent=train_many_lib.AgentConfig(
+    agent=train_two_lib.AgentConfig(
         name=['Diamond Player'],
     ),
     teachers=[str(paths.JAX_IMITATION_CHECKPOINT)] * 3,
