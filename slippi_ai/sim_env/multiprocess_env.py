@@ -38,6 +38,7 @@ from slippi_ai.jax.jax_utils import slice_map, fast_map
 T = tp.TypeVar('T')
 
 _BARRIER_TIMEOUT_S = 900.0
+_FORKSERVER_PRELOAD = 'slippi_ai.sim_env.forkserver_preload'
 _ERROR_POLL_S = 1.0
 
 
@@ -108,9 +109,16 @@ class MultiprocessSimEnvironment:
     self._action_index = 0
     self._pushed_minus_popped = 1
 
+    # Workers are forked from a forkserver that has already imported their
+    # modules and loaded melee_sim's game data (see forkserver_preload), so
+    # they share those ~400MB copy-on-write instead of each paying for them.
+    # Forking the training process itself would be unsafe (JAX/CUDA), but the
+    # forkserver is a fresh interpreter.
+    self._context = mp.get_context('forkserver')
+    self._context.set_forkserver_preload([_FORKSERVER_PRELOAD])
+
     # Two barriers define one synchronous sim frame: parent publishes actions,
     # workers step their shards, then parent reads the completed observations.
-    self._context = mp.get_context('spawn')
     self._obs_written_events = [
         [self._context.Event() for _ in range(self._num_workers)]
         for _ in range(self._env_runahead)
