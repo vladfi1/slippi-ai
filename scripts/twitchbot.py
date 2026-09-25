@@ -1357,14 +1357,16 @@ class Bot(commands.Bot):
         bot_configs[port] = agent_config
 
       self._bot_configs = bot_configs
-      # A new initiator gets a fresh timer; the same user re-running !bots
-      # (while still holding the lock) keeps their existing one.
-      if ctx.author.name != self._bots_set_by or self._bots_lock_remaining() is None:
-        now = datetime.datetime.now()
+      now = datetime.datetime.now()
+      # Only a new initiator gets a fresh timer. The same user re-running
+      # !bots keeps their existing timer, and can't regain the lock once it
+      # has expired (or been relinquished) by changing the matchup again;
+      # someone else has to take the bots first.
+      if ctx.author.name != self._bots_set_by:
         self._bots_set_by = ctx.author.name
-        self._bots_set_time = now
         self._bots_lock_until = now + datetime.timedelta(
             minutes=self._bots_lock_minutes)
+      self._bots_set_time = now
 
       self._stop_bot_session()
       await self._maybe_start_bot_session()
