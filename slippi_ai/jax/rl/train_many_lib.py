@@ -700,8 +700,25 @@ def _run(
         for i, spec in enumerate(workers)
     }
 
+    # Each agent's ko_diff averaged over its cross-play matchups. Every
+    # cross-play worker has the same number of envs, so a plain mean over
+    # matchups is also the mean over the agent's cross-play trajectories.
+    agent_ko_diffs: list[list[float]] = [[] for _ in agents]
+    for spec in workers:
+      if spec.is_self_play:
+        continue
+      ko_diff = matchups[spec.label]['ko_diff']
+      agent_ko_diffs[spec.first].append(ko_diff)
+      agent_ko_diffs[spec.second].append(-ko_diff)
+    agent_stats = {
+        agent.label: dict(ko_diff=np.mean(ko_diffs))
+        for agent, ko_diffs in zip(agents, agent_ko_diffs)
+        if ko_diffs  # Empty with a single agent.
+    }
+
     return dict(
         matchups=matchups,
+        agents=agent_stats,
         timings=timings,
         actor=metrics['actor'],
         learner=metrics['learner'],
@@ -745,6 +762,9 @@ def _run(
     for label, matchup in metrics['matchups'].items():
       if 'ko_diff' in matchup:
         print(f'{label}: ko_diff={matchup["ko_diff"]:.3f}')
+
+    for label, agent_stats in metrics['agents'].items():
+      print(f'{label}: mean ko_diff={agent_stats["ko_diff"]:.3f}')
 
   maybe_flush = utils.Periodically(flush, config.runtime.log_interval)
 
