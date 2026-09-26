@@ -19,7 +19,7 @@ from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
     microbatch_fn, microbatch_module, microbatched_grads, grad_with_aux_tuple,
-    GraphDefCache, Opaque, packed_nnx_jit,
+    GraphDefCache, Opaque, packed_nnx_jit, jit_partial,
 )
 
 
@@ -527,6 +527,89 @@ class PackedNnxJitTest(unittest.TestCase):
       np.testing.assert_allclose(packed_f(module, arg), expected, rtol=1e-6)
 
     self.assertEqual(len(traces), 2)
+
+
+class JitPartialTest(unittest.TestCase):
+
+  def _param_pointers(self, module: nnx.Module) -> list[int]:
+    return [
+        v.unsafe_buffer_pointer()
+        for v in jax.tree.leaves(nnx.state(module, nnx.Param))
+    ]
+
+  def test_params_not_copied_and_rngs_updated(self):
+    """Unchanged params keep their buffers; the rng count is written back."""
+    module = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+    rngs = nnx.Rngs(1)
+
+    def f(module, rngs, x, state):
+      noise = jax.random.normal(rngs(), x.shape)
+      return module(x) + noise + state, state + 1
+
+    f_partial = jit_partial(
+        f, module, rngs, donate_argnums=(3,), static_argnames=())
+    pointers = self._param_pointers(module)
+    count = lambda: int(jax.tree.leaves(nnx.state(rngs, nnx.RngCount))[0])
+    self.assertEqual(count(), 0)
+
+    state = jnp.zeros([])
+    x = np.ones([3, 2], np.float32)
+    outputs = []
+    for _ in range(3):
+      old_state = state
+      out, state = f_partial(x, state)
+      outputs.append(np.asarray(out))
+      self.assertTrue(old_state.is_deleted())  # donated
+
+    self.assertEqual(count(), 3)
+    self.assertEqual(self._param_pointers(module), pointers)
+    self.assertFalse(np.array_equal(outputs[0], outputs[1]))  # fresh noise
+
+  def test_shared_params(self):
+    """Two modules aliasing one set of arrays keep sharing it across calls."""
+    a = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+    b = nnx.Linear(2, 2, rngs=nnx.Rngs(1))
+    nnx.update(b, nnx.state(a))  # b now aliases a's arrays
+    self.assertEqual(self._param_pointers(a), self._param_pointers(b))
+
+    f = lambda module, x: module(x)
+    fa, fb = jit_partial(f, a), jit_partial(f, b)
+    x = np.ones([3, 2], np.float32)
+    for _ in range(2):
+      np.testing.assert_allclose(fa(x), fb(x))
+    self.assertEqual(self._param_pointers(a), self._param_pointers(b))
+
+    # Swapping in new values reaches the jitted function without retracing.
+    new_state = jax.tree.map(jnp.zeros_like, nnx.state(a))
+    nnx.update(a, new_state)
+    nnx.update(b, new_state)
+    np.testing.assert_allclose(fa(x), np.zeros([3, 2]))
+    np.testing.assert_allclose(fb(x), np.zeros([3, 2]))
+
+  def test_pack_args(self):
+    """Packed args are unpacked inside the jitted function; one trace per structure."""
+    traces = []
+
+    def f(module, arg):
+      traces.append(None)
+      return module(arg['x']) + arg['y']
+
+    module = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+    packed_f = jit_partial(f, module, pack_argnums=(1,))
+
+    for batch_size in [2, 3, 2]:
+      arg = dict(
+          x=np.ones([batch_size, 2], np.float32),
+          y=np.arange(batch_size, dtype=np.float32)[:, None])
+      expected = module(arg['x']) + arg['y']
+      np.testing.assert_allclose(packed_f(arg), expected, rtol=1e-6)
+
+    self.assertEqual(len(traces), 2)
+
+  def test_rejects_donating_partial_args(self):
+    module = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
+    with self.assertRaises(ValueError):
+      jit_partial(lambda m, x: m(x), module, donate_argnums=(0,))
 
 
 if __name__ == '__main__':

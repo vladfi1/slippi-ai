@@ -60,19 +60,14 @@ def _sample(
 class _SampleFns(tp.NamedTuple):
   sample: tp.Callable
   multi_sample: tp.Callable
-  jit_sample: tp.Callable
-  jit_multi_sample: tp.Callable
 
 
 @functools.lru_cache(maxsize=None)
-def _sample_fns(dtype: DType, pack_args: bool) -> _SampleFns:
-  """Sampling functions shared by all agents with the same settings.
+def _sample_fns(dtype: DType) -> _SampleFns:
+  """The (un-jitted) sampling functions, computing in the given dtype.
 
-  nnx.jit caches compilations per function object and policy GraphDef, so
-  building these once (rather than per agent) lets agents whose policies share
-  a GraphDef (see saving.policy_from_config_dict) share compiled functions.
-  Anything that varies between such agents (batch size, rating, name codes)
-  is a jit argument rather than a closure variable.
+  Anything that varies between agents (batch size, rating, name codes) is an
+  argument rather than a closure variable.
   """
   # TODO: this shouldn't be necessay if we always make sure that the policy
   # parameters are in the correct dtype.
@@ -128,17 +123,7 @@ def _sample_fns(dtype: DType, pack_args: bool) -> _SampleFns:
   if dtype is not DType.FP32:
     multi_sample = jax_utils.with_compute_dtype(multi_sample, dtype.dtype)
 
-  jit_kwargs = dict(donate_argnums=(1, 6), static_argnames=('sample_kwargs',))
-  if pack_args:
-    jit_sample = jax_utils.packed_nnx_jit(
-        sample, pack_argnums=(2,), **jit_kwargs)
-    jit_multi_sample = jax_utils.packed_nnx_jit(
-        multi_sample, pack_argnums=(2,), **jit_kwargs)
-  else:
-    jit_sample = jax_utils.nnx_jit(sample, **jit_kwargs)
-    jit_multi_sample = jax_utils.nnx_jit(multi_sample, **jit_kwargs)
-
-  return _SampleFns(sample, multi_sample, jit_sample, jit_multi_sample)
+  return _SampleFns(sample=sample, multi_sample=multi_sample)
 
 
 class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
@@ -201,13 +186,11 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       self._prev_controller = jax.device_put(
           self._prev_controller, self._device)
 
-    fns = _sample_fns(dtype, pack_args)
-    self._sample = jax_utils.cached_partial(fns.sample, policy, rngs)
-    self._multi_sample = jax_utils.cached_partial(
-        fns.multi_sample, policy, rngs)
+    fns = _sample_fns(dtype)
+    self._sample = functools.partial(fns.sample, policy, rngs)
+    self._multi_sample = functools.partial(fns.multi_sample, policy, rngs)
 
     if functionalize:
-      # Not shared between agents.
       self._jitted_sample = jax_utils.cached_functional_jit(
           fns.sample, policy, rngs, donate_argnums=(6,),
           static_argnames=('sample_kwargs',))
@@ -215,10 +198,18 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
           fns.multi_sample, policy, rngs, donate_argnums=(6,),
           static_argnames=('sample_kwargs',))
     else:
-      self._jitted_sample = jax_utils.cached_partial(
-          fns.jit_sample, policy, rngs)
-      self._jitted_multi_sample = jax_utils.cached_partial(
-          fns.jit_multi_sample, policy, rngs)
+      # Tree-mode jit: only the rng counts are written back after each call,
+      # so the policy's parameters are never copied and may be shared with
+      # other agents (see set_policy_state).
+      jit_kwargs = dict(
+          donate_argnums=(6,),  # prev_state
+          static_argnames=('sample_kwargs',),
+          pack_argnums=(2,) if pack_args else (),  # state_and_reset
+      )
+      self._jitted_sample = jax_utils.jit_partial(
+          fns.sample, policy, rngs, **jit_kwargs)
+      self._jitted_multi_sample = jax_utils.jit_partial(
+          fns.multi_sample, policy, rngs, **jit_kwargs)
 
     self._hidden_state = self._policy.initial_state(batch_size, rngs)
     if dtype is not DType.FP32:
@@ -240,6 +231,12 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
     self._name_code = np.array(name_code, dtype=data.NAME_DTYPE)
 
   def set_policy_state(self, state: State):
+    """Points the policy at the given variables, cast to the agent's dtype.
+
+    Arrays already in this dtype on this device are aliased rather than
+    copied, and the jitted sample functions don't copy them either, so agents
+    given the same state share a single copy of it.
+    """
     state = jax_utils.cast_floats_to_dtype(state, self._dtype.dtype)
     if self._device is not None:
       state = jax.device_put(state, self._device)
@@ -285,8 +282,12 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
       game = self._policy.network.encode_game(game)
       # Keep hidden state and prev_controller on device.
       sample_fn = self._jitted_sample if self._compile else self._sample
+      # The sample function is dispatched asynchronously, so hand it a buffer
+      # we never write to again rather than clearing this one in place.
+      needs_reset, self._needs_reset = (
+          self._needs_reset, np.zeros_like(self._needs_reset))
       sample_outputs, self._hidden_state = sample_fn(
-          (game, self._needs_reset), self._name_code, self._rating,
+          (game, needs_reset), self._name_code, self._rating,
           self._prev_controller, self._hidden_state,
           sample_kwargs=self._sample_kwargs)
 
@@ -295,8 +296,6 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
 
       sample_outputs = jax.copy_to_host_async(sample_outputs)
       self._sample_outputs.extend(sample_outputs)
-
-      self._needs_reset[:] = False
 
     return self._sample_outputs.popleft()
 
