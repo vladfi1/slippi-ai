@@ -261,7 +261,7 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
       # "hide" it because the dolphin evaluator doesn't support it.
       if port not in self._port_to_agent:
         continue
-      self._port_to_agent[port].policy.set_state(update)
+      self._port_to_agent[port].set_policy_state(update)
 
   def _push_actions(self, timings: tp.Optional[dict] = None):
     """Pop actions from the agents and push them to the environment."""
