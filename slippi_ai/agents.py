@@ -49,9 +49,14 @@ class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
   def hidden_state(self) -> RecurrentState:
     """Returns the current hidden state."""
 
-  # @abc.abstractmethod
-  # def set_policy_state(self, state: State):
-  #   """Sets the current state."""
+  @abc.abstractmethod
+  def set_policy_state(self, state: State):
+    """Updates the policy variables, keeping the agent's dtype and device.
+
+    Implementations must not simply alias `state` into the policy: e.g. an
+    fp16 actor given the learner's fp32 variables would otherwise end up
+    holding (and computing with) a full fp32 copy.
+    """
 
   @abc.abstractmethod
   def step(

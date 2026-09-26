@@ -384,7 +384,7 @@ class RolloutWorker(AbstractRolloutWorker):
       self, updates: tp.Mapping[Port, policies.PolicyState],
   ):
     for port, values in updates.items():
-      self._agents[port].policy.set_state(values)
+      self._agents[port].set_policy_state(values)
 
   def active_sim_games(self) -> list[dict[str, int | str]]:
     from slippi_ai import sim_env
