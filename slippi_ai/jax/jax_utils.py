@@ -1044,6 +1044,129 @@ def packed_nnx_jit(
 
   return wrapped
 
+@tp.overload
+def jit_partial(
+    func: tp.Callable[tp.Concatenate[In1, P], T],
+    arg1: In1,
+    *,
+    donate_argnums: tp.Sequence[int] = (),
+    static_argnames: tp.Sequence[str] = (),
+    pack_argnums: tp.Sequence[int] = (),
+    batch_rank: int = 0,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def jit_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, P], T],
+    arg1: In1, arg2: In2,
+    *,
+    donate_argnums: tp.Sequence[int] = (),
+    static_argnames: tp.Sequence[str] = (),
+    pack_argnums: tp.Sequence[int] = (),
+    batch_rank: int = 0,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def jit_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, P], T],
+    arg1: In1, arg2: In2, arg3: In3,
+    *,
+    donate_argnums: tp.Sequence[int] = (),
+    static_argnames: tp.Sequence[str] = (),
+    pack_argnums: tp.Sequence[int] = (),
+    batch_rank: int = 0,
+) -> tp.Callable[P, T]: ...
+
+@tp.overload
+def jit_partial(
+    func: tp.Callable[tp.Concatenate[In1, In2, In3, In4, P], T],
+    arg1: In1, arg2: In2, arg3: In3, arg4: In4,
+    *,
+    donate_argnums: tp.Sequence[int] = (),
+    static_argnames: tp.Sequence[str] = (),
+    pack_argnums: tp.Sequence[int] = (),
+    batch_rank: int = 0,
+) -> tp.Callable[P, T]: ...
+
+def jit_partial(  # type: ignore
+    func,
+    *partial_args,
+    donate_argnums: tp.Sequence[int] = (),
+    static_argnames: tp.Sequence[str] = (),
+    pack_argnums: tp.Sequence[int] = (),
+    batch_rank: int = 0,
+):
+  """Jits func with the leading (nnx module) partial_args bound, in tree mode.
+
+  Unlike nnx.jit in its default graph-updates mode, which returns the entire
+  state of every module argument and so re-materializes all of their arrays
+  on every call, tree mode writes back only the Variables whose values were
+  replaced inside func (e.g. rng counts). Unchanged parameters keep their
+  buffers, so modules in partial_args may alias arrays owned elsewhere (or by
+  other modules) without ever being copied. Variable values may change
+  between calls without retracing; the structure may not.
+
+  Args:
+    func: The function to jit. Its structure-carrying arguments must be the
+      leading positional ones, given here as partial_args.
+    partial_args: nnx modules bound to func's leading positional arguments.
+    donate_argnums: Indices into func's full signature of arguments whose
+      buffers may be donated. Only non-partial arguments may be donated.
+    static_argnames: Keyword arguments treated as static.
+    pack_argnums: Indices into func's full signature of (numpy pytree)
+      arguments to pack into one array per dtype before dispatch, as in
+      packed_nnx_jit.
+    batch_rank: Number of leading batch dimensions of the packed arguments.
+  """
+  num_partial = len(partial_args)
+  for argnum in (*donate_argnums, *pack_argnums):
+    if argnum < num_partial:
+      raise ValueError(
+          f'argnum {argnum} refers to a partial argument; only the remaining '
+          f'{num_partial}+ arguments may be donated or packed.')
+
+  # nnx.jit_partial passes the flattened partial_args to jax.jit as a single
+  # leading argument, so the runtime arguments' indices shift by one.
+  jit_kwargs = dict(
+      graph=False,
+      donate_argnums=tuple(i - num_partial + 1 for i in donate_argnums),
+  )
+
+  if not pack_argnums:
+    return nnx.jit_partial(
+        func, *partial_args,
+        static_argnames=tuple(static_argnames), **jit_kwargs)
+
+  packers: dict[tuple[int, tp.Hashable], ArgPacker] = {}
+
+  def packed_func(*args, packers: tuple[ArgPacker, ...], **kwargs) -> T:
+    args = list(args)
+    for packer, argnum in zip(packers, pack_argnums):
+      args[argnum] = packer.unpack(args[argnum])
+    return func(*args, **kwargs)
+
+  jitted = nnx.jit_partial(
+      packed_func, *partial_args,
+      static_argnames=(*static_argnames, 'packers'), **jit_kwargs)
+
+  @functools.wraps(func)
+  def wrapped(*args, **kwargs) -> T:
+    packed_args = list(args)
+    used_packers = []
+    for argnum in pack_argnums:
+      index = argnum - num_partial
+      arg = packed_args[index]
+      key = (argnum, ArgPacker.spec_key(arg))
+      packer = packers.get(key)
+      if packer is None:
+        packer = packers[key] = ArgPacker(batch_rank)
+      packed_args[index] = packer.pack(arg)
+      used_packers.append(packer)
+
+    return jitted(*packed_args, packers=tuple(used_packers), **kwargs)
+
+  return wrapped
+
 CachedArgs = tp.TypeVarTuple('CachedArgs')
 
 class CachedFunctionalJit(tp.Generic[*CachedArgs, P, T]):
