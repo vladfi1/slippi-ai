@@ -219,6 +219,24 @@ def _concat_batch(
       learner_lib.FrameSkipTrajectory.batch_dims(), *trajectories)
 
 
+def _actor_variables(learner_variables, dtype: jnp.dtype):
+  """One copy of a learner's policy variables for all of its actors.
+
+  The actors' set_policy_state aliases arrays that are already in their dtype
+  and on their device, and their (tree-mode) sample functions never copy
+  them, so every actor of the agent shares this single copy. It is a copy
+  even when the dtypes match: the learner's own arrays are invalidated by
+  buffer donation on its next update (see
+  train_two_lib.AgentManager.policy_variables), while the actors may roll
+  out again before their next update (see _burnin_after_reset).
+  """
+  def convert(x: jax.Array) -> jax.Array:
+    if jnp.issubdtype(x.dtype, jnp.floating):
+      return jnp.array(x, dtype=dtype)
+    return jnp.array(x)  # jnp.array copies, unlike asarray.
+  return jax.tree.map(convert, learner_variables)
+
+
 class ExperimentManager:
 
   def __init__(
@@ -379,8 +397,11 @@ class ExperimentManager:
         self._burnin_after_reset()
 
     with self.update_profiler:
-      # See train_two_lib.AgentManager.policy_variables re: buffer donation.
-      variables = [agent.policy_variables() for agent in self._agents]
+      variables = [
+          _actor_variables(
+              agent.policy_variables(), agent.agent_config.jax.dtype.dtype)
+          for agent in self._agents
+      ]
       for spec, actor in zip(self._worker_specs, self.actors):
         actor.update_variables({
             port: variables[index]
