@@ -38,13 +38,21 @@ class FakeAgent(BasicAgent[ControllerType, RecurrentState]):
       policy: policies.Policy[ControllerType, RecurrentState],
       batch_size: int,
   ):
+    self._policy = policy
     self._sample_outputs = policy.controller_head.dummy_sample_outputs([batch_size])
     self._hidden_state = policy.initial_state(batch_size)
     self._batch_size = batch_size
     self._name_code = np.zeros(batch_size, dtype=data.NAME_DTYPE)
 
+  @property
+  def platform(self) -> policies.Platform:
+    return self._policy.platform
+
+  def dummy_sample_outputs(self, shape: tp.Sequence[int]) -> SampleOutputs[ControllerType]:
+    return self._policy.controller_head.dummy_sample_outputs(shape)
+
   def hidden_state(self) -> RecurrentState:
-    return super().hidden_state()
+    return self._hidden_state
 
   @property
   def name_code(self):
@@ -55,6 +63,9 @@ class FakeAgent(BasicAgent[ControllerType, RecurrentState]):
       self._name_code = np.array([name_code] * self._batch_size, dtype=data.NAME_DTYPE)
     else:
       self._name_code = np.array(name_code, dtype=data.NAME_DTYPE)
+
+  def set_policy_state(self, state):
+    self._policy.set_state(state)
 
   def step(
       self,
@@ -160,6 +171,10 @@ class DelayedAgent(tp.Generic[ControllerType, RecurrentState]):
     # Note: this returns device arrays for jax. We might want to copy at least
     # the controller state to host.
     return self._output_queue.popleft()
+
+  def set_policy_state(self, state):
+    """Updates the policy variables, keeping the agent's dtype and device."""
+    self._agent.set_policy_state(state)
 
   def decode_controller(self, controller: ControllerType) -> Controller:
     return self.policy.controller_head.decode_controller(controller)
@@ -327,6 +342,10 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
   @property
   def rating(self) -> float:
     return self._agent.rating
+
+  def set_policy_state(self, state):
+    """Updates the policy variables, keeping the agent's dtype and device."""
+    self._agent.set_policy_state(state)
 
   def decode_controller(self, controller: ControllerType) -> Controller:
     return self.policy.controller_head.decode_controller(controller)

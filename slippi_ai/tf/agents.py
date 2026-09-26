@@ -19,6 +19,9 @@ class BasicAgent(agents.BasicAgent[ControllerType, policies.RecurrentState]):
   def platform(self) -> Platform:
     return Platform.TF
 
+  def set_policy_state(self, state):
+    self._policy.set_state(state)
+
   def __init__(
       self,
       policy: policies.Policy[ControllerType],
