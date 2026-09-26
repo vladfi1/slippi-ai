@@ -263,6 +263,12 @@ class ExperimentManager:
         for learner, agent_sources in zip(self._learners, sources)
     ]
 
+    # (worker, port) -> (agent index, index into that agent's sources).
+    self._piece_index: dict[tuple[int, int], tuple[int, int]] = {}
+    for index, agent_sources in enumerate(sources):
+      for j, source in enumerate(agent_sources):
+        self._piece_index[source.worker, source.port] = (index, j)
+
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
     self.rollout_profiler = utils.Profiler()
@@ -291,43 +297,61 @@ class ExperimentManager:
       self.num_rollouts = 0
       self._burnin_after_reset()
 
-  def _agent_trajectory(
-      self,
-      index: int,
-      rollouts: list[tp.Mapping[int, evaluators.Trajectory]],
-  ) -> learner_lib.FrameSkipTrajectory:
-    agent_dtype = self._agents[index].agent_config.jax.dtype.dtype
-
-    fs_trajectories = []
-    for source, converter in zip(self._sources[index], self._converters[index]):
-      fs_trajectory = converter.convert(rollouts[source.worker][source.port])
-
-      # Agents may run at a lower precision than the learner.
-      if agent_dtype != self._learner_dtype:
-        fs_trajectory = fs_trajectory._replace(
-            initial_state=run_lib.cast_floats(
-                fs_trajectory.initial_state, dtype=self._learner_dtype))
-
-      # Transfer the trajectory to the device once; see train_two_lib.
-      fs_trajectories.append(jax.device_put(fs_trajectory))
-
-    if len(fs_trajectories) == 1:
-      return fs_trajectories[0]
-    return _concat_batch(fs_trajectories)
-
   def _rollout(self) -> tuple[
       list[learner_lib.FrameSkipTrajectory],  # per agent
       list[tp.Mapping[int, evaluators.Trajectory]],  # per worker
       list[dict],  # per worker
   ]:
     self.num_rollouts += 1
-    results = [actor.rollout(self._unroll_length) for actor in self.actors]
-    rollouts = [trajectories for trajectories, _ in results]
-    timings = [timing for _, timing in results]
+    learner_dtype = self._learner_dtype
 
-    fs_trajectories = [
-        self._agent_trajectory(i, rollouts) for i in range(len(self._agents))
+    # The converted (frame-skipped) pieces of each agent's batch, in the
+    # order of its sources.
+    pieces: list[list[tp.Optional[learner_lib.FrameSkipTrajectory]]] = [
+        [None] * len(agent_sources) for agent_sources in self._sources
     ]
+    rollouts: list[tp.Mapping[int, evaluators.Trajectory]] = []
+    timings: list[dict] = []
+
+    for worker, actor in enumerate(self.actors):
+      trajectories, timing = actor.rollout(self._unroll_length)
+      timings.append(timing)
+
+      # Convert each port's trajectory as soon as it is available and drop
+      # the actor's sampled outputs, which live on the device (see
+      # keep_agent_outputs_on_device), once the converter has copied them.
+      # Converting after every worker has rolled out would instead hold two
+      # copies of every worker's logits (~1.6 KB per env-frame) at once. The
+      # remaining (host) states are what the caller uses for stats.
+      stripped: dict[int, evaluators.Trajectory] = {}
+      for port, trajectory in trajectories.items():
+        index, j = self._piece_index[worker, port]
+        fs_trajectory = self._converters[index][j].convert(trajectory)
+        agent_dtype = self._agents[index].agent_config.jax.dtype.dtype
+        # Agents may run at a lower precision than the learner.
+        if agent_dtype != learner_dtype:
+          fs_trajectory = fs_trajectory._replace(
+              initial_state=run_lib.cast_floats(
+                  fs_trajectory.initial_state, dtype=learner_dtype))
+        # Transfer the trajectory to the device once; see train_two_lib.
+        pieces[index][j] = jax.device_put(fs_trajectory)
+        stripped[port] = trajectory._replace(
+            actions=None, delayed_actions=None)
+      rollouts.append(stripped)
+
+    fs_trajectories: list[learner_lib.FrameSkipTrajectory] = []
+    for index in range(len(pieces)):
+      # Release each agent's pieces as soon as they are concatenated, rather
+      # than holding every agent's pieces until all of the (equally large)
+      # concatenations are done.
+      agent_pieces = pieces[index]
+      pieces[index] = []
+      assert all(piece is not None for piece in agent_pieces)
+      if len(agent_pieces) == 1:
+        fs_trajectories.append(agent_pieces[0])
+      else:
+        fs_trajectories.append(_concat_batch(agent_pieces))
+      del agent_pieces
     return fs_trajectories, rollouts, timings
 
   def unroll(self):
