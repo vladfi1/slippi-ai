@@ -16,13 +16,24 @@ if __name__ == '__main__':
   import os
   import pathlib
 
+  # Must be set before jax is imported (via slippi_ai below): jax reads
+  # JAX_COMPILATION_CACHE_DIR into its config at import time.
+  os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", "./untracked/jax_cache")
+  os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '.95')
+  # The default BFC allocator fragments under this workload's mix of
+  # multi-GiB trajectory buffers and per-step actor outputs: with 4 agents x
+  # 512 envs it fails to find a contiguous 1.8 GiB block for the teacher
+  # unroll with 5 GiB free. The CUDA async allocator (a VMM-backed pool)
+  # doesn't have this problem.
+  os.environ.setdefault('XLA_PYTHON_CLIENT_ALLOCATOR', 'cuda_async')
+
   from absl import app, flags
   import fancyflags as ff
   import wandb
 
   from slippi_ai import nametags, flag_utils
   from slippi_ai.jax.agents import DType
-  from slippi_ai.jax.rl import run_lib, train_many_lib
+  from slippi_ai.jax.rl import train_many_lib
 
   MODELS_DIR = pathlib.Path('pickled_models/jax')
   MP = nametags.DEFAULT_NAME  # 'Master Player'
@@ -52,6 +63,9 @@ if __name__ == '__main__':
   CONFIG.actor.num_envs=256
   CONFIG.learner.microbatch_size=1024
   CONFIG.learner.value_mbs=1024
+  # Unmicrobatched (0), the teacher unroll over a 4096-trajectory batch needs
+  # a 2.3 GiB temp buffer; this costs nothing since it takes no gradients.
+  CONFIG.learner.teacher_mbs=1024
   CONFIG.actor.inner_batch_size=-1
   CONFIG.actor.async_envs=True
   CONFIG.actor.num_env_steps=4
