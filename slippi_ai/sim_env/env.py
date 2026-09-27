@@ -46,13 +46,18 @@ _MELEE_TO_SIM_STAGE = {
     melee.Stage.FINAL_DESTINATION: melee_sim.Stage.FINAL_DESTINATION,
 }
 SUPPORTED_STAGES = tuple(_MELEE_TO_SIM_STAGE)
-SUPPORTED_CHARACTERS = (
-    melee.Character.FOX,
-    melee.Character.FALCO,
-)
+# melee_sim.Character shares libmelee's integer ids (only some names differ),
+# so the sim supports exactly the characters its enum lists.
+SUPPORTED_CHARACTERS = tuple(
+    melee.Character(int(character.value)) for character in melee_sim.Character)
+# Accept both libmelee names (e.g. 'cptfalcon') and melee_sim names ('falcon').
 _CHARACTER_BY_NAME = {
     character.name.lower(): character for character in SUPPORTED_CHARACTERS
 }
+_CHARACTER_BY_NAME.update({
+    character.name.lower(): melee.Character(int(character.value))
+    for character in melee_sim.Character
+})
 
 class SimStepInfo(tp.NamedTuple):
   terminal: np.ndarray
