@@ -1,19 +1,23 @@
+"""Evaluate two agents against each other; see slippi_ai/evaluation.py.
+
+Flags are kept flat (--num_envs etc.) so run_scripts/run_evaluator.sh and
+older invocations keep working.
+"""
+
 # Make sure not to import things unless we're the main module.
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
-import math
-import os
-import typing as tp
 
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
 
+  import json
+
   from absl import app, flags
   import fancyflags as ff
 
-  from slippi_ai import (
-      eval_lib, dolphin, utils, evaluators, flag_utils, policies, saving)
+  from slippi_ai import data, dolphin, evaluation, flag_utils
 
   default_dolphin_config = dolphin.DolphinConfig(
       infinite_time=False,
@@ -50,15 +54,21 @@ if __name__ == '__main__':
       'Default number of agent steps to batch; a per-agent '
       '--{player,opponent}.ai.batch_steps takes precedence.')
 
-  agent_flags = utils.deep_copy(eval_lib.BATCH_AGENT_FLAGS)
-  agent_flags['tf']['jit_compile'] = ff.Boolean(True)
-  agent_flags['jax']['pack_args'] = ff.Boolean(True)
-
-  player_flags = dict(eval_lib.PLAYER_FLAGS, ai=agent_flags)
+  player_flags = evaluation.player_flags()
   PLAYER = ff.DEFINE_dict('player', **player_flags)
 
   SELF_PLAY = flags.DEFINE_boolean('self_play', False, 'Self play.')
   OPPONENT = ff.DEFINE_dict('opponent', **player_flags)
+
+  # Multi-character agents can cover several matchups in one run: envs cycle
+  # through the product of the two lists. Empty means the single
+  # --{player,opponent}.character.
+  PLAYER_CHARACTERS = flags.DEFINE_list(
+      'player_characters', [],
+      'Characters for the player to cycle across envs (libmelee names).')
+  OPPONENT_CHARACTERS = flags.DEFINE_list(
+      'opponent_characters', [],
+      'Characters for the opponent to cycle across envs (libmelee names).')
 
   TF_PROFILE = flags.DEFINE_boolean('tf_profile', False, 'Enable TF profiler.')
   JAX_PROFILER_DIR = flags.DEFINE_string('jax_profiler_dir', None, 'Directory for JAX profiler traces.')
@@ -67,272 +77,52 @@ if __name__ == '__main__':
 
   QUIET = flags.DEFINE_boolean('quiet', False, 'Whether to suppress non-timing prints.')
   BURNIN = flags.DEFINE_boolean('burnin', False, 'Do a burnin unroll for better timings.')
+  RESULTS_PATH = flags.DEFINE_string(
+      'results_path', None,
+      'Write run parameters, reward stats and completed games as JSON here.')
 
-  def print_game_summary(games: list[dict]):
-    # Sim envs expose completed-game records directly, so this summary reports
-    # game-level outcomes instead of inferring strength from rollout reward.
-    if not games:
-      print('completed games: 0')
-      return
-
-    wins = sum(game['winner_port'] == 1 for game in games)
-    losses = sum(game['winner_port'] == 2 for game in games)
-    ties = sum(game['winner_port'] is None for game in games)
-    timeouts = sum(game['max_frame_reached'] for game in games)
-    stockouts = sum(game['stockout'] for game in games)
-    lengths = [game['frames'] for game in games]
-    stocks = [game['stocks'] for game in games]
-    print(
-        'completed games: '
-        f'total={len(games)} wins={wins} losses={losses} ties={ties} '
-        f'win_rate={wins / len(games):.3f}')
-    print(
-        'game endings: '
-        f'stockouts={stockouts} timeouts={timeouts}')
-    print(
-        'game length: '
-        f'avg_frames={sum(lengths) / len(lengths):.1f} '
-        f'avg_seconds={sum(lengths) / len(lengths) / 60:.1f}')
-    print(
-        'final stocks: '
-        f'player={sum(s[0] for s in stocks) / len(stocks):.2f} '
-        f'opponent={sum(s[1] for s in stocks) / len(stocks):.2f}')
-    stages = sorted({game['stage'] for game in games})
-    for stage in stages:
-      stage_games = [game for game in games if game['stage'] == stage]
-      stage_wins = sum(game['winner_port'] == 1 for game in stage_games)
-      stage_losses = sum(game['winner_port'] == 2 for game in stage_games)
-      stage_ties = sum(game['winner_port'] is None for game in stage_games)
-      stage_lengths = [game['frames'] for game in stage_games]
-      print(
-          f'stage {stage}: total={len(stage_games)} '
-          f'wins={stage_wins} losses={stage_losses} ties={stage_ties} '
-          f'win_rate={stage_wins / len(stage_games):.3f} '
-          f'avg_frames={sum(stage_lengths) / len(stage_lengths):.1f}')
-
-  def get_inner_batch_size() -> int:
-    inner_batch_size = INNER_BATCH_SIZE.value
-    if inner_batch_size != -1:
-      return inner_batch_size
-    cpu_count = os.cpu_count()
-    if cpu_count is None:
-      raise OSError('Could not determine CPU count for inner_batch_size=-1')
-    if NUM_ENVS.value < cpu_count:
-      return 1
-    if NUM_ENVS.value % cpu_count != 0:
-      raise ValueError(
-          f'num_envs={NUM_ENVS.value} must be divisible by '
-          f'CPU count={cpu_count} for inner_batch_size=-1')
-    return NUM_ENVS.value // cpu_count
+  def parse_characters(names: list[str]) -> list:
+    return [data.name_to_character[name.lower()] for name in names]
 
   def main(_):
-    inner_batch_size = get_inner_batch_size()
-    player_kwargs = {
-        1: PLAYER.value,
-        2: PLAYER.value if SELF_PLAY.value else OPPONENT.value,
-    }
-    agent_kwargs: dict[int, dict[str, tp.Any]] = {}
-    players: dict[int, dolphin.Player] = {}
-    for port, pkwargs in player_kwargs.items():
-      player = eval_lib.get_player(**pkwargs)
-      players[port] = player
-      if isinstance(player, dolphin.AI):
-        akwargs: dict = pkwargs['ai'].copy()
-        # the evaluator wants the state, not a path
-        path = akwargs.pop('path')
-        akwargs.update(
-            state=saving.load_state_from_disk(path),
-            # --num_agent_steps is the default for all agents; a per-agent
-            # --{player,opponent}.ai.batch_steps overrides it.
-            batch_steps=akwargs['batch_steps'] or NUM_AGENT_STEPS.value,
-        )
-        agent_kwargs[port] = akwargs
-
-    dolphin_kwargs = dolphin.DolphinConfig.kwargs_from_flags(DOLPHIN.value)
-    dolphin_kwargs.update(players=players)
-
-    env_kwargs = dict(
+    config = evaluation.EvaluationConfig(
+        num_envs=NUM_ENVS.value,
+        rollout_length=ROLLOUT_LENGTH.value,
+        chunk_length=CHUNK_LENGTH.value,
+        num_env_steps=NUM_ENV_STEPS.value,
+        num_agent_steps=NUM_AGENT_STEPS.value,
+        inner_batch_size=INNER_BATCH_SIZE.value,
         swap_ports=SWAP_PORTS.value,
+        fake_envs=FAKE_ENVS.value,
+        sim_envs=SIM_ENVS.value,
+        async_envs=ASYNC_ENVS.value,
+        use_gpu=USE_GPU.value,
+        self_play=SELF_PLAY.value,
+        num_games=NUM_GAMES.value,
+        burnin=BURNIN.value,
+        quiet=QUIET.value,
+        tf_profile=TF_PROFILE.value,
+        jax_profiler_dir=JAX_PROFILER_DIR.value,
     )
-    if ASYNC_ENVS.value:
-      env_kwargs.update(
-          num_steps=NUM_ENV_STEPS.value,
-          inner_batch_size=inner_batch_size,
-      )
+    result = evaluation.evaluate(
+        config=config,
+        player_kwargs={1: PLAYER.value, 2: OPPONENT.value},
+        dolphin_kwargs=dolphin.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
+        character_pairs=evaluation.character_pairs_from_lists({
+            1: parse_characters(PLAYER_CHARACTERS.value),
+            2: parse_characters(OPPONENT_CHARACTERS.value),
+        }),
+    )
+    evaluation.print_result(result)
 
-    if NUM_GAMES.value and not SIM_ENVS.value:
-      raise ValueError('--num_games currently requires --sim_envs.')
-
-    # Every agent's batch_steps must divide the rollout length, so a chunk has
-    # to be a multiple of all of them.
-    agent_batch_steps = math.lcm(
-        *[kwargs['batch_steps'] or 1 for kwargs in agent_kwargs.values()])
-
-    chunk_length = CHUNK_LENGTH.value or ROLLOUT_LENGTH.value
-    if ROLLOUT_LENGTH.value % chunk_length != 0:
-      raise ValueError(
-          f'--chunk_length ({chunk_length}) must divide '
-          f'--rollout_length ({ROLLOUT_LENGTH.value}).')
-    if chunk_length % agent_batch_steps != 0:
-      raise ValueError(
-          f'chunk length ({chunk_length}) must be a multiple of every agent\'s '
-          f'batch_steps (lcm={agent_batch_steps}).')
-
-    if SIM_ENVS.value:
-      if len(agent_kwargs) != 2:
-        raise NotImplementedError('JaxSimRolloutWorker currently only supports 2 agents.')
-
-      from slippi_ai.sim_env import jax_rollout
-
-      sim_agent_kwargs: dict[int | tuple[int, ...], dict] = {}
-
-      if SELF_PLAY.value:
-        sim_agent_kwargs[(1, 2)] = agent_kwargs[1]
-      else:
-        for port, kwargs in agent_kwargs.items():
-          sim_agent_kwargs[port] = kwargs
-
-      evaluator = jax_rollout.JaxSimRolloutWorker(
-          agent_kwargs=sim_agent_kwargs,
-          dolphin_kwargs=dolphin_kwargs,
-          num_envs=NUM_ENVS.value,
-          rollout_length=chunk_length,
-          use_fake_envs=FAKE_ENVS.value,
-          async_envs=ASYNC_ENVS.value,
-          inner_batch_size=inner_batch_size,
-          # When burnin is enabled, mirror the behavior during RL training.
-          keep_agent_outputs_on_device=BURNIN.value,
-      )
-    else:
-      evaluator = evaluators.Evaluator(
-          agent_kwargs=agent_kwargs,
-          dolphin_kwargs=dolphin_kwargs,
-          num_envs=NUM_ENVS.value,
-          async_envs=ASYNC_ENVS.value,
-          env_kwargs=env_kwargs,
-          use_gpu=USE_GPU.value,
-          use_fake_envs=FAKE_ENVS.value,
-          use_sim_envs=SIM_ENVS.value,
-          damage_ratio=0,
-      )
-
-    with evaluator.run():
-      if BURNIN.value:
-        burnin_steps = math.ceil(32 / agent_batch_steps) * agent_batch_steps
-        if SIM_ENVS.value:
-          # JaxSimRolloutWorker only accepts rollouts of its configured length.
-          burnin_steps = chunk_length
-
-        print(f'Burning in for {burnin_steps} steps...')
-        # Warm up the same code path we time below, not the trajectory one.
-        if SIM_ENVS.value:
-          from slippi_ai.sim_env import jax_rollout
-          assert isinstance(evaluator, jax_rollout.JaxSimRolloutWorker)
-          evaluator.rollout_metrics(burnin_steps, verbose=not QUIET.value)
-        else:
-          evaluator.rollout(burnin_steps, verbose=not QUIET.value)
-
-      if TF_PROFILE.value:
-        import tensorflow as tf
-        tf.profiler.experimental.start('tf_profile')
-
-      if JAX_PROFILER_DIR.value:
-        import jax
-        jax.profiler.start_trace(JAX_PROFILER_DIR.value)
-
-      cohort = None
-      cohort_results = {}
-      if NUM_GAMES.value:
-        # Measure a fixed cohort of already-started games. Replacement games
-        # after resets are ignored so "100 games" means the first 100 selected
-        # games finished, not the first 100 short games to finish.
-        active_games = evaluator.active_sim_games()
-        if NUM_GAMES.value > len(active_games):
-          raise ValueError(
-              '--num_games cannot exceed --num_envs for unbiased cohort eval.')
-        cohort = {
-            (game['env_id'], game['episode_id'])
-            for game in active_games[:NUM_GAMES.value]
-        }
-
-      timer = utils.Profiler(burnin=0)
-      rewards = {}
-      completed_games = []
-      total_steps = 0
-
-      # A per-rollout bar would restart on every chunk, so when chunking is on
-      # we track the whole evaluation with one bar instead. Running to a game
-      # cohort has no step target, so that bar is unbounded.
-      progress = None
-      if not QUIET.value and chunk_length != ROLLOUT_LENGTH.value:
-        import tqdm
-        progress = tqdm.tqdm(
-            total=None if NUM_GAMES.value else ROLLOUT_LENGTH.value,
-            desc='Rollout', unit='step')
-
-      # Let the worker draw its own per-step bar only when we aren't drawing one.
-      verbose = not QUIET.value and progress is None
-
-      with timer:
-        while True:
-          if isinstance(evaluator, evaluators.Evaluator):
-            stats, metrics = evaluator.rollout(chunk_length, verbose=verbose)
-          else:
-            # We only need reward sums, so skip building trajectories: their
-            # per-step agent outputs (logits) and encoded states dominate memory.
-            stats, metrics = evaluator.rollout_metrics(
-                chunk_length, verbose=verbose)
-          total_steps += chunk_length
-          for port, stat in stats.items():
-            rewards[port] = rewards.get(port, 0) + stat.reward
-          if cohort is None:
-            completed_games.extend(metrics.get('completed_games', []))
-          else:
-            # Completed-game metadata carries (env_id, episode_id), which lets
-            # us keep collecting long games from the original cohort while
-            # discarding later episodes from the same env lanes.
-            for game in metrics.get('completed_games', []):
-              key = (game['env_id'], game['episode_id'])
-              if key in cohort:
-                cohort_results[key] = game
-            completed_games = list(cohort_results.values())
-          if progress is not None:
-            progress.update(chunk_length)
-            if NUM_GAMES.value:
-              progress.set_postfix(
-                  games=f'{len(completed_games)}/{NUM_GAMES.value}')
-          if NUM_GAMES.value:
-            if len(completed_games) >= NUM_GAMES.value:
-              break
-          elif total_steps >= ROLLOUT_LENGTH.value:
-            break
-
-      if progress is not None:
-        progress.close()
-
-      if TF_PROFILE.value:
-        import tensorflow as tf
-        tf.profiler.experimental.stop()
-
-      if JAX_PROFILER_DIR.value:
-        import jax
-        jax.profiler.stop_trace()
-
-    env_frames = NUM_ENVS.value * total_steps
-    player_frames = env_frames * len(players)
-    num_minutes = env_frames / (60 * 60)
-    kdpm = rewards[1] / num_minutes
-    print('ko diff per minute:', kdpm)
-    print_game_summary(completed_games)
-
-    timings = metrics['timing']
-    print('timings:', utils.map_single_structure(lambda f: f'{f * 1000:.3f}', timings))
-
-    sps = total_steps / timer.cumtime
-    env_fps = env_frames / timer.cumtime
-    player_fps = player_frames / timer.cumtime
-    print(
-        f'env_fps: {env_fps:.2f}, player_fps: {player_fps:.2f}, '
-        f'sps: {sps:.2f}')
+    if RESULTS_PATH.value:
+      results = result.to_json_dict(extra_params=dict(
+          stage=DOLPHIN.value['stage'],
+          player=PLAYER.value,
+          opponent=OPPONENT.value,
+      ))
+      with open(RESULTS_PATH.value, 'w') as f:
+        json.dump(results, f, default=evaluation.json_default)
+      print(f'Wrote results to {RESULTS_PATH.value}')
 
   app.run(main)
