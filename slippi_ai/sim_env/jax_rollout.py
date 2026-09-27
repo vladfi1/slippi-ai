@@ -113,11 +113,18 @@ class JaxSimRolloutWorker(AbstractRolloutWorker):
           raise ValueError(f'Agent ports must be consecutive, got {ports}')
 
       # TODO: use agent's observation_config
-      # TODO: check that agent's character matches the env
       agent = eval_lib.build_delayed_agent(
           console_delay=0,
           batch_size=len(ports) * self._num_envs,
           **kwargs)
+
+      # The sim env takes each port's character from the player config, whose
+      # flag default is Fox. Like the Dolphin Evaluator, set the character
+      # from the agent's config when it is unambiguous, and fail otherwise.
+      for port in ports:
+        for dkwargs in dolphin_kwargs:
+          eval_lib.update_character(
+              dkwargs['players'][port], kwargs['state']['config'])
       self._port_to_agent[ports[0]] = agent
       if rollout_length % agent.batch_steps != 0:
         raise ValueError(f'agent batch steps ({agent.batch_steps}) must divide rollout length ({rollout_length})')
