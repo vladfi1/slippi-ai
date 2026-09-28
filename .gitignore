@@ -154,6 +154,7 @@ saved_models/
 pickled_models/
 test_models/
 deployed_models/
+.twitchbot/
 stripped_models/
 
 # git worktrees

@@ -7,6 +7,7 @@ import enum
 import json
 import logging
 import os
+import pickle
 import random
 import time
 import threading
@@ -87,6 +88,10 @@ DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
 
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
+MODEL_CACHE = flags.DEFINE_string(
+    'model_cache', '.twitchbot/cached_models',
+    'Directory in which to cache model configs (without the weights), to'
+    ' speed up loading the models directory. Empty string disables caching.')
 
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
@@ -129,8 +134,90 @@ Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
 @dataclasses.dataclass
 class LoadedModel:
   mtime: float  # file modification time when loaded
+  size: int  # file size when loaded
   state: dict  # trimmed to the keys shown by !config
   summary: eval_lib.AgentSummary
+
+# The parts of a model's state that we keep in memory (and cache on disk).
+# Everything else (e.g. the network weights) is only loaded in the sessions.
+MODEL_STATE_KEYS = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
+
+# Bump this whenever the format of the cache entries changes.
+MODEL_CACHE_VERSION = 1
+
+def trim_model_state(state: dict) -> dict:
+  return {k: state[k] for k in MODEL_STATE_KEYS if k in state}
+
+class ModelCache:
+  """On-disk cache of trimmed model states, one pickle file per model.
+
+  An entry is only valid if the model file's mtime and size match those
+  recorded when the entry was written.
+  """
+
+  def __init__(self, path: str):
+    self._path = path
+    os.makedirs(path, exist_ok=True)
+
+  def _entry_path(self, model: str) -> str:
+    return os.path.join(self._path, model)
+
+  def get(self, model: str, mtime: float, size: int) -> Optional[dict]:
+    """Returns the cached trimmed state, or None if missing or stale."""
+    entry_path = self._entry_path(model)
+    if not os.path.isfile(entry_path):
+      return None
+
+    try:
+      with open(entry_path, 'rb') as f:
+        entry = saving.CustomUnpickler(f).load()
+    except Exception as e:
+      logging.warning(f'Failed to read model cache entry {entry_path}: {e}')
+      return None
+
+    if (
+        not isinstance(entry, dict)
+        or entry.get('version') != MODEL_CACHE_VERSION
+        or entry.get('mtime') != mtime
+        or entry.get('size') != size
+        or set(entry.get('keys', [])) != set(MODEL_STATE_KEYS)
+    ):
+      return None
+
+    return entry['state']
+
+  def put(self, model: str, mtime: float, size: int, state: dict):
+    entry = dict(
+        version=MODEL_CACHE_VERSION,
+        mtime=mtime,
+        size=size,
+        keys=MODEL_STATE_KEYS,
+        state=state,
+    )
+    entry_path = self._entry_path(model)
+    # Write to a temporary file and rename so that a concurrent reader (or a
+    # crash mid-write) never sees a partial entry.
+    tmp_path = f'{entry_path}.tmp{os.getpid()}'
+    try:
+      with open(tmp_path, 'wb') as f:
+        pickle.dump(entry, f)
+      os.replace(tmp_path, entry_path)
+    except Exception as e:
+      logging.warning(f'Failed to write model cache entry {entry_path}: {e}')
+      if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
+  def prune(self, current_models: tp.Collection[str]):
+    """Removes entries for models that no longer exist."""
+    for entry in os.listdir(self._path):
+      if entry not in current_models:
+        entry_path = self._entry_path(entry)
+        if os.path.isfile(entry_path):
+          logging.info(f'Removing stale model cache entry {entry}')
+          try:
+            os.remove(entry_path)
+          except FileNotFoundError:
+            pass  # Another process may have removed it.
 
 class AgentConfig(abc.ABC):
 
@@ -721,6 +808,7 @@ class Bot(commands.Bot):
       costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
       botmatch_max_games: int = 10,
+      model_cache_path: Optional[str] = None,
   ):
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
@@ -772,6 +860,10 @@ class Bot(commands.Bot):
     # Cache of loaded model states, keyed by model name. Each entry holds the
     # file mtime it was loaded at, the (trimmed) state, and its summary.
     self._loaded_models: dict[str, LoadedModel] = {}
+    # Optional on-disk cache of the trimmed states, to speed up startup.
+    self._model_cache: Optional[ModelCache] = None
+    if model_cache_path:
+      self._model_cache = ModelCache(model_cache_path)
     self._reload_models()
 
     if bot is None:
@@ -846,37 +938,55 @@ class Bot(commands.Bot):
     await ctx.send(ABOUT_MESSAGE)
 
   def _refresh_loaded_models(self) -> int:
-    """Loads models that are new or newer than the cached version.
+    """Loads models that are new or have changed since they were loaded.
 
-    Models whose files have been removed are dropped from the cache.
-    Returns the number of models (re)loaded.
+    Models whose files have been removed are dropped from the in-memory (and
+    on-disk) cache. Returns the number of models (re)loaded from disk, not
+    counting those served from the on-disk cache.
     """
-    keys = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
     num_loaded = 0
+    num_cached = 0
 
     current_models = set(os.listdir(self._models_path))
     for model in list(self._loaded_models):
       if model not in current_models:
         logging.info(f'Model {model} removed from disk')
         del self._loaded_models[model]
+    if self._model_cache is not None:
+      self._model_cache.prune(current_models)
 
     for model in sorted(current_models):
       path = os.path.join(self._models_path, model)
-      mtime = os.path.getmtime(path)
+      stat = os.stat(path)
+      mtime = stat.st_mtime
+      size = stat.st_size
 
       loaded = self._loaded_models.get(model)
-      if loaded is not None and loaded.mtime >= mtime:
+      if loaded is not None and (loaded.mtime, loaded.size) == (mtime, size):
         continue
 
-      logging.info(f'Loading model {model}')
-      state = saving.load_state_from_disk(path)
-      state = {k: state[k] for k in keys if k in state}
+      state = None
+      if self._model_cache is not None:
+        state = self._model_cache.get(model, mtime, size)
+        if state is not None:
+          num_cached += 1
+
+      if state is None:
+        logging.info(f'Loading model {model}')
+        state = trim_model_state(saving.load_state_from_disk(path))
+        num_loaded += 1
+        if self._model_cache is not None:
+          self._model_cache.put(model, mtime, size, state)
+
       self._loaded_models[model] = LoadedModel(
           mtime=mtime,
+          size=size,
           state=state,
           summary=eval_lib.AgentSummary.from_state(state),
       )
-      num_loaded += 1
+
+    if num_cached:
+      logging.info(f'Loaded {num_cached} models from the cache.')
 
     return num_loaded
 
@@ -1697,6 +1807,7 @@ def main(_):
       costume=COSTUME.value,
       botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
       botmatch_max_games=BOTMATCH_MAX_GAMES.value,
+      model_cache_path=MODEL_CACHE.value,
   )
 
   try:
