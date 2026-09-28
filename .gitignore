@@ -158,3 +158,11 @@ stripped_models/
 
 # git worktrees
 .worktrees/
+
+# models & weights
+medium-v2*
+*.bin
+*.part
+*.slp
+datasets/
+Parsed/

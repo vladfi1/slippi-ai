@@ -635,6 +635,28 @@ def train_test_split(
 
 name_to_character = {c.name.lower(): c for c in melee.Character}
 
+_character_aliases = {
+    'captain_falcon': 'cptfalcon',
+    'falcon': 'cptfalcon',
+    'donkey_kong': 'dk',
+    'dr_mario': 'doc',
+    'drmario': 'doc',
+    'dr.mario': 'doc',
+    'young_link': 'ylink',
+    'younglink': 'ylink',
+    'game_and_watch': 'gameandwatch',
+    'game_&_watch': 'gameandwatch',
+    'gnw': 'gameandwatch',
+    'mr_game_and_watch': 'gameandwatch',
+    'puff': 'jigglypuff',
+    'jiggs': 'jigglypuff',
+    'ice_climbers': 'popo',
+    'ics': 'popo',
+}
+for _alias, _canonical in _character_aliases.items():
+  if _canonical in name_to_character:
+    name_to_character[_alias] = name_to_character[_canonical]
+
 _legal_character_names = [
     'fox', 'falco', 'marth', 'cptfalcon', 'jigglypuff', 'peach', 'popo',
     'luigi', 'samus', 'pikachu', 'yoshi', 'ganondorf', 'dk', 'ness',
@@ -647,7 +669,7 @@ LEGAL_CHARACTERS = [name_to_character[c] for c in _legal_character_names]
 def chars_from_string(chars: str) -> Optional[List[melee.Character]]:
   if chars == ALL:
     return LEGAL_CHARACTERS
-  return [name_to_character[c] for c in chars.split(',')]
+  return [name_to_character[c.strip().lower()] for c in chars.split(',')]
 
 def _replay_info_to_wds(info: ReplayInfo) -> dict:
   meta = info.meta

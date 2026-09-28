@@ -18,7 +18,34 @@ python scripts/eval_two.py --p1.type human --p2.ai.path <path/to/trained/model> 
 python scripts/eval_two.py --help  # to get a full list of options
 ```
 
-The "medium-v2" model capable of playing 12 different characters is available [here](https://www.dropbox.com/scl/fi/lpi9krfei1knfvfw7up7v/medium-v2?rlkey=qmah3qfz5anwva93x48zcx01k&st=sxo8hbeb&dl=0). You can change the character by setting `--p2.character <fox/falco/marth/...>`. The full set of released models is in this [Dropbox folder](https://www.dropbox.com/scl/fo/mg916t9exid4stqmx2bjf/AD2oysY7SbTa6N0u7j75-SA?rlkey=baqxnfxg2uytvcz62w9o8mwzt&st=eil5kcql&dl=0).
+The original "medium-v2" model capable of playing 12 different characters is available [here](https://www.dropbox.com/scl/fi/lpi9krfei1knfvfw7up7v/medium-v2?rlkey=qmah3qfz5anwva93x48zcx01k&st=sxo8hbeb&dl=0). The full set of released models is in this [Dropbox folder](https://www.dropbox.com/scl/fo/mg916t9exid4stqmx2bjf/AD2oysY7SbTa6N0u7j75-SA?rlkey=baqxnfxg2uytvcz62w9o8mwzt&st=eil5kcql&dl=0).
+
+### 26-Character Fine-Tuned Model
+
+An updated **26-character fine-tuned model** covering all 26 Super Smash Bros. Melee characters (including Bowser, Donkey Kong, Dr. Mario, Mr. Game & Watch, Ganondorf, Kirby, Link, Mario, Mewtwo, Ness, Pichu, Roy, Young Link, and Zelda) is available on [GitHub Releases](https://github.com/Joe-Simo/slippi-ai/releases/tag/v2.0-all-characters):
+- **Checkpoint (Pickle)**: [`medium-v2-finetuned.pkl`](https://github.com/Joe-Simo/slippi-ai/releases/download/v2.0-all-characters/medium-v2-finetuned.pkl) (SHA-256: `f79765b7bc46891670a7015265b92c5a5710ad89c4863bcfae799e4bb351b82b`)
+- **Native Binary Weights**: [`slippi_ai_weights.bin`](https://github.com/Joe-Simo/slippi-ai/releases/download/v2.0-all-characters/slippi_ai_weights.bin) (SHA-256: `4a4d66c1154433bf3056c4f37a491b0f32da5e00ac1ed84c11f969284d076e11`)
+
+You can select any of the 26 characters by passing `--p2.character <name>` (e.g. `ganondorf`, `bowser`, `dk`, `link`, `doc`, `mewtwo`, etc.). Common aliases like `falcon`, `dr_mario`, `young_link`, and `gnw` are supported automatically.
+
+#### Training Dataset
+The 26-character model was fine-tuned from the base `medium-v2` checkpoint on **2,151 Master-vs-Master competitive games** (2,425,188 frames, 304 MB compressed Parquet) with balanced character sampling emphasizing underrepresented characters:
+- **Ganondorf**: 1,065 games
+- **Link**: 424 games
+- **Dr. Mario**: 262 games
+- **Donkey Kong**: 228 games
+- **Game & Watch**: 141 games
+- **Bowser**: 105 games
+- **Young Link**: 60 games
+- **Mario**: 11 games
+- **Pichu**: 8 games
+- **Roy**: 7 games
+- **Zelda**: 7 games
+- **Kirby**: 5 games
+- **Mewtwo**: 5 games
+- **Ness**: 2 games
+
+Imitation loss converged from 1.4271 to 0.9931 across 2,500 unroll steps (batch size 16, unroll length 60 frames, 21-frame reaction delay) on Apple Silicon MPS.
 
 #### Notes
 * Tested with python 3.12 and 3.13.
@@ -57,9 +84,25 @@ The output of this step will be a `Parsed` directory of preprocessed games and a
 
 ## Imitation Learning
 
-The entry point for imitation learning is [`scripts/train.py`](https://github.com/vladfi1/slippi-ai/blob/main/scripts/train.py). See [`scripts/imitation_example.sh`](https://github.com/vladfi1/slippi-ai/blob/main/scripts/imitation_example.sh) for appropriate arguments.
+The entry point for standard imitation learning is [`scripts/train.py`](https://github.com/vladfi1/slippi-ai/blob/main/scripts/train.py). See [`scripts/imitation_example.sh`](https://github.com/vladfi1/slippi-ai/blob/main/scripts/imitation_example.sh) for appropriate arguments.
 
 Metrics are logged to [wandb](https://wandb.ai/) during training. To use your own wandb account, set the `WANDB_API_KEY` environment variable. The key metric to look at is `eval.policy.loss` -- once this has plateaued you can stop training. On a good GPU (e.g. a 3080Ti), imitation learning should take a few days to a week. The agent checkpoint will be periodically written to `experiments/<tag>/latest.pkl`.
+
+### 26-Character Fine-Tuning
+
+To fine-tune an existing model (such as `medium-v2`) on replays for omitted or custom characters:
+
+```shell
+python scripts/finetune_26_characters.py \
+  --base-checkpoint path/to/medium-v2.pkl \
+  --dataset-dir path/to/dataset \
+  --output-pkl path/to/medium-v2-finetuned.pkl \
+  --steps 2500 \
+  --batch-size 16 \
+  --lr 3e-5
+```
+
+This uses balanced character sampling to ensure underrepresented low and mid-tier characters receive adequate training signal, tracks imitation loss convergence across buttons, analog stick bins, and shoulder triggers, and outputs a ready-to-evaluate pickle checkpoint.
 
 ## Reinforcement Learning
 
