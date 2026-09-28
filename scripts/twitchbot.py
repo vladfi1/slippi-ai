@@ -3,6 +3,7 @@
 import abc
 import dataclasses
 import datetime
+import enum
 import json
 import logging
 import os
@@ -36,6 +37,24 @@ NAME_TO_STAGE = {
     'bf': melee.Stage.BATTLEFIELD,
     'all': melee.Stage.RANDOM_STAGE,
 }
+
+MAX_STOCKS = 4
+
+# Action states in which the player is dead or on the respawn platform.
+# All action states up to ON_HALO_WAIT are death/respawn states.
+_MAX_RESPAWN_ACTION = melee.Action.ON_HALO_WAIT.value
+
+def is_dead_or_respawning(player: melee.PlayerState) -> bool:
+  return player.action.value <= _MAX_RESPAWN_ACTION
+
+class SDPhase(enum.Enum):
+  """Phases of the crew-battle style self-destruct at the start of a game."""
+  # Holding away from center until we have SD'd down to the desired stocks.
+  SD = 0
+  # Standing still until our respawn invincibility has worn off.
+  WAIT = 1
+  # The agent is in control.
+  DONE = 2
 
 # Twitch settings
 default_access_token = os.environ.get('TWITCHBOT_ACCESS_TOKEN')
@@ -393,7 +412,13 @@ class Session:
       stages: Optional[list[melee.Stage]] = None,
       run_on_cpu: bool = False,
       costume: Optional[int] = None,
+      sd_stocks: Optional[int] = None,
   ):
+    """
+    Args:
+      sd_stocks: If set, the agent will self-destruct at the start of each game
+        until it has at most this many stocks left.
+    """
     if run_on_cpu:
       eval_lib.disable_gpus()
     else:
@@ -403,6 +428,8 @@ class Session:
     self.agent_config = agent_config
     self.stop_requested = threading.Event()
     stages = stages or [dolphin_config.stage]
+    self._sd_stocks = sd_stocks
+    self._sd_phase = SDPhase.DONE
 
     dolphin_config.online_delay = agent_config.target_console_delay
     logging.info(f'Setting console delay to {agent_config.target_console_delay}')
@@ -441,6 +468,13 @@ class Session:
       # Don't block in the menu so that we can stop if asked to.
       gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
 
+      # The agent's actual (netplay) port, set at the start of each game.
+      actual_port: Optional[int] = None
+      # Set at the start of each game and cleared once the agent has been
+      # stepped, so that the agent sees a reset even if we skipped stepping
+      # it on the first frame (e.g. while self-destructing).
+      agent_needs_reset = False
+
       # Main loop
       agent.start()
       try:
@@ -450,9 +484,20 @@ class Session:
           if not dolphin_lib.is_menu_state(gamestate):
             # Ports may change if opponent disconnects and reconnects.
             if gamestate.frame == -123:
-              agent.set_ports(*get_ports(gamestate, display_name))
+              actual_port, opponent_port = get_ports(gamestate, display_name)
+              agent.set_ports(actual_port, opponent_port)
+              agent_needs_reset = True
+              if self._sd_stocks is not None:
+                self._sd_phase = SDPhase.SD
 
-            agent.step(gamestate)
+            if self._sd_step(gamestate, actual_port, controller):
+              # We are self-destructing or waiting out our invincibility; the
+              # agent is not stepped so that it doesn't see any of this.
+              pass
+            else:
+              agent.step(gamestate, needs_reset=agent_needs_reset)
+              agent_needs_reset = False
+
             self._num_menu_frames = 0
           else:
             controller.release_all()
@@ -468,6 +513,46 @@ class Session:
 
     self._thread = threading.Thread(target=run)
     self._thread.start()
+
+  def _sd_step(
+      self, gamestate: melee.GameState, port: Optional[int],
+      controller: melee.Controller,
+  ) -> bool:
+    """Crew-battle style start of game: SD down to the desired stock count.
+
+    Returns True if we took control of the controller (and the agent should
+    therefore not be stepped), False if the agent is in control.
+    """
+    if self._sd_phase is SDPhase.DONE or port is None:
+      return False
+
+    player = gamestate.players.get(port)
+    if player is None:
+      return False
+
+    if self._sd_phase is SDPhase.SD:
+      if player.stock > self._sd_stocks:
+        # Hold the control stick away from the center of the stage so that we
+        # walk/fall off and die. All legal stages are centered at x=0.
+        away_x = 1.0 if player.position.x >= 0 else 0.0
+        controller.release_all()
+        controller.tilt_analog(melee.Button.BUTTON_MAIN, away_x, 0.5)
+        return True
+      logging.info('SD complete, waiting out invincibility.')
+      self._sd_phase = SDPhase.WAIT
+
+    if self._sd_phase is SDPhase.WAIT:
+      # As in a crew battle, do nothing until our respawn invincibility is
+      # over. Note that libmelee's `invulnerable` also covers intangibility
+      # (e.g. ledge grabs), which is why this is only checked right after
+      # respawning rather than any time we have the desired number of stocks.
+      if is_dead_or_respawning(player) or player.invulnerable:
+        controller.release_all()
+        return True
+      logging.info('Invincibility over, handing control to the agent.')
+      self._sd_phase = SDPhase.DONE
+
+    return False
 
   def num_menu_frames(self) -> int:
     return self._num_menu_frames
@@ -500,6 +585,7 @@ EXTRA_HELP_MESSAGE = """
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !reset: Stop the bot and start a new game with the same agent.
 !stages: Specify a space-separated list of stages to play on.
+!stocks <n>: Have the bot SD down to n stocks at the start of each game. Use "!stocks 4" to disable.
 !bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream. Locks the bots for {bots_lock_minutes} minutes or until you !relinquish.
 !about: Print some info about the this AI.
 """
@@ -707,6 +793,8 @@ class Bot(commands.Bot):
     self._requested_agent_configs: dict[str, AgentConfig] = {}
     self._play_codes: dict[str, str] = {}
     self._stages: dict[str, list[melee.Stage]] = {}
+    # Number of stocks the bot should SD down to at the start of each game.
+    self._sd_stocks: dict[str, int] = {}
 
     self._do_chores.start()
 
@@ -1060,6 +1148,44 @@ class Bot(commands.Bot):
     await ctx.send(f'{name} has set the stages to {", ".join(stage_names)}')
 
   @commands.command()
+  async def stocks(self, ctx: commands.Context):
+    name = ctx.author.name
+    assert isinstance(name, str)
+    words = ctx.message.content.split(' ')
+
+    if len(words) == 1:
+      stocks = self._sd_stocks.get(name)
+      if stocks is None:
+        await ctx.send(
+            f'{name}, the bot will play with all its stocks.'
+            ' Use "!stocks <n>" to have it SD down to n stocks.')
+      else:
+        await ctx.send(f'{name}, the bot will SD down to {stocks} stocks.')
+      return
+
+    try:
+      stocks = int(words[1])
+    except ValueError:
+      await ctx.send(f'{name}, "{words[1]}" is not a number.')
+      return
+
+    if not 1 <= stocks <= MAX_STOCKS:
+      await ctx.send(f'{name}, stocks must be between 1 and {MAX_STOCKS}.')
+      return
+
+    if stocks == MAX_STOCKS:
+      self._sd_stocks.pop(name, None)
+      await ctx.send(
+          f'{name}, the bot will play with all its stocks.'
+          ' Takes effect on your next game.')
+      return
+
+    self._sd_stocks[name] = stocks
+    await ctx.send(
+        f'{name}, the bot will SD down to {stocks} stocks at the start of'
+        ' each game. Takes effect on your next session (!play or !reset).')
+
+  @commands.command()
   async def stop(self, ctx: commands.Context):
     with self.lock:
       name = ctx.author.name
@@ -1108,6 +1234,7 @@ class Bot(commands.Bot):
           render=is_stream,
           stages=self._stages.get(name, None),
           save_replays=not is_weak_agent,
+          sd_stocks=self._sd_stocks.get(name, None),
       )
       self._sessions[name] = SessionInfo(
           session=session,
@@ -1211,6 +1338,7 @@ class Bot(commands.Bot):
       stages: Optional[list[melee.Stage]],
       render: bool = False,
       save_replays: bool = True,
+      sd_stocks: Optional[int] = None,
   ) -> Session:
     config = dataclasses.replace(self.dolphin_config)
     config.slippi_port = portpicker.pick_unused_port()
@@ -1235,6 +1363,7 @@ class Bot(commands.Bot):
         stages=stages,
         run_on_cpu=self.run_on_cpu,
         costume=self._costume,
+        sd_stocks=sd_stocks,
     )
 
   def _start_bot_session(self, render: bool = True) -> BotSession:
