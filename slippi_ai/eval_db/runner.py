@@ -3,6 +3,8 @@
 import dataclasses
 import json
 import logging
+import multiprocessing
+import multiprocessing.connection
 import os
 import sqlite3
 import subprocess
@@ -253,13 +255,122 @@ def evaluate_matchup(
   )
 
 
+@dataclasses.dataclass
+class EvalOutcome:
+  """What `finish_eval` needs from an evaluation; small enough to pickle."""
+  games: list[dict]
+  kdpm: tp.Optional[float] = None
+  env_fps: tp.Optional[float] = None
+
+  @classmethod
+  def from_result(cls, result: evaluation.EvaluationResult) -> 'EvalOutcome':
+    return cls(
+        games=result.completed_games, kdpm=result.kdpm, env_fps=result.env_fps)
+
+
+EvaluateFn = tp.Callable[
+    [Matchup, EvalParams, str, str], evaluation.EvaluationResult]
+
+
+class ChildEvalError(Exception):
+  """The eval child process failed; str(e) is its traceback or exit status."""
+
+
+def _child_main(
+    pipe: multiprocessing.connection.Connection,
+    evaluate_fn: EvaluateFn,
+    matchup: Matchup,
+    params: EvalParams,
+    p1_path: str,
+    p2_path: str,
+    log_level: int,
+):
+  """Entry point of the per-eval child: evaluates and reports through `pipe`."""
+  root = logging.getLogger()
+  if not root.handlers:
+    logging.basicConfig()
+  root.setLevel(log_level)
+  try:
+    outcome = EvalOutcome.from_result(
+        evaluate_fn(matchup, params, p1_path, p2_path))
+    message = ('ok', outcome)
+  except BaseException:  # pylint: disable=broad-except
+    message = ('error', traceback.format_exc())
+  try:
+    pipe.send(message)
+  finally:
+    pipe.close()
+
+
+def evaluate_matchup_in_child(
+    matchup: Matchup,
+    params: EvalParams,
+    p1_path: str,
+    p2_path: str,
+    evaluate_fn: EvaluateFn = evaluate_matchup,
+) -> EvalOutcome:
+  """Runs `evaluate_fn` in a fresh (spawned) process and returns its outcome.
+
+  Building agents and compiling their policies leaks a few hundred MB per
+  eval into the process that does it (TF and JAX keep compiled functions in
+  process-wide caches), so a long session runs each eval in a child that
+  exits when it's done. Spawning also keeps the parent free of GPU state.
+
+  Raises ChildEvalError if the child raised or died without reporting.
+  """
+  ctx = multiprocessing.get_context('spawn')
+  parent_end, child_end = ctx.Pipe(duplex=False)
+  # Not a daemon: the child spawns the sim env workers itself.
+  process = ctx.Process(
+      target=_child_main,
+      args=(child_end, evaluate_fn, matchup, params, p1_path, p2_path,
+            logging.getLogger().level),
+      name='eval',
+  )
+  process.start()
+  child_end.close()  # so recv() sees EOF if the child dies
+  try:
+    # Receive before joining: a large game list would otherwise block the
+    # child's send while we block on join.
+    try:
+      message = parent_end.recv()
+    except EOFError:
+      message = None
+    process.join()
+    exitcode = process.exitcode
+  except BaseException:
+    # Interrupted (e.g. Ctrl-C, which the child also got): don't leave it.
+    process.join(timeout=10)
+    if process.is_alive():
+      process.terminate()
+      process.join()
+    raise
+  finally:
+    parent_end.close()
+    process.close()
+
+  if message is None:
+    raise ChildEvalError(
+        f'eval child exited with code {exitcode} without reporting')
+  status, payload = message
+  if status != 'ok':
+    raise ChildEvalError(payload)
+  return payload
+
+
 def run_eval(
     conn: sqlite3.Connection,
     matchup: Matchup,
     params: EvalParams,
     stripped_dir: str,
+    isolate: bool = True,
+    evaluate_fn: EvaluateFn = evaluate_matchup,
 ) -> int:
-  """Runs one matchup in-process and stores the outcome. Returns the eval id.
+  """Runs one matchup and stores the outcome. Returns the eval id.
+
+  With `isolate`, the evaluation runs in a spawned child process (see
+  `evaluate_matchup_in_child`); otherwise in this process, which leaks memory
+  across evals.
 
   The eval is marked 'running' before it starts, so a crash that takes the
   process down leaves a visible record (see `reset_stale_running`).
@@ -270,10 +381,19 @@ def run_eval(
       'eval %d: %s vs %s over %d character pairs', eval_id,
       p1_path, p2_path, len(matchup.character_pairs))
   try:
-    result = evaluate_matchup(matchup, params, p1_path, p2_path)
+    if isolate:
+      outcome = evaluate_matchup_in_child(
+          matchup, params, p1_path, p2_path, evaluate_fn=evaluate_fn)
+    else:
+      outcome = EvalOutcome.from_result(
+          evaluate_fn(matchup, params, p1_path, p2_path))
     finish_eval(
-        conn, eval_id, result.completed_games,
-        kdpm=result.kdpm, env_fps=result.env_fps)
+        conn, eval_id, outcome.games,
+        kdpm=outcome.kdpm, env_fps=outcome.env_fps)
+  except ChildEvalError as e:
+    error = str(e)
+    logging.error('eval %d failed in its child process:\n%s', eval_id, error)
+    fail_eval(conn, eval_id, error)
   except Exception:  # pylint: disable=broad-except
     error = traceback.format_exc()
     logging.error('eval %d failed:\n%s', eval_id, error)
@@ -322,7 +442,11 @@ def run_eval_subprocess(
     log_dir: str,
     python: str = sys.executable,
 ) -> int:
-  """Like `run_eval` but in a child process, for isolation from crashes."""
+  """Like `run_eval` but through scripts/run_evaluator.py, with its own log.
+
+  Only supports one character pair per eval; `run_eval` (which isolates in a
+  spawned child by default) is the usual choice.
+  """
   p1_path, p2_path = agent_paths(conn, matchup, stripped_dir)
   os.makedirs(log_dir, exist_ok=True)
   eval_id = start_eval(conn, matchup, params)

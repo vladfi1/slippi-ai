@@ -405,6 +405,33 @@ def fake_games(n: int, p1_wins: int, ties: int = 0,
   return games
 
 
+def fake_result(games: list[dict]) -> evaluation.EvaluationResult:
+  return evaluation.EvaluationResult(
+      config=runner.DEFAULT_CONFIG, total_steps=1, rewards={1: 0.0, 2: 0.0},
+      kdpm=0.5, completed_games=games, timings={}, env_fps=100.0,
+      player_fps=200.0, sps=1.0, character_pairs=[('FOX', 'MARTH')])
+
+
+# Stand-ins for runner.evaluate_matchup; module-level so a spawned child can
+# import them by name.
+def evaluate_ok(matchup, params, p1_path, p2_path):
+  del params
+  assert matchup.character_pairs == (('FOX', 'MARTH'),)
+  paths = (os.path.basename(p1_path), os.path.basename(p2_path))
+  assert paths == ('aaa', 'bbb'), paths
+  return fake_result(fake_games(5, p1_wins=3))
+
+
+def evaluate_raises(matchup, params, p1_path, p2_path):
+  del matchup, params, p1_path, p2_path
+  raise RuntimeError('agent exploded')
+
+
+def evaluate_crashes(matchup, params, p1_path, p2_path):
+  del matchup, params, p1_path, p2_path
+  os._exit(3)  # like a segfault: no exception, no report
+
+
 def insert_agent(conn, h, characters, opponents, active=True,
                  now='2026-01-01T00:00:00+00:00'):
   conn.execute(
@@ -495,6 +522,54 @@ class IngestTest(unittest.TestCase):
       conn.close()
       with self.assertRaises(RuntimeError):
         db.connect(path)
+
+
+class RunEvalTest(unittest.TestCase):
+
+  def setUp(self):
+    self.conn = db.connect(':memory:')
+    insert_agent(self.conn, 'a' * 32, ['FOX'], ['FOX', 'MARTH'])
+    insert_agent(self.conn, 'b' * 32, ['MARTH'], ['FOX', 'MARTH'])
+    self.matchup = matchups.Matchup('a' * 32, 'b' * 32, (('FOX', 'MARTH'),))
+
+  def run_eval(self, evaluate_fn, isolate=True):
+    eval_id = runner.run_eval(
+        self.conn, self.matchup, runner.EvalParams(), 'stripped',
+        isolate=isolate, evaluate_fn=evaluate_fn)
+    return self.conn.execute(
+        'SELECT * FROM evals WHERE id = ?', (eval_id,)).fetchone()
+
+  def assert_done(self, row):
+    self.assertEqual(row['status'], 'done')
+    self.assertEqual(
+        (row['num_games'], row['p1_wins'], row['p2_wins']), (5, 3, 2))
+    self.assertEqual((row['p1_kdpm'], row['env_fps']), (0.5, 100.0))
+    games = self.conn.execute(
+        'SELECT COUNT(*) FROM games WHERE eval_id = ?', (row['id'],)).fetchone()
+    self.assertEqual(games[0], 5)
+
+  def test_in_process(self):
+    self.assert_done(self.run_eval(evaluate_ok, isolate=False))
+    row = self.run_eval(evaluate_raises, isolate=False)
+    self.assertEqual(row['status'], 'failed')
+    self.assertIn('agent exploded', row['error'])
+
+  def test_child_process(self):
+    self.assert_done(self.run_eval(evaluate_ok))
+
+  def test_child_exception_is_recorded(self):
+    row = self.run_eval(evaluate_raises)
+    self.assertEqual(row['status'], 'failed')
+    # The child's traceback, not just the parent's.
+    self.assertIn('agent exploded', row['error'])
+    self.assertIn('evaluate_raises', row['error'])
+
+  def test_child_crash_is_recorded(self):
+    row = self.run_eval(evaluate_crashes)
+    self.assertEqual(row['status'], 'failed')
+    self.assertIn('exited with code 3', row['error'])
+    # The session goes on: the next eval still works.
+    self.assert_done(self.run_eval(evaluate_ok))
 
 
 class RatingsTest(unittest.TestCase):
