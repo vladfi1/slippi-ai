@@ -349,10 +349,15 @@ class MatchupTest(unittest.TestCase):
              if x.pair == m.pair][0].character_pairs), 2)
     # Different params start over.
     other = runner.EvalParams(config=runner.dataclasses.replace(
-        params.config, rollout_length=100))
+        params.config, num_envs=100))
     self.assertEqual(
         pending_all_pairs(matchups.pending_matchups(self.conn, other.key(), **kw)),
         pending_all_pairs(pending))
+    # ... except the rollout length, which only decides how many games finish.
+    longer = runner.EvalParams(config=runner.dataclasses.replace(
+        params.config, rollout_length=params.config.rollout_length + 1))
+    self.assertEqual(longer.key(), params.key())
+    self.assertNotEqual(longer.to_dict(), params.to_dict())
     # Agents that already have evals sort after those with none.
     counts = matchups.eval_counts(self.conn)
     self.assertEqual(counts[m.p1_hash], 1)
@@ -586,12 +591,27 @@ class EvalParamsTest(unittest.TestCase):
       self.assertTrue(hasattr(config, name), name)
     self.assertEqual(config.num_envs, int(script['num_envs']))
     self.assertEqual(config.rollout_length, int(script['rollout_length']))
+
     self.assertEqual(config.chunk_length, int(script['chunk_length']))
     self.assertEqual(config.num_env_steps, int(script['num_env_steps']))
     self.assertEqual(config.num_agent_steps, int(script['num_agent_steps']))
     for flag in ('sim_envs', 'async_envs', 'use_gpu'):
       self.assertEqual(script[flag], 'true')
       self.assertTrue(getattr(config, flag))
+
+  def test_rekey_evals_updates_stale_keys(self):
+    conn = db.connect(':memory:')
+    insert_agent(conn, 'a' * 32, ['FOX'], ['FOX'])
+    insert_agent(conn, 'b' * 32, ['FOX'], ['FOX'])
+    matchup = matchups.Matchup('a' * 32, 'b' * 32, (('FOX', 'FOX'),))
+    params = runner.EvalParams()
+    eval_id = runner.start_eval(conn, matchup, params)
+    # Simulate a row written when rollout_length was part of the key.
+    conn.execute('UPDATE evals SET params_key = params WHERE id = ?', (eval_id,))
+    self.assertEqual(len(matchups.covered_pairs(conn, params.key())), 0)
+    self.assertEqual(runner.rekey_evals(conn), 1)
+    self.assertEqual(runner.rekey_evals(conn), 0)
+    self.assertEqual(len(matchups.covered_pairs(conn, params.key())), 1)
 
   def test_key_ignores_presentation_fields(self):
     a = runner.EvalParams()
