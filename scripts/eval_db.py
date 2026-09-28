@@ -6,8 +6,11 @@ Typical use, after adding or updating something in deployed_models/:
   python scripts/eval_db.py --mode=plan    # just list what would run
   python scripts/eval_db.py --mode=show    # latest leaderboard
 
-Evaluations run in-process through slippi_ai.evaluation with the same
-defaults as run_scripts/run_evaluator.sh; override them with --eval.<field>.
+Evaluations run through slippi_ai.evaluation with the same defaults as
+run_scripts/run_evaluator.sh; override them with --eval.<field>. Each eval
+runs in a spawned child process by default (see --isolation): building and
+compiling agents leaks a few hundred MB per eval into the process that does
+it, which adds up over a long session.
 """
 
 # Child processes of the multiprocess sim env re-import this module, so keep
@@ -44,6 +47,11 @@ if __name__ == '__main__':
     RATE = 'rate'    # fit and store ratings
     SHOW = 'show'    # print the latest leaderboard
     FULL = 'full'    # sync, run, rate, show
+
+  class Isolation(enum.Enum):
+    PROCESS = 'process'  # a spawned child process per eval
+    NONE = 'none'        # in this process; leaks memory across evals
+    SCRIPT = 'script'    # scripts/run_evaluator.py per eval, with its own log
 
   MODE = flags.DEFINE_enum_class('mode', Mode.FULL, Mode, 'What to do.')
   DB = flags.DEFINE_string(
@@ -86,12 +94,16 @@ if __name__ == '__main__':
       'many envs.')
   MAX_EVALS = flags.DEFINE_integer(
       'max_evals', 0, 'Stop after this many evals; 0 means run everything.')
-  SUBPROCESS = flags.DEFINE_boolean(
-      'subprocess', False,
-      'Run each eval in a child process (slower startup, crash isolation).')
+  ISOLATION = flags.DEFINE_enum_class(
+      'isolation', Isolation.PROCESS, Isolation,
+      'Where each eval runs. "process" spawns a child per eval, so memory '
+      'leaked by building agents is freed after every eval; "none" runs in '
+      'this process; "script" runs scripts/run_evaluator.py per eval, which '
+      'writes its own log but only supports one character pair per eval '
+      '(use --min_lanes_per_pair >= num_envs).')
   EVAL_LOG_DIR = flags.DEFINE_string(
       'eval_log_dir', 'untracked/eval_db_logs',
-      'Where --subprocess evals write their logs and results.')
+      'Where --isolation=script evals write their logs and results.')
   RESET_STALE = flags.DEFINE_boolean(
       'reset_stale', False,
       'Mark evals left "running" by a dead session as failed so they rerun. '
@@ -189,12 +201,13 @@ if __name__ == '__main__':
     run_start = time.perf_counter()
     for i, matchup in enumerate(todo):
       start = time.perf_counter()
-      if SUBPROCESS.value:
+      if ISOLATION.value is Isolation.SCRIPT:
         eval_id = runner.run_eval_subprocess(
             conn, matchup, params(), STRIPPED_MODELS.value, EVAL_LOG_DIR.value)
       else:
         eval_id = runner.run_eval(
-            conn, matchup, params(), STRIPPED_MODELS.value)
+            conn, matchup, params(), STRIPPED_MODELS.value,
+            isolate=ISOLATION.value is Isolation.PROCESS)
       row = conn.execute(
           'SELECT * FROM evals WHERE id = ?', (eval_id,)).fetchone()
       elapsed = time.perf_counter() - start
