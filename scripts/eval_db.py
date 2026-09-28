@@ -186,6 +186,7 @@ if __name__ == '__main__':
     if MAX_EVALS.value:
       todo = todo[:MAX_EVALS.value]
     print(f'run: {len(todo)} evals')
+    run_start = time.perf_counter()
     for i, matchup in enumerate(todo):
       start = time.perf_counter()
       if SUBPROCESS.value:
@@ -203,9 +204,24 @@ if __name__ == '__main__':
             f'({row["num_games"]} games)')
       else:
         outcome = row['status']
+      # Evals share num_envs and rollout_length, so the mean so far is a fair
+      # predictor of the rest.
+      remaining = len(todo) - (i + 1)
+      mean = (time.perf_counter() - run_start) / (i + 1)
+      eta = f', ~{format_duration(mean * remaining)} left' if remaining else ''
       print(
           f'[{i + 1}/{len(todo)}] eval {eval_id}: {describe(conn, matchup)}: '
-          f'{outcome} in {elapsed:.0f}s', flush=True)
+          f'{outcome} in {elapsed:.0f}s{eta}', flush=True)
+
+  def format_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if hours:
+      return f'{hours}h{minutes:02d}m'
+    if minutes:
+      return f'{minutes}m{seconds:02d}s'
+    return f'{seconds}s'
 
   def print_leaderboard(rows):
     if not rows:
