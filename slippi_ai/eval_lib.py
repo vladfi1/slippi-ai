@@ -582,8 +582,23 @@ class Agent:
       self.name_index = np.random.randint(len(self.name_codes))
     self._agent._agent.set_name_code(self.name_codes[self.name_index])
 
-  def step(self, gamestate: melee.GameState) -> SampleOutputs:
-    new_game = gamestate.frame == -123
+  def step(
+      self,
+      gamestate: melee.GameState,
+      needs_reset: tp.Optional[bool] = None,
+  ) -> SampleOutputs:
+    """Steps the agent on a gamestate and sends inputs to the controller.
+
+    Args:
+      gamestate: The current gamestate.
+      needs_reset: Whether to treat this as the first frame of a new game. If
+        None, this is inferred from the gamestate's frame number. Callers that
+        skip stepping the agent on the first frame of a game should pass True
+        on the first frame that they do step.
+    """
+    if needs_reset is None:
+      needs_reset = gamestate.frame == -123
+    new_game = needs_reset
     if new_game:
       self.update_name()
       self._parser = Parser(ports=self.players)
@@ -905,16 +920,24 @@ class EnsembleAgent:
     self.current_model = model
     return self._agent
 
-  def step(self, gamestate: melee.GameState) -> SampleOutputs:
+  def step(
+      self,
+      gamestate: melee.GameState,
+      needs_reset: tp.Optional[bool] = None,
+  ) -> SampleOutputs:
+    """See Agent.step."""
+    if needs_reset is None:
+      needs_reset = gamestate.frame == -123
+
     agent = self._agent
 
-    if agent is None or gamestate.frame == -123:
+    if agent is None or needs_reset:
       # New game, pick new agent.
       opponent = gamestate.players[self.opponent_port].character
       model = self.opponent_table[opponent]
       agent = self._get_agent(model)
 
-    return agent.step(gamestate)
+    return agent.step(gamestate, needs_reset=needs_reset)
 
   def start(self):
     pass
