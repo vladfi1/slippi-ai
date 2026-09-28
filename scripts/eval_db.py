@@ -246,6 +246,9 @@ if __name__ == '__main__':
   def main(_):
     logging.getLogger().setLevel(logging.INFO)
     conn = db.connect(DB.value)
+    rekeyed = runner.rekey_evals(conn)
+    if rekeyed:
+      print(f'updated the coverage key of {rekeyed} evals')
     mode = MODE.value
     if mode is Mode.SYNC:
       do_sync(conn)

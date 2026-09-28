@@ -24,7 +24,7 @@ EVALUATOR_SHELL_SCRIPT = os.path.join(
 # Mirrors run_scripts/run_evaluator.sh; tests check they stay in sync.
 DEFAULT_CONFIG = evaluation.EvaluationConfig(
     num_envs=1024,
-    rollout_length=14400,
+    rollout_length=18000,  # 5 minutes at 60 fps; floaty matchups run long
     chunk_length=120,
     num_env_steps=4,
     num_agent_steps=4,
@@ -34,6 +34,33 @@ DEFAULT_CONFIG = evaluation.EvaluationConfig(
     quiet=True,
 )
 DEFAULT_STAGE = melee.Stage.RANDOM_STAGE
+
+
+# Params that change what an eval measures only mildly, so an eval run with a
+# different value still counts as covering its player pairs. A longer rollout
+# just lets more (slower) games finish.
+NON_DISQUALIFYING_PARAMS = ('rollout_length',)
+
+
+def params_key(params: dict[str, tp.Any]) -> str:
+  """The coverage key of an eval's params dict (see EvalParams.key)."""
+  return db.dumps({
+      k: v for k, v in params.items() if k not in NON_DISQUALIFYING_PARAMS})
+
+
+def rekey_evals(conn: sqlite3.Connection) -> int:
+  """Recomputes stored params_keys after the key rule changes.
+
+  Returns the number of evals whose key changed.
+  """
+  updates = []
+  for row in conn.execute('SELECT id, params, params_key FROM evals'):
+    key = params_key(db.loads(row['params']))
+    if key != row['params_key']:
+      updates.append((key, row['id']))
+  with conn:
+    conn.executemany('UPDATE evals SET params_key = ? WHERE id = ?', updates)
+  return len(updates)
 
 
 @dataclasses.dataclass
@@ -48,7 +75,7 @@ class EvalParams:
 
   def key(self) -> str:
     """Canonical string identifying these settings in the evals table."""
-    return db.dumps(self.to_dict())
+    return params_key(self.to_dict())
 
   def dolphin_kwargs(self) -> dict:
     return dolphin.DolphinConfig(
