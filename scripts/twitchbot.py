@@ -88,10 +88,10 @@ DOLPHIN = ff.DEFINE_dict(
     'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
 
 MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
-MODEL_CACHE = flags.DEFINE_string(
-    'model_cache', '.twitchbot/cached_models',
-    'Directory in which to cache model configs (without the weights), to'
-    ' speed up loading the models directory. Empty string disables caching.')
+STATE_DIR = flags.DEFINE_string(
+    'state_dir', '.twitchbot',
+    'Directory for state that persists across restarts: the model config'
+    ' cache and user preferences. Empty string disables persistence.')
 
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
@@ -218,6 +218,66 @@ class ModelCache:
             os.remove(entry_path)
           except FileNotFoundError:
             pass  # Another process may have removed it.
+
+class UserPrefs:
+  """Per-user preferences persisted to a JSON file.
+
+  The file maps twitch user name to a dict of preferences.
+  """
+
+  def __init__(self, path: Optional[str]):
+    self._path = path
+    self._prefs: dict[str, dict[str, tp.Any]] = {}
+    self._load()
+
+  def _load(self):
+    if self._path is None or not os.path.isfile(self._path):
+      return
+    try:
+      with open(self._path) as f:
+        prefs = json.load(f)
+    except Exception as e:
+      logging.warning(f'Failed to read user prefs from {self._path}: {e}')
+      return
+    if not isinstance(prefs, dict):
+      logging.warning(f'Ignoring malformed user prefs in {self._path}')
+      return
+    self._prefs = prefs
+    logging.info(f'Loaded prefs for {len(prefs)} users from {self._path}')
+
+  def _save(self):
+    if self._path is None:
+      return
+    os.makedirs(os.path.dirname(self._path) or '.', exist_ok=True)
+    tmp_path = f'{self._path}.tmp{os.getpid()}'
+    try:
+      with open(tmp_path, 'w') as f:
+        json.dump(self._prefs, f, indent=2, sort_keys=True)
+      os.replace(tmp_path, self._path)
+    except Exception as e:
+      logging.warning(f'Failed to write user prefs to {self._path}: {e}')
+      if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
+  def get(self, user: str, key: str) -> tp.Any:
+    return self._prefs.get(user, {}).get(key)
+
+  def set(self, user: str, key: str, value: tp.Any):
+    self._prefs.setdefault(user, {})[key] = value
+    self._save()
+
+  def delete(self, user: str, key: str):
+    user_prefs = self._prefs.get(user)
+    if user_prefs is None or key not in user_prefs:
+      return
+    del user_prefs[key]
+    if not user_prefs:
+      del self._prefs[user]
+    self._save()
+
+# Keys into UserPrefs.
+AGENT_PREF = 'agent'
+CONNECT_CODE_PREF = 'connect_code'
 
 class AgentConfig(abc.ABC):
 
@@ -808,8 +868,13 @@ class Bot(commands.Bot):
       costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
       botmatch_max_games: int = 10,
-      model_cache_path: Optional[str] = None,
+      state_dir: Optional[str] = None,
   ):
+    """
+    Args:
+      state_dir: Directory for state that persists across restarts (model
+        config cache, user preferences). None disables persistence.
+    """
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
 
@@ -862,9 +927,14 @@ class Bot(commands.Bot):
     self._loaded_models: dict[str, LoadedModel] = {}
     # Optional on-disk cache of the trimmed states, to speed up startup.
     self._model_cache: Optional[ModelCache] = None
-    if model_cache_path:
-      self._model_cache = ModelCache(model_cache_path)
+    user_prefs_path: Optional[str] = None
+    if state_dir:
+      self._model_cache = ModelCache(os.path.join(state_dir, 'cached_models'))
+      user_prefs_path = os.path.join(state_dir, 'user_prefs.json')
     self._reload_models()
+
+    # Persisted per-user preferences (currently just the selected agent).
+    self._user_prefs = UserPrefs(user_prefs_path)
 
     if bot is None:
       bot1_config = self._default_agent_config
@@ -881,9 +951,7 @@ class Bot(commands.Bot):
         2: bot2_config,
     }
 
-    # User-specific state.
-    self._requested_agent_configs: dict[str, AgentConfig] = {}
-    self._play_codes: dict[str, str] = {}
+    # User-specific state (not persisted).
     self._stages: dict[str, list[melee.Stage]] = {}
     # Number of stocks the bot should SD down to at the start of each game.
     self._sd_stocks: dict[str, int] = {}
@@ -1210,7 +1278,7 @@ class Bot(commands.Bot):
 
     name = ctx.author.name
     assert isinstance(name, str)
-    self._requested_agent_configs[name] = agent_config
+    self._user_prefs.set(name, AGENT_PREF, agent_name)
     await ctx.send(f'{name} has selected {agent_name}')
 
     # Auto-restart if the person is already playing
@@ -1310,7 +1378,7 @@ class Bot(commands.Bot):
     with self.lock:
       name = ctx.author.name
       assert isinstance(name, str)
-      connect_code = self._play_codes[name]
+      connect_code = self._user_prefs.get(name, CONNECT_CODE_PREF)
       assert connect_code
 
       if name in self._sessions:
@@ -1363,7 +1431,7 @@ class Bot(commands.Bot):
     words = ctx.message.content.split(' ')
 
     if len(words) == 1:
-      connect_code = self._play_codes.get(name)
+      connect_code = self._user_prefs.get(name, CONNECT_CODE_PREF)
       if connect_code is None:
         await ctx.send('You must specify a connect code')
         return
@@ -1372,7 +1440,7 @@ class Bot(commands.Bot):
       if '#' not in connect_code:
         await ctx.send(f'{connect_code} is not a valid connect code')
         return
-      self._play_codes[name] = connect_code
+      self._user_prefs.set(name, CONNECT_CODE_PREF, connect_code)
 
     await self._play(ctx)
 
@@ -1635,7 +1703,17 @@ class Bot(commands.Bot):
       await ctx.send('Bots relinquished; anyone can now use !bots.')
 
   def _get_opponent_config(self, name: str) -> AgentConfig:
-    return self._requested_agent_configs.get(name, self._default_agent_config)
+    agent_name = self._user_prefs.get(name, AGENT_PREF)
+    if agent_name is None:
+      return self._default_agent_config
+    # Agents are looked up by name at use time so that the selection survives
+    # restarts and !reload, even if the model has since gone away.
+    agent_config = self._agents.get(agent_name)
+    if agent_config is None:
+      logging.warning(
+          f'{name} selected agent {agent_name} which no longer exists.')
+      return self._default_agent_config
+    return agent_config
 
   @commands.command()
   async def status(self, ctx: commands.Context):
@@ -1807,7 +1885,7 @@ def main(_):
       costume=COSTUME.value,
       botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
       botmatch_max_games=BOTMATCH_MAX_GAMES.value,
-      model_cache_path=MODEL_CACHE.value,
+      state_dir=STATE_DIR.value,
   )
 
   try:
