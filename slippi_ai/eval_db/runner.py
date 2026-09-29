@@ -41,7 +41,7 @@ DEFAULT_STAGE = melee.Stage.RANDOM_STAGE
 # Params that change what an eval measures only mildly, so an eval run with a
 # different value still counts as covering its player pairs. A longer rollout
 # just lets more (slower) games finish.
-NON_DISQUALIFYING_PARAMS = ('rollout_length',)
+NON_DISQUALIFYING_PARAMS = ('rollout_length', 'num_envs')
 
 
 def params_key(params: dict[str, tp.Any]) -> str:

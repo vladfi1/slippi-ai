@@ -348,14 +348,16 @@ class MatchupTest(unittest.TestCase):
         len([x for x in matchups.pending_matchups(self.conn, params.key(), **kw)
              if x.pair == m.pair][0].character_pairs), 2)
     # Different params start over.
-    other = runner.EvalParams(config=runner.dataclasses.replace(
-        params.config, num_envs=100))
+    other = runner.EvalParams(
+        config=params.config, stage=runner.melee.Stage.FINAL_DESTINATION)
     self.assertEqual(
         pending_all_pairs(matchups.pending_matchups(self.conn, other.key(), **kw)),
         pending_all_pairs(pending))
-    # ... except the rollout length, which only decides how many games finish.
+    # ... except the rollout length and env count, which only decide how many
+    # games get played.
     longer = runner.EvalParams(config=runner.dataclasses.replace(
-        params.config, rollout_length=params.config.rollout_length + 1))
+        params.config, rollout_length=params.config.rollout_length + 1,
+        num_envs=params.config.num_envs + 1))
     self.assertEqual(longer.key(), params.key())
     self.assertNotEqual(longer.to_dict(), params.to_dict())
     # Agents that already have evals sort after those with none.
