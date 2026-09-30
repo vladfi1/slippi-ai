@@ -53,7 +53,7 @@ if __name__ == '__main__':
   CONFIG.learner.ppo.epsilon=1e-2
 
   CONFIG.learner.ppo.num_batches = 1
-  CONFIG.learner.ppo.num_epochs = 1
+  CONFIG.learner.ppo.num_epochs = 2
   CONFIG.learner.teacher_dtype = DType.FP16
   CONFIG.learner.value_dtype = DType.FP32  # could be bf16
   CONFIG.learner.policy_dtype = DType.FP16
@@ -160,6 +160,8 @@ if __name__ == '__main__':
       config.agent.batch_steps = 0
 
     if config.runtime.tag is None:
+      parts = ['rl', char_tag, f'd{delay}']
+
       if config.opponent.type is run_lib.OpponentType.SELF:
         if config.opponent.train:
           opp = 'ditto'
@@ -176,14 +178,18 @@ if __name__ == '__main__':
       else:
         raise ValueError(f"Unsupported opponent type: {config.opponent.type}")
 
+      parts.append(opp)
+
       if config.agent.rating:
-        rstr = f'_r{int(config.agent.rating)}'
-      else:
-        rstr = ''
+        parts.append(f'r{int(config.agent.rating)}')
+
+      parts.append(f'kl_{KLW.value:.0e}')
 
       fs = imitation_config.policy.frame_skip
+      if fs > 1:
+        parts.append(f'rfs{fs}')
 
-      config.runtime.tag = f"rl_{char_tag}_d{delay}_{opp}{rstr}_kl_{KLW.value:.0e}_rfs{fs}"
+      config.runtime.tag = '_'.join(parts)
 
     wandb_kwargs = dict(WANDB_FLAG.value)
 
