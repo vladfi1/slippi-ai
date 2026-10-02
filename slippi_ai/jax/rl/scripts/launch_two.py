@@ -10,7 +10,9 @@ if __name__ == '__main__':
   import logging
   import os
 
-  os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.95'
+  os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", "./untracked/jax_cache")
+  os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '.95')
+  os.environ.setdefault('XLA_PYTHON_CLIENT_ALLOCATOR', 'cuda_async')
 
   from absl import app, flags
   import fancyflags as ff
