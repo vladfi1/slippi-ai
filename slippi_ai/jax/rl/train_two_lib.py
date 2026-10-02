@@ -375,8 +375,16 @@ class ExperimentManager:
     #   iterates on the host (one small cuGraphLaunch per iteration), so
     #   learner host time was unchanged. Worth re-testing after XLA upgrades
     #   in case whole-loop capture (conditional graph nodes) lands.
+    #
+    # Only parallelize across distinct devices. Learners that share a device
+    # gain nothing from concurrency (the GPU serializes them anyway) and each
+    # PPO epoch allocates a multi-GiB temp (5.84 GiB at num_envs=2048, mbs
+    # 512), so two in flight at once overflow a 16 GB card. The BFC allocator
+    # hid this by waiting up to 10 s for the other learner to free its temp;
+    # cuda_async fails immediately.
+    num_devices = len({agent.device for agent in agents.values()})
     self._learner_pool = concurrent.futures.ThreadPoolExecutor(
-        max_workers=len(self._learners))
+        max_workers=num_devices)
 
     self.update_profiler = utils.Profiler(burnin=0)
     self.learner_profiler = utils.Profiler()
