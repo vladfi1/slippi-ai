@@ -373,8 +373,17 @@ class Learner(nnx.Module, tp.Generic[Action]):
     return initial_states
 
   def policy_variables(self, to_numpy: bool = True):
-    """Returns policy state for actor update via evaluators.update_variables."""
-    return self.policy.get_state(to_numpy=to_numpy)
+    """Returns policy state for actor update via evaluators.update_variables.
+
+    With to_numpy=False the arrays are copied on device. The learner's own
+    buffers are donated by its next update, and the actors alias the arrays
+    they are given rather than copying them (see BasicAgent.set_policy_state),
+    so this one copy is what keeps them valid; it is shared by every actor.
+    """
+    state = self.policy.get_state(to_numpy=to_numpy)
+    if not to_numpy:
+      state = jax.tree.map(jnp.copy, state)
+    return state
 
   def _sum_leaves(self, embedding: embed.Embedding[tp.Any, T], struct: T) -> jax.Array:
     return functools.reduce(jnp.add, embedding.flatten(struct))

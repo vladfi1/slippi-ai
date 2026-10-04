@@ -292,9 +292,8 @@ class LearnerManager(tp.Generic[Action]):
       step: int,
   ) -> tuple[list[evaluators.Trajectory], dict]:
     with self.update_profiler:
-      # Note: the parameters returned with to_numpy=False will be invalidated
-      # by jax buffer donation on the next learner update, but we don't need to
-      # make a copy because we use them only for the next rollout.
+      # Note: with to_numpy=False the learner hands out a device-side copy of
+      # its parameters, since its own buffers are donated on the next update.
       # TODO: we could also avoid the update entirely by sharing the Policy
       # object and its parameters between the learner and actor.
       variables = {self._port: self._learner.policy_variables(to_numpy=False)}
