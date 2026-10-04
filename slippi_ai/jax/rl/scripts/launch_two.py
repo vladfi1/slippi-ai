@@ -29,6 +29,7 @@ if __name__ == '__main__':
 
   CONFIG.runtime.max_step=10000
   CONFIG.runtime.log_interval=300
+  CONFIG.runtime.save_interval=1800
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
   CONFIG.dolphin.console_timeout=60
@@ -80,6 +81,8 @@ if __name__ == '__main__':
   )
 
   KLW = flags.DEFINE_float('kl_weight', 1e-2, 'weight for KL teacher losses')
+  KLW1 = flags.DEFINE_float('klw1', None, 'weight for KL teacher losses for player 1')
+  KLW2 = flags.DEFINE_float('klw2', None, 'weight for KL teacher losses for player 2')
 
   PERF = flags.DEFINE_bool('perf', False, 'Run to measure performance')
 
@@ -103,6 +106,13 @@ if __name__ == '__main__':
 
     config = flag_utils.dataclass_from_dict(
         train_two_lib.Config, CONFIG_FLAG.value)
+
+    if KLW1.value is not None:
+      config.learner1.kl_teacher_weight = KLW1.value
+      config.learner1.reverse_kl_teacher_weight = KLW1.value
+    if KLW2.value is not None:
+      config.learner2.kl_teacher_weight = KLW2.value
+      config.learner2.reverse_kl_teacher_weight = KLW2.value
 
     p1_imitation_config = get_imitation_config(config.p1.teacher)
     p2_imitation_config = get_imitation_config(config.p2.teacher)
