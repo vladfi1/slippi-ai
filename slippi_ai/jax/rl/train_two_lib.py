@@ -274,9 +274,8 @@ class AgentManager:
     self.to_save['opponent'] = opp_name
 
   def policy_variables(self):
-    # Note: the parameters returned with to_numpy=False will be invalidated by
-    # jax buffer donation on the next learner update, but we don't need to make
-    # a copy because we use them only for the next rollout.
+    # With to_numpy=False the learner hands out a device-side copy of its
+    # parameters, since its own buffers are donated on the next update.
     return self.learner.policy_variables(to_numpy=False)
 
   def get_state(self) -> dict:

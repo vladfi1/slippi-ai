@@ -77,8 +77,13 @@ def _multi_sample(
   stacked_states_and_resets = jax.tree.map(
       lambda *xs: jnp.stack(xs, axis=0), *states_and_resets)
 
-  @nnx.scan(in_axes=(0, 0, nnx.Carry), out_axes=(0, nnx.Carry))
+  # The policy is passed to the scan rather than closed over: under a
+  # tree-mode jit its Variables belong to the enclosing jit trace, and nested
+  # nnx transforms (the controller head's own scan) refuse to extract graph
+  # nodes from a different trace level.
+  @nnx.scan(in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))
   def scan_fn(
+      policy: policies.Policy[ControllerType],
       rngs: nnx.Rngs,
       state_and_reset: tuple[Game, jax.Array],
       prev_actions_and_state: tuple[list[ControllerType], policies.RecurrentState],
@@ -94,7 +99,7 @@ def _multi_sample(
   length = len(states_and_resets)
 
   stacked_sample_outputs, (next_actions, final_state) = scan_fn(
-      rngs.fork(split=length), stacked_states_and_resets,
+      policy, rngs.fork(split=length), stacked_states_and_resets,
       (prev_actions, initial_state))
 
   sample_outputs: list[SampleOutputs[ControllerType]] = []
