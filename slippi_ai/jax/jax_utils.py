@@ -1015,7 +1015,7 @@ def packed_nnx_jit(
   """
   packers: dict[tuple[int, tp.Hashable], ArgPacker] = {}
 
-  static_argnames = jit_kwargs.pop('static_argnames', ())
+  static_argnames = jit_kwargs.pop('static_argnames', None) or ()
   if isinstance(static_argnames, str):
     static_argnames = (static_argnames,)
 
@@ -1119,6 +1119,9 @@ def jit_partial(  # type: ignore
     batch_rank: Number of leading batch dimensions of the packed arguments.
   """
   num_partial = len(partial_args)
+  static_argnames = static_argnames or ()
+  if isinstance(static_argnames, str):
+    static_argnames = (static_argnames,)
   for argnum in (*donate_argnums, *pack_argnums):
     if argnum < num_partial:
       raise ValueError(
