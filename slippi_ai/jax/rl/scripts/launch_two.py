@@ -4,6 +4,9 @@
 # This allows child processes to avoid importing tensorflow,
 # which uses a lot of memory.
 
+import dataclasses
+
+
 if __name__ == '__main__':
   __spec__ = None  # https://github.com/python/cpython/issues/87115
 
@@ -148,7 +151,7 @@ if __name__ == '__main__':
       wandb_kwargs['mode'] = 'disabled'
 
     wandb.init(
-        config=CONFIG_FLAG.value,
+        config=dataclasses.asdict(config),
         **wandb_kwargs,
     )
 
