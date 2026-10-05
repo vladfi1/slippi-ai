@@ -19,8 +19,6 @@ import numpy as np
 import tensorflow as tf
 import tree
 
-import wandb
-
 import melee
 
 from slippi_ai import (
@@ -125,6 +123,7 @@ def log_stats(
 ):
   if take_mean:
     stats = utils.map_nt(mean, stats)
+  import wandb
   wandb.log(data=stats, step=step)
 
 _field = utils.field
@@ -331,6 +330,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   name_map_path = os.path.join(expt_dir, 'name_map.json')
   with open(name_map_path, 'w') as f:
     json.dump(name_map, f)
+  import wandb
   wandb.save(name_map_path, policy='now')
 
   num_codes = nametags.max_name_code(name_map) + 1

@@ -31,3 +31,10 @@ jobs:
 
     - name: Parse eval_two flags
       run: python scripts/eval_two.py --only_check_args
+
+    # Model platforms, but still no training extras like wandb.
+    - name: Install model platforms
+      run: pip install .[jax,tf]
+
+    - name: Load and run agents
+      run: python tests/play_agent_test.py
