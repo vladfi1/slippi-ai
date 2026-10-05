@@ -16,7 +16,6 @@ import typing as tp
 import zipfile
 
 import numpy as np
-import py7zr
 
 
 T = tp.TypeVar('T')
@@ -343,6 +342,7 @@ def traverse_slp_files(root: str) -> list[LocalFile]:
 
 def traverse_slp_files_7z(root: str) -> list[SevenZipFile]:
   files = []
+  import py7zr
   relpaths = py7zr.SevenZipFile(root).getnames()
   for path in relpaths:
     if path.endswith('.slp'):
@@ -358,6 +358,7 @@ class SevenZipChunk:
   @contextmanager
   def extract(self, in_memory: bool = True) -> Generator[list[LocalFile], None, None]:
     """Extract the chunk to a temporary directory and return the files."""
+    import py7zr
     with tempfile.TemporaryDirectory(dir=get_tmp_dir(in_memory=in_memory)) as tmpdir:
       py7zr.SevenZipFile(self.path).extract(targets=self.files, path=tmpdir)
       yield [SimplePath(tmpdir, f) for f in self.files]
@@ -368,6 +369,7 @@ def traverse_7z_fast(
 ) -> list[SevenZipChunk]:
 # ) -> tuple[tp.Iterator[list[LocalFile]], int]:
   """Efficiently iterate through a 7z archive."""
+  import py7zr
   archive = py7zr.SevenZipFile(path, 'r')
 
   # calculate optimal chunks

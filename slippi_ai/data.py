@@ -20,7 +20,6 @@ from typing import (
 import typing as tp
 import zlib
 
-import fsspec
 import numpy as np
 import pyarrow
 import pyarrow.parquet as pq
@@ -926,6 +925,7 @@ class AbstractDataSource(abc.ABC):
     """Returns the batch size used by the data source."""
 
 def read_wds_meta(dataset_path: str) -> dict:
+  import fsspec
   with fsspec.open(os.path.join(dataset_path, WDS_META)) as f:
     return json.load(f)
 
@@ -979,6 +979,7 @@ class WebDataSource(AbstractDataSource):
 
     self.replay_counter = 0
 
+    import fsspec
     fs: fsspec.AbstractFileSystem
     fs, ds_path = fsspec.core.url_to_fs(self.dataset_path)
     shards = fs.glob(os.path.join(ds_path, wds_glob_pattern(self.split)))
