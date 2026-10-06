@@ -36,6 +36,9 @@ def upgrade_config(
     case Platform.TF:
       from slippi_ai.tf import saving as tf_saving
       return tf_saving.upgrade_config(config)
+    case Platform.ONNX:
+      # Configs are already upgraded when exported.
+      return config
 
 def load_policy_from_state(state: dict) -> policies.Policy:
   config: dict = state['config']
@@ -48,6 +51,9 @@ def load_policy_from_state(state: dict) -> policies.Policy:
     case Platform.TF:
       from slippi_ai.tf import saving as tf_saving
       return tf_saving.load_policy_from_state(state)
+    case Platform.ONNX:
+      from slippi_ai import onnx_policies
+      return onnx_policies.load_policy_from_state(state)
 
 
 class CustomUnpickler(pickle.Unpickler):
@@ -59,6 +65,10 @@ class CustomUnpickler(pickle.Unpickler):
 
 
 def load_state_from_disk(path: str) -> dict:
+  if path.endswith('.onnx'):
+    from slippi_ai import onnx_policies
+    return onnx_policies.load_state_from_disk(path)
+
   with open(path, 'rb') as f:
     return CustomUnpickler(f).load()
 

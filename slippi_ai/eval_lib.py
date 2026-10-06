@@ -76,12 +76,17 @@ def build_basic_agent(
     fake: bool = False,
     tf: dict[str, tp.Any] = {},
     jax: dict[str, tp.Any] = {},
+    onnx: dict[str, tp.Any] = {},
     **kwargs,
 ) -> tp.Union[FakeAgent, BasicAgent[ControllerType, RecurrentState]]:
   if fake:
     return FakeAgent(policy, batch_size)
 
-  framework_kwargs = tf if policy.platform == policies.Platform.TF else jax
+  framework_kwargs = {
+      policies.Platform.TF: tf,
+      policies.Platform.JAX: jax,
+      policies.Platform.ONNX: onnx,
+  }[policy.platform]
 
   return policy.build_agent(batch_size, **kwargs, **framework_kwargs)
 
@@ -662,6 +667,9 @@ BATCH_AGENT_FLAGS = dict(
         functionalize=ff.Boolean(False, 'Whether to functionalize the sample function for JAX agents.'),
         # TODO: get from jax/agents.py
         dtype=ff.Enum('float16', ['float32', 'float16', 'bfloat16']),
+    ),
+    onnx=dict(
+        seed=ff.Integer(None, 'Random seed for ONNX agents.'),
     ),
 )
 

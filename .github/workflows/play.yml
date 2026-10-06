@@ -34,7 +34,22 @@ jobs:
 
     # Model platforms, but still no training extras like wandb.
     - name: Install model platforms
-      run: pip install .[jax,tf]
+      run: pip install .[jax,tf,onnx-export]
 
     - name: Load and run agents
       run: python tests/play_agent_test.py
+
+    - name: ONNX export matches JAX
+      run: python tests/onnx_test.py
+
+    - name: Export ONNX model
+      run: python scripts/export_onnx.py --checkpoint slippi_ai/data/checkpoints/jax_demo --output jax_demo.onnx
+
+    # Check that exported models run with only onnxruntime, no jax or tf.
+    - name: Run ONNX model without jax or tf
+      shell: bash
+      run: |
+        python -m venv onnx-env
+        if [ -d onnx-env/Scripts ]; then PY=onnx-env/Scripts/python; else PY=onnx-env/bin/python; fi
+        $PY -m pip install .[onnx]
+        $PY tests/play_agent_test.py --models jax_demo.onnx --no_jax_tf

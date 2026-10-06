@@ -2,9 +2,11 @@
 
 Run this from an install with just the model platform extras (e.g.
 `pip install .[jax,tf]`) to check that loading and running an agent doesn't
-depend on training-only packages such as wandb.
+depend on training-only packages such as wandb. With --no_jax_tf, also checks
+that jax and tensorflow aren't imported, e.g. for exported ONNX models.
 """
 
+import os
 import sys
 
 from absl import app, flags
@@ -15,8 +17,9 @@ from slippi_ai.types import Game, reify_tuple_type
 
 flags.DEFINE_list(
     'models', ['demo', 'rl_demo', 'jax_demo'],
-    f'Checkpoints in {paths.CHECKPOINTS_DIR} to test.')
+    f'Paths, or names of checkpoints in {paths.CHECKPOINTS_DIR}, to test.')
 flags.DEFINE_integer('steps', 10, 'Number of agent steps to run.')
+flags.DEFINE_boolean('no_jax_tf', False, 'Check that jax and tensorflow are not imported.')
 
 FLAGS = flags.FLAGS
 
@@ -36,11 +39,15 @@ def run_agent(path: str, steps: int):
 
 def main(_):
   for model in FLAGS.models:
-    run_agent(str(paths.CHECKPOINTS_DIR / model), FLAGS.steps)
+    path = model if os.path.exists(model) else str(paths.CHECKPOINTS_DIR / model)
+    run_agent(path, FLAGS.steps)
     print(f'Ran {model}')
 
-  loaded = [m for m in TRAINING_ONLY_MODULES if m in sys.modules]
-  assert not loaded, f'Running agents imported training-only modules: {loaded}'
+  forbidden = TRAINING_ONLY_MODULES
+  if FLAGS.no_jax_tf:
+    forbidden = forbidden + ['jax', 'tensorflow']
+  loaded = [m for m in forbidden if m in sys.modules]
+  assert not loaded, f'Running agents imported forbidden modules: {loaded}'
 
 if __name__ == '__main__':
   app.run(main)

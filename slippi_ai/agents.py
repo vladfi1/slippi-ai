@@ -15,6 +15,7 @@ RecurrentState = tp.TypeVar('RecurrentState')
 class Platform(enum.Enum):
   TF = 'tf'
   JAX = 'jax'
+  ONNX = 'onnx'
 
 
 class BasicAgent(abc.ABC, tp.Generic[ControllerType, RecurrentState]):
