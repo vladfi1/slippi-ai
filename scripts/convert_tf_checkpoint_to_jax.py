@@ -165,26 +165,13 @@ def _upgrade_network_config(config: dict):
 
 
 def _policy_from_config(config: dict) -> policies.Policy:
-  embed_config = dataclass_from_dict(embed.EmbedConfig, config['embed'])
-  policy_config = dataclass_from_dict(policies.PolicyConfig, config['policy'])
-  rngs = nnx.Rngs(config.get('seed', 0))
-
-  network = networks.build_embed_network(
-      rngs=rngs,
-      embed_config=embed_config,
-      num_names=config['max_names'],
+  return saving.policy_from_configs(
       network_config=config['network'],
-  )
-  controller_head = controller_heads.construct(
-      rngs=rngs,
-      input_size=network.output_size,
-      embed_controller=embed_config.controller.make_embedding(),
-      **config['controller_head'],
-  )
-  return policies.Policy(
-      network=network,
-      controller_head=controller_head,
-      delay=policy_config.delay,
+      controller_head_config=config['controller_head'],
+      embed_config=dataclass_from_dict(embed.EmbedConfig, config['embed']),
+      policy_config=dataclass_from_dict(policies.PolicyConfig, config['policy']),
+      max_name=config['max_names'],
+      rngs=nnx.Rngs(config.get('seed', 0)),
   )
 
 
@@ -348,13 +335,18 @@ def _tf_logits(source_path: Path, game_path: Path):
 
 def _jax_logits(output_path: Path, game_path: Path):
   policy = saving.load_policy_from_state(saving.load_state_from_disk(str(output_path)))
+  # TF policies have no frame skip; JAX policies take a list of actions, one
+  # per skipped frame.
+  assert policy.frame_skip == 1
   frames = _frames(game_path)
-  frames = frames._replace(state_action=policy.network.encode(frames.state_action))
+  state_action = frames.state_action
+  state_action = state_action._replace(action=[state_action.action])
+  frames = frames._replace(state_action=policy.network.encode(state_action))
   frames = utils.map_nt(lambda x: jnp.expand_dims(jnp.asarray(x), 1), frames)
   outputs = policy.unroll(frames, policy.initial_state(1))
   logits = utils.map_nt(
       lambda x: np.squeeze(np.asarray(x), 1)[::_VERIFY_SUBSAMPLE],
-      outputs.distances.logits)
+      outputs.distances[0].logits)
   return policy.controller_head.controller_embedding, logits
 
 
