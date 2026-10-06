@@ -1,6 +1,7 @@
 import abc
 import copy
 import logging
+import operator
 import typing as tp
 
 import jax
@@ -291,9 +292,6 @@ class AutoRegressive(ControllerHead[ControllerType]):
   ) -> list[SampleOutputs[ControllerType]]:
     residual = self.encoder(inputs)
 
-    stacked_prev_controller_state = utils.map_nt(
-      lambda *xs: jnp.stack(xs, axis=0), *prev_controller_state)
-
     def single_action_sample(
         res_blocks: tp.Iterable[AutoRegressiveComponent],
         rngs: nnx.Rngs | nnx.RngStream,
@@ -312,13 +310,22 @@ class AutoRegressive(ControllerHead[ControllerType]):
           logits=self.embed_controller.unflatten(iter(logits)),
       ), residual
 
-    stacked_outputs, _ = nnx.scan(
-        single_action_sample,
-        in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
-        self.res_blocks[0], rngs.fork(split=len(prev_controller_state)),
-        stacked_prev_controller_state, residual)
+    # A python loop rather than nnx.scan, so that each frame's sampling is
+    # traced separately; ONNX export relies on this to give every frame its
+    # own noise. Slicing the forked rngs gives the same keys as scanning over
+    # them would.
+    rngs_graphdef, rngs_state = nnx.split(
+        rngs.fork(split=len(prev_controller_state)))
 
-    return jax_utils.unstack_pytree(stacked_outputs, axis=0)
+    outputs: list[SampleOutputs[ControllerType]] = []
+    for i, prev_controller in enumerate(prev_controller_state):
+      frame_rngs = nnx.merge(
+          rngs_graphdef, jax.tree.map(operator.itemgetter(i), rngs_state))
+      output, residual = single_action_sample(
+          self.res_blocks[0], frame_rngs, prev_controller, residual)
+      outputs.append(output)
+
+    return outputs
 
   def _distance_outputs(
       self,
