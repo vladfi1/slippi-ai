@@ -19,7 +19,7 @@ from slippi_ai.jax.jax_utils import (
     shard_map_grads, DATA_AXIS, replicate_module,
     device_put, data_sharding, ArgPacker,
     microbatch_fn, microbatch_module, microbatched_grads, grad_with_aux_tuple,
-    GraphDefCache, Opaque, packed_nnx_jit, jit_partial,
+    GraphDefCache, packed_nnx_jit, jit_partial,
 )
 
 
@@ -491,20 +491,6 @@ class GraphDefCacheTest(unittest.TestCase):
     cache.canonicalize('key', _ModuleWithStatic(2, nnx.Rngs(0)))
     with self.assertRaises(ValueError):
       cache.canonicalize('key', _ModuleWithStatic(3, nnx.Rngs(0)))
-
-
-class OpaqueTest(unittest.TestCase):
-
-  def test_hidden_from_graphdef(self):
-    self.assertEqual(Opaque(1), Opaque(2))
-    self.assertEqual(hash(Opaque(1)), hash(Opaque(2)))
-
-    class Module(nnx.Module):
-      def __init__(self, value):
-        self.linear = nnx.Linear(2, 2, rngs=nnx.Rngs(0))
-        self.value = Opaque(value)
-
-    self.assertEqual(nnx.graphdef(Module(1)), nnx.graphdef(Module(2)))
 
 
 class PackedNnxJitTest(unittest.TestCase):

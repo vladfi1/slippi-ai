@@ -392,7 +392,9 @@ class LossWeights(tp.NamedTuple):
 
   They are passed to the jitted PPO update as (dynamic) arguments rather than
   read from the (static) LearnerConfig, so that such learners share compiled
-  functions; see Learner.
+  functions. They are owned by whoever owns the Learner (e.g.
+  train_two_lib.AgentManager) and passed to Learner.ppo rather than stored on
+  the Learner; see the note in Learner.__init__.
   """
   policy_gradient: float
   actor_kl: float  # ppo.beta
@@ -554,8 +556,13 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     # GraphDef, which nnx.jit uses as a compilation cache key. Learners that
     # differ only in their loss weights should still share compiled
     # functions, so those are kept out of the config and instead passed to
-    # the jitted functions as arguments.
-    self._loss_weights = jax_utils.Opaque(LossWeights.from_config(config))
+    # the jitted functions as arguments by the Learner's owner (see `ppo`).
+    #
+    # The weights must not live on this module at all, not even hidden from
+    # the cache key: after a call, nnx.jit writes the GraphDef it traced with
+    # back onto the module, so any per-learner python attribute would be
+    # replaced by that of whichever learner the shared function was first
+    # traced with.
     self._config = _static_config(config)
     self._device = device
     self.policy = policy
@@ -981,6 +988,7 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
       trajectories: list[FrameSkipTrajectory[ControllerType]],
       initial_state: LearnerState,
       step: int,
+      weights: LossWeights,
       jit: bool = True,
   ) -> tp.Tuple[LearnerState, dict]:
     """Multi-epoch PPO update.
@@ -990,7 +998,8 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     Args:
       trajectories: List of trajectories (one per PPO batch).
       initial_state: Initial recurrent states for teacher and value function.
-      num_epochs: Number of PPO epochs. Defaults to config value.
+      step: Training step; determines the number of PPO epochs during burnin.
+      weights: This learner's loss weights; see LossWeights.
 
     Returns:
       Tuple of (new hidden state, metrics dict).
@@ -1003,7 +1012,6 @@ class Learner(nnx.Module, tp.Generic[ControllerType]):
     else:
       num_epochs = self._config.ppo.num_epochs
 
-    weights = self._loss_weights.value
     if self._config.fused:
       final_state, metrics = _jit_fused_ppo(
           self, trajectories, initial_state, weights, num_epochs)

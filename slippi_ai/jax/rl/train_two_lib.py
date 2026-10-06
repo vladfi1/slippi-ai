@@ -261,6 +261,8 @@ class AgentManager:
         device=device,
     )
     self.learner.restore_from_imitation(rl_state['state'])
+    # Owned here rather than by the Learner; see Learner.__init__.
+    self.loss_weights = learner_lib.LossWeights.from_config(learner_config)
 
   def set_opponent(self, character: melee.Character):
     char_name = self.character.name.lower()
@@ -349,6 +351,8 @@ class ExperimentManager:
     batch_size = config.actor.num_envs
 
     self._learners = {port: agent.learner for port, agent in agents.items()}
+    self._loss_weights = {
+        port: agent.loss_weights for port, agent in agents.items()}
     self._hidden_states = {
         port: learner.initial_state(batch_size)
         for port, learner in self._learners.items()
@@ -506,7 +510,8 @@ class ExperimentManager:
       futures = {
           port: self._learner_pool.submit(
               learner.ppo,
-              fs_trajectories[port], self._hidden_states[port], step=step)
+              fs_trajectories[port], self._hidden_states[port], step=step,
+              weights=self._loss_weights[port])
           for port, learner in self._learners.items()
       }
       metrics = {}

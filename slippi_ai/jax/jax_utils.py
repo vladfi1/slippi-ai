@@ -726,32 +726,6 @@ device_put = _typed_transform(jax.device_put)
 device_get = _typed_transform(jax.device_get)
 
 
-class Opaque(tp.Generic[T]):
-  """Hides a per-instance python object stored on an nnx.Module.
-
-  nnx records every non-array attribute of a Module in its GraphDef, which
-  nnx.jit uses as part of its compilation cache key, so two structurally
-  identical modules only share compiled functions if all of their static
-  attributes compare equal. Wrapping an attribute in Opaque makes it compare
-  equal to any other Opaque, so it must only hold values that never affect a
-  traced computation (e.g. values that are passed to jit as arguments).
-  """
-
-  __slots__ = ('value',)
-
-  def __init__(self, value: T):
-    self.value = value
-
-  def __eq__(self, other):
-    return isinstance(other, Opaque)
-
-  def __hash__(self):
-    return 0
-
-  def __repr__(self):
-    return f'Opaque({self.value!r})'
-
-
 def freeze(x: tp.Any) -> tp.Hashable:
   """Recursively converts a config-like structure into a hashable key."""
   if dataclasses.is_dataclass(x) and not isinstance(x, type):
