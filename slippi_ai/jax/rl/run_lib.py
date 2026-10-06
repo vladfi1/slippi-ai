@@ -208,6 +208,8 @@ class LearnerManager(tp.Generic[Action]):
   ):
     self._config = config
     self._learner = learner
+    # Owned here rather than by the Learner; see Learner.__init__.
+    self._loss_weights = learner_lib.LossWeights.from_config(config.learner)
     self._build_actor = build_actor
     self._unroll_length = config.actor.rollout_length
     self._port = port
@@ -320,7 +322,8 @@ class LearnerManager(tp.Generic[Action]):
     with self.learner_profiler:
 
       self._hidden_state, metrics = self._learner.ppo(
-          fs_trajectories, self._hidden_state, step=step)
+          fs_trajectories, self._hidden_state, step=step,
+          weights=self._loss_weights)
       self._learner.check_actor_kl(metrics)
 
     return trajectories, dict(learner=metrics, actor=actor_metrics)

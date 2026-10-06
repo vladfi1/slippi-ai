@@ -434,7 +434,8 @@ class ExperimentManager:
       metrics = {}
       for i, (agent, learner) in enumerate(zip(self._agents, self._learners)):
         self._hidden_states[i], metrics[agent.label] = learner.ppo(
-            fs_trajectories[i], self._hidden_states[i], step=step)
+            fs_trajectories[i], self._hidden_states[i], step=step,
+            weights=agent.loss_weights)
 
       # This blocks on the device, so do it after dispatching every update.
       for agent, learner in zip(self._agents, self._learners):
