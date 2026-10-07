@@ -27,6 +27,10 @@ from slippi_ai import saving
 from slippi_db.parse_libmelee import Parser
 
 def disable_gpus():
+  """Hides GPUs from tensorflow, if installed (play installs may not have it)."""
+  import importlib.util
+  if importlib.util.find_spec('tensorflow') is None:
+    return
   import tensorflow as tf
   tf.config.set_visible_devices([], 'GPU')
 
