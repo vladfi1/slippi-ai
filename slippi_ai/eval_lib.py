@@ -670,6 +670,12 @@ BATCH_AGENT_FLAGS = dict(
     ),
     onnx=dict(
         seed=ff.Integer(None, 'Random seed for ONNX agents.'),
+        providers=ff.StringList(
+            [], 'onnxruntime execution providers in priority order; '
+            'defaults to CUDA if available, else CPU.'),
+        cuda_graph=ff.Boolean(
+            True, 'Use CUDA graphs with CUDA, for models exported with '
+            'a fixed batch size.'),
     ),
 )
 

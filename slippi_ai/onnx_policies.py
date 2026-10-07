@@ -1,8 +1,8 @@
 """Runs exported policies with onnxruntime, without jax or tensorflow.
 
 See slippi_ai/jax/onnx_export.py for how policies are exported. The ONNX graph
-does a single (frame-skipped) agent step, including game encoding. Its inputs
-and outputs are named by their tree paths:
+does a single (frame-skipped) agent step, including game encoding. Its
+logical inputs and outputs are named by their tree paths:
 
   inputs: game.*, needs_reset, name, rating, temperature,
           prev_actions.<i>.*, prev_state.*, noise.<i>
@@ -11,12 +11,18 @@ and outputs are named by their tree paths:
 The encoded actions and state outputs are fed back in as prev_actions and
 prev_state on the next step. The actions are also decoded with numpy, see
 ControllerDecoder, and sent to dolphin.
+
+The graph's actual inputs and outputs pack these by dtype into one [B, n]
+tensor each, named inputs.<dtype> and outputs.<dtype>, since per-tensor
+overhead dominates small models on GPUs. The layouts are in the metadata.
 """
 
 import collections
 import json
+import math
 import typing as tp
 
+from absl import logging
 import numpy as np
 
 from slippi_ai import agents, controller_heads, policies, utils
@@ -55,6 +61,79 @@ def unflatten_with_names(template, prefix: str, flat: dict[str, np.ndarray]):
         unflatten_with_names(value, f'{prefix}.{key}', flat)
         for key, value in zip(template._fields, template)])
   return flat[prefix]
+
+
+class PackedLeaf(tp.NamedTuple):
+  name: str
+  shape: tuple[int, ...]  # Without the batch dimension.
+  offset: int  # Column offset in the packed tensor.
+  size: int  # Number of columns, the product of shape.
+
+
+# Maps packed tensor names, '<prefix>.<dtype>', to the leaves they contain.
+Layout = dict[str, list[PackedLeaf]]
+
+
+def make_layout(
+    prefix: str,
+    leaves: tp.Iterable[tuple[str, np.dtype, tuple[int, ...]]],
+) -> Layout:
+  """Packs (name, dtype, shape without batch) leaves by dtype."""
+  layout: Layout = {}
+  offsets: dict[str, int] = {}
+  for name, dtype, shape in leaves:
+    key = f'{prefix}.{np.dtype(dtype).name}'
+    leaf = PackedLeaf(
+        name, tuple(shape), offsets.get(key, 0), math.prod(shape))
+    layout.setdefault(key, []).append(leaf)
+    offsets[key] = leaf.offset + leaf.size
+  return layout
+
+
+def layout_dtype(key: str) -> np.dtype:
+  return np.dtype(key.split('.', 1)[1])
+
+
+def layout_width(leaves: list[PackedLeaf]) -> int:
+  return leaves[-1].offset + leaves[-1].size
+
+
+def layout_to_json(layout: Layout) -> dict:
+  return {key: [leaf._asdict() for leaf in leaves]
+          for key, leaves in layout.items()}
+
+
+def layout_from_json(layout: dict) -> Layout:
+  return {
+      key: [PackedLeaf(l['name'], tuple(l['shape']), l['offset'], l['size'])
+            for l in leaves]
+      for key, leaves in layout.items()
+  }
+
+
+def pack(
+    layout: Layout,
+    flat: dict[str, np.ndarray],
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+  packed = {}
+  for key, leaves in layout.items():
+    out = np.empty([batch_size, layout_width(leaves)], layout_dtype(key))
+    for leaf in leaves:
+      out[:, leaf.offset:leaf.offset + leaf.size] = flat[leaf.name].reshape(
+          batch_size, leaf.size)
+    packed[key] = out
+  return packed
+
+
+def unpack(layout: Layout, packed: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+  flat = {}
+  for key, leaves in layout.items():
+    x = packed[key]
+    for leaf in leaves:
+      flat[leaf.name] = x[:, leaf.offset:leaf.offset + leaf.size].reshape(
+          (x.shape[0],) + leaf.shape)
+  return flat
 
 
 CONTROLLER_TEMPLATE: Controller = reify_tuple_type(Controller)
@@ -135,6 +214,7 @@ def load_state_from_disk(path: str) -> dict:
       config=metadata['config'],
       name_map=metadata['name_map'],
       onnx_model=model,
+      onnx_metadata=metadata,
   )
   if metadata['agent_config'] is not None:
     state['agent_config'] = metadata['agent_config']
@@ -156,35 +236,30 @@ class OnnxControllerHead(controller_heads.ControllerHead[Controller]):
 
 
 class OnnxPolicy(policies.Policy[Controller, RecurrentState]):
+  """An exported model and its metadata. Agents create their own sessions."""
 
-  def __init__(
-      self,
-      model: bytes,
-      providers: tp.Optional[tp.Sequence[str]] = None,
-  ):
-    import onnxruntime as ort
+  def __init__(self, model: bytes, metadata: tp.Optional[dict] = None):
+    self.model = model
+    if metadata is None:
+      metadata = read_metadata(model)
 
-    if providers is None:
-      providers = ort.get_available_providers()
-
-    session_options = ort.SessionOptions()
-    # Silences warnings about unused initializers in the exported graph.
-    session_options.log_severity_level = 3
-    self.session = ort.InferenceSession(
-        model, session_options, providers=list(providers))
-
-    metadata = _session_metadata(self.session)
     policy_config = metadata['config']['policy']
     self._delay: int = policy_config['delay']
     self.frame_skip: int = policy_config.get('frame_skip', 1)
     self._controller_head = OnnxControllerHead()
     self.controller_decoder = ControllerDecoder(metadata['controller'])
 
-    self.input_names = [i.name for i in self.session.get_inputs()]
-    self.output_names = [o.name for o in self.session.get_outputs()]
+    # The fixed batch size the model was exported with, or None if dynamic.
+    self.batch_size: tp.Optional[int] = metadata['batch_size']
+    self.input_layout = layout_from_json(metadata['inputs'])
+    self.output_layout = layout_from_json(metadata['outputs'])
+    # Logical inputs: name -> (dtype, shape without batch).
+    self.input_specs = {
+        leaf.name: (layout_dtype(key), leaf.shape)
+        for key, leaves in self.input_layout.items() for leaf in leaves}
     self.noise_shapes = {
-        i.name: tuple(i.shape[1:]) for i in self.session.get_inputs()
-        if i.name.startswith('noise.')}
+        name: shape for name, (_, shape) in self.input_specs.items()
+        if name.startswith('noise.')}
 
     self._initial_state = {
         name: np.array(entry['value'], dtype=entry['dtype'])
@@ -195,7 +270,7 @@ class OnnxPolicy(policies.Policy[Controller, RecurrentState]):
     dummy_game = utils.map_nt(
         lambda dtype: np.zeros([1], dtype), reify_tuple_type(Game))
     game_names = set(flatten_with_names(dummy_game, 'game'))
-    graph_game_names = {n for n in self.input_names if n.startswith('game.')}
+    graph_game_names = {n for n in self.input_specs if n.startswith('game.')}
     if game_names != graph_game_names:
       raise ValueError(
           'ONNX game inputs do not match slippi_ai.types.Game: '
@@ -233,8 +308,100 @@ class OnnxPolicy(policies.Policy[Controller, RecurrentState]):
     raise NotImplementedError('ONNX policy parameters are part of the graph.')
 
 
-def load_policy_from_state(state: dict, **kwargs) -> OnnxPolicy:
-  return OnnxPolicy(state['onnx_model'], **kwargs)
+def load_policy_from_state(state: dict) -> OnnxPolicy:
+  return OnnxPolicy(state['onnx_model'], state.get('onnx_metadata'))
+
+
+CUDA = 'CUDAExecutionProvider'
+CPU = 'CPUExecutionProvider'
+
+
+def default_providers() -> list[str]:
+  """CUDA if available, else CPU.
+
+  Other providers must be asked for explicitly: DirectML was slower than CPU
+  in our tests, and TensorRT needs a separate install.
+  """
+  import onnxruntime as ort
+  if CUDA in ort.get_available_providers():
+    return [CUDA, CPU]
+  return [CPU]
+
+
+class SessionRunner:
+  """Runs the graph on packed numpy inputs, returning packed numpy outputs.
+
+  With CUDA and a model exported with a fixed batch size, the step is captured
+  as a CUDA graph and replayed, which removes most per-kernel launch overhead.
+  This needs fixed device buffers, so inputs and outputs are copied through
+  IOBinding instead of passed to session.run.
+  """
+
+  def __init__(
+      self,
+      policy: OnnxPolicy,
+      batch_size: int,
+      providers: tp.Optional[tp.Sequence[str]] = None,
+      cuda_graph: bool = True,
+  ):
+    import onnxruntime as ort
+
+    providers = list(providers or default_providers())
+    if CUDA in providers and hasattr(ort, 'preload_dlls'):
+      # Finds CUDA and cuDNN from the nvidia-* pip packages, if installed.
+      ort.preload_dlls()
+
+    if cuda_graph and providers[0] == CUDA and policy.batch_size != batch_size:
+      logging.warning(
+          'Not using CUDA graphs: the model has batch size %s, not %d. '
+          'Export with --batch_size=%d to use them.',
+          policy.batch_size, batch_size, batch_size)
+      cuda_graph = False
+    cuda_graph = cuda_graph and providers[0] == CUDA
+
+    provider_options = [
+        (p, {'enable_cuda_graph': '1'}) if p == CUDA and cuda_graph else p
+        for p in providers]
+
+    session_options = ort.SessionOptions()
+    # Silences warnings about unused initializers in the exported graph.
+    session_options.log_severity_level = 3
+    self.session = ort.InferenceSession(
+        policy.model, session_options, providers=provider_options)
+    self.providers = self.session.get_providers()
+    # Dead inputs may have been pruned from the graph.
+    self.input_names = [i.name for i in self.session.get_inputs()]
+    self.output_names = [o.name for o in self.session.get_outputs()]
+
+    # CUDA may have failed to load, falling back to CPU.
+    self.cuda_graph = cuda_graph and self.providers[0] == CUDA
+    if self.cuda_graph:
+      def device_buffer(key: str, leaves: list[PackedLeaf]):
+        return ort.OrtValue.ortvalue_from_shape_and_type(
+            [batch_size, layout_width(leaves)], layout_dtype(key), 'cuda', 0)
+
+      self._inputs = {
+          key: device_buffer(key, policy.input_layout[key])
+          for key in self.input_names}
+      self._outputs = {
+          key: device_buffer(key, policy.output_layout[key])
+          for key in self.output_names}
+      self._binding = self.session.io_binding()
+      for key, value in self._inputs.items():
+        self._binding.bind_ortvalue_input(key, value)
+      for key, value in self._outputs.items():
+        self._binding.bind_ortvalue_output(key, value)
+
+  def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    if not self.cuda_graph:
+      outputs = self.session.run(
+          self.output_names, {key: inputs[key] for key in self.input_names})
+      return dict(zip(self.output_names, outputs))
+
+    for key, value in self._inputs.items():
+      value.update_inplace(inputs[key])
+    self.session.run_with_iobinding(self._binding)
+    return {key: value.numpy() for key, value in self._outputs.items()}
 
 
 class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
@@ -249,7 +416,10 @@ class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
       seed: tp.Optional[int] = None,
       sample_kwargs: tp.Optional[dict] = None,
       compile: bool = True,  # Unused; ONNX graphs are always compiled.
+      providers: tp.Optional[tp.Sequence[str]] = None,
+      cuda_graph: bool = True,
   ):
+    """See SessionRunner for providers and cuda_graph."""
     del compile
     sample_kwargs = sample_kwargs or {}
     self._policy = policy
@@ -259,13 +429,13 @@ class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
     self._temperature = np.array(
         sample_kwargs.get('temperature', 1.0), dtype=np.float32)
     self._rng = np.random.default_rng(seed)
+    self.runner = SessionRunner(policy, batch_size, providers, cuda_graph)
 
     # Mirror the prev_actions inputs, which are encoded controllers.
     self._prev_actions = {
-        name: np.zeros(
-            [batch_size] + i.shape[1:], dtype=_ORT_TO_NUMPY[i.type])
-        for i in policy.session.get_inputs()
-        if (name := i.name).startswith('prev_actions.')
+        name: np.zeros((batch_size,) + shape, dtype)
+        for name, (dtype, shape) in policy.input_specs.items()
+        if name.startswith('prev_actions.')
     }
     self._hidden_state = policy.initial_state(batch_size)
 
@@ -310,15 +480,16 @@ class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
     feed['needs_reset'] = needs_reset
     feed['name'] = self._name_code
     feed['rating'] = np.full([self._batch_size], self._rating, np.float32)
-    feed['temperature'] = self._temperature
+    # Packed with the batch; the graph uses the first entry.
+    feed['temperature'] = np.full([self._batch_size], self._temperature)
     for name, shape in self._policy.noise_shapes.items():
       feed[name] = self._rng.random(
           (self._batch_size,) + shape, dtype=np.float32)
 
-    outputs = self._policy.session.run(
-        self._policy.output_names,
-        {name: feed[name] for name in self._policy.input_names})
-    outputs = dict(zip(self._policy.output_names, outputs))
+    outputs = unpack(
+        self._policy.output_layout,
+        self.runner.run(
+            pack(self._policy.input_layout, feed, self._batch_size)))
 
     for name, value in outputs.items():
       if name.startswith('actions.'):
@@ -355,16 +526,3 @@ class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
       states: list[tuple[Game[Rank1], BoolArray[Rank1]]],
   ) -> list[SampleOutputs[Controller]]:
     return [self.step(game, needs_reset) for game, needs_reset in states]
-
-
-_ORT_TO_NUMPY = {
-    'tensor(float)': np.float32,
-    'tensor(double)': np.float64,
-    'tensor(bool)': np.bool_,
-    'tensor(uint8)': np.uint8,
-    'tensor(uint16)': np.uint16,
-    'tensor(int8)': np.int8,
-    'tensor(int16)': np.int16,
-    'tensor(int32)': np.int32,
-    'tensor(int64)': np.int64,
-}

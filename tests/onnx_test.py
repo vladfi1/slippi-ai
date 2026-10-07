@@ -22,6 +22,11 @@ flags.DEFINE_list(
     f'Checkpoints in {paths.CHECKPOINTS_DIR} to test.')
 flags.DEFINE_integer('steps', 60, 'Number of frames to run.')
 flags.DEFINE_integer('reset_every', 25, 'Reset the agent every this many frames.')
+flags.DEFINE_boolean('fixed_batch', False, 'Export with a fixed batch size.')
+# float16 weights are rounded, so they only match JAX approximately; see
+# onnx_providers_test.py --reference_models for comparing them.
+flags.DEFINE_enum(
+    'weight_dtype', 'float32', ['float32', 'float16'], 'Exported weight dtype.')
 
 FLAGS = flags.FLAGS
 
@@ -53,12 +58,15 @@ def load_replay():
 
 def test_model(model: str, replay):
   state = saving.load_state_from_disk(str(paths.CHECKPOINTS_DIR / model))
-  onnx_model = onnx_export.export_state(state).SerializeToString()
+  onnx_model = onnx_export.export_state(
+      state, batch_size=BATCH_SIZE if FLAGS.fixed_batch else None,
+      weight_dtype=FLAGS.weight_dtype,
+  ).SerializeToString()
 
-  onnx_policy = onnx_policies.OnnxPolicy(
-      onnx_model, providers=['CPUExecutionProvider'])
+  onnx_policy = onnx_policies.OnnxPolicy(onnx_model)
   agent = onnx_policy.build_agent(
-      BATCH_SIZE, name_code=0, rating=1500, sample_kwargs=dict(temperature=0.8))
+      BATCH_SIZE, name_code=0, rating=1500, sample_kwargs=dict(temperature=0.8),
+      providers=[onnx_policies.CPU])
   rng = RecordingRng(seed=0)
   agent._rng = rng  # pylint: disable=protected-access
 

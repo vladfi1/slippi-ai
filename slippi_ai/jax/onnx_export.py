@@ -26,7 +26,7 @@ from flax import nnx
 from jax._src import core as jax_core
 from jax._src.interpreters import partial_eval as pe
 
-from slippi_ai import flag_utils, utils
+from slippi_ai import flag_utils, onnx_policies, utils
 from slippi_ai.agents import Platform
 from slippi_ai.data import StateAction
 from slippi_ai.types import Game, NAME_DTYPE, reify_tuple_type
@@ -234,12 +234,47 @@ def _flatten_with_names(tree) -> tuple[list[str], list[tp.Any], tp.Any]:
   return names, leaves, treedef
 
 
+def _unpack(
+    layout: onnx_policies.Layout,
+    packed: dict[str, Array],
+) -> dict[str, Array]:
+  """jnp version of onnx_policies.unpack."""
+  flat = {}
+  for key, leaves in layout.items():
+    x = packed[key]
+    parts = jnp.split(x, [leaf.offset for leaf in leaves[1:]], axis=1)
+    for leaf, part in zip(leaves, parts):
+      flat[leaf.name] = part.reshape(part.shape[:1] + leaf.shape)
+  return flat
+
+
+def _pack(
+    layout: onnx_policies.Layout,
+    flat: dict[str, Array],
+) -> dict[str, Array]:
+  """jnp version of onnx_policies.pack."""
+  return {
+      key: jnp.concatenate([
+          flat[leaf.name].reshape(flat[leaf.name].shape[:1] + (leaf.size,))
+          for leaf in leaves], axis=1)
+      for key, leaves in layout.items()
+  }
+
+
+class Exported(tp.NamedTuple):
+  model: tp.Any  # onnx.ModelProto
+  input_layout: onnx_policies.Layout
+  output_layout: onnx_policies.Layout
+
+
 def export(
     policy: policies.Policy,
     game_embedding: embed.Embedding[Game, Game],
     batch_size: tp.Optional[int] = None,
-):
+) -> Exported:
   """Exports the policy's step function to an ONNX ModelProto.
+
+  The graph's inputs and outputs are packed by dtype, see onnx_policies.
 
   Args:
     policy: The policy to export.
@@ -254,49 +289,55 @@ def export(
   step = make_step_fn(policy, game_embedding)
 
   example = dummy_step_inputs(policy, 1)
-  example = example._replace(noise=[
-      np.zeros((1,) + spec.shape, np.float32) for spec in specs])
+  example = example._replace(
+      # Packed with the batch; the graph uses the first entry.
+      temperature=np.ones([1], np.float32),
+      noise=[np.zeros((1,) + spec.shape, np.float32) for spec in specs],
+  )
+
+  def batched_step(inputs: StepInputs) -> StepOutputs:
+    return step(inputs._replace(temperature=inputs.temperature[0]))
 
   input_names, example_leaves, in_treedef = _flatten_with_names(example)
+  input_layout = onnx_policies.make_layout('inputs', [
+      (name, x.dtype, x.shape[1:])
+      for name, x in zip(input_names, example_leaves)])
 
-  output_names, _, out_treedef = _flatten_with_names(
-      jax.eval_shape(step, example))
+  output_names, output_leaves, out_treedef = _flatten_with_names(
+      jax.eval_shape(batched_step, example))
+  output_layout = onnx_policies.make_layout('outputs', [
+      (name, x.dtype, x.shape[1:])
+      for name, x in zip(output_names, output_leaves)])
 
   batch_dim = batch_size if batch_size is not None else 'B'
-
-  def input_spec(name: str, x: np.ndarray):
-    if name == 'temperature':
-      return jax.ShapeDtypeStruct((), x.dtype)
-    return jax.ShapeDtypeStruct((batch_dim,) + x.shape[1:], x.dtype)
-
   input_specs = [
-      input_spec(n, x) for n, x in zip(input_names, example_leaves)]
+      jax.ShapeDtypeStruct(
+          (batch_dim, onnx_policies.layout_width(leaves)),
+          onnx_policies.layout_dtype(key))
+      for key, leaves in input_layout.items()]
 
-  def flat_step(*leaves):
-    inputs = jax.tree.unflatten(in_treedef, leaves)
-    outputs = out_treedef.flatten_up_to(step(inputs))
-    # ONNX graph outputs need distinct values, so copy any repeats.
-    seen = set()
-    for i, x in enumerate(outputs):
-      if id(x) in seen:
-        outputs[i] = jnp.copy(x)
-      seen.add(id(outputs[i]))
-    return tuple(outputs)
+  def packed_step(*packed):
+    flat = _unpack(input_layout, dict(zip(input_layout, packed)))
+    inputs = jax.tree.unflatten(in_treedef, [flat[n] for n in input_names])
+    outputs = out_treedef.flatten_up_to(batched_step(inputs))
+    packed_outputs = _pack(output_layout, dict(zip(output_names, outputs)))
+    return tuple(packed_outputs[key] for key in output_layout)
 
-  def dce_flat_step(*leaves):
+  def dce_packed_step(*packed):
     # The policy still creates and splits RNG keys, which jax2onnx can't
     # convert. They are unused since sampling reads the noise inputs, so
     # dead-code elimination removes them.
-    closed = jax.make_jaxpr(flat_step)(*leaves)
+    closed = jax.make_jaxpr(packed_step)(*packed)
     jaxpr, used_inputs = pe.dce_jaxpr(
         closed.jaxpr, [True] * len(closed.jaxpr.outvars))
-    used_leaves = [x for x, used in zip(leaves, used_inputs) if used]
-    return tuple(jax_core.eval_jaxpr(jaxpr, closed.consts, *used_leaves))
+    used_packed = [x for x, used in zip(packed, used_inputs) if used]
+    return tuple(jax_core.eval_jaxpr(jaxpr, closed.consts, *used_packed))
 
-  return jax2onnx.to_onnx(
-      dce_flat_step, input_specs,
-      input_names=input_names, output_names=output_names,
+  model = jax2onnx.to_onnx(
+      dce_packed_step, input_specs,
+      input_names=list(input_layout), output_names=list(output_layout),
       model_name='slippi_ai_policy')
+  return Exported(model, input_layout, output_layout)
 
 
 def _to_json_safe(x):
@@ -323,10 +364,55 @@ def _initial_state_metadata(policy: policies.Policy) -> dict[str, dict]:
   }
 
 
-def export_state(state: dict, batch_size: tp.Optional[int] = None):
-  """Exports a JAX checkpoint state to an ONNX ModelProto with metadata."""
+def store_weights_as_float16(model, min_size: int = 1024):
+  """Stores large float32 initializers as float16, cast back in the graph.
+
+  onnxruntime constant-folds the casts when creating a session, so the model
+  still computes in float32; only the weights are rounded. This halves the
+  file size without float16 compute, which was no faster at batch size 1 and
+  changed sampled actions noticeably more.
+  """
+  import onnx
+  from onnx import numpy_helper
+
+  graph = model.graph
+  initializers = []
+  casts = []
+  for init in graph.initializer:
+    if (init.data_type != onnx.TensorProto.FLOAT
+        or np.prod(init.dims, dtype=np.int64) < min_size):
+      initializers.append(init)
+      continue
+    fp16 = numpy_helper.from_array(
+        numpy_helper.to_array(init).astype(np.float16), init.name + '_fp16')
+    initializers.append(fp16)
+    casts.append(onnx.helper.make_node(
+        'Cast', [fp16.name], [init.name], to=onnx.TensorProto.FLOAT,
+        name=init.name + '_cast'))
+
+  del graph.initializer[:]
+  graph.initializer.extend(initializers)
+  # Casts first, so the nodes stay topologically sorted.
+  nodes = casts + list(graph.node)
+  del graph.node[:]
+  graph.node.extend(nodes)
+  return model
+
+
+def export_state(
+    state: dict,
+    batch_size: tp.Optional[int] = None,
+    weight_dtype: str = 'float16',
+):
+  """Exports a JAX checkpoint state to an ONNX ModelProto with metadata.
+
+  Args:
+    state: The checkpoint state.
+    batch_size: Fixed batch size, needed for CUDA graphs; dynamic if None.
+    weight_dtype: Storage dtype of the weights. The model always computes in
+      float32; float16 halves the file size, see store_weights_as_float16.
+  """
   from slippi_ai import eval_lib, saving
-  from slippi_ai import onnx_policies
 
   config = saving.upgrade_config(state['config'])
   if saving.get_platform(config) is not Platform.JAX:
@@ -339,7 +425,13 @@ def export_state(state: dict, batch_size: tp.Optional[int] = None):
   embed_config = embed_config_from_config(config)
   game_embedding = embed_config.make_game_embedding()
 
-  model = export(policy, game_embedding, batch_size=batch_size)
+  model, input_layout, output_layout = export(
+      policy, game_embedding, batch_size=batch_size)
+
+  if weight_dtype == 'float16':
+    model = store_weights_as_float16(model)
+  elif weight_dtype != 'float32':
+    raise ValueError(f'Unsupported weight_dtype {weight_dtype}.')
 
   onnx_config = _to_json_safe(config)
   onnx_config[saving.PLATFORM_KEY] = Platform.ONNX.value
@@ -353,6 +445,10 @@ def export_state(state: dict, batch_size: tp.Optional[int] = None):
       initial_state=_initial_state_metadata(policy),
       # For decoding the graph's actions, see onnx_policies.ControllerDecoder.
       controller=_to_json_safe(dataclasses.asdict(embed_config.controller)),
+      batch_size=batch_size,
+      weight_dtype=weight_dtype,
+      inputs=onnx_policies.layout_to_json(input_layout),
+      outputs=onnx_policies.layout_to_json(output_layout),
   )
   entry = model.metadata_props.add()
   entry.key = onnx_policies.METADATA_KEY
