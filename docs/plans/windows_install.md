@@ -8,7 +8,8 @@ Step 3, GPU inference, is mostly done (2026-10-07, on `onnx-agent`): CUDA
 with CUDA graphs, packed graph I/O and float16 weight storage, benchmarked
 in the real loop with Dolphin. What's left is measuring low-end machines for
 a minimum-spec statement. Step 4, the session library entry point
-(`slippi_ai/session.py`), is done (2026-10-07).
+(`slippi_ai/session.py`), is done (2026-10-07). Step 5, model downloads, is
+deferred (client on branch `model-downloads`).
 
 ## Goal
 
@@ -196,7 +197,12 @@ within 0.2 s. It can't interrupt a hung Dolphin, so the GUI should still run
 the session in a child process (kill as a fallback), which also keeps
 Dolphin/libmelee crashes from taking down the UI.
 
-## 5. Model distribution
+## 5. Model distribution (deferred)
+
+Deferred (2026-10-07): for now users download model files themselves. A
+download client (`--p*.ai.model <name>`, a sha256-pinned manifest shipped with
+the package, caching under `%LOCALAPPDATA%\slippi-ai\models`) is implemented
+and tested on branch `model-downloads`, waiting on hosting.
 
 - Host exported `.onnx` files (fp32 and/or fp16) on the Hugging Face Hub, or
   GitHub Releases, instead of the Google Drive folder.
