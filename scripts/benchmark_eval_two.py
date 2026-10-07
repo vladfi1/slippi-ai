@@ -1,6 +1,6 @@
 """Benchmarks the eval_two loop: whether agents keep up with Dolphin at 1x.
 
-Like scripts/eval_two.py, but stops after a fixed number of game frames and
+Runs the scripts/eval_two.py session, but stops after a fixed number of game frames and
 prints a JSON line with the achieved frame rate, the wall time between frames,
 and the time the main loop spends in agent.step. Dolphin waits for agent
 inputs (blocking_input), so agents that can't keep up lower the frame rate.
@@ -20,9 +20,7 @@ ONNX agents can be compared on CPU and GPU with --p2.ai.onnx.providers, and
 with and without --p2.ai.async_inference.
 """
 
-import contextlib
 import json
-import os
 import time
 
 from absl import app
@@ -30,27 +28,14 @@ from absl import flags
 import fancyflags as ff
 import numpy as np
 
-from slippi_ai import eval_lib, flag_utils, utils
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai import flag_utils, session
 
-PORTS = (1, 2)
-
-player_flags = utils.map_nt(lambda x: x, eval_lib.PLAYER_FLAGS)
-player_flags['ai']['async_inference'] = ff.Boolean(True)
-
-PLAYERS = {p: ff.DEFINE_dict(f"p{p}", **player_flags) for p in PORTS}
-
-dolphin_config = dolphin_lib.DolphinConfig(
-    headless=False,
-    infinite_time=False,
-    online_delay=2,
-    emulation_speed=1,
-    path=os.environ.get('DOLPHIN_PATH'),
-    iso=os.environ.get('ISO_PATH'),
-    instant_match_restart=False,
-)
-DOLPHIN = ff.DEFINE_dict(
-    'dolphin', **flag_utils.get_flags_from_default(dolphin_config))
+PLAYERS = {
+    p: ff.DEFINE_dict(f"p{p}", **session.player_flags())
+    for p in session.PORTS
+}
+DOLPHIN = ff.DEFINE_dict('dolphin', **session.dolphin_flags())
 
 WARMUP_FRAMES = flags.DEFINE_integer(
     'warmup_frames', 60, 'Game frames to skip before measuring.')
@@ -71,43 +56,12 @@ def summarize_ms(times: list[float]) -> dict[str, float]:
 
 
 def main(_):
-  with contextlib.ExitStack() as exit_stack:
-    _main(exit_stack)
-
-
-def _main(exit_stack: contextlib.ExitStack):
-  eval_lib.disable_gpus()
-
-  players = {
-      port: eval_lib.get_player(**player.value)
-      for port, player in PLAYERS.items()
-  }
-
-  agents: list[eval_lib.Agent] = []
-
-  for port, opponent_port in zip(PORTS, reversed(PORTS)):
-    player = players[port]
-    if isinstance(player, dolphin_lib.AI):
-      agent = eval_lib.build_agent(
-          port=port,
-          opponent_port=opponent_port,
-          console_delay=DOLPHIN.value['online_delay'],
-          **PLAYERS[port].value['ai'],
-      )
-      agent.start()
-      agents.append(agent)
-      exit_stack.callback(agent.stop)
-
-      eval_lib.update_character(player, agent.config)
-
-  dolphin = dolphin_lib.Dolphin(
-      players=players,
-      **dolphin_lib.DolphinConfig.kwargs_from_flags(DOLPHIN.value),
+  config = session.SessionConfig(
+      players={port: player.value for port, player in PLAYERS.items()},
+      dolphin=flag_utils.dataclass_from_dict(
+          dolphin_lib.DolphinConfig, DOLPHIN.value),
+      num_games=1,
   )
-  exit_stack.callback(dolphin.stop)
-
-  for agent in agents:
-    agent.set_controller(dolphin.controllers[agent._port])
 
   start_frame = WARMUP_FRAMES.value
   end_frame = start_frame + FRAMES.value
@@ -115,25 +69,20 @@ def _main(exit_stack: contextlib.ExitStack):
   step_times = []
   last_time = None
 
-  for gamestate in dolphin.iter_gamestates(skip_menu_frames=False):
-    if dolphin_lib.is_menu_state(gamestate):
-      if frame_intervals:
-        break  # The game ended early.
-      continue
+  with session.Session(config) as sess:
+    for frame in sess.frames():
+      # Measured from when the frame arrived, before the agents stepped.
+      now = time.perf_counter() - frame.step_time
+      measuring = start_frame < frame.gamestate.frame <= end_frame
+      if measuring and last_time is not None:
+        frame_intervals.append(now - last_time)
+      last_time = now
 
-    now = time.perf_counter()
-    measuring = start_frame < gamestate.frame <= end_frame
-    if measuring and last_time is not None:
-      frame_intervals.append(now - last_time)
-    last_time = now
+      if measuring:
+        step_times.append(frame.step_time)
 
-    for agent in agents:
-      agent.step(gamestate)
-    if measuring:
-      step_times.append(time.perf_counter() - now)
-
-    if gamestate.frame >= end_frame:
-      break
+      if frame.gamestate.frame >= end_frame:
+        break
 
   if len(frame_intervals) < FRAMES.value:
     raise RuntimeError(

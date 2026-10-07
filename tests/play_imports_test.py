@@ -5,7 +5,7 @@ the play path doesn't depend on training-only packages.
 """
 
 import sys
-from slippi_ai import eval_lib, dolphin, saving
+from slippi_ai import eval_lib, dolphin, saving, session
 
 TRAINING_ONLY_MODULES = [
     'jax',

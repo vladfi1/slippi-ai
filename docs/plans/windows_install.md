@@ -7,7 +7,8 @@ jax-free agent (branch `onnx-agent`, stacked on #54). A converted TF model
 Step 3, GPU inference, is mostly done (2026-10-07, on `onnx-agent`): CUDA
 with CUDA graphs, packed graph I/O and float16 weight storage, benchmarked
 in the real loop with Dolphin. What's left is measuring low-end machines for
-a minimum-spec statement.
+a minimum-spec statement. Step 4, the session library entry point
+(`slippi_ai/session.py`), is done (2026-10-07).
 
 ## Goal
 
@@ -176,16 +177,24 @@ Remaining:
 - If low-end machines still can't keep up, consider a smaller "lite" model;
   phillip's strength is limited by its input delay more than its size.
 
-## 4. Library entry point for a session
+## 4. Library entry point for a session (done)
 
-(`scripts/benchmark_eval_two.py` duplicates `eval_two`'s setup; it should
-become a thin wrapper too.)
+`slippi_ai/session.py` holds the `eval_two` loop:
 
-Refactor `scripts/eval_two.py` into something like
-`run_session(config: SessionConfig, stop_event) -> None` in a module, with
-the absl script and the future GUI as thin wrappers. The GUI should run the
-session in a child process so that Stop is reliable and Dolphin/libmelee
-crashes don't take down the UI.
+- `SessionConfig(players, dolphin, num_games)`: per-port player flag values
+  (`session.player_flags()`) and a `DolphinConfig`
+  (`session.default_dolphin_config()`, 1x speed with graphics).
+- `Session(config)` starts the agents and Dolphin; `session.frames(stop_event)`
+  steps the agents on each in-game frame and yields it with the step time;
+  `close()` stops everything.
+- `run_session(config, stop_event)` plays with the slow-step warnings.
+
+`scripts/eval_two.py` and `scripts/benchmark_eval_two.py` are thin wrappers.
+The stop event (`threading.Event` or `multiprocessing.Event`) is checked
+once per frame; setting it from another thread stopped a session and Dolphin
+within 0.2 s. It can't interrupt a hung Dolphin, so the GUI should still run
+the session in a child process (kill as a fallback), which also keeps
+Dolphin/libmelee crashes from taking down the UI.
 
 ## 5. Model distribution
 
