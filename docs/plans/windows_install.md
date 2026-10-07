@@ -5,8 +5,9 @@ Windows CI (PR #54, branch `windows-play-install`) and ONNX export with a
 jax-free agent (branch `onnx-agent`, stacked on #54). A converted TF model
 (`medium-v1`) has been played locally as ONNX in Slippi Dolphin on Windows.
 Step 3, GPU inference, is mostly done (2026-10-07, on `onnx-agent`): CUDA
-with CUDA graphs, packed graph I/O and float16 weight storage. What's left
-is benchmarking the real loop with Dolphin.
+with CUDA graphs, packed graph I/O and float16 weight storage, benchmarked
+in the real loop with Dolphin. What's left is measuring low-end machines for
+a minimum-spec statement.
 
 ## Goal
 
@@ -80,7 +81,12 @@ python -m venv .venv\ort-cuda
 .venv\ort-cuda\Scripts\python tests\onnx_providers_test.py --models deployed_models\<name>.onnx
 
 .venv\play\Scripts\python scripts\eval_two.py --p1.type cpu --p2.ai.path deployed_models\<name>.onnx --p2.character fox
+.venv\play\Scripts\python scripts\benchmark_eval_two.py --p1.type cpu --p2.ai.path deployed_models\<name>.onnx --p2.character fox
 ```
+
+Slippi Dolphin is at `%APPDATA%\Slippi Launcher\netplay` and the ISO path is
+`isoPath` in `%APPDATA%\Slippi Launcher\Settings`; pass them with
+`--dolphin.path`/`--dolphin.iso` or set `DOLPHIN_PATH`/`ISO_PATH`.
 
 Use Python 3.12/3.13 venvs: on Windows a bare `python` may be Python 3.14,
 which needs MSVC for pyenet (see below). Installing the export env needs
@@ -132,12 +138,38 @@ Tried and rejected:
   vs float32 given identical noise. jax2onnx's float16 export produced invalid
   graphs, and onnxconverter-common's converter mistypes some Casts.
 
+**Real loop.** `scripts/benchmark_eval_two.py` runs the `eval_two` loop
+(Dolphin at 1x with blocking input, in-game CPU vs the agent) for a fixed
+number of frames and reports the achieved fps and per-frame times. On the
+same machine, 1800 frames per run:
+
+| model | inference | async | fps | slow frames | agent time/frame (mean / p99) |
+|---|---|---|---|---|---|
+| medium-v1 | CPU | on | 59.94 | 0 | 1.2 / 1.8 ms |
+| medium-v1 | CPU | off | 59.94 | 0 | 3.4 / 4.1 ms |
+| medium-v1 | CUDA graph | on | 59.94 | 0 | 1.9 / 4.7 ms |
+| medium-v1 | CUDA graph | off | 59.94 | 0 | 9.3 / 11.8 ms |
+| diamond | CPU | on | 59.94 | 0 | 1.2 / 1.8 ms |
+| diamond | CPU | off | 59.94 | 0 | 12.8 / 14.6 ms |
+| diamond | CUDA graph | on | 59.94 | 0 | 1.8 / 3.6 ms |
+| diamond | CUDA graph | off | 59.94 | 0 | 7.3 / 14.9 ms |
+
+- Everything keeps up on this machine. Async inference (the `eval_two`
+  default) keeps the agent's main-loop time at 1-2 ms, since inference
+  overlaps with Dolphin within the online delay.
+- CUDA steps are slower in the loop than back to back (2.5 -> 7-9 ms): paced
+  at 60 Hz without Dolphin they already take 5.5-6.6 ms (p99 ~13 ms), likely
+  because the GPU downclocks between frames; Dolphin's rendering adds the
+  rest. CPU inference is barely affected by pacing.
+
 Remaining:
 
-- **Benchmark the real loop**, not just inference: `eval_two` with Dolphin
-  running, with and without `--p2.ai.async_inference`, on CPU and GPU. The
-  goal is a minimum-spec statement for the README (e.g. "CPU-only works on
-  4+ cores; otherwise use a GPU").
+- **Minimum spec.** Run `benchmark_eval_two.py` on low-end machines (e.g. the
+  2-core laptop, a 4-core CPU without GPU) to write the README statement
+  (e.g. "CPU-only works on 4+ cores; otherwise use a GPU").
+- GPU latency when paced: try NVIDIA's "prefer maximum performance" power
+  setting, and check whether the async agent hides the p99 spikes on weaker
+  CPUs.
 - Keep the recurrent state on the device between steps (would save the
   remaining copies; needs ping-pong buffers or a device-side copy, since CUDA
   graphs need fixed addresses).
@@ -145,6 +177,9 @@ Remaining:
   phillip's strength is limited by its input delay more than its size.
 
 ## 4. Library entry point for a session
+
+(`scripts/benchmark_eval_two.py` duplicates `eval_two`'s setup; it should
+become a thin wrapper too.)
 
 Refactor `scripts/eval_two.py` into something like
 `run_session(config: SessionConfig, stop_event) -> None` in a module, with
