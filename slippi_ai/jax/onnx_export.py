@@ -2,8 +2,9 @@
 
 The exported graph performs one agent step: it takes the raw game state, the
 previous (encoded) controller, the recurrent state and per-component uniform
-noise, and returns the sampled controller (both encoded, for feeding back in,
-and decoded, for sending to dolphin) along with the new recurrent state.
+noise, and returns the sampled (encoded) controller along with the new
+recurrent state. Controllers are decoded outside the graph, in numpy, using
+the controller config in the model metadata.
 
 Sampling noise is an explicit input rather than an RNG key so that the graph
 uses only standard ONNX ops. During tracing, `jax.random.categorical` and
@@ -28,7 +29,7 @@ from jax._src.interpreters import partial_eval as pe
 from slippi_ai import flag_utils, utils
 from slippi_ai.agents import Platform
 from slippi_ai.data import StateAction
-from slippi_ai.types import Controller, Game, NAME_DTYPE, reify_tuple_type
+from slippi_ai.types import Game, NAME_DTYPE, reify_tuple_type
 from slippi_ai.jax import embed, jax_utils, policies
 from slippi_ai.jax import saving as jax_saving
 
@@ -127,11 +128,13 @@ def encode_game(game_embedding: embed.Embedding[Game, Game], game: Game) -> Game
   return game_embedding.map(_encode_leaf, game)
 
 
-def game_embedding_from_config(config: dict) -> embed.Embedding[Game, Game]:
+def embed_config_from_config(config: dict) -> embed.EmbedConfig:
   config = jax_saving.upgrade_config(config)
-  embed_config = flag_utils.dataclass_from_dict(
-      embed.EmbedConfig, config['embed'])
-  return embed_config.make_game_embedding()
+  return flag_utils.dataclass_from_dict(embed.EmbedConfig, config['embed'])
+
+
+def game_embedding_from_config(config: dict) -> embed.Embedding[Game, Game]:
+  return embed_config_from_config(config).make_game_embedding()
 
 
 class StepInputs(tp.NamedTuple):
@@ -148,8 +151,6 @@ class StepInputs(tp.NamedTuple):
 class StepOutputs(tp.NamedTuple):
   # Encoded controllers, one per frame_skip, fed back in as prev_actions.
   actions: list
-  # Decoded controllers, ready to send to dolphin.
-  controllers: list[Controller]
   state: tp.Any  # RecurrentState
 
 
@@ -186,9 +187,7 @@ def make_step_fn(
           rngs, state_action, inputs.prev_state, inputs.needs_reset,
           temperature=inputs.temperature)
     actions = [so.controller_state for so in sample_outputs]
-    controllers = [
-        policy.controller_head.decode_controller(a) for a in actions]
-    return StepOutputs(actions, controllers, new_state)
+    return StepOutputs(actions, new_state)
 
   return step
 
@@ -275,8 +274,7 @@ def export(
   def flat_step(*leaves):
     inputs = jax.tree.unflatten(in_treedef, leaves)
     outputs = out_treedef.flatten_up_to(step(inputs))
-    # Some outputs are the same value, e.g. buttons are decoded as-is. ONNX
-    # graph outputs need distinct values, so copy the repeats.
+    # ONNX graph outputs need distinct values, so copy any repeats.
     seen = set()
     for i, x in enumerate(outputs):
       if id(x) in seen:
@@ -337,7 +335,8 @@ def export_state(state: dict, batch_size: tp.Optional[int] = None):
 
   policy = saving.load_policy_from_state(state)
   jax_utils.cast_module_state_to_dtype(policy, jnp.float32)
-  game_embedding = game_embedding_from_config(config)
+  embed_config = embed_config_from_config(config)
+  game_embedding = embed_config.make_game_embedding()
 
   model = export(policy, game_embedding, batch_size=batch_size)
 
@@ -351,6 +350,8 @@ def export_state(state: dict, batch_size: tp.Optional[int] = None):
       name_map=state['name_map'],
       agent_config=_to_json_safe(eval_lib.get_agent_config(state)),
       initial_state=_initial_state_metadata(policy),
+      # For decoding the graph's actions, see onnx_policies.ControllerDecoder.
+      controller=_to_json_safe(dataclasses.asdict(embed_config.controller)),
   )
   entry = model.metadata_props.add()
   entry.key = onnx_policies.METADATA_KEY

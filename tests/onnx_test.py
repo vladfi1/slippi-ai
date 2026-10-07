@@ -2,7 +2,7 @@
 
 Exports each checkpoint, runs the OnnxAgent on replay frames, and replays the
 same sampling noise through the JAX step function, checking that the sampled
-controllers and recurrent states match.
+(decoded) controllers and recurrent states match.
 
 Requires the onnx-export extra: pip install .[onnx-export]
 """
@@ -98,7 +98,10 @@ def test_model(model: str, replay):
         game=game, needs_reset=needs_reset.copy(), noise=noise))
     needs_reset[:] = False
     inputs = inputs._replace(prev_actions=outputs.actions, prev_state=outputs.state)
-    jax_controllers.extend(outputs.controllers)
+    # Checks the OnnxAgent's numpy decoding against the policy's.
+    jax_controllers.extend(
+        policy.controller_head.decode_controller(jax.tree.map(np.asarray, a))
+        for a in outputs.actions)
     jax_states.append(outputs.state)
 
   # Compare.

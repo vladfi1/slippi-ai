@@ -1,15 +1,16 @@
 """Runs exported policies with onnxruntime, without jax or tensorflow.
 
 See slippi_ai/jax/onnx_export.py for how policies are exported. The ONNX graph
-does a single (frame-skipped) agent step, including game encoding and
-controller decoding. Its inputs and outputs are named by their tree paths:
+does a single (frame-skipped) agent step, including game encoding. Its inputs
+and outputs are named by their tree paths:
 
   inputs: game.*, needs_reset, name, rating, temperature,
           prev_actions.<i>.*, prev_state.*, noise.<i>
-  outputs: actions.<i>.*, controllers.<i>.*, state.*
+  outputs: actions.<i>.*, state.*
 
 The encoded actions and state outputs are fed back in as prev_actions and
-prev_state on the next step, and the decoded controllers are sent to dolphin.
+prev_state on the next step. The actions are also decoded with numpy, see
+ControllerDecoder, and sent to dolphin.
 """
 
 import collections
@@ -19,6 +20,7 @@ import typing as tp
 import numpy as np
 
 from slippi_ai import agents, controller_heads, policies, utils
+from slippi_ai.action_space import custom_v1
 from slippi_ai.agents import Platform
 from slippi_ai.controller_heads import SampleOutputs
 from slippi_ai.types import (
@@ -58,6 +60,54 @@ def unflatten_with_names(template, prefix: str, flat: dict[str, np.ndarray]):
 CONTROLLER_TEMPLATE: Controller = reify_tuple_type(Controller)
 
 
+class ControllerDecoder:
+  """numpy version of the controller embedding's decode, without jax.
+
+  Built from the policy's embed controller config (jax.embed.ControllerConfig
+  as a dict), which the exporter stores in the model metadata.
+  """
+
+  def __init__(self, config: dict):
+    self.type = config['type']
+    if self.type == 'default':
+      self._axis_spacing: int = config['default']['axis_spacing']
+      self._shoulder_spacing: int = config['default']['shoulder_spacing']
+      # Encoded controllers have the same structure as decoded ones.
+      self.template = CONTROLLER_TEMPLATE
+    elif self.type == 'custom_v1':
+      cv1_config = config['custom_v1']
+      self._bucketer = custom_v1.Config(
+          c_stick_config=custom_v1.PolarStickConfig(
+              **cv1_config['c_stick_config']),
+          main_stick_config=custom_v1.PolarStickConfig(
+              **cv1_config['main_stick_config']),
+      ).create_bucketer()
+      self.template = custom_v1.ControllerV1(buttons=None, main_stick=None)
+    else:
+      raise ValueError(f'Unknown controller type {self.type}.')
+
+  def _decode_default(self, action: Controller) -> Controller:
+    # Matches jax.embed.get_controller_embedding.
+    def decode_discrete(x: np.ndarray, n: int) -> np.ndarray:
+      return (x / n).astype(np.float32)
+
+    def decode_axis(x: np.ndarray) -> np.ndarray:
+      if self._axis_spacing:
+        return decode_discrete(x, self._axis_spacing)
+      return x
+
+    return action._replace(
+        main_stick=utils.map_nt(decode_axis, action.main_stick),
+        c_stick=utils.map_nt(decode_axis, action.c_stick),
+        shoulder=decode_discrete(action.shoulder, self._shoulder_spacing),
+    )
+
+  def decode(self, action) -> Controller:
+    if self.type == 'default':
+      return self._decode_default(action)
+    return self._bucketer.decode(action)
+
+
 def _session_metadata(session) -> dict:
   custom_metadata = session.get_modelmeta().custom_metadata_map
   if METADATA_KEY not in custom_metadata:
@@ -92,7 +142,7 @@ def load_state_from_disk(path: str) -> dict:
 
 
 class OnnxControllerHead(controller_heads.ControllerHead[Controller]):
-  """The graph decodes controllers itself, so this is mostly a no-op."""
+  """The agent decodes controllers itself, so this is mostly a no-op."""
 
   def dummy_controller(self, shape: tp.Sequence[int]) -> Controller:
     return utils.map_nt(lambda dtype: np.zeros(shape, dtype), CONTROLLER_TEMPLATE)
@@ -128,6 +178,7 @@ class OnnxPolicy(policies.Policy[Controller, RecurrentState]):
     self._delay: int = policy_config['delay']
     self.frame_skip: int = policy_config.get('frame_skip', 1)
     self._controller_head = OnnxControllerHead()
+    self.controller_decoder = ControllerDecoder(metadata['controller'])
 
     self.input_names = [i.name for i in self.session.get_inputs()]
     self.output_names = [o.name for o in self.session.get_outputs()]
@@ -275,10 +326,11 @@ class OnnxAgent(agents.BasicAgent[Controller, RecurrentState]):
       elif name.startswith('state.'):
         self._hidden_state['prev_' + name] = value
 
+    decoder = self._policy.controller_decoder
     return [
         SampleOutputs(
-            controller_state=unflatten_with_names(
-                CONTROLLER_TEMPLATE, f'controllers.{i}', outputs),
+            controller_state=decoder.decode(unflatten_with_names(
+                decoder.template, f'actions.{i}', outputs)),
             logits=())
         for i in range(self._policy.frame_skip)
     ]

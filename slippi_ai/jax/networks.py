@@ -1079,7 +1079,9 @@ class MultiEmbed(nnx.Module):
     assert len(inputs) == len(self._sizes)
 
     index = jnp.zeros_like(inputs[0])
-    valid = jnp.full(index.shape, True)
+    # Not jnp.full(index.shape, ...), which jax2onnx can't export with a
+    # dynamic batch size.
+    valid = jnp.ones_like(index, dtype=bool)
     for size, inp in zip(self._sizes, inputs):
       valid &= (inp >= 0) & (inp < size)
       index *= size

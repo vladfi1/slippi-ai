@@ -27,7 +27,8 @@ TRAINING_ONLY_MODULES = ['wandb', 'pandas', 'peppi_py', 'py7zr', 'fsspec']
 
 def run_agent(path: str, steps: int):
   state = saving.load_state_from_disk(path)
-  name = next(iter(state['name_map']))
+  # Models without a name map accept any name.
+  name = next(iter(state['name_map']), 'any')
   agent = eval_lib.build_delayed_agent(
       state, console_delay=0, name=name, batch_size=1)
   game = utils.map_nt(

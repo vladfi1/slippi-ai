@@ -33,7 +33,9 @@ testing on real Windows machines with Dolphin and controllers.
 
 - `scripts/export_onnx.py` (`slippi_ai/jax/onnx_export.py`) exports a JAX
   checkpoint to one `.onnx` file doing a single agent step, including game
-  encoding and controller decoding. Sampling noise is a graph input:
+  encoding. The graph outputs encoded actions, which the agent decodes with
+  numpy (`onnx_policies.ControllerDecoder`, from the controller config in the
+  metadata), so `custom_v1` models work too. Sampling noise is a graph input:
   `jax.random.categorical`/`bernoulli` are replaced during tracing by
   `argmax(logits + gumbel(u))` and `u < p`. Config, name map, agent config and
   initial state are JSON in the model metadata. Batch size is dynamic and
