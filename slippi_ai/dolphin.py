@@ -281,7 +281,9 @@ class Dolphin:
     self.console.stop()
 
   def __del__(self):
-    self.stop()
+    # __init__ may have failed before starting the console.
+    if hasattr(self, 'controllers'):
+      self.stop()
 
   def multi_step(self, n: int):
     for _ in range(n):

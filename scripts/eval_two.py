@@ -22,6 +22,8 @@ python scripts/eval_two.py \
 
 """
 
+import multiprocessing
+
 from absl import app
 from absl import flags
 import fancyflags as ff
@@ -49,4 +51,6 @@ def main(_):
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
+  # libmelee's slippstream starts a worker process; needed in frozen builds.
+  multiprocessing.freeze_support()
   app.run(main)

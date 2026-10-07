@@ -1,0 +1,53 @@
+name: windows bundle
+
+# Builds the PyInstaller one-dir bundle of the play CLI (packaging/slippi_ai.spec)
+# and checks that the frozen executables start.
+
+on: [push, pull_request]
+
+jobs:
+  bundle:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+
+    - name: Install
+      run: pip install .[onnx] pyinstaller
+
+    - name: Build
+      run: pyinstaller --noconfirm packaging/slippi_ai.spec
+
+    - name: Parse flags
+      shell: bash
+      run: |
+        dist/slippi-ai/eval_two.exe --only_check_args
+        dist/slippi-ai/benchmark_eval_two.exe --only_check_args
+
+    # Installed after the build so they can't end up in the bundle.
+    - name: Export ONNX model
+      run: |
+        pip install .[onnx-export]
+        python scripts/export_onnx.py --checkpoint slippi_ai/data/checkpoints/jax_demo --output jax_demo.onnx --batch_size 1
+
+    # Agents are built before Dolphin starts, so failing to find Dolphin means
+    # the frozen onnxruntime loaded the model.
+    - name: Load ONNX model
+      shell: bash
+      env:
+        DOLPHIN_PATH: C:/nonexistent
+      run: |
+        dist/slippi-ai/eval_two.exe --p1.type=cpu --p2.ai.path=jax_demo.onnx "--p2.ai.name=Diamond Player" --dolphin.online_delay=0 > out.txt 2>&1 || true
+        cat out.txt
+        grep -q "Unknown path" out.txt
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: slippi-ai-windows
+        path: dist/slippi-ai

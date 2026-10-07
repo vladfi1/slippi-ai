@@ -390,7 +390,9 @@ class AsyncDelayedAgent(tp.Generic[ControllerType, RecurrentState]):
       return self.dummy_sample_outputs
 
   def __del__(self):
-    self.stop()
+    # __init__ may have failed before setting up the worker.
+    if hasattr(self, '_worker_thread'):
+      self.stop()
 
   def step(
       self,

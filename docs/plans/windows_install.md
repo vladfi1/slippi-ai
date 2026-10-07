@@ -215,9 +215,21 @@ and tested on branch `model-downloads`, waiting on hosting.
 
 ## 6. Packaging and GUI
 
-- **PyInstaller first, for the CLI**, built in a Windows GitHub Actions job,
-  to solve bundling issues (onnxruntime DLLs, melee package data, absl/
-  fancyflags) before any UI exists. One-dir mode.
+Local play only for now; netplay is on the back burner.
+
+- **PyInstaller for the CLI (done, CPU onnxruntime).** `packaging/slippi_ai.spec`
+  builds a one-dir bundle with `eval_two.exe` and `benchmark_eval_two.exe`
+  sharing one `_internal` (180 MB; pyarrow is 81 MB of it, imported by
+  `slippi_ai/types.py`). It collects melee's data files and onnxruntime's
+  DLLs, and excludes jax/tf. libmelee's slippstream runs a worker process,
+  so the scripts call `multiprocessing.freeze_support()`. Locally the
+  frozen `eval_two.exe` played in Slippi Dolphin, and `benchmark_eval_two.exe`
+  matched the unfrozen numbers (`medium-v1` CPU: 59.95 fps, 1.1 ms/step).
+  `.github/workflows/bundle.yml` builds it on Windows, checks that the exes
+  start and that the frozen onnxruntime loads an exported model, and uploads
+  the bundle as a workflow artifact for testers.
+- Not yet tried: a CUDA bundle (`onnxruntime-gpu` with the pip CUDA/cuDNN
+  DLLs, likely >1 GB).
 - **GUI: PySide6.** First-run setup screen: find Slippi Dolphin (under
   `%APPDATA%`, with a Browse fallback), pick and hash-check the ISO (it can't
   be shipped), warn about Wii U adapter drivers (Zadig/WinUSB) and running
@@ -251,5 +263,5 @@ and tested on branch `model-downloads`, waiting on hosting.
   results; Windows ML is untested.
 - Whether to distribute models exported with a fixed batch size of 1 (needed
   for CUDA graphs) only.
-- Whether the GUI should also support netplay (`scripts/netplay.py`) or only
-  local play at first.
+- Whether and when the GUI should also support netplay (`scripts/netplay.py`);
+  local play comes first.

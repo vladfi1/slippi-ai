@@ -21,6 +21,7 @@ with and without --p2.ai.async_inference.
 """
 
 import json
+import multiprocessing
 import time
 
 from absl import app
@@ -104,4 +105,6 @@ def main(_):
 if __name__ == '__main__':
   # https://github.com/python/cpython/issues/87115
   __spec__ = None
+  # libmelee's slippstream starts a worker process; needed in frozen builds.
+  multiprocessing.freeze_support()
   app.run(main)
