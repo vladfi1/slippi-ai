@@ -111,8 +111,9 @@ def _encode_leaf(embedding: embed.Embedding, x: Array) -> Array:
     # such as uint16, so do the range logic in int32.
     x = x.astype(jnp.int32)
     if policy in (embed.OneHotPolicy.CLAMP, embed.OneHotPolicy.ERROR):
-      # The graph can't raise errors, so ERROR clamps like CLAMP.
-      x = jnp.clip(x, 0, embedding.input_size - 1)
+      # The graph can't raise errors, so ERROR clamps like CLAMP. Not
+      # jnp.clip, since onnxruntime's CUDA Clip has no int32 kernel.
+      x = jnp.minimum(jnp.maximum(x, 0), embedding.input_size - 1)
     elif policy is embed.OneHotPolicy.EXTRA:
       invalid = (x < 0) | (x >= embedding.input_size)
       x = jnp.where(invalid, embedding.input_size, x)

@@ -1083,7 +1083,10 @@ class MultiEmbed(nnx.Module):
     # dynamic batch size.
     valid = jnp.ones_like(index, dtype=bool)
     for size, inp in zip(self._sizes, inputs):
-      valid &= (inp >= 0) & (inp < size)
+      # Compare in int32, since onnxruntime's CUDA comparisons lack kernels
+      # for small unsigned types.
+      inp_int32 = inp.astype(jnp.int32)
+      valid &= (inp_int32 >= 0) & (inp_int32 < size)
       index *= size
       index += inp
 
