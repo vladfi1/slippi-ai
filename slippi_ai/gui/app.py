@@ -414,7 +414,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
           text = 'No phillip models (.onnx files) found.'
         if errors:
-          text += f' Could not read {len(errors)} .onnx file(s); hover for details.'
+          text += f' Skipped {len(errors)} .onnx file(s); hover for details.'
           self.models_status.setToolTip(
               '\n'.join(f'{path}: {message}' for path, message in errors))
         _status(self.models_status, text, bool(count))

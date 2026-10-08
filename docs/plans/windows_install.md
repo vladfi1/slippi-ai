@@ -246,6 +246,10 @@ Local play only for now; netplay is on the back burner.
     Only the metadata is read (`onnx_policies.read_metadata_from_file` skips
     the graph in the protobuf), about 1 ms per model instead of up to 0.8 s
     with an onnxruntime session.
+  - Only models exported with batch size 1 are listed (decided 2026-10-08):
+    play runs one game, CUDA graphs need a fixed size, and that's all we
+    distribute for the GUI; `export_onnx.py` defaults to it. Power users who
+    want to run evals can download the original TF/JAX checkpoints.
   - The opponent is either the user, in a chosen port, or an in-game CPU.
     Humans can keep their Slippi Dolphin controller settings
     (`copy_home_directory`); otherwise their port is a GameCube adapter.
@@ -281,7 +285,5 @@ Local play only for now; netplay is on the back burner.
 - Whether one installer can ship both CPU and CUDA onnxruntime (the CUDA
   wheels are large), and what to offer AMD/Intel GPU users given DirectML's
   results; Windows ML is untested.
-- Whether to distribute models exported with a fixed batch size of 1 (needed
-  for CUDA graphs) only.
 - Whether and when the GUI should also support netplay (`scripts/netplay.py`);
   local play comes first.

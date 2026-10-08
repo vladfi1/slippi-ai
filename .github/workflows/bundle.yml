@@ -35,7 +35,7 @@ jobs:
     - name: Export ONNX model
       run: |
         pip install .[onnx-export]
-        python scripts/export_onnx.py --checkpoint slippi_ai/data/checkpoints/jax_demo --output jax_demo.onnx --batch_size 1
+        python scripts/export_onnx.py --checkpoint slippi_ai/data/checkpoints/jax_demo --output jax_demo.onnx
 
     # Agents are built before Dolphin starts, so failing to find Dolphin means
     # the frozen onnxruntime loaded the model.
