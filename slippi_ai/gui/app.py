@@ -10,7 +10,7 @@ import typing as tp
 import melee
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from slippi_ai import session, utils
+from slippi_ai import onnx_policies, session, utils
 from slippi_ai.gui import models as models_lib, runner, settings as settings_lib
 
 _CHARACTER_NAMES = {
@@ -201,8 +201,9 @@ class MainWindow(QtWidgets.QMainWindow):
     self._poll_timer.timeout.connect(self._poll)
 
     self._load_settings()
+    self._find_providers()
     self._update_controls()
-    self.resize(720, 780)
+    self.resize(720, 800)
 
   # Layout
 
@@ -258,6 +259,12 @@ class MainWindow(QtWidgets.QMainWindow):
     self.model_list.setMinimumHeight(110)
     self.model_list.itemSelectionChanged.connect(self._model_chosen)
     form.addRow('Model', self.model_list)
+
+    # Filled in by _find_providers.
+    self.provider_combo = QtWidgets.QComboBox()
+    self.provider_combo.addItem('Looking for devices...', '')
+    self.provider_combo.activated.connect(self._provider_chosen)
+    form.addRow('Run on', self.provider_combo)
     return group
 
   def _opponent_group(self) -> QtWidgets.QGroupBox:
@@ -451,6 +458,29 @@ class MainWindow(QtWidgets.QMainWindow):
       self.settings.model_path = model.path
     self._update_controls()
 
+  def _find_providers(self):
+    # Can take a while: Windows ML may download a provider the first time.
+    def find():
+      return onnx_policies.provider_choices(), onnx_policies.default_providers()
+
+    def on_done(result, error):
+      if error is not None:
+        logging.warning('Could not list devices: %s', error)
+        choices, default = [], [onnx_policies.CPU]
+      else:
+        choices, default = result
+      automatic = onnx_policies.PROVIDER_NAMES.get(default[0], default[0])
+      _set_items(
+          self.provider_combo,
+          [(f'Automatic: {automatic}', '')]
+          + [(choice.label, choice.provider) for choice in choices],
+          self.settings.provider)
+
+    run_in_thread(find, on_done)
+
+  def _provider_chosen(self):
+    self.settings.provider = self.provider_combo.currentData()
+
   def _update_character_filter(self):
     characters = {c for m in self._models for c in m.summary.characters}
     _set_items(
@@ -518,7 +548,8 @@ class MainWindow(QtWidgets.QMainWindow):
     running = self._running()
     for widget in (self.dolphin_row, self.iso_row, self.models_row,
                    self.character_combo, self.opponent_filter_combo,
-                   self.model_list, self.human_radio, self.cpu_radio,
+                   self.model_list, self.provider_combo,
+                   self.human_radio, self.cpu_radio,
                    self.port_combo, self.copy_settings_check,
                    self.cpu_character_combo, self.cpu_level_spin):
       widget.setEnabled(not running)
@@ -553,6 +584,11 @@ class MainWindow(QtWidgets.QMainWindow):
     ai['type'] = 'ai'
     ai['character'] = self._character()
     ai['ai']['path'] = model.path
+    provider = self.provider_combo.currentData()
+    if provider:
+      # The CPU runs whatever the chosen provider can't.
+      ai['ai']['onnx']['providers'] = list(dict.fromkeys(
+          [provider, onnx_policies.CPU]))
 
     other = utils.map_nt(lambda x: x, defaults)
     if human:

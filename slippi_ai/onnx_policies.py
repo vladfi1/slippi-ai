@@ -390,9 +390,18 @@ def load_policy_from_state(state: dict) -> OnnxPolicy:
 
 CUDA = 'CUDAExecutionProvider'
 CPU = 'CPUExecutionProvider'
+DIRECTML = 'DmlExecutionProvider'
 TENSORRT_RTX = winml.TENSORRT_RTX
 # Providers that never need Windows ML.
-_BUILT_IN = (CPU, CUDA, 'DmlExecutionProvider')
+_BUILT_IN = (CPU, CUDA, DIRECTML)
+
+# Display names, in order of preference.
+PROVIDER_NAMES = {
+    TENSORRT_RTX: 'TensorRT-RTX',
+    CUDA: 'CUDA',
+    CPU: 'CPU',
+    DIRECTML: 'DirectML',
+}
 
 
 def _plugin_providers() -> set[str]:
@@ -416,6 +425,46 @@ def default_providers() -> list[str]:
   if CUDA in ort.get_available_providers():
     return [CUDA, CPU]
   return [CPU]
+
+
+def _device_descriptions() -> dict[str, str]:
+  """Maps providers to their devices' descriptions, where onnxruntime has them."""
+  import onnxruntime as ort
+  if not hasattr(ort, 'get_ep_devices'):
+    return {}
+  descriptions: dict[str, list[str]] = {}
+  for d in ort.get_ep_devices():
+    description = d.device.metadata.get('Description')
+    if description and description not in descriptions.get(d.ep_name, []):
+      descriptions.setdefault(d.ep_name, []).append(description)
+  return {name: ', '.join(ds) for name, ds in descriptions.items()}
+
+
+class ProviderChoice(tp.NamedTuple):
+  provider: str
+  label: str  # e.g. 'TensorRT-RTX (NVIDIA GeForce RTX 3080 Ti)'
+
+
+def provider_choices() -> list[ProviderChoice]:
+  """The providers models can run on here, in order of preference.
+
+  May start Windows ML, which can take a while the first time; see
+  winml.initialize.
+  """
+  import onnxruntime as ort
+  available = set(ort.get_available_providers()) | _plugin_providers()
+  descriptions = _device_descriptions()
+  choices = []
+  for provider, name in PROVIDER_NAMES.items():
+    if provider not in available:
+      continue
+    label = name
+    if provider in descriptions:
+      label += f' ({descriptions[provider]})'
+    if provider == DIRECTML:
+      label += ', usually slower than the CPU'
+    choices.append(ProviderChoice(provider, label))
+  return choices
 
 
 def _plugin_provider_options(provider: str, cuda_graph: bool) -> dict[str, str]:
@@ -475,6 +524,10 @@ class SessionRunner:
       self.session = ort.InferenceSession(
           policy.model, session_options, providers=provider_options)
     self.providers = self.session.get_providers()
+    device = _device_descriptions().get(self.providers[0])
+    logging.info(
+        'Running on %s%s.', PROVIDER_NAMES.get(self.providers[0], self.providers[0]),
+        f' ({device})' if device else '')
     # Dead inputs may have been pruned from the graph.
     self.input_names = [i.name for i in self.session.get_inputs()]
     self.output_names = [o.name for o in self.session.get_outputs()]

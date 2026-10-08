@@ -30,6 +30,8 @@ class Settings:
   human_port: int = 1
   cpu_level: int = 9
   cpu_character: str = 'FOX'
+  # The onnxruntime provider to run phillip on; empty for automatic.
+  provider: str = ''
   # Copy Slippi Dolphin's user folder (DolphinConfig.copy_home_directory), so
   # Dolphin keeps the user's graphics, audio and controller settings.
   # Otherwise it uses defaults, and a human's port is a GameCube adapter.
