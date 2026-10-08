@@ -265,20 +265,24 @@ and tested on branch `model-downloads`, waiting on hosting.
 
 Local play only for now; netplay is on the back burner.
 
-- **PyInstaller (done, CPU onnxruntime).** `packaging/slippi_ai.spec`
+- **PyInstaller (done).** `packaging/slippi_ai.spec`
   builds a one-dir bundle with the GUI (`slippi-ai.exe`, windowed),
   `eval_two.exe` and `benchmark_eval_two.exe` sharing one `_internal`
-  (268 MB: PySide6 is 74 MB, pyarrow 81 MB, imported by `slippi_ai/types.py`).
-  It collects melee's data files and onnxruntime's DLLs, and excludes jax/tf.
+  (327 MB with Windows ML, 268 MB with plain onnxruntime: PySide6 is 74 MB,
+  pyarrow 81 MB, imported by `slippi_ai/types.py`). It collects melee's data
+  files and onnxruntime's DLLs, plus the Windows ML modules and bootstrap DLL
+  when built with `.[gui,winml]`, and excludes jax/tf.
   libmelee's slippstream runs a worker process, so the entry points call
   `multiprocessing.freeze_support()`. The GUI's script is a launcher in
   `packaging/gui.py`, because a script's folder goes on the import path and
   `slippi_ai/types.py` would hide the stdlib `types`. Locally the frozen
   `eval_two.exe` played in Slippi Dolphin, and `benchmark_eval_two.exe`
   matched the unfrozen numbers (`medium-v1` CPU: 59.95 fps, 1.1 ms/step).
-  `.github/workflows/bundle.yml` builds it on Windows, checks that the CLI
-  exes start and that the frozen onnxruntime loads an exported model, and
-  uploads the bundle as a workflow artifact for testers. The GUI is only
+  `.github/workflows/bundle.yml` builds it with Windows ML, checks that the
+  CLI exes start and load an exported model, first without the Windows App
+  SDK Runtime (CPU fallback) and then with it (Windows ML starts; the
+  runners have no GPU), and uploads the bundle as a workflow artifact for
+  testers. The GUI is only
   built there, since a windowed exe reports errors in a dialog.
 - **One build, on Windows ML** (decided 2026-10-08): `onnxruntime-windowsml`
   falls back to CPU (and DirectML) on older Windows, including Windows 10,
@@ -293,8 +297,13 @@ Local play only for now; netplay is on the back burner.
     `%LOCALAPPDATA%\slippi-ai\tensorrt-rtx` (written when the session
     closes; `diamond` 6.5 s, then 3.5 s), and falls back to CPU if that
     fails.
-  - To do: a real-loop benchmark, the GUI showing the device and first-load
-    progress, and packaging with the Windows App SDK Runtime installer.
+  - Done since: the real-loop benchmark, a "Run on" choice in the GUI, and
+    the bundle. The frozen `eval_two.exe` ran `diamond` on TensorRT-RTX; the
+    bundle carries its own `msvcp140.dll` (14.50, as in System32).
+  - To do: the installer must install the Windows App SDK Runtime (2.3.1;
+    `windowsappruntimeinstall-x64.exe --quiet`, no admin needed). Without
+    it the app should fall back to the CPU (checked in CI, not yet locally),
+    so the zipped bundle works as is.
 - **GUI: PySide6 (done, local play).** `python -m slippi_ai.gui`
   (`pip install slippi-ai[gui,onnx]`) or the bundle's `slippi-ai.exe`.
   - One window, with settings saved to `%APPDATA%\slippi-ai\gui.json`.

@@ -1,8 +1,9 @@
 name: windows bundle
 
-# Builds the PyInstaller one-dir bundle of the GUI and play CLI
-# (packaging/slippi_ai.spec) and checks that the frozen CLI executables start. The GUI is only built:
-# windowed exes report errors in a dialog, which would hang CI.
+# Builds the PyInstaller one-dir bundle of the GUI and play CLI with Windows ML
+# (packaging/slippi_ai.spec) and checks that the frozen CLI executables start
+# and load a model. The GUI is only built: windowed exes report errors in a
+# dialog, which would hang CI.
 
 on: [push, pull_request]
 
@@ -20,7 +21,7 @@ jobs:
         python-version: '3.13'
 
     - name: Install
-      run: pip install .[gui,onnx] pyinstaller
+      run: pip install .[gui,winml] pyinstaller
 
     - name: Build
       run: pyinstaller --noconfirm packaging/slippi_ai.spec
@@ -38,14 +39,36 @@ jobs:
         python scripts/export_onnx.py --checkpoint slippi_ai/data/checkpoints/jax_demo --output jax_demo.onnx
 
     # Agents are built before Dolphin starts, so failing to find Dolphin means
-    # the frozen onnxruntime loaded the model.
-    - name: Load ONNX model
+    # onnxruntime loaded the model. Without the Windows App SDK Runtime,
+    # Windows ML can't start and the model runs on the CPU.
+    - name: Load ONNX model without Windows ML
       shell: bash
       env:
         DOLPHIN_PATH: C:/nonexistent
       run: |
         dist/slippi-ai/eval_two.exe --p1.type=cpu --p2.ai.path=jax_demo.onnx "--p2.ai.name=Diamond Player" --dolphin.online_delay=0 > out.txt 2>&1 || true
         cat out.txt
+        grep -q "Could not start Windows ML" out.txt
+        grep -q "Running on CPU" out.txt
+        grep -q "Unknown path" out.txt
+
+    # The version must match the wasdk packages in setup.cfg's winml extra.
+    - name: Install the Windows App SDK Runtime
+      shell: bash
+      run: |
+        curl -sSL -o windowsappruntimeinstall.exe https://aka.ms/windowsappsdk/2.3/2.3.1/windowsappruntimeinstall-x64.exe
+        ./windowsappruntimeinstall.exe --quiet
+
+    # The runners have no GPU, so Windows ML offers no providers and the
+    # model still runs on the CPU, but the frozen app must start it.
+    - name: Load ONNX model with Windows ML
+      shell: bash
+      env:
+        DOLPHIN_PATH: C:/nonexistent
+      run: |
+        dist/slippi-ai/eval_two.exe --p1.type=cpu --p2.ai.path=jax_demo.onnx "--p2.ai.name=Diamond Player" --dolphin.online_delay=0 > out.txt 2>&1 || true
+        cat out.txt
+        grep -q "Windows ML providers:" out.txt
         grep -q "Unknown path" out.txt
 
     - uses: actions/upload-artifact@v4
