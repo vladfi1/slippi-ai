@@ -201,8 +201,10 @@ def _session_metadata(session) -> dict:
 
 def read_metadata(model: bytes) -> dict:
   import onnxruntime as ort
-  return _session_metadata(
-      ort.InferenceSession(model, providers=['CPUExecutionProvider']))
+  options = ort.SessionOptions()
+  options.log_severity_level = 3  # Errors only; graph cleanup warns.
+  return _session_metadata(ort.InferenceSession(
+      model, options, providers=['CPUExecutionProvider']))
 
 
 def load_state_from_disk(path: str) -> dict:

@@ -217,24 +217,39 @@ and tested on branch `model-downloads`, waiting on hosting.
 
 Local play only for now; netplay is on the back burner.
 
-- **PyInstaller for the CLI (done, CPU onnxruntime).** `packaging/slippi_ai.spec`
-  builds a one-dir bundle with `eval_two.exe` and `benchmark_eval_two.exe`
-  sharing one `_internal` (180 MB; pyarrow is 81 MB of it, imported by
-  `slippi_ai/types.py`). It collects melee's data files and onnxruntime's
-  DLLs, and excludes jax/tf. libmelee's slippstream runs a worker process,
-  so the scripts call `multiprocessing.freeze_support()`. Locally the
-  frozen `eval_two.exe` played in Slippi Dolphin, and `benchmark_eval_two.exe`
+- **PyInstaller (done, CPU onnxruntime).** `packaging/slippi_ai.spec`
+  builds a one-dir bundle with the GUI (`slippi-ai.exe`, windowed),
+  `eval_two.exe` and `benchmark_eval_two.exe` sharing one `_internal`
+  (268 MB: PySide6 is 74 MB, pyarrow 81 MB, imported by `slippi_ai/types.py`).
+  It collects melee's data files and onnxruntime's DLLs, and excludes jax/tf.
+  libmelee's slippstream runs a worker process, so the entry points call
+  `multiprocessing.freeze_support()`. The GUI's script is a launcher in
+  `packaging/gui.py`, because a script's folder goes on the import path and
+  `slippi_ai/types.py` would hide the stdlib `types`. Locally the frozen
+  `eval_two.exe` played in Slippi Dolphin, and `benchmark_eval_two.exe`
   matched the unfrozen numbers (`medium-v1` CPU: 59.95 fps, 1.1 ms/step).
-  `.github/workflows/bundle.yml` builds it on Windows, checks that the exes
-  start and that the frozen onnxruntime loads an exported model, and uploads
-  the bundle as a workflow artifact for testers.
+  `.github/workflows/bundle.yml` builds it on Windows, checks that the CLI
+  exes start and that the frozen onnxruntime loads an exported model, and
+  uploads the bundle as a workflow artifact for testers. The GUI is only
+  built there, since a windowed exe reports errors in a dialog.
 - Not yet tried: a CUDA bundle (`onnxruntime-gpu` with the pip CUDA/cuDNN
   DLLs, likely >1 GB).
-- **GUI: PySide6.** First-run setup screen: find Slippi Dolphin (under
-  `%APPDATA%`, with a Browse fallback), pick and hash-check the ISO (it can't
-  be shipped), warn about Wii U adapter drivers (Zadig/WinUSB) and running
-  Dolphin instances. Main screen: character/model picker with download
-  progress, opponent port and controller type, Start/Stop, log panel.
+- **GUI: PySide6 (done, local play).** `python -m slippi_ai.gui`
+  (`pip install slippi-ai[gui,onnx]`) or the bundle's `slippi-ai.exe`.
+  - One window, with settings saved to `%APPDATA%\slippi-ai\gui.json`.
+    Slippi Dolphin and the ISO are found from Slippi Launcher's settings
+    (Browse otherwise); the ISO is MD5-checked against NTSC 1.02.
+  - The model is a local `.onnx` file; its metadata gives the reaction delay
+    and the character list.
+  - The opponent is either the user, in a chosen port, or an in-game CPU.
+    Humans can keep their Slippi Dolphin controller settings
+    (`copy_home_directory`); otherwise their port is a GameCube adapter.
+  - Start/Stop and a log panel. The session runs in a spawn-context child
+    process (not a daemon, since slippstream starts its own worker) and is
+    killed if it doesn't stop within 10 s. Start warns if Dolphin is already
+    running.
+  - Tested against an in-game CPU and with a controller.
+  - Not yet: model downloads (step 5), a Wii U adapter driver check, netplay.
 - **Installer:** Inno Setup around the PyInstaller output, published on
   GitHub Releases. Code signing (e.g. Azure Trusted Signing) to avoid
   SmartScreen and antivirus false positives; otherwise document the

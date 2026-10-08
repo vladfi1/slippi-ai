@@ -1,10 +1,10 @@
-# PyInstaller spec for a one-dir Windows build of the play CLI.
+# PyInstaller spec for a one-dir Windows build of the GUI and the play CLI.
 #
-#   pip install .[onnx] pyinstaller
+#   pip install .[gui,onnx] pyinstaller
 #   pyinstaller packaging/slippi_ai.spec
 #
-# Produces dist/slippi-ai/eval_two.exe and benchmark_eval_two.exe, sharing one
-# dist/slippi-ai/_internal.
+# Produces dist/slippi-ai/slippi-ai.exe (the GUI), eval_two.exe and
+# benchmark_eval_two.exe, sharing one dist/slippi-ai/_internal.
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
@@ -20,27 +20,31 @@ binaries = collect_dynamic_libs('onnxruntime')
 excludes = ['jax', 'jaxlib', 'tensorflow', 'tensorflow_probability', 'wandb',
             'pandas', 'IPython', 'matplotlib', 'tkinter']
 
+# (name, script, console, hidden imports)
+programs = [
+    # The launcher runs slippi_ai.gui by name, which PyInstaller can't follow.
+    ('slippi-ai', 'packaging/gui.py', False, ['slippi_ai.gui.__main__']),
+    ('eval_two', 'scripts/eval_two.py', True, []),
+    ('benchmark_eval_two', 'scripts/benchmark_eval_two.py', True, []),
+]
 
-def analysis(script):
-  return Analysis(
-      [f'{ROOT}/scripts/{script}.py'],
+analyses = []
+exes = []
+for name, script, console, hiddenimports in programs:
+  a = Analysis(
+      [f'{ROOT}/{script}'],
       pathex=[ROOT],
+      hiddenimports=hiddenimports,
       binaries=binaries,
       datas=datas,
       excludes=excludes,
   )
-
-
-scripts = ['eval_two', 'benchmark_eval_two']
-analyses = [analysis(s) for s in scripts]
-exes = []
-for script, a in zip(scripts, analyses):
-  pyz = PYZ(a.pure)
+  analyses.append(a)
   exes.append(EXE(
-      pyz, a.scripts, [],
+      PYZ(a.pure), a.scripts, [],
       exclude_binaries=True,
-      name=script,
-      console=True,
+      name=name,
+      console=console,
   ))
 
 coll = COLLECT(

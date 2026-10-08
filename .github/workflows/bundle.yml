@@ -1,7 +1,8 @@
 name: windows bundle
 
-# Builds the PyInstaller one-dir bundle of the play CLI (packaging/slippi_ai.spec)
-# and checks that the frozen executables start.
+# Builds the PyInstaller one-dir bundle of the GUI and play CLI
+# (packaging/slippi_ai.spec) and checks that the frozen CLI executables start. The GUI is only built:
+# windowed exes report errors in a dialog, which would hang CI.
 
 on: [push, pull_request]
 
@@ -19,7 +20,7 @@ jobs:
         python-version: '3.13'
 
     - name: Install
-      run: pip install .[onnx] pyinstaller
+      run: pip install .[gui,onnx] pyinstaller
 
     - name: Build
       run: pyinstaller --noconfirm packaging/slippi_ai.spec

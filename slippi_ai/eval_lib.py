@@ -766,9 +766,18 @@ class AgentSummary:
       agent_type = AgentType.RL
       if 'opponents' in combined_state:  # train_many
         opponent_names = combined_state['opponents']
-      else:  # train_two
+      elif 'opponent' in combined_state:  # train_two
         opponent_names = [combined_state['opponent']]
-      opponents = [data.name_to_character[name] for name in opponent_names]
+      else:
+        # Exported ONNX models keep only the agent config, like self-play.
+        rl_chars = combined_state['agent_config'].get('char')
+        if rl_chars is not None:
+          characters = [melee.Character(c) for c in rl_chars]
+        opponent_names = None
+      if opponent_names is None:
+        opponents = characters
+      else:
+        opponents = [data.name_to_character[name] for name in opponent_names]
     else:
       agent_type = AgentType.IMITATION
       opponents = chars_from_string(config['dataset']['allowed_opponents'])
