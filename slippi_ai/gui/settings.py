@@ -38,16 +38,19 @@ class Settings:
   copy_dolphin_settings: bool = True
 
 
-def settings_path() -> pathlib.Path:
+def settings_path(app: str = 'phillip') -> pathlib.Path:
   if sys.platform == 'win32':
     base = os.environ.get('APPDATA') or pathlib.Path.home() / 'AppData' / 'Roaming'
   else:
     base = os.environ.get('XDG_CONFIG_HOME') or pathlib.Path.home() / '.config'
-  return pathlib.Path(base) / 'slippi-ai' / 'gui.json'
+  return pathlib.Path(base) / app / 'gui.json'
 
 
 def load() -> Settings:
   path = settings_path()
+  if not path.exists():
+    # Saved under the old app name; the next save moves them.
+    path = settings_path('slippi-ai')
   try:
     with open(path) as f:
       values = json.load(f)

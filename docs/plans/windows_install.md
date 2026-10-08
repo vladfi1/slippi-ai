@@ -249,7 +249,7 @@ Dolphin/libmelee crashes from taking down the UI.
 
 Deferred (2026-10-07): for now users download model files themselves. A
 download client (`--p*.ai.model <name>`, a sha256-pinned manifest shipped with
-the package, caching under `%LOCALAPPDATA%\slippi-ai\models`) is implemented
+the package, caching under `%LOCALAPPDATA%\phillip\models`) is implemented
 and tested on branch `model-downloads`, waiting on hosting.
 
 - Host exported `.onnx` files (fp32 and/or fp16) on the Hugging Face Hub, or
@@ -266,7 +266,7 @@ and tested on branch `model-downloads`, waiting on hosting.
 Local play only for now; netplay is on the back burner.
 
 - **PyInstaller (done).** `packaging/slippi_ai.spec`
-  builds a one-dir bundle with the GUI (`slippi-ai.exe`, windowed),
+  builds a one-dir bundle with the GUI (`phillip.exe`, windowed),
   `eval_two.exe` and `benchmark_eval_two.exe` sharing one `_internal`
   (327 MB with Windows ML, 268 MB with plain onnxruntime: PySide6 is 74 MB,
   pyarrow 81 MB, imported by `slippi_ai/types.py`). It collects melee's data
@@ -294,19 +294,18 @@ Local play only for now; netplay is on the back burner.
     TensorRT-RTX, then CUDA, then CPU; `SessionRunner` creates TensorRT-RTX
     sessions by device (it fails by name, though onnxruntime lists it as
     available), with its runtime cache in
-    `%LOCALAPPDATA%\slippi-ai\tensorrt-rtx` (written when the session
+    `%LOCALAPPDATA%\phillip\tensorrt-rtx` (written when the session
     closes; `diamond` 6.5 s, then 3.5 s), and falls back to CPU if that
     fails.
   - Done since: the real-loop benchmark, a "Run on" choice in the GUI, and
     the bundle. The frozen `eval_two.exe` ran `diamond` on TensorRT-RTX; the
     bundle carries its own `msvcp140.dll` (14.50, as in System32).
-  - To do: the installer must install the Windows App SDK Runtime (2.3.1;
-    `windowsappruntimeinstall-x64.exe --quiet`, no admin needed). Without
-    it the app should fall back to the CPU (checked in CI, not yet locally),
-    so the zipped bundle works as is.
+  - The installer installs the Windows App SDK Runtime (2.3.1) when it's
+    missing; see Installer. Without it the app falls back to the CPU
+    (checked in CI, not yet locally), so the zipped bundle works as is.
 - **GUI: PySide6 (done, local play).** `python -m slippi_ai.gui`
-  (`pip install slippi-ai[gui,onnx]`) or the bundle's `slippi-ai.exe`.
-  - One window, with settings saved to `%APPDATA%\slippi-ai\gui.json`.
+  (`pip install slippi-ai[gui,onnx]`) or the bundle's `phillip.exe`.
+  - One window, with settings saved to `%APPDATA%\phillip\gui.json`.
     Slippi Dolphin and the ISO are found from Slippi Launcher's settings
     (Browse otherwise); the ISO is MD5-checked against NTSC 1.02.
   - phillip's models come from a folder of `.onnx` files (searched
@@ -331,11 +330,27 @@ Local play only for now; netplay is on the back burner.
     running.
   - Tested against an in-game CPU and with a controller.
   - Not yet: model downloads (step 5), a Wii U adapter driver check, netplay.
-- **Installer:** Inno Setup around the PyInstaller output, published on
-  GitHub Releases. Code signing (e.g. Azure Trusted Signing) to avoid
-  SmartScreen and antivirus false positives; otherwise document the
-  "More info > Run anyway" step. A startup check against GitHub Releases for
-  new versions.
+- **Installer: Inno Setup (started).** `packaging/slippi_ai.iss` wraps the
+  PyInstaller output in `dist/phillip-setup-<version>.exe` (80 MB).
+  - Installs per user by default, to `%LOCALAPPDATA%\Programs\phillip` with
+    no admin (all users is offered), with a Start menu shortcut and an
+    optional desktop one. Upgrades replace `_internal`; uninstalling removes
+    the TensorRT-RTX cache but keeps the GUI's settings.
+  - If the Windows App SDK Runtime 2.3.1+ isn't installed (checked with
+    `Get-AppxPackage`), a checked-by-default task downloads Microsoft's
+    installer (113 MB, SHA-256 pinned) on the Ready page and runs it with
+    `--quiet` after copying the files. A failed download only warns: the
+    app runs on the CPU. Downloading keeps the setup small and skips the
+    runtime for most players who already have it.
+  - Tested locally: a silent per-user install (with the runtime check forced
+    to fail, so it downloaded and ran the runtime installer), the installed
+    `eval_two.exe` on TensorRT-RTX, and a silent uninstall. CI builds the
+    installer, installs it silently on a runner without the runtime, and
+    runs the installed `eval_two.exe` with Windows ML.
+  - To do: try the wizard by hand; publish on GitHub Releases. Code signing
+    (e.g. Azure Trusted Signing) to avoid SmartScreen and antivirus false
+    positives; otherwise document the "More info > Run anyway" step. A
+    startup check against GitHub Releases for new versions. An icon.
 - Recruit Windows testers from Discord once a packaged build exists.
 
 ## Known Windows issues

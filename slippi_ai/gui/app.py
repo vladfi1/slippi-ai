@@ -707,7 +707,7 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
   logging.basicConfig(level=logging.INFO)
   app = QtWidgets.QApplication(sys.argv)
-  app.setApplicationName('slippi-ai')
+  app.setApplicationName('phillip')
   window = MainWindow()
   window.show()
   return app.exec()

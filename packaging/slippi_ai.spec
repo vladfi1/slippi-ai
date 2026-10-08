@@ -8,8 +8,8 @@
 # slippi_ai/winml.py. Building with .[gui,onnx] instead gives a CPU-only
 # bundle.
 #
-# Produces dist/slippi-ai/slippi-ai.exe (the GUI), eval_two.exe and
-# benchmark_eval_two.exe, sharing one dist/slippi-ai/_internal.
+# Produces dist/phillip/phillip.exe (the GUI), eval_two.exe and
+# benchmark_eval_two.exe, sharing one dist/phillip/_internal.
 
 from PyInstaller.utils.hooks import (
     collect_data_files, collect_dynamic_libs, collect_submodules)
@@ -39,7 +39,7 @@ excludes = ['jax', 'jaxlib', 'tensorflow', 'tensorflow_probability', 'wandb',
 # (name, script, console, hidden imports)
 programs = [
     # The launcher runs slippi_ai.gui by name, which PyInstaller can't follow.
-    ('slippi-ai', 'packaging/gui.py', False, ['slippi_ai.gui.__main__']),
+    ('phillip', 'packaging/gui.py', False, ['slippi_ai.gui.__main__']),
     ('eval_two', 'scripts/eval_two.py', True, []),
     ('benchmark_eval_two', 'scripts/benchmark_eval_two.py', True, []),
 ]
@@ -67,5 +67,5 @@ coll = COLLECT(
     *exes,
     *(a.binaries for a in analyses),
     *(a.datas for a in analyses),
-    name='slippi-ai',
+    name='phillip',
 )

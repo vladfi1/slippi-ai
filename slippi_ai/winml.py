@@ -100,6 +100,6 @@ def cache_dir(name: str) -> str:
   """A per-user folder for caches, e.g. TensorRT-RTX's compiled kernels."""
   base = os.environ.get('LOCALAPPDATA') or os.path.expanduser(
       os.path.join('~', 'AppData', 'Local'))
-  path = os.path.join(base, 'slippi-ai', name)
+  path = os.path.join(base, 'phillip', name)
   os.makedirs(path, exist_ok=True)
   return path
