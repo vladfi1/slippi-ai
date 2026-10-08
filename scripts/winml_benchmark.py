@@ -3,7 +3,8 @@
 Experimental. Registers the providers in the Windows ML catalog (downloading
 them if needed; vendor providers need Windows 11 24H2+), then times agent.step
 at batch size 1 on every onnxruntime device, checking sampled actions against
-CPU given the same inputs.
+CPU given the same inputs. TensorRT-RTX needs models exported with
+--widen_ints (the default); otherwise it leaves them to the CPU.
 
 Setup (Python 3.10-3.13, plus the matching Windows App SDK Runtime):
 
@@ -50,31 +51,6 @@ def register_catalog_providers(ort, winml):
         print(f'    could not register: {e}')
 
 
-_NUMPY_TYPES = {
-    'tensor(float)': np.float32, 'tensor(bool)': np.bool_,
-    'tensor(int32)': np.int32, 'tensor(uint8)': np.uint8,
-    'tensor(uint16)': np.uint16,
-}
-
-
-class CastingSession:
-  """Casts packed inputs and outputs, for models whose graph I/O was retyped.
-
-  TensorRT-RTX doesn't take uint16 inputs, so models can be rewritten to
-  int32; the packed tensors keep their layout dtypes (outputs.<dtype>).
-  """
-
-  def __init__(self, session):
-    self._session = session
-    self._types = {i.name: _NUMPY_TYPES[i.type] for i in session.get_inputs()}
-
-  def run(self, names, feed):
-    feed = {k: v.astype(self._types[k], copy=False) for k, v in feed.items()}
-    outputs = self._session.run(names, feed)
-    return [o.astype(np.dtype(n.rsplit('.', 1)[1]), copy=False)
-            for n, o in zip(names, outputs)]
-
-
 def time_model(ort, path: str, replay):
   policy = saving.load_policy_from_state(saving.load_state_from_disk(path))
   devices = {}
@@ -95,7 +71,6 @@ def time_model(ort, path: str, replay):
       setup = time.time() - start
     else:
       setup = 0.
-    agent.runner.session = CastingSession(agent.runner.session)
 
     times = []
     actions = []

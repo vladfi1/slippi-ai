@@ -163,8 +163,14 @@ Tried and rejected:
   | medium-v1 | 2.2 ms | 2.5 ms | 0.7 ms (p99 0.9) |
   | diamond | 11.3 ms | 2.5 ms | 1.2 ms (p99 1.7) |
 
-  Session setup took 4.3 / 7.5 s (engine build, no cache yet). To use it the
-  exporter would pack small integer inputs as int32.
+  Session setup took 4.3 / 7.5 s (engine build, no cache yet).
+- `export_onnx.py --widen_ints` (the default) now exports int32 instead of
+  8/16-bit integers: the packed inputs and outputs (3 input tensors instead
+  of 5) and, by a graph pass, the casts and constants inside. Real exports
+  then run on TensorRT-RTX unmodified (0.7 / 1.2 ms, no action differences
+  vs CPU), with CPU and CUDA graph times unchanged, and still match JAX in
+  `tests/onnx_test.py`. Older exports keep working; their layouts are in
+  the metadata.
 
 **Real loop.** `scripts/benchmark_eval_two.py` runs the `eval_two` loop
 (Dolphin at 1x with blocking input, in-game CPU vs the agent) for a fixed

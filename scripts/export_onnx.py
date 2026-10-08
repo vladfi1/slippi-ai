@@ -24,12 +24,17 @@ WEIGHT_DTYPE = flags.DEFINE_enum(
     'Storage dtype of the weights; float16 halves the file size but still '
     'computes in float32.')
 
+WIDEN_INTS = flags.DEFINE_boolean(
+    'widen_ints', True,
+    'Use int32 instead of 8 and 16 bit integers, which TensorRT-RTX (Windows '
+    'ML) lacks. No slower on CPU or CUDA.')
+
 def main(_):
   output = OUTPUT.value or CHECKPOINT.value + '.onnx'
   state = saving.load_state_from_disk(CHECKPOINT.value)
   model = onnx_export.export_state(
       state, batch_size=BATCH_SIZE.value or None,
-      weight_dtype=WEIGHT_DTYPE.value)
+      weight_dtype=WEIGHT_DTYPE.value, widen_ints=WIDEN_INTS.value)
   onnx.save(model, output)
   print(f'Wrote {output}')
 

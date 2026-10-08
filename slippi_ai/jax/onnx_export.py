@@ -261,6 +261,55 @@ def _pack(
   }
 
 
+# Integer types that TensorRT (including TensorRT-RTX) doesn't support. All
+# their values fit in int32.
+SMALL_INTS = tuple(map(np.dtype, ['int8', 'int16', 'uint8', 'uint16']))
+
+
+def _widen(dtype) -> np.dtype:
+  dtype = np.dtype(dtype)
+  return np.dtype(np.int32) if dtype in SMALL_INTS else dtype
+
+
+def widen_small_ints(model):
+  """Retypes the graph's small integer tensors to int32, see SMALL_INTS.
+
+  Changes the graph's inputs, outputs and intermediate types, Casts and
+  constants. Values are the same unless a small integer op would overflow,
+  which the exported step doesn't rely on.
+  """
+  import onnx
+  from onnx import numpy_helper
+
+  small = {onnx.helper.np_dtype_to_tensor_dtype(d) for d in SMALL_INTS}
+
+  def widen_tensor(tensor):
+    if tensor.data_type in small:
+      tensor.CopyFrom(numpy_helper.from_array(
+          numpy_helper.to_array(tensor).astype(np.int32), tensor.name))
+
+  def widen_graph(graph):
+    for value in [*graph.input, *graph.output, *graph.value_info]:
+      if value.type.tensor_type.elem_type in small:
+        value.type.tensor_type.elem_type = onnx.TensorProto.INT32
+    for tensor in graph.initializer:
+      widen_tensor(tensor)
+    for node in graph.node:
+      for attr in node.attribute:
+        if attr.name == 'to' and attr.i in small:  # Cast
+          attr.i = onnx.TensorProto.INT32
+        if attr.HasField('t'):  # Constant, ConstantOfShape
+          widen_tensor(attr.t)
+        if attr.HasField('g'):
+          widen_graph(attr.g)
+        for subgraph in attr.graphs:
+          widen_graph(subgraph)
+
+  widen_graph(model.graph)
+  onnx.checker.check_model(model)
+  return model
+
+
 class Exported(tp.NamedTuple):
   model: tp.Any  # onnx.ModelProto
   input_layout: onnx_policies.Layout
@@ -271,6 +320,7 @@ def export(
     policy: policies.Policy,
     game_embedding: embed.Embedding[Game, Game],
     batch_size: tp.Optional[int] = None,
+    widen_ints: bool = True,
 ) -> Exported:
   """Exports the policy's step function to an ONNX ModelProto.
 
@@ -280,7 +330,11 @@ def export(
     policy: The policy to export.
     game_embedding: The policy's game embedding, see game_embedding_from_config.
     batch_size: Fixed batch size, or None for a dynamic batch dimension.
+    widen_ints: Use int32 for small integers (SMALL_INTS), in the graph and
+      its packed inputs and outputs. TensorRT-RTX doesn't support them, and
+      without them it leaves the whole graph to the CPU.
   """
+  widen = _widen if widen_ints else np.dtype
   import jax2onnx
   # jax2onnx logs every input spec at INFO level.
   logging.getLogger('jax2onnx').setLevel(logging.WARNING)
@@ -299,14 +353,16 @@ def export(
     return step(inputs._replace(temperature=inputs.temperature[0]))
 
   input_names, example_leaves, in_treedef = _flatten_with_names(example)
+  input_dtypes = {
+      name: np.dtype(x.dtype) for name, x in zip(input_names, example_leaves)}
   input_layout = onnx_policies.make_layout('inputs', [
-      (name, x.dtype, x.shape[1:])
+      (name, widen(x.dtype), x.shape[1:])
       for name, x in zip(input_names, example_leaves)])
 
   output_names, output_leaves, out_treedef = _flatten_with_names(
       jax.eval_shape(batched_step, example))
   output_layout = onnx_policies.make_layout('outputs', [
-      (name, x.dtype, x.shape[1:])
+      (name, widen(x.dtype), x.shape[1:])
       for name, x in zip(output_names, output_leaves)])
 
   batch_dim = batch_size if batch_size is not None else 'B'
@@ -318,8 +374,11 @@ def export(
 
   def packed_step(*packed):
     flat = _unpack(input_layout, dict(zip(input_layout, packed)))
-    inputs = jax.tree.unflatten(in_treedef, [flat[n] for n in input_names])
+    # The step itself is traced with the original dtypes.
+    inputs = jax.tree.unflatten(
+        in_treedef, [flat[n].astype(input_dtypes[n]) for n in input_names])
     outputs = out_treedef.flatten_up_to(batched_step(inputs))
+    outputs = [x.astype(widen(x.dtype)) for x in outputs]
     packed_outputs = _pack(output_layout, dict(zip(output_names, outputs)))
     return tuple(packed_outputs[key] for key in output_layout)
 
@@ -337,6 +396,8 @@ def export(
       dce_packed_step, input_specs,
       input_names=list(input_layout), output_names=list(output_layout),
       model_name='slippi_ai_policy')
+  if widen_ints:
+    model = widen_small_ints(model)
   return Exported(model, input_layout, output_layout)
 
 
@@ -412,6 +473,7 @@ def export_state(
     state: dict,
     batch_size: tp.Optional[int] = None,
     weight_dtype: str = 'float16',
+    widen_ints: bool = True,
 ):
   """Exports a JAX checkpoint state to an ONNX ModelProto with metadata.
 
@@ -420,6 +482,7 @@ def export_state(
     batch_size: Fixed batch size, needed for CUDA graphs; dynamic if None.
     weight_dtype: Storage dtype of the weights. The model always computes in
       float32; float16 halves the file size, see store_weights_as_float16.
+    widen_ints: Use int32 for small integers, see export.
   """
   from slippi_ai import eval_lib, saving
 
@@ -435,7 +498,7 @@ def export_state(
   game_embedding = embed_config.make_game_embedding()
 
   model, input_layout, output_layout = export(
-      policy, game_embedding, batch_size=batch_size)
+      policy, game_embedding, batch_size=batch_size, widen_ints=widen_ints)
 
   if weight_dtype == 'float16':
     model = store_weights_as_float16(model)
