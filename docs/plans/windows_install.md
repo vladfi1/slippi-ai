@@ -196,6 +196,10 @@ same machine, 1800 frames per run:
 | diamond | CPU | off | 59.94 | 0 | 12.8 / 14.6 ms |
 | diamond | CUDA graph | on | 59.94 | 0 | 1.8 / 3.6 ms |
 | diamond | CUDA graph | off | 59.94 | 0 | 7.3 / 14.9 ms |
+| medium-v1 | TensorRT-RTX | on | 59.94 | 0 | 1.3 / 2.5 ms |
+| medium-v1 | TensorRT-RTX | off | 59.94 | 5 | 5.3 / 11.6 ms |
+| diamond | TensorRT-RTX | on | 59.94 | 0 | 1.5 / 2.6 ms |
+| diamond | TensorRT-RTX | off | 59.94 | 0 | 6.2 / 9.7 ms |
 
 - Everything keeps up on this machine. Async inference (the `eval_two`
   default) keeps the agent's main-loop time at 1-2 ms, since inference
@@ -204,6 +208,9 @@ same machine, 1800 frames per run:
   at 60 Hz without Dolphin they already take 5.5-6.6 ms (p99 ~13 ms), likely
   because the GPU downclocks between frames; Dolphin's rendering adds the
   rest. CPU inference is barely affected by pacing.
+- TensorRT-RTX (Windows ML, 25H2, measured later) behaves the same way:
+  0.7-1.2 ms back to back, 5-6 ms paced. With async inference, as in
+  `eval_two` and the GUI, both models keep up with no slow frames.
 
 Remaining:
 
