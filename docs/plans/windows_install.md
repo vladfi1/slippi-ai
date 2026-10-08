@@ -139,6 +139,32 @@ Tried and rejected:
   slower on CPU, and changed ~10% of `diamond`'s sampled action components
   vs float32 given identical noise. jax2onnx's float16 export produced invalid
   graphs, and onnxconverter-common's converter mistypes some Casts.
+- **Windows ML** (branch `winml`, 2026-10-08, Windows 11 23H2):
+  `onnxruntime-windowsml` 1.25.2 plus the `wasdk-` packages. Python only
+  supports framework-dependent deployment, so users must install the
+  matching Windows App SDK Runtime (2.3.1 here; frameworks other apps had
+  installed weren't enough, it needs the Main/DDLM packages; installed
+  without admin). The catalog had no providers: vendor ones (TensorRT-RTX,
+  MIGraphX, OpenVINO, QNN, VitisAI) need 24H2+, and Windows 10 only gets
+  CPU and DirectML. DirectML matched CPU's actions but was slower (median
+  14 ms `medium-v1`, 34 ms `diamond` vs CPU 2.0 / 10.8 ms).
+  `scripts/winml_benchmark.py` registers catalog providers and times every
+  device.
+- **Windows ML on 25H2** (same machine, after updating): the catalog offered
+  TensorRT-RTX (`NvTensorRTRTXExecutionProvider`, ~13 s first download) and
+  WebGPU (experimental; failed to register from Python, its library path is
+  relative). TensorRT-RTX rejects uint8 and uint16 tensors and then silently
+  leaves the whole graph on CPU; with copies of the models retyped to int32
+  (graph I/O, casts and constants) it ran the whole graph, with no action
+  differences vs CPU in 320 steps:
+
+  | model | CPU | CUDA graph (onnxruntime-gpu) | TensorRT-RTX (Windows ML) |
+  |---|---|---|---|
+  | medium-v1 | 2.2 ms | 2.5 ms | 0.7 ms (p99 0.9) |
+  | diamond | 11.3 ms | 2.5 ms | 1.2 ms (p99 1.7) |
+
+  Session setup took 4.3 / 7.5 s (engine build, no cache yet). To use it the
+  exporter would pack small integer inputs as int32.
 
 **Real loop.** `scripts/benchmark_eval_two.py` runs the `eval_two` loop
 (Dolphin at 1x with blocking input, in-game CPU vs the agent) for a fixed
@@ -286,6 +312,7 @@ Local play only for now; netplay is on the back burner.
 
 - Whether one installer can ship both CPU and CUDA onnxruntime (the CUDA
   wheels are large), and what to offer AMD/Intel GPU users given DirectML's
-  results; Windows ML is untested.
+  results. Windows ML can't give Windows 10 or 23H2 more than DirectML,
+  but on 24H2+ its TensorRT-RTX beat our CUDA graphs 2-3x.
 - Whether and when the GUI should also support netplay (`scripts/netplay.py`);
   local play comes first.
