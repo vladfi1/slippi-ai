@@ -251,8 +251,10 @@ Local play only for now; netplay is on the back burner.
     distribute for the GUI; `export_onnx.py` defaults to it. Power users who
     want to run evals can download the original TF/JAX checkpoints.
   - The opponent is either the user, in a chosen port, or an in-game CPU.
-    Humans can keep their Slippi Dolphin controller settings
-    (`copy_home_directory`); otherwise their port is a GameCube adapter.
+  - A checkbox (on by default) starts Dolphin with a copy of Slippi Dolphin's
+    settings (`copy_home_directory`): graphics, audio, and a human's
+    controller config. Otherwise Dolphin uses defaults and a human's port is
+    a GameCube adapter.
   - Start/Stop and a log panel. The session runs in a spawn-context child
     process (not a daemon, since slippstream starts its own worker) and is
     killed if it doesn't stop within 10 s. Start warns if Dolphin is already

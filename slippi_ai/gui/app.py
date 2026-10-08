@@ -222,6 +222,14 @@ class MainWindow(QtWidgets.QMainWindow):
     self.iso_status = QtWidgets.QLabel()
     form.addRow('Melee 1.02 ISO', self.iso_row)
     form.addRow('', self.iso_status)
+
+    self.copy_settings_check = QtWidgets.QCheckBox(
+        'Use my Slippi Dolphin settings (graphics, audio, controllers)')
+    self.copy_settings_check.setToolTip(
+        "Starts Dolphin with a copy of Slippi Dolphin's settings; changes "
+        "made during the session aren't saved. If unchecked, Dolphin uses "
+        'default settings and your port uses a GameCube controller adapter.')
+    form.addRow('', self.copy_settings_check)
     return group
 
   def _phillip_group(self) -> QtWidgets.QGroupBox:
@@ -264,12 +272,6 @@ class MainWindow(QtWidgets.QMainWindow):
     for port in session.PORTS:
       self.port_combo.addItem(str(port), port)
 
-    self.controller_check = QtWidgets.QCheckBox(
-        'Use my Slippi Dolphin controller settings')
-    self.controller_check.setToolTip(
-        'Copies the controller setup from Slippi Dolphin. If unchecked, your '
-        'port uses a GameCube controller adapter.')
-
     self.cpu_character_combo = QtWidgets.QComboBox()
     for c in CPU_CHARACTERS:
       self.cpu_character_combo.addItem(character_name(c), c.name)
@@ -279,7 +281,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     grid.addWidget(self.human_radio, 0, 0)
     grid.addWidget(self.port_combo, 0, 1)
-    grid.addWidget(self.controller_check, 0, 2, 1, 2)
     grid.addWidget(self.cpu_radio, 1, 0)
     grid.addWidget(self.cpu_character_combo, 1, 1, 1, 2)
     grid.addWidget(self.cpu_level_spin, 1, 3)
@@ -305,7 +306,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     (self.human_radio if s.opponent == 'human' else self.cpu_radio).setChecked(True)
     self.port_combo.setCurrentIndex(max(0, self.port_combo.findData(s.human_port)))
-    self.controller_check.setChecked(s.use_slippi_controller_settings)
+    self.copy_settings_check.setChecked(s.copy_dolphin_settings)
     self.cpu_character_combo.setCurrentIndex(
         max(0, self.cpu_character_combo.findData(s.cpu_character)))
     self.cpu_level_spin.setValue(s.cpu_level)
@@ -325,7 +326,7 @@ class MainWindow(QtWidgets.QMainWindow):
       s.character = self.character_combo.currentData()
     s.opponent = 'human' if self.human_radio.isChecked() else 'cpu'
     s.human_port = self.port_combo.currentData()
-    s.use_slippi_controller_settings = self.controller_check.isChecked()
+    s.copy_dolphin_settings = self.copy_settings_check.isChecked()
     s.cpu_character = self.cpu_character_combo.currentData()
     s.cpu_level = self.cpu_level_spin.value()
     try:
@@ -518,14 +519,13 @@ class MainWindow(QtWidgets.QMainWindow):
     for widget in (self.dolphin_row, self.iso_row, self.models_row,
                    self.character_combo, self.opponent_filter_combo,
                    self.model_list, self.human_radio, self.cpu_radio,
-                   self.port_combo, self.controller_check,
+                   self.port_combo, self.copy_settings_check,
                    self.cpu_character_combo, self.cpu_level_spin):
       widget.setEnabled(not running)
 
     if not running:
       human = self.human_radio.isChecked()
       self.port_combo.setEnabled(human)
-      self.controller_check.setEnabled(human)
       self.cpu_character_combo.setEnabled(not human)
       self.cpu_level_spin.setEnabled(not human)
 
@@ -567,7 +567,7 @@ class MainWindow(QtWidgets.QMainWindow):
     dolphin.iso = self.iso_row.path()
     # Models with less delay than the default online delay need less.
     dolphin.online_delay = min(dolphin.online_delay, summary.delay)
-    dolphin.copy_home_directory = human and self.controller_check.isChecked()
+    dolphin.copy_home_directory = self.copy_settings_check.isChecked()
 
     return session.SessionConfig(
         players={ai_port: ai, other_port: other}, dolphin=dolphin)

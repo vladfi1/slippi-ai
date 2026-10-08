@@ -30,9 +30,10 @@ class Settings:
   human_port: int = 1
   cpu_level: int = 9
   cpu_character: str = 'FOX'
-  # Copy Slippi Dolphin's user folder, so that humans keep their controller
-  # settings. Otherwise their port is set to a GameCube adapter.
-  use_slippi_controller_settings: bool = True
+  # Copy Slippi Dolphin's user folder (DolphinConfig.copy_home_directory), so
+  # Dolphin keeps the user's graphics, audio and controller settings.
+  # Otherwise it uses defaults, and a human's port is a GameCube adapter.
+  copy_dolphin_settings: bool = True
 
 
 def settings_path() -> pathlib.Path:
@@ -53,6 +54,11 @@ def load() -> Settings:
   except (OSError, ValueError) as e:
     logging.warning(f'Ignoring unreadable settings at {path}: {e}')
     return Settings()
+
+  # Renamed when it started applying to more than controllers.
+  if 'use_slippi_controller_settings' in values:
+    values.setdefault(
+        'copy_dolphin_settings', values.pop('use_slippi_controller_settings'))
 
   fields = {f.name for f in dataclasses.fields(Settings)}
   settings = Settings(**{k: v for k, v in values.items() if k in fields})
