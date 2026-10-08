@@ -1,19 +1,15 @@
 """Times exported models on each Windows ML execution provider.
 
-Experimental. Registers the providers in the Windows ML catalog (downloading
-them if needed; vendor providers need Windows 11 24H2+), then times agent.step
-at batch size 1 on every onnxruntime device, checking sampled actions against
+Registers the providers in the Windows ML catalog (downloading them if
+needed; vendor providers need Windows 11 24H2+), then times agent.step at
+batch size 1 on every onnxruntime device, checking sampled actions against
 CPU given the same inputs. TensorRT-RTX needs models exported with
 --widen_ints (the default); otherwise it leaves them to the CPU.
 
-Setup (Python 3.10-3.13, plus the matching Windows App SDK Runtime):
-
-  pip install -e . "wasdk-Microsoft.Windows.AI.MachineLearning[all]" \\
-    wasdk-Microsoft.Windows.ApplicationModel.DynamicDependency.Bootstrap \\
-    onnxruntime-windowsml
+Setup: pip install -e .[winml], plus the matching Windows App SDK Runtime
+(see slippi_ai/winml.py).
 """
 
-import ctypes
 import os
 import time
 
@@ -21,7 +17,7 @@ from absl import app, flags
 import numpy as np
 import tree
 
-from slippi_ai import data, onnx_policies, paths, saving, utils
+from slippi_ai import data, onnx_policies, paths, saving, utils, winml
 
 MODELS = flags.DEFINE_list(
     'models', ['deployed_models/medium-v1-jax.onnx', 'deployed_models/diamond.onnx'],
@@ -34,26 +30,6 @@ RUNTIME_CACHE = flags.DEFINE_string(
     'model), which roughly halves its session setup on later runs.')
 DOWNLOAD = flags.DEFINE_boolean(
     'download', True, 'Download catalog providers that are not installed.')
-
-
-def register_catalog_providers(ort, winml):
-  catalog = winml.ExecutionProviderCatalog.get_default()
-  providers = list(catalog.find_all_providers())
-  print(f'Catalog providers: {len(providers)}')
-  for p in providers:
-    print(f'  {p.name}: {p.ready_state}')
-    if p.ready_state == winml.ExecutionProviderReadyState.NOT_PRESENT and not DOWNLOAD.value:
-      continue
-    start = time.time()
-    result = p.ensure_ready_async().get()
-    print(f'    ensure_ready: {result.status} ({time.time() - start:.1f} s)')
-    if result.status == winml.ExecutionProviderReadyResultState.SUCCESS:
-      print(f'    library: {p.library_path!r}')
-      try:
-        # Windows ML's own register calls don't reach Python's onnxruntime.
-        ort.register_execution_provider_library(p.name, p.library_path)
-      except Exception as e:  # pylint: disable=broad-except
-        print(f'    could not register: {e}')
 
 
 def time_model(ort, path: str, replay):
@@ -105,23 +81,16 @@ def time_model(ort, path: str, replay):
 
 
 def main(_):
-  # Registering TensorRT-RTX crashes unless the system C++ runtime is already
-  # loaded (here dm-tree happens to load it, but don't rely on that).
-  ctypes.WinDLL('msvcp140.dll')
-  from winui3.microsoft.windows.applicationmodel.dynamicdependency import bootstrap
+  import onnxruntime as ort
 
-  with bootstrap.initialize():
-    import onnxruntime as ort
-    import winui3.microsoft.windows.ai.machinelearning as winml
+  print('onnxruntime', ort.__version__)
+  print('Windows ML providers:', winml.initialize(download=DOWNLOAD.value))
 
-    print('onnxruntime', ort.__version__)
-    register_catalog_providers(ort, winml)
-
-    replay_path = os.path.join(
-        paths.TOY_DATA_DIR, sorted(os.listdir(paths.TOY_DATA_DIR))[0])
-    replay = data.read_table(replay_path, compressed=True)
-    for path in MODELS.value:
-      time_model(ort, path, replay)
+  replay_path = os.path.join(
+      paths.TOY_DATA_DIR, sorted(os.listdir(paths.TOY_DATA_DIR))[0])
+  replay = data.read_table(replay_path, compressed=True)
+  for path in MODELS.value:
+    time_model(ort, path, replay)
 
 
 if __name__ == '__main__':

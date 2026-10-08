@@ -273,8 +273,21 @@ Local play only for now; netplay is on the back burner.
   exes start and that the frozen onnxruntime loads an exported model, and
   uploads the bundle as a workflow artifact for testers. The GUI is only
   built there, since a windowed exe reports errors in a dialog.
-- Not yet tried: a CUDA bundle (`onnxruntime-gpu` with the pip CUDA/cuDNN
-  DLLs, likely >1 GB).
+- **One build, on Windows ML** (decided 2026-10-08): `onnxruntime-windowsml`
+  falls back to CPU (and DirectML) on older Windows, including Windows 10,
+  and gets TensorRT-RTX on 24H2+ with RTX GPUs, which beat CUDA graphs. No
+  separate CPU or CUDA bundles.
+  - Done: `pip install .[winml]`. `slippi_ai/winml.py` starts Windows ML once
+    per process (preloading msvcp140) and registers the catalog's providers,
+    downloading them if needed. `onnx_policies.default_providers()` prefers
+    TensorRT-RTX, then CUDA, then CPU; `SessionRunner` creates TensorRT-RTX
+    sessions by device (it fails by name, though onnxruntime lists it as
+    available), with its runtime cache in
+    `%LOCALAPPDATA%\slippi-ai\tensorrt-rtx` (written when the session
+    closes; `diamond` 6.5 s, then 3.5 s), and falls back to CPU if that
+    fails.
+  - To do: a real-loop benchmark, the GUI showing the device and first-load
+    progress, and packaging with the Windows App SDK Runtime installer.
 - **GUI: PySide6 (done, local play).** `python -m slippi_ai.gui`
   (`pip install slippi-ai[gui,onnx]`) or the bundle's `slippi-ai.exe`.
   - One window, with settings saved to `%APPDATA%\slippi-ai\gui.json`.
@@ -325,9 +338,7 @@ Local play only for now; netplay is on the back burner.
 
 ## Open questions
 
-- Whether one installer can ship both CPU and CUDA onnxruntime (the CUDA
-  wheels are large), and what to offer AMD/Intel GPU users given DirectML's
-  results. Windows ML can't give Windows 10 or 23H2 more than DirectML,
-  but on 24H2+ its TensorRT-RTX beat our CUDA graphs 2-3x.
+- How Windows ML's AMD and Intel providers (MIGraphX, OpenVINO) compare
+  with CPU; needs testers with that hardware on 24H2+.
 - Whether and when the GUI should also support netplay (`scripts/netplay.py`);
   local play comes first.

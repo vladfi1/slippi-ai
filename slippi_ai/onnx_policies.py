@@ -26,7 +26,7 @@ import typing as tp
 from absl import logging
 import numpy as np
 
-from slippi_ai import agents, controller_heads, policies, utils
+from slippi_ai import agents, controller_heads, policies, utils, winml
 from slippi_ai.action_space import custom_v1
 from slippi_ai.agents import Platform
 from slippi_ai.controller_heads import SampleOutputs
@@ -390,18 +390,42 @@ def load_policy_from_state(state: dict) -> OnnxPolicy:
 
 CUDA = 'CUDAExecutionProvider'
 CPU = 'CPUExecutionProvider'
+TENSORRT_RTX = winml.TENSORRT_RTX
+# Providers that never need Windows ML.
+_BUILT_IN = (CPU, CUDA, 'DmlExecutionProvider')
+
+
+def _plugin_providers() -> set[str]:
+  """Providers that are chosen by device rather than by name: Windows ML's.
+
+  onnxruntime lists them as available once registered, but creating a
+  session with them by name fails.
+  """
+  return set(winml.initialize())
 
 
 def default_providers() -> list[str]:
-  """CUDA if available, else CPU.
+  """TensorRT-RTX (Windows ML) if available, else CUDA, else CPU.
 
   Other providers must be asked for explicitly: DirectML was slower than CPU
   in our tests, and TensorRT needs a separate install.
   """
   import onnxruntime as ort
+  if TENSORRT_RTX in _plugin_providers():
+    return [TENSORRT_RTX, CPU]
   if CUDA in ort.get_available_providers():
     return [CUDA, CPU]
   return [CPU]
+
+
+def _plugin_provider_options(provider: str, cuda_graph: bool) -> dict[str, str]:
+  if provider == TENSORRT_RTX:
+    return {
+        'enable_cuda_graph': str(int(cuda_graph)),
+        # Compiled kernels, a few MB per model, which halve later setups.
+        'nv_runtime_cache_path': winml.cache_dir('tensorrt-rtx'),
+    }
+  return {}
 
 
 class SessionRunner:
@@ -427,13 +451,14 @@ class SessionRunner:
       # Finds CUDA and cuDNN from the nvidia-* pip packages, if installed.
       ort.preload_dlls()
 
-    if cuda_graph and providers[0] == CUDA and policy.batch_size != batch_size:
+    # TensorRT-RTX captures its own CUDA graphs; with CUDA we bind buffers.
+    cuda_graph = cuda_graph and providers[0] in (CUDA, TENSORRT_RTX)
+    if cuda_graph and policy.batch_size != batch_size:
       logging.warning(
           'Not using CUDA graphs: the model has batch size %s, not %d. '
           'Export with --batch_size=%d to use them.',
           policy.batch_size, batch_size, batch_size)
       cuda_graph = False
-    cuda_graph = cuda_graph and providers[0] == CUDA
 
     provider_options = [
         (p, {'enable_cuda_graph': '1'}) if p == CUDA and cuda_graph else p
@@ -442,8 +467,13 @@ class SessionRunner:
     session_options = ort.SessionOptions()
     # Silences warnings about unused initializers in the exported graph.
     session_options.log_severity_level = 3
-    self.session = ort.InferenceSession(
-        policy.model, session_options, providers=provider_options)
+    if providers[0] not in _BUILT_IN and providers[0] in _plugin_providers():
+      self.session = self._plugin_session(
+          ort, policy, session_options, providers[0], cuda_graph)
+      cuda_graph = False
+    else:
+      self.session = ort.InferenceSession(
+          policy.model, session_options, providers=provider_options)
     self.providers = self.session.get_providers()
     # Dead inputs may have been pruned from the graph.
     self.input_names = [i.name for i in self.session.get_inputs()]
@@ -467,6 +497,26 @@ class SessionRunner:
         self._binding.bind_ortvalue_input(key, value)
       for key, value in self._outputs.items():
         self._binding.bind_ortvalue_output(key, value)
+
+  @staticmethod
+  def _plugin_session(ort, policy, session_options, provider, cuda_graph):
+    """A session on a provider chosen by device, falling back to the CPU.
+
+    Such providers can't be combined with others by name; onnxruntime runs
+    any nodes they don't support on the CPU.
+    """
+    devices = [d for d in ort.get_ep_devices() if d.ep_name == provider]
+    session_options.add_provider_for_devices(
+        devices, _plugin_provider_options(provider, cuda_graph))
+    logging.info('Creating a %s session; the first time for a model can '
+                 'take a few seconds.', provider)
+    try:
+      return ort.InferenceSession(policy.model, session_options)
+    except Exception as e:  # pylint: disable=broad-except
+      logging.warning('Could not use %s, using the CPU: %s', provider, e)
+      cpu_options = ort.SessionOptions()
+      cpu_options.log_severity_level = session_options.log_severity_level
+      return ort.InferenceSession(policy.model, cpu_options, providers=[CPU])
 
   def run(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     if not self.cuda_graph:
