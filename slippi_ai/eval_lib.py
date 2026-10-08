@@ -769,7 +769,8 @@ class AgentSummary:
       elif 'opponent' in combined_state:  # train_two
         opponent_names = [combined_state['opponent']]
       else:
-        # Exported ONNX models keep only the agent config, like self-play.
+        # Exported self-play models: ONNX keeps the agent config but not the
+        # rl_config around it.
         rl_chars = combined_state['agent_config'].get('char')
         if rl_chars is not None:
           characters = [melee.Character(c) for c in rl_chars]

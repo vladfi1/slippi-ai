@@ -399,6 +399,15 @@ def store_weights_as_float16(model, min_size: int = 1024):
   return model
 
 
+def _opponent_names(state: dict) -> tp.Optional[list[str]]:
+  """The opponents of train_two/train_many agents; see AgentSummary."""
+  if 'opponents' in state:  # train_many
+    return list(state['opponents'])
+  if 'opponent' in state:  # train_two
+    return [state['opponent']]
+  return None
+
+
 def export_state(
     state: dict,
     batch_size: tp.Optional[int] = None,
@@ -442,6 +451,7 @@ def export_state(
       config=onnx_config,
       name_map=state['name_map'],
       agent_config=_to_json_safe(eval_lib.get_agent_config(state)),
+      opponents=_opponent_names(state),
       initial_state=_initial_state_metadata(policy),
       # For decoding the graph's actions, see onnx_policies.ControllerDecoder.
       controller=_to_json_safe(dataclasses.asdict(embed_config.controller)),

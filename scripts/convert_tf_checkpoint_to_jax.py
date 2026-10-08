@@ -280,6 +280,9 @@ def _convert_lstm_layer(params: ArrayTree, reader: LeafReader, layer_index: int)
     _set_path(params, f'{core_base}/{gate_name}/bias', gate_value)
 
 
+RL_KEYS = ('rl_config', 'agent_config', 'opponent', 'opponents')
+
+
 def convert_state(source_state: dict) -> dict:
   config = _jax_config_from_tf_config(source_state['config'])
   policy = _policy_from_config(config)
@@ -292,12 +295,18 @@ def convert_state(source_state: dict) -> dict:
   reader.finish()
 
   # TODO: Convert optimizer/value-function state.
-  return {
+  converted = {
       'state': {'policy': params},
       'config': config,
       'name_map': copy.deepcopy(source_state.get('name_map', {})),
       'step': int(source_state.get('step', source_state['state'].get('step', 0))),
   }
+  # RL settings: the agent's characters, the name it was trained with, and its
+  # opponents. See eval_lib.get_agent_config and AgentSummary.
+  for key in RL_KEYS:
+    if key in source_state:
+      converted[key] = copy.deepcopy(source_state[key])
+  return converted
 
 
 def convert_file(source_path: str | Path, output_path: str | Path) -> None:

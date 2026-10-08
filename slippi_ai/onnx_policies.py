@@ -291,6 +291,9 @@ def load_state_from_disk(path: str, load_model: bool = True) -> dict:
     state['onnx_model'] = model
   if metadata['agent_config'] is not None:
     state['agent_config'] = metadata['agent_config']
+  # Missing in models exported before opponents were saved.
+  if metadata.get('opponents') is not None:
+    state['opponents'] = metadata['opponents']
   return state
 
 
