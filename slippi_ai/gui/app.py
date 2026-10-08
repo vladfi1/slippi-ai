@@ -10,8 +10,8 @@ import typing as tp
 import melee
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from slippi_ai import eval_lib, saving, session, utils
-from slippi_ai.gui import runner, settings as settings_lib
+from slippi_ai import session, utils
+from slippi_ai.gui import models as models_lib, runner, settings as settings_lib
 
 _CHARACTER_NAMES = {
     melee.Character.CPTFALCON: 'Captain Falcon',
@@ -64,10 +64,13 @@ def run_in_thread(
         result = fn()
       else:
         result = fn(signals.progress.emit)
+      error = None
     except Exception as e:
-      signals.done.emit(None, e)
-    else:
-      signals.done.emit(result, None)
+      result, error = None, e
+    try:
+      signals.done.emit(result, error)
+    except RuntimeError:
+      pass  # The app quit while fn was running.
 
   _live_signals.add(signals)
   signals.done.connect(lambda *_: _live_signals.discard(signals))
@@ -90,6 +93,24 @@ def running_dolphins() -> list[str]:
     if 'dolphin' in name.lower():
       names.add(name)
   return sorted(names)
+
+
+def _set_items(
+    combo: QtWidgets.QComboBox,
+    items: list[tuple[str, tp.Any]],
+    preferred: tp.Any,
+):
+  """Replaces a combo box's items, selecting `preferred` if it's there."""
+  combo.blockSignals(True)
+  combo.clear()
+  for text, data in items:
+    combo.addItem(text, data)
+  combo.setCurrentIndex(max(0, combo.findData(preferred)))
+  combo.blockSignals(False)
+
+
+def _same_path(a: str, b: str) -> bool:
+  return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 def _status(label: QtWidgets.QLabel, text: str, ok: tp.Optional[bool]):
@@ -146,9 +167,9 @@ class MainWindow(QtWidgets.QMainWindow):
     self._dolphin_ok = False
     self._iso_ok = False
     self._iso_checked_path = None
-    self._model_path = None
-    self._model_summary: tp.Optional[eval_lib.AgentSummary] = None
-    self._model_loading = False
+    self._models: list[models_lib.Model] = []
+    self._models_scan_id = 0  # Ignores results from earlier scans.
+    self._models_scanning = False
     self._process: tp.Optional[runner.SessionProcess] = None
     self._stop_requested_at: tp.Optional[QtCore.QElapsedTimer] = None
 
@@ -181,7 +202,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     self._load_settings()
     self._update_controls()
-    self.resize(720, 640)
+    self.resize(720, 780)
 
   # Layout
 
@@ -207,16 +228,28 @@ class MainWindow(QtWidgets.QMainWindow):
     group = QtWidgets.QGroupBox('phillip')
     form = QtWidgets.QFormLayout(group)
 
-    self.model_row = PathRow(
-        choose_dir=False, file_filter='phillip models (*.onnx);;All files (*)')
-    self.model_row.changed.connect(self._load_model)
-    self.model_status = QtWidgets.QLabel()
-    self.model_status.setWordWrap(True)
-    form.addRow('Model file', self.model_row)
-    form.addRow('', self.model_status)
+    self.models_row = PathRow(choose_dir=True)
+    self.models_row.changed.connect(self._scan_models)
+    self.models_status = QtWidgets.QLabel()
+    self.models_status.setWordWrap(True)
+    form.addRow('Models folder', self.models_row)
+    form.addRow('', self.models_status)
 
+    # The settings remember what the user picked, even while no model in the
+    # folder matches it.
     self.character_combo = QtWidgets.QComboBox()
-    form.addRow('Character', self.character_combo)
+    self.character_combo.activated.connect(self._character_chosen)
+    self.opponent_filter_combo = QtWidgets.QComboBox()
+    self.opponent_filter_combo.activated.connect(self._opponent_filter_chosen)
+    form.addRow('phillip\'s character', self.character_combo)
+    form.addRow('Opponent\'s character', self.opponent_filter_combo)
+
+    self.model_list = QtWidgets.QTreeWidget()
+    self.model_list.setHeaderLabels(['Model', 'Reaction delay', 'Trained against'])
+    self.model_list.setRootIsDecorated(False)
+    self.model_list.setMinimumHeight(110)
+    self.model_list.itemSelectionChanged.connect(self._model_chosen)
+    form.addRow('Model', self.model_list)
     return group
 
   def _opponent_group(self) -> QtWidgets.QGroupBox:
@@ -279,14 +312,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     self.dolphin_row.set_path(s.dolphin_path)
     self.iso_row.set_path(s.iso_path)
-    self.model_row.set_path(s.model_path)
+    self.models_row.set_path(s.models_dir)
 
   def _save_settings(self):
     s = self.settings
     s.dolphin_path = self.dolphin_row.path()
     s.iso_path = self.iso_row.path()
-    s.model_path = self.model_row.path()
-    if self.character_combo.currentData():
+    s.models_dir = self.models_row.path()
+    model = self._selected_model()
+    if model is not None:
+      s.model_path = model.path
       s.character = self.character_combo.currentData()
     s.opponent = 'human' if self.human_radio.isChecked() else 'cpu'
     s.human_port = self.port_combo.currentData()
@@ -345,50 +380,133 @@ class MainWindow(QtWidgets.QMainWindow):
           on_done, on_progress)
     self._update_controls()
 
-  def _load_model(self, path: str):
-    if path == self._model_path:
-      return
-    self._model_path = path
-    self._model_summary = None
-    self.character_combo.clear()
+  def _scan_models(self, folder: str):
+    self._models_scan_id += 1
+    scan_id = self._models_scan_id
+    self._models = []
+    self._models_scanning = False
+    self.models_status.setToolTip('')
+    self._update_character_filter()
 
-    if not path:
-      _status(self.model_status, 'Choose an exported phillip model (.onnx).', False)
-      self._update_controls()
+    if not folder:
+      _status(self.models_status,
+              'Choose the folder with your phillip models (.onnx files).', False)
       return
-    if not os.path.isfile(path):
-      _status(self.model_status, 'File not found.', False)
-      self._update_controls()
+    if not os.path.isdir(folder):
+      _status(self.models_status, 'Folder not found.', False)
       return
 
-    self._model_loading = True
-    _status(self.model_status, 'Loading model...', None)
+    self._models_scanning = True
+    _status(self.models_status, 'Looking for models...', None)
     self._update_controls()
 
-    def load():
-      state = saving.load_state_from_disk(path)
-      return eval_lib.AgentSummary.from_state(state)
-
-    def on_done(summary: eval_lib.AgentSummary, error):
-      if path != self._model_path:
-        return  # Another model was chosen meanwhile.
-      self._model_loading = False
+    def on_done(result, error):
+      if scan_id != self._models_scan_id:
+        return  # Another folder was chosen meanwhile.
+      self._models_scanning = False
       if error is not None:
-        _status(self.model_status, f'Could not load model: {error}', False)
+        _status(self.models_status, f'Could not read the folder: {error}', False)
       else:
-        self._model_summary = summary
-        self.character_combo.clear()
-        for c in summary.characters:
-          self.character_combo.addItem(character_name(c), c.name)
-        index = self.character_combo.findData(self.settings.character)
-        self.character_combo.setCurrentIndex(max(0, index))
-        frames = 'frame' if summary.delay == 1 else 'frames'
-        _status(
-            self.model_status,
-            f'Reaction delay: {summary.delay} {frames}.', True)
-      self._update_controls()
+        self._models, errors = result
+        count = len(self._models)
+        if count:
+          text = f'Found {count} model{"" if count == 1 else "s"}.'
+        else:
+          text = 'No phillip models (.onnx files) found.'
+        if errors:
+          text += f' Could not read {len(errors)} .onnx file(s); hover for details.'
+          self.models_status.setToolTip(
+              '\n'.join(f'{path}: {message}' for path, message in errors))
+        _status(self.models_status, text, bool(count))
+      self._update_character_filter()
 
-    run_in_thread(load, on_done)
+    run_in_thread(lambda: models_lib.scan(folder), on_done)
+
+  def _character(self) -> tp.Optional[melee.Character]:
+    name = self.character_combo.currentData()
+    return melee.Character[name] if name else None
+
+  def _opponent_filter(self) -> tp.Optional[melee.Character]:
+    name = self.opponent_filter_combo.currentData()
+    return melee.Character[name] if name else None
+
+  def _selected_model(self) -> tp.Optional[models_lib.Model]:
+    items = self.model_list.selectedItems()
+    if not items:
+      return None
+    return items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
+
+  def _character_chosen(self):
+    self.settings.character = self.character_combo.currentData()
+    self._update_opponent_filter()
+
+  def _opponent_filter_chosen(self):
+    self.settings.opponent_character = self.opponent_filter_combo.currentData()
+    self._update_model_list()
+
+  def _model_chosen(self):
+    model = self._selected_model()
+    if model is not None:
+      self.settings.model_path = model.path
+    self._update_controls()
+
+  def _update_character_filter(self):
+    characters = {c for m in self._models for c in m.summary.characters}
+    _set_items(
+        self.character_combo,
+        [(character_name(c), c.name)
+         for c in sorted(characters, key=character_name)],
+        self.settings.character)
+    self._update_opponent_filter()
+
+  def _update_opponent_filter(self):
+    """Lists the opponents of the models that play phillip's character."""
+    character = self._character()
+    opponents = {
+        c for m in self._models if character and m.plays(character)
+        for c in m.summary.opponents}
+    _set_items(
+        self.opponent_filter_combo,
+        [('Any', '')] + [(character_name(c), c.name)
+                         for c in sorted(opponents, key=character_name)],
+        self.settings.opponent_character)
+    self._update_model_list()
+
+  def _update_model_list(self):
+    character = self._character()
+    opponent = self._opponent_filter()
+    matching = [
+        m for m in self._models
+        if character and m.plays(character)
+        and (opponent is None or m.plays_against(opponent))]
+
+    self.model_list.blockSignals(True)
+    self.model_list.clear()
+    selected = None
+    for model in matching:
+      summary = model.summary
+      opponents = sorted(summary.opponents, key=character_name)
+      if len(opponents) > 3:
+        against = f'{len(opponents)} characters'
+      else:
+        against = ', '.join(character_name(c) for c in opponents)
+      frames = 'frame' if summary.delay == 1 else 'frames'
+      item = QtWidgets.QTreeWidgetItem(
+          [model.name, f'{summary.delay} {frames}', against])
+      item.setData(0, QtCore.Qt.ItemDataRole.UserRole, model)
+      item.setToolTip(0, model.path)
+      item.setToolTip(2, ', '.join(character_name(c) for c in opponents))
+      self.model_list.addTopLevelItem(item)
+      if selected is None and _same_path(model.path, self.settings.model_path):
+        selected = item
+    if selected is None and matching:
+      selected = self.model_list.topLevelItem(0)
+    if selected is not None:
+      self.model_list.setCurrentItem(selected)
+    for column in range(self.model_list.columnCount()):
+      self.model_list.resizeColumnToContents(column)
+    self.model_list.blockSignals(False)
+    self._update_controls()
 
   # Running
 
@@ -397,8 +515,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def _update_controls(self):
     running = self._running()
-    for widget in (self.dolphin_row, self.iso_row, self.model_row,
-                   self.character_combo, self.human_radio, self.cpu_radio,
+    for widget in (self.dolphin_row, self.iso_row, self.models_row,
+                   self.character_combo, self.opponent_filter_combo,
+                   self.model_list, self.human_radio, self.cpu_radio,
                    self.port_combo, self.controller_check,
                    self.cpu_character_combo, self.cpu_level_spin):
       widget.setEnabled(not running)
@@ -411,8 +530,8 @@ class MainWindow(QtWidgets.QMainWindow):
       self.cpu_level_spin.setEnabled(not human)
 
     ready = (
-        self._dolphin_ok and self._iso_ok and
-        self._model_summary is not None and not self._model_loading)
+        self._dolphin_ok and self._iso_ok and not self._models_scanning and
+        self._character() is not None and self._selected_model() is not None)
     if running:
       self.start_button.setText('Stop')
       self.start_button.setEnabled(self._stop_requested_at is None)
@@ -421,8 +540,9 @@ class MainWindow(QtWidgets.QMainWindow):
       self.start_button.setEnabled(ready)
 
   def _session_config(self) -> session.SessionConfig:
-    summary = self._model_summary
-    assert summary is not None
+    model = self._selected_model()
+    assert model is not None
+    summary = model.summary
 
     defaults = utils.map_nt(lambda item: item.default, session.player_flags())
     human = self.human_radio.isChecked()
@@ -431,8 +551,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     ai = utils.map_nt(lambda x: x, defaults)
     ai['type'] = 'ai'
-    ai['character'] = melee.Character[self.character_combo.currentData()]
-    ai['ai']['path'] = self.model_row.path()
+    ai['character'] = self._character()
+    ai['ai']['path'] = model.path
 
     other = utils.map_nt(lambda x: x, defaults)
     if human:

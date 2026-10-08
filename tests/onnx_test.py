@@ -8,6 +8,7 @@ Requires the onnx-export extra: pip install .[onnx-export]
 """
 
 import os
+import tempfile
 
 from absl import app, flags
 import jax
@@ -62,6 +63,14 @@ def test_model(model: str, replay):
       state, batch_size=BATCH_SIZE if FLAGS.fixed_batch else None,
       weight_dtype=FLAGS.weight_dtype,
   ).SerializeToString()
+
+  # The GUI reads metadata from files without loading the graph.
+  with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, 'model.onnx')
+    with open(path, 'wb') as f:
+      f.write(onnx_model)
+    assert (onnx_policies.read_metadata_from_file(path)
+            == onnx_policies.read_metadata(onnx_model))
 
   onnx_policy = onnx_policies.OnnxPolicy(onnx_model)
   agent = onnx_policy.build_agent(

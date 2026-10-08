@@ -239,8 +239,13 @@ Local play only for now; netplay is on the back burner.
   - One window, with settings saved to `%APPDATA%\slippi-ai\gui.json`.
     Slippi Dolphin and the ISO are found from Slippi Launcher's settings
     (Browse otherwise); the ISO is MD5-checked against NTSC 1.02.
-  - The model is a local `.onnx` file; its metadata gives the reaction delay
-    and the character list.
+  - phillip's models come from a folder of `.onnx` files (searched
+    recursively). The user picks phillip's character and optionally the
+    opponent's, and chooses among the models that play that matchup; the
+    list shows each model's reaction delay and who it was trained against.
+    Only the metadata is read (`onnx_policies.read_metadata_from_file` skips
+    the graph in the protobuf), about 1 ms per model instead of up to 0.8 s
+    with an onnxruntime session.
   - The opponent is either the user, in a chosen port, or an in-game CPU.
     Humans can keep their Slippi Dolphin controller settings
     (`copy_home_directory`); otherwise their port is a GameCube adapter.

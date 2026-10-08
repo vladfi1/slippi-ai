@@ -18,6 +18,7 @@ overhead dominates small models on GPUs. The layouts are in the metadata.
 """
 
 import collections
+import io
 import json
 import math
 import typing as tp
@@ -187,8 +188,7 @@ class ControllerDecoder:
     return self._bucketer.decode(action)
 
 
-def _session_metadata(session) -> dict:
-  custom_metadata = session.get_modelmeta().custom_metadata_map
+def _decode_metadata(custom_metadata: tp.Mapping[str, str]) -> dict:
   if METADATA_KEY not in custom_metadata:
     raise ValueError('ONNX model was not exported by slippi-ai.')
   metadata = json.loads(custom_metadata[METADATA_KEY])
@@ -203,21 +203,92 @@ def read_metadata(model: bytes) -> dict:
   import onnxruntime as ort
   options = ort.SessionOptions()
   options.log_severity_level = 3  # Errors only; graph cleanup warns.
-  return _session_metadata(ort.InferenceSession(
-      model, options, providers=['CPUExecutionProvider']))
+  session = ort.InferenceSession(
+      model, options, providers=['CPUExecutionProvider'])
+  return _decode_metadata(session.get_modelmeta().custom_metadata_map)
 
 
-def load_state_from_disk(path: str) -> dict:
-  """Loads an exported model into a state dict like a pickled checkpoint."""
+def _read_varint(f: tp.BinaryIO) -> int:
+  result = shift = 0
+  while True:
+    byte = f.read(1)
+    if not byte:
+      raise EOFError
+    result |= (byte[0] & 0x7f) << shift
+    if byte[0] < 0x80:
+      return result
+    shift += 7
+
+
+def _protobuf_fields(f: tp.BinaryIO, wanted: set[int]) -> tp.Iterator[tuple[int, bytes]]:
+  """Yields (field number, bytes) for the length-delimited fields in `wanted`.
+
+  Other fields are skipped without being read.
+  """
+  while True:
+    try:
+      key = _read_varint(f)
+    except EOFError:
+      return
+    field, wire_type = key >> 3, key & 7
+    if wire_type == 0:
+      _read_varint(f)
+    elif wire_type == 1:
+      f.seek(8, 1)
+    elif wire_type == 5:
+      f.seek(4, 1)
+    elif wire_type == 2:
+      length = _read_varint(f)
+      if field in wanted:
+        value = f.read(length)
+        if len(value) != length:
+          raise EOFError('Truncated ONNX file.')
+        yield field, value
+      else:
+        f.seek(length, 1)
+    else:
+      raise ValueError(f'Not an ONNX file (protobuf wire type {wire_type}).')
+
+
+# ModelProto.metadata_props and StringStringEntryProto's key and value.
+_METADATA_PROPS_FIELD = 14
+_ENTRY_KEY_FIELD = 1
+_ENTRY_VALUE_FIELD = 2
+
+
+def read_metadata_from_file(path: str) -> dict:
+  """Like read_metadata, but skips over the graph instead of loading it."""
+  custom_metadata = {}
   with open(path, 'rb') as f:
-    model = f.read()
-  metadata = read_metadata(model)
+    for _, entry in _protobuf_fields(f, {_METADATA_PROPS_FIELD}):
+      fields = dict(_protobuf_fields(
+          io.BytesIO(entry), {_ENTRY_KEY_FIELD, _ENTRY_VALUE_FIELD}))
+      key = fields.get(_ENTRY_KEY_FIELD, b'').decode()
+      custom_metadata[key] = fields.get(_ENTRY_VALUE_FIELD, b'').decode()
+  return _decode_metadata(custom_metadata)
+
+
+def load_state_from_disk(path: str, load_model: bool = True) -> dict:
+  """Loads an exported model into a state dict like a pickled checkpoint.
+
+  With load_model=False, only the metadata is read; the state has no model
+  and is only good for e.g. eval_lib.AgentSummary.
+  """
+  if load_model:
+    with open(path, 'rb') as f:
+      model = f.read()
+    metadata = read_metadata(model)
+  else:
+    model = None
+    metadata = read_metadata_from_file(path)
+
   state = dict(
       config=metadata['config'],
       name_map=metadata['name_map'],
-      onnx_model=model,
       onnx_metadata=metadata,
   )
+  if model is not None:
+    state['onnx_model'] = model
   if metadata['agent_config'] is not None:
     state['agent_config'] = metadata['agent_config']
   return state

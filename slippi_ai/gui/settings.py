@@ -21,8 +21,11 @@ MELEE_102_MD5 = '0e63d4223b01d9aba596259dc155a174'
 class Settings:
   dolphin_path: str = ''
   iso_path: str = ''
-  model_path: str = ''
-  character: str = ''  # melee.Character name; empty for the model's first.
+  models_dir: str = ''
+  model_path: str = ''  # The chosen model, in models_dir.
+  character: str = ''  # phillip's melee.Character name.
+  # Filters the models by who they were trained against; empty for any.
+  opponent_character: str = ''
   opponent: str = 'human'  # 'human' or 'cpu'
   human_port: int = 1
   cpu_level: int = 9
@@ -52,7 +55,11 @@ def load() -> Settings:
     return Settings()
 
   fields = {f.name for f in dataclasses.fields(Settings)}
-  return Settings(**{k: v for k, v in values.items() if k in fields})
+  settings = Settings(**{k: v for k, v in values.items() if k in fields})
+  # Older settings had a model file but no folder.
+  if not settings.models_dir and settings.model_path:
+    settings.models_dir = os.path.dirname(settings.model_path)
+  return settings
 
 
 def save(settings: Settings):
