@@ -13,6 +13,7 @@ Setup (Python 3.10-3.13, plus the matching Windows App SDK Runtime):
     onnxruntime-windowsml
 """
 
+import ctypes
 import os
 import time
 
@@ -27,6 +28,10 @@ MODELS = flags.DEFINE_list(
     'Exported .onnx models.')
 STEPS = flags.DEFINE_integer('steps', 300, 'Timed steps per model and device.')
 WARMUP = flags.DEFINE_integer('warmup', 20, 'Untimed steps first.')
+RUNTIME_CACHE = flags.DEFINE_string(
+    'runtime_cache', None,
+    "Folder for TensorRT-RTX's runtime cache (compiled kernels, ~2 MB per "
+    'model), which roughly halves its session setup on later runs.')
 DOWNLOAD = flags.DEFINE_boolean(
     'download', True, 'Download catalog providers that are not installed.')
 
@@ -65,7 +70,10 @@ def time_model(ort, path: str, replay):
       # Catalog providers are chosen by device, not by name.
       options = ort.SessionOptions()
       options.log_severity_level = 3
-      options.add_provider_for_devices(ep_devices, {})
+      provider_options = {}
+      if ep_name == 'NvTensorRTRTXExecutionProvider' and RUNTIME_CACHE.value:
+        provider_options['nv_runtime_cache_path'] = RUNTIME_CACHE.value
+      options.add_provider_for_devices(ep_devices, provider_options)
       start = time.time()
       agent.runner.session = ort.InferenceSession(policy.model, options)
       setup = time.time() - start
@@ -97,6 +105,9 @@ def time_model(ort, path: str, replay):
 
 
 def main(_):
+  # Registering TensorRT-RTX crashes unless the system C++ runtime is already
+  # loaded (here dm-tree happens to load it, but don't rely on that).
+  ctypes.WinDLL('msvcp140.dll')
   from winui3.microsoft.windows.applicationmodel.dynamicdependency import bootstrap
 
   with bootstrap.initialize():

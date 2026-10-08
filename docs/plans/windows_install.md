@@ -164,6 +164,15 @@ Tried and rejected:
   | diamond | 11.3 ms | 2.5 ms | 1.2 ms (p99 1.7) |
 
   Session setup took 4.3 / 7.5 s (engine build, no cache yet).
+- **TensorRT-RTX setup caching** (`diamond`, fresh process each time):
+  no cache 7.2-8.3 s; runtime cache (`nv_runtime_cache_path`, compiled
+  kernels, 1.7 MB) 7.1 s when cold, then 3.2 s; a compiled EP context model
+  (`ort.ModelCompiler`, one-time 8.2 s) 4.4 s, or 0.37 s together with the
+  runtime cache, but it writes a 394 MB engine (float32 weights, twice the
+  float16 `.onnx`). Decided: use the runtime cache only; twice the model
+  size on disk per model isn't worth a few seconds of loading.
+- Registering TensorRT-RTX from Python segfaults unless the system C++
+  runtime (`msvcp140.dll`) is already loaded; load it explicitly first.
 - `export_onnx.py --widen_ints` (the default) now exports int32 instead of
   8/16-bit integers: the packed inputs and outputs (3 input tensors instead
   of 5) and, by a graph pass, the casts and constants inside. Real exports
