@@ -262,9 +262,12 @@ ones, with the same character, opponent and delay filters, and downloads one
 when it's chosen. The packaged manifest is replaced; its download, sha256
 check and cache code is reused.
 
-### Hosting
+### Hosting (done)
 
-- A Hugging Face model repo (name to be decided) holds the exported `.onnx`
+Done (2026-10-09): https://huggingface.co/vladfi/phillip-models, public, with
+`diamond` and `falco_d21_ditto_v6.1` (fp16, batch size 1).
+
+- A Hugging Face model repo holds the exported `.onnx`
   files and the index. It's free for public models, serves large files from
   a CDN, keeps every revision, and counts downloads. GitHub Releases would
   work too, but updating the index there means re-uploading release assets.
@@ -325,8 +328,8 @@ Done (2026-10-09), reworked from the `model-downloads` branch; stdlib only
 (`urllib`), so the bundle doesn't need `huggingface_hub`. Tested in
 `tests/models_test.py` (in `play.yml`) against a local HTTP server, and by
 hand: a real exported model served locally downloaded by name and loaded.
-`DEFAULT_INDEX_URL` is unset until the repo exists, so for now
-`$PHILLIP_INDEX_URL` is required.
+Checked against the live index too (fetch, ETag revalidation, download
+through the Hub's redirect).
 
 - `fetch_index()` downloads the index (with `If-None-Match`/ETag) and saves
   it to `%LOCALAPPDATA%\phillip\models\index-v1.json`; `load_index()` reads
@@ -369,15 +372,17 @@ hand: a real exported model served locally downloaded by name and loaded.
   ones) instead of only a path.
 - The entry's description is shown as the model's tooltip.
 
-### Publishing (`scripts/publish_models.py`)
+### Publishing (`scripts/publish_models.py`, done)
 
-Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in the
-`onnx-export` extra.
+Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in its own
+`publish` extra (publishing only reads the models' metadata, so it doesn't
+need jax), and `hf auth login` with a write token.
 
 - Input: the `onnx_models` directory that `scripts/sync_onnx_models.py`
-  keeps in sync, plus a checked-in list of which models are public, with
-  their descriptions (`models/published.json`), so publishing is reviewed in
-  a PR rather than whatever is in `onnx_models`.
+  keeps in sync (`--models_dir`), plus a checked-in list of which models are
+  public, with their descriptions (`models/published.json`), so publishing
+  is reviewed in a PR rather than whatever is in `onnx_models`. Files are
+  uploaded as `<name>.onnx`.
 - It reads each published model's metadata, uploads files whose sha256
   isn't in the index yet in one commit, then rewrites `index-v1.json` with
   their URLs pinned to that commit, in a second commit. Entries for models
@@ -389,8 +394,8 @@ Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in the
 
 1. Client (done): index format, fetch and saved copy, downloads, CLI
    names; tests with a local HTTP server, run in `play.yml`.
-2. Publishing script; create the Hugging Face repo and publish the current
-   `deployed_models` exports (fp16, batch size 1).
+2. Publishing script, the Hugging Face repo, and the first two models
+   (done).
 3. GUI: merged list, Download button and progress, offline handling.
 4. Bundle and installer: check in CI that the frozen GUI fetches the index
    and downloads a small test model from a staging URL.
@@ -398,7 +403,7 @@ Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in the
 With sections 4 and 5, a technical user's whole setup is
 `pip install slippi-ai[onnx]` (or `uvx`) plus Dolphin and an ISO.
 
-Open: the repo name and owner; whether to also publish fp32 files (fp16
+Open: a model card (README.md) for the repo; whether to also publish fp32 files (fp16
 storage computes in fp32 and halves downloads, so probably not); whether to
 show download counts from the Hub in the GUI.
 

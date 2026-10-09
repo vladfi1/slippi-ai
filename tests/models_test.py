@@ -136,7 +136,7 @@ class ModelsTest(unittest.TestCase):
     with mock.patch.dict(os.environ), \
          mock.patch.object(models, 'DEFAULT_INDEX_URL', None):
       del os.environ[models.INDEX_URL_ENV_VAR]
-      with self.assertRaisesRegex(ValueError, 'No model index'):
+      with self.assertRaisesRegex(ValueError, 'No model index URL'):
         models.get_index()
 
   def test_summary(self):

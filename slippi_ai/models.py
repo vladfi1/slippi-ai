@@ -47,8 +47,9 @@ import urllib.error
 import urllib.request
 
 INDEX_VERSION = 1
-# TODO: Set once the models are hosted.
-DEFAULT_INDEX_URL: tp.Optional[str] = None
+# Published with scripts/publish_models.py.
+DEFAULT_INDEX_URL: tp.Optional[str] = (
+    f'https://huggingface.co/vladfi/phillip-models/resolve/main/index-v{INDEX_VERSION}.json')
 
 INDEX_URL_ENV_VAR = 'PHILLIP_INDEX_URL'
 CACHE_ENV_VAR = 'PHILLIP_CACHE'
@@ -176,7 +177,7 @@ def index_url() -> str:
   url = os.environ.get(INDEX_URL_ENV_VAR, DEFAULT_INDEX_URL)
   if not url:
     raise ValueError(
-        f'No model index has been published yet; set ${INDEX_URL_ENV_VAR}.')
+        f'No model index URL; set ${INDEX_URL_ENV_VAR}.')
   return url
 
 
