@@ -351,27 +351,36 @@ through the Hub's redirect).
   pins an exact file, for reproducible evals. A name can have several
   entries (e.g. one per `format_version`); the compatible one is used.
 
-### GUI
+### GUI (done, untested with Dolphin)
 
-- The model list merges three sources: the optional local folder (as now),
-  downloaded models, and the index. A model in the index that's already
-  downloaded shows once, matched by sha256 (cached files are keyed by hash,
-  so this needs no hashing). Local-folder files are listed separately.
-- A new column shows where each model is: "Downloaded", "Local", or the
-  download size for models that are only online. A checkbox hides
-  online-only models, for offline play.
-- The model folder becomes optional: with the index, a new user can play
-  without choosing one.
-- Choosing an online-only model enables a Download button (Start becomes
-  "Download and start"); the download runs in a thread with a progress bar
-  in the status line and can be cancelled. A context menu deletes a
-  downloaded model.
-- The index is fetched in the background at startup, after showing the
-  saved copy, so the list appears immediately; status shows "Couldn't reach
-  the model list; showing models from <date>" when offline.
-- Settings remember the chosen model by name and sha256 (or path, for local
-  ones) instead of only a path.
-- The entry's description is shown as the model's tooltip.
+Done (2026-10-09), in `slippi_ai/gui/app.py` and `gui/models.py`. Checked
+offscreen against the live index with a fresh cache: listing, filtering,
+downloading (with the session start stubbed), cancelling, hiding online
+models, deleting a download, and offline with and without a saved index.
+Not yet: a real session started from a downloaded model, by hand.
+
+- The model list merges published models (in index order, then downloads
+  no longer in the index) and the optional local folder's. A published
+  model shows once: as downloaded if that version is, otherwise as online
+  (older downloads of it are hidden, and deleted once the new version is
+  downloaded). A local file that is also published is listed twice.
+- A Status column shows "Downloaded", "Your folder" or "Download (N MB)". A
+  checkbox (on by default, saved) hides models that need downloading.
+- The models folder is optional ("Your models folder"): a new user can play
+  without one.
+- For an online model Start reads "Download and start": the download runs
+  in a thread with progress in the status line, Start becomes "Cancel
+  download", and the controls are locked meanwhile. Right-clicking a
+  downloaded model offers "Delete download".
+- At startup the saved index and downloads are shown at once, and the index
+  is fetched in the background. The "Published models" line shows the
+  counts, how many models need a newer phillip, or, offline, "Couldn't
+  reach the list of published models; showing the list from <date>" (the
+  error is in its tooltip).
+- Settings remember a published model as `published:<name>`, so the choice
+  carries over to updated versions, and a local one by path (`model`,
+  migrated from `model_path`).
+- The model's tooltip shows its description and URL or path.
 
 ### Publishing (`scripts/publish_models.py`, done)
 
@@ -403,7 +412,7 @@ need jax), and `hf auth login` with a write token.
    names; tests with a local HTTP server, run in `play.yml`.
 2. Publishing script, the Hugging Face repo, and the first two models
    (done).
-3. GUI: merged list, Download button and progress, offline handling.
+3. GUI (done): merged list, Download button and progress, offline handling.
 4. Bundle and installer: check in CI that the frozen GUI fetches the index
    and downloads a small test model from a staging URL.
 
@@ -482,8 +491,8 @@ Local play only for now; netplay is on the back burner.
     killed if it doesn't stop within 10 s. Start warns if Dolphin is already
     running.
   - Tested against an in-game CPU and with a controller.
-  - Not yet: browsing and downloading published models (planned in step
-    5), a Wii U adapter driver check, netplay.
+  - Published models are listed and downloaded on demand (step 5).
+  - Not yet: a Wii U adapter driver check, netplay.
 - **Installer: Inno Setup (started).** `packaging/slippi_ai.iss` wraps the
   PyInstaller output in `dist/phillip-setup-<version>.exe` (80 MB).
   - Installs per user by default, to `%LOCALAPPDATA%\Programs\phillip` with

@@ -21,8 +21,11 @@ MELEE_102_MD5 = '0e63d4223b01d9aba596259dc155a174'
 class Settings:
   dolphin_path: str = ''
   iso_path: str = ''
-  models_dir: str = ''
-  model_path: str = ''  # The chosen model, in models_dir.
+  models_dir: str = ''  # Optional: a folder of the user's own models.
+  # The chosen model: published:<name>, or a local file's path.
+  model: str = ''
+  # List published models that aren't downloaded yet.
+  show_online_models: bool = True
   character: str = ''  # phillip's melee.Character name.
   # Filters the models by who they were trained against; empty for any.
   opponent_character: str = ''
@@ -65,12 +68,15 @@ def load() -> Settings:
     values.setdefault(
         'copy_dolphin_settings', values.pop('use_slippi_controller_settings'))
 
+  # Older settings had a model file, and before that no folder.
+  model_path = values.pop('model_path', '')
+  if model_path:
+    values.setdefault('model', model_path)
+    if not values.get('models_dir'):
+      values['models_dir'] = os.path.dirname(model_path)
+
   fields = {f.name for f in dataclasses.fields(Settings)}
-  settings = Settings(**{k: v for k, v in values.items() if k in fields})
-  # Older settings had a model file but no folder.
-  if not settings.models_dir and settings.model_path:
-    settings.models_dir = os.path.dirname(settings.model_path)
-  return settings
+  return Settings(**{k: v for k, v in values.items() if k in fields})
 
 
 def save(settings: Settings):

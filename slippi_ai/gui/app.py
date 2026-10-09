@@ -10,7 +10,7 @@ import typing as tp
 import melee
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from slippi_ai import onnx_policies, session, utils
+from slippi_ai import models as model_index, onnx_policies, session, utils
 from slippi_ai.gui import models as models_lib, runner, settings as settings_lib
 
 _CHARACTER_NAMES = {
@@ -113,6 +113,14 @@ def _same_path(a: str, b: str) -> bool:
   return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
+def _source_text(model: models_lib.Model) -> str:
+  if model.source is models_lib.Source.ONLINE:
+    return f'Download ({model.info.size / 1e6:.0f} MB)'
+  if model.source is models_lib.Source.DOWNLOADED:
+    return 'Downloaded'
+  return 'Your folder'
+
+
 def _status(label: QtWidgets.QLabel, text: str, ok: tp.Optional[bool]):
   color = {True: 'green', False: '#c00000', None: 'gray'}[ok]
   label.setText(text)
@@ -167,7 +175,13 @@ class MainWindow(QtWidgets.QMainWindow):
     self._dolphin_ok = False
     self._iso_ok = False
     self._iso_checked_path = None
+    # Published models, from the index and downloads, then local ones.
     self._models: list[models_lib.Model] = []
+    self._index: tp.Optional[model_index.Index] = None
+    self._index_fetching = False
+    self._downloaded: list[tuple[model_index.ModelInfo, str]] = []
+    self._download_cancel: tp.Optional[threading.Event] = None
+    self._local_models: list[models_lib.Model] = []
     self._models_scan_id = 0  # Ignores results from earlier scans.
     self._models_scanning = False
     self._process: tp.Optional[runner.SessionProcess] = None
@@ -201,6 +215,8 @@ class MainWindow(QtWidgets.QMainWindow):
     self._poll_timer.timeout.connect(self._poll)
 
     self._load_settings()
+    self._load_published()
+    self._fetch_index()
     self._find_providers()
     self._update_controls()
     self.resize(720, 800)
@@ -237,11 +253,19 @@ class MainWindow(QtWidgets.QMainWindow):
     group = QtWidgets.QGroupBox('phillip')
     form = QtWidgets.QFormLayout(group)
 
+    self.index_status = QtWidgets.QLabel()
+    self.index_status.setWordWrap(True)
+    self.show_online_check = QtWidgets.QCheckBox(
+        'Show models that need to be downloaded')
+    self.show_online_check.toggled.connect(self._show_online_toggled)
+    form.addRow('Published models', self.index_status)
+    form.addRow('', self.show_online_check)
+
     self.models_row = PathRow(choose_dir=True)
     self.models_row.changed.connect(self._scan_models)
     self.models_status = QtWidgets.QLabel()
     self.models_status.setWordWrap(True)
-    form.addRow('Models folder', self.models_row)
+    form.addRow('Your models folder', self.models_row)
     form.addRow('', self.models_status)
 
     # The settings remember what the user picked, even while no model in the
@@ -254,10 +278,14 @@ class MainWindow(QtWidgets.QMainWindow):
     form.addRow('Opponent\'s character', self.opponent_filter_combo)
 
     self.model_list = QtWidgets.QTreeWidget()
-    self.model_list.setHeaderLabels(['Model', 'Reaction delay', 'Trained against'])
+    self.model_list.setHeaderLabels(
+        ['Model', 'Reaction delay', 'Trained against', 'Status'])
     self.model_list.setRootIsDecorated(False)
     self.model_list.setMinimumHeight(110)
     self.model_list.itemSelectionChanged.connect(self._model_chosen)
+    self.model_list.setContextMenuPolicy(
+        QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+    self.model_list.customContextMenuRequested.connect(self._model_menu)
     form.addRow('Model', self.model_list)
 
     # Filled in by _find_providers.
@@ -317,6 +345,9 @@ class MainWindow(QtWidgets.QMainWindow):
     self.cpu_character_combo.setCurrentIndex(
         max(0, self.cpu_character_combo.findData(s.cpu_character)))
     self.cpu_level_spin.setValue(s.cpu_level)
+    self.show_online_check.blockSignals(True)
+    self.show_online_check.setChecked(s.show_online_models)
+    self.show_online_check.blockSignals(False)
 
     self.dolphin_row.set_path(s.dolphin_path)
     self.iso_row.set_path(s.iso_path)
@@ -329,8 +360,9 @@ class MainWindow(QtWidgets.QMainWindow):
     s.models_dir = self.models_row.path()
     model = self._selected_model()
     if model is not None:
-      s.model_path = model.path
+      s.model = model.key
       s.character = self.character_combo.currentData()
+    s.show_online_models = self.show_online_check.isChecked()
     s.opponent = 'human' if self.human_radio.isChecked() else 'cpu'
     s.human_port = self.port_combo.currentData()
     s.copy_dolphin_settings = self.copy_settings_check.isChecked()
@@ -391,14 +423,15 @@ class MainWindow(QtWidgets.QMainWindow):
   def _scan_models(self, folder: str):
     self._models_scan_id += 1
     scan_id = self._models_scan_id
-    self._models = []
+    self._local_models = []
     self._models_scanning = False
     self.models_status.setToolTip('')
-    self._update_character_filter()
+    self._refresh_models()
 
     if not folder:
       _status(self.models_status,
-              'Choose the folder with your phillip models (.onnx files).', False)
+              'Optional: a folder with your own phillip models (.onnx files).',
+              None)
       return
     if not os.path.isdir(folder):
       _status(self.models_status, 'Folder not found.', False)
@@ -415,8 +448,8 @@ class MainWindow(QtWidgets.QMainWindow):
       if error is not None:
         _status(self.models_status, f'Could not read the folder: {error}', False)
       else:
-        self._models, errors = result
-        count = len(self._models)
+        self._local_models, errors = result
+        count = len(self._local_models)
         if count:
           text = f'Found {count} model{"" if count == 1 else "s"}.'
         else:
@@ -426,9 +459,127 @@ class MainWindow(QtWidgets.QMainWindow):
           self.models_status.setToolTip(
               '\n'.join(f'{path}: {message}' for path, message in errors))
         _status(self.models_status, text, bool(count))
-      self._update_character_filter()
+      self._refresh_models()
 
     run_in_thread(lambda: models_lib.scan(folder), on_done)
+
+  # Published models
+
+  def _load_published(self):
+    """Shows the saved index and downloads; fast, so on the GUI thread."""
+    self._index = model_index.load_index()
+    self._downloaded = model_index.downloaded_models()
+    self._refresh_models()
+
+  def _fetch_index(self):
+    self._index_fetching = True
+    self._update_index_status()
+
+    def on_done(index, error):
+      self._index_fetching = False
+      if error is not None:
+        logging.warning('Could not fetch the model index: %s', error)
+      else:
+        self._index = index
+      self._update_index_status(error)
+      self._refresh_models()
+
+    run_in_thread(model_index.fetch_index, on_done)
+
+  def _update_index_status(self, error: tp.Optional[BaseException] = None):
+    published = models_lib.published(self._index, self._downloaded)
+    downloaded = sum(m.source is models_lib.Source.DOWNLOADED for m in published)
+    count = f'{len(published)} model{"" if len(published) == 1 else "s"}'
+    count += f', {downloaded} downloaded.'
+    self.index_status.setToolTip('' if error is None else str(error))
+    if self._index_fetching:
+      _status(self.index_status, 'Checking for new models...', None)
+    elif error is not None:
+      if self._index is None:
+        _status(self.index_status,
+                "Couldn't get the list of published models; check your "
+                'internet connection. Hover for details.', False)
+      else:
+        _status(self.index_status,
+                "Couldn't reach the list of published models; showing the "
+                f'list from {self._index.updated[:10]}. {count}', False)
+    else:
+      text = count
+      incompatible = models_lib.incompatible_count(self._index)
+      if incompatible:
+        text += f' {incompatible} more need a newer version of phillip.'
+      _status(self.index_status, text, True)
+
+  def _refresh_models(self):
+    published = models_lib.published(self._index, self._downloaded)
+    if not self.show_online_check.isChecked():
+      published = [
+          m for m in published if m.source is not models_lib.Source.ONLINE]
+    self._models = published + self._local_models
+    self._update_character_filter()
+
+  def _show_online_toggled(self):
+    self.settings.show_online_models = self.show_online_check.isChecked()
+    self._refresh_models()
+
+  def _downloads_changed(self):
+    self._downloaded = model_index.downloaded_models()
+    if not self._index_fetching:
+      self._update_index_status()
+    self._refresh_models()
+
+  def _model_menu(self, pos: QtCore.QPoint):
+    item = self.model_list.itemAt(pos)
+    if item is None or self._busy():
+      return
+    model: models_lib.Model = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+    if model.source is not models_lib.Source.DOWNLOADED:
+      return
+    menu = QtWidgets.QMenu(self)
+    delete = menu.addAction('Delete download')
+    if menu.exec(self.model_list.viewport().mapToGlobal(pos)) is delete:
+      try:
+        model_index.delete_download(model.info)
+      except OSError as e:
+        QtWidgets.QMessageBox.warning(
+            self, 'Delete download', f'Could not delete {model.name}: {e}')
+      self._downloads_changed()
+
+  def _download_and_start(self, model: models_lib.Model):
+    info = model.info
+    assert info is not None
+    cancel = threading.Event()
+    self._download_cancel = cancel
+    size = f'{info.size / 1e6:.0f} MB'
+    self.status.setText(f'Downloading {info.name} ({size})...')
+    self._update_controls()
+
+    def download(progress):
+      path = model_index.download(
+          info, lambda done, total: progress(done / max(total, 1)), cancel)
+      models_lib.delete_other_versions(info)
+      return path
+
+    def on_progress(fraction):
+      if self._download_cancel is cancel and not cancel.is_set():
+        self.status.setText(f'Downloading {info.name}... {fraction:.0%} of {size}')
+
+    def on_done(path, error):
+      self._download_cancel = None
+      self._downloads_changed()
+      if isinstance(error, model_index.DownloadCancelled):
+        self.status.setText('Download cancelled.')
+      elif error is not None:
+        logging.warning('Could not download %s: %s', info.name, error)
+        self.status.setText(f'Could not download {info.name}: {error}')
+      else:
+        self.status.setText('')
+        selected = self._selected_model()
+        if selected is not None and selected.path == path:
+          self._start_session()
+      self._update_controls()
+
+    run_in_thread(download, on_done, on_progress)
 
   def _character(self) -> tp.Optional[melee.Character]:
     name = self.character_combo.currentData()
@@ -455,7 +606,7 @@ class MainWindow(QtWidgets.QMainWindow):
   def _model_chosen(self):
     model = self._selected_model()
     if model is not None:
-      self.settings.model_path = model.path
+      self.settings.model = model.key
     self._update_controls()
 
   def _find_providers(self):
@@ -523,12 +674,14 @@ class MainWindow(QtWidgets.QMainWindow):
         against = ', '.join(character_name(c) for c in opponents)
       frames = 'frame' if summary.delay == 1 else 'frames'
       item = QtWidgets.QTreeWidgetItem(
-          [model.name, f'{summary.delay} {frames}', against])
+          [model.name, f'{summary.delay} {frames}', against, _source_text(model)])
       item.setData(0, QtCore.Qt.ItemDataRole.UserRole, model)
-      item.setToolTip(0, model.path)
+      tooltip = [model.info.description] if model.info and model.info.description else []
+      tooltip.append(model.path or model.info.url)
+      item.setToolTip(0, '\n'.join(tooltip))
       item.setToolTip(2, ', '.join(character_name(c) for c in opponents))
       self.model_list.addTopLevelItem(item)
-      if selected is None and _same_path(model.path, self.settings.model_path):
+      if selected is None and self._is_chosen(model):
         selected = item
     if selected is None and matching:
       selected = self.model_list.topLevelItem(0)
@@ -539,22 +692,36 @@ class MainWindow(QtWidgets.QMainWindow):
     self.model_list.blockSignals(False)
     self._update_controls()
 
+  def _is_chosen(self, model: models_lib.Model) -> bool:
+    chosen = self.settings.model
+    if model.source is models_lib.Source.LOCAL:
+      return bool(chosen) and _same_path(model.path, chosen)
+    return model.key == chosen
+
   # Running
 
   def _running(self) -> bool:
     return self._process is not None
 
+  def _downloading(self) -> bool:
+    return self._download_cancel is not None
+
+  def _busy(self) -> bool:
+    return self._running() or self._downloading()
+
   def _update_controls(self):
     running = self._running()
+    busy = self._busy()
     for widget in (self.dolphin_row, self.iso_row, self.models_row,
+                   self.show_online_check,
                    self.character_combo, self.opponent_filter_combo,
                    self.model_list, self.provider_combo,
                    self.human_radio, self.cpu_radio,
                    self.port_combo, self.copy_settings_check,
                    self.cpu_character_combo, self.cpu_level_spin):
-      widget.setEnabled(not running)
+      widget.setEnabled(not busy)
 
-    if not running:
+    if not busy:
       human = self.human_radio.isChecked()
       self.port_combo.setEnabled(human)
       self.cpu_character_combo.setEnabled(not human)
@@ -566,13 +733,18 @@ class MainWindow(QtWidgets.QMainWindow):
     if running:
       self.start_button.setText('Stop')
       self.start_button.setEnabled(self._stop_requested_at is None)
+    elif self._downloading():
+      self.start_button.setText('Cancel download')
+      self.start_button.setEnabled(not self._download_cancel.is_set())
     else:
-      self.start_button.setText('Start')
+      model = self._selected_model()
+      online = model is not None and model.path is None
+      self.start_button.setText('Download and start' if online else 'Start')
       self.start_button.setEnabled(ready)
 
   def _session_config(self) -> session.SessionConfig:
     model = self._selected_model()
-    assert model is not None
+    assert model is not None and model.path is not None
     summary = model.summary
 
     defaults = utils.map_nt(lambda item: item.default, session.player_flags())
@@ -611,6 +783,10 @@ class MainWindow(QtWidgets.QMainWindow):
   def _start_or_stop(self):
     if self._running():
       self._stop()
+    elif self._downloading():
+      self._download_cancel.set()
+      self.status.setText('Cancelling download...')
+      self._update_controls()
     else:
       self._start()
 
@@ -626,6 +802,13 @@ class MainWindow(QtWidgets.QMainWindow):
       if answer != QtWidgets.QMessageBox.StandardButton.Yes:
         return
 
+    model = self._selected_model()
+    if model is not None and model.path is None:
+      self._download_and_start(model)
+    else:
+      self._start_session()
+
+  def _start_session(self):
     self._save_settings()
     config = self._session_config()
     self.log.clear()
@@ -694,6 +877,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def closeEvent(self, event: QtGui.QCloseEvent):
     self._save_settings()
+    if self._download_cancel is not None:
+      self._download_cancel.set()
     if self._process is not None:
       self._process.request_stop()
       deadline = QtCore.QDeadlineTimer(runner.STOP_TIMEOUT * 1000)
