@@ -379,16 +379,18 @@ Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in its own
 `publish` extra (publishing only reads the models' metadata, so it doesn't
 need jax), and `hf auth login` with a write token.
 
-- Input: the `onnx_models` directory that `scripts/sync_onnx_models.py`
-  keeps in sync (`--models_dir`), plus a checked-in list of which models are
-  public, with their descriptions (`models/published.json`), so publishing
-  is reviewed in a PR rather than whatever is in `onnx_models`. Files are
-  uploaded as `<name>.onnx`.
-- It reads each published model's metadata, uploads files whose sha256
-  isn't in the index yet in one commit, then rewrites `index-v1.json` with
-  their URLs pinned to that commit, in a second commit. Entries for models
-  dropped from the list are removed from the index; their files stay, so
-  existing downloads and pinned URLs keep working.
+- The index on the Hub is the list of published models (decided
+  2026-10-09): models are published often, and that shouldn't need a commit
+  here. The Hub keeps the history, one commit per change.
+- `publish_models.py add <file.onnx>... [--name] [--description]` reads each
+  model's metadata, uploads files that aren't published yet as
+  `<name>.onnx` in one commit, then rewrites `index-v1.json` with their URLs
+  pinned to that commit, in a second commit. Re-adding a name replaces its
+  entry for that format version (keeping the description unless one is
+  given); entries for other format versions stay, for older installs.
+- `remove <name>...` drops entries from the index; the files stay, so
+  existing downloads and pinned URLs keep working. `describe <name>
+  --description=...` edits a description; `list` prints the index.
 - `--dry_run` prints the new index and what would be uploaded.
 
 ### Steps

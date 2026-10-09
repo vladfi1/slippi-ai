@@ -1,23 +1,23 @@
-"""Publishes exported .onnx models and the model index to the Hugging Face Hub.
+"""Manages the published models on the Hugging Face Hub.
 
-The models to publish, and their descriptions, are listed in
-models/published.json:
+The index on the Hub (slippi_ai/models.py) is the list of published models,
+so publishing needs no commit here; the Hub keeps the history.
 
-  {
-    "diamond": {
-      "path": "diamond.onnx",     # relative to --models_dir
-      "description": "..."
-    }
-  }
+  # Publish a model, or a new version of one (named after the file by default).
+  python scripts/publish_models.py add deployed_models/diamond.onnx \
+    --description="Plays and faces all characters."
+  python scripts/publish_models.py add a.onnx b.onnx
 
-Files whose sha256 isn't in the index yet are uploaded in one commit, then
-the index (slippi_ai/models.py) is rewritten in a second commit, with each
-new entry's URL pinned to the first commit. Entries for models dropped from
-the list are removed from the index, but their files stay on the Hub, so
-existing downloads and pinned URLs keep working. Entries for other format
-versions of a listed model are kept, for older installs.
+  python scripts/publish_models.py remove diamond
+  python scripts/publish_models.py describe diamond --description="..."
+  python scripts/publish_models.py list
 
-  python scripts/publish_models.py --models_dir=onnx_models --dry_run
+A new file is uploaded as <name>.onnx, then the index is rewritten in a second
+commit, with the file's URL pinned to the first. Re-adding a model keeps its
+description unless --description is given. Entries for other format versions
+of the model are kept, for older installs. Removing a model only removes it
+from the index; its files stay on the Hub, so existing downloads and pinned
+URLs keep working.
 
 Requires the publish extra (pip install .[publish]) and `hf auth login` with
 a write token.
@@ -32,14 +32,15 @@ from absl import app, flags
 from slippi_ai import models
 
 REPO = flags.DEFINE_string('repo', 'vladfi/phillip-models', 'Hugging Face model repo.')
-MODELS_DIR = flags.DEFINE_string(
-    'models_dir', 'onnx_models', 'Directory of exported .onnx models.')
-PUBLISHED = flags.DEFINE_string(
-    'published', 'models/published.json', 'Which models to publish.')
+NAME = flags.DEFINE_string(
+    'name', None, 'Name for the model being added; defaults to the file name.')
+DESCRIPTION = flags.DEFINE_string(
+    'description', None, 'Description for add or describe.')
 DRY_RUN = flags.DEFINE_boolean(
     'dry_run', False, 'Only print the new index and what would be uploaded.')
 
 INDEX_FILE = f'index-v{models.INDEX_VERSION}.json'
+PENDING = '<commit>'
 
 
 def file_url(repo: str, revision: str, filename: str) -> str:
@@ -58,55 +59,100 @@ def load_current_index(api, repo: str) -> models.Index:
     return models.Index.from_json(json.load(f))
 
 
-def main(_):
-  import huggingface_hub
+def add(index: models.Index, paths: list[str], repo: str) -> dict[str, str]:
+  """Adds models to the index; returns the files to upload (repo name -> path)."""
+  if NAME.value is not None and len(paths) != 1:
+    raise app.UsageError('--name needs exactly one model.')
 
-  with open(PUBLISHED.value, encoding='utf-8') as f:
-    published: dict[str, dict] = json.load(f)
-
-  api = huggingface_hub.HfApi()
-  repo = REPO.value
-  current = load_current_index(api, repo)
-  by_sha256 = {(m.name, m.sha256): m for m in current.models}
-  today = datetime.date.today().isoformat()
-
-  # Entries in published order; new ones get their URL after the upload.
-  entries: list[models.ModelInfo] = []
-  uploads: dict[str, str] = {}  # repo filename -> local path
-  for name, spec in published.items():
-    path = os.path.join(MODELS_DIR.value, spec['path'])
+  uploads = {}
+  for path in paths:
+    name = NAME.value or os.path.splitext(os.path.basename(path))[0]
     filename = f'{name}.onnx'
     info = models.info_from_file(
-        path, name, url=file_url(repo, '<commit>', filename),
-        description=spec.get('description', ''), published=today)
+        path, name, url=file_url(repo, PENDING, filename),
+        published=datetime.date.today().isoformat())
     if not info.compatible():
       raise ValueError(f'{path} is not playable by this version of phillip.')
 
-    old = by_sha256.get((name, info.sha256))
-    if old is not None:
-      info.url, info.published = old.url, old.published
+    old = [m for m in index.models if m.name == name]
+    same_format = [m for m in old if m.format_version == info.format_version]
+    info.description = DESCRIPTION.value or next(
+        (m.description for m in same_format or old), '')
+    if same_format and same_format[0].sha256 == info.sha256:
+      print(f'{name} is already published.')
+      info.url, info.published = same_format[0].url, same_format[0].published
     else:
       uploads[filename] = path
-    entries.append(info)
 
-    # Other format versions of this model, for older installs.
-    entries.extend(
-        m for m in current.models
-        if m.name == name and m.format_version != info.format_version)
+    # Replace the entry for this format version, in place for a new version.
+    position = index.models.index(same_format[0]) if same_format else len(index.models)
+    index.models = [m for m in index.models if m not in same_format]
+    index.models.insert(min(position, len(index.models)), info)
+  return uploads
 
-  dropped = sorted({m.name for m in current.models} - set(published))
+
+def find(index: models.Index, name: str) -> list[models.ModelInfo]:
+  matches = [m for m in index.models if m.name == name]
+  if not matches:
+    raise app.UsageError(f'No published model "{name}".')
+  return matches
+
+
+def print_index(index: models.Index):
+  for m in index.models:
+    characters = ', '.join(m.characters) if len(m.characters) <= 3 else (
+        f'{len(m.characters)} characters')
+    print(f'{m.name}: {characters}, delay {m.delay}, '
+          f'{m.size / 2**20:.0f} MiB, format {m.format_version}, '
+          f'published {m.published}')
+    if m.description:
+      print(f'  {m.description}')
+
+
+def main(argv):
+  if len(argv) < 2:
+    raise app.UsageError('Usage: publish_models.py add|remove|describe|list ...')
+  command, args = argv[1], argv[2:]
+
+  import huggingface_hub
+  api = huggingface_hub.HfApi()
+  repo = REPO.value
+  index = load_current_index(api, repo)
+
+  uploads = {}
+  if command == 'list':
+    print_index(index)
+    return
+  elif command == 'add':
+    if not args:
+      raise app.UsageError('add needs .onnx files.')
+    uploads = add(index, args, repo)
+    message = f'Add {", ".join(f.removesuffix(".onnx") for f in uploads) or "nothing new"}'
+  elif command == 'remove':
+    if not args:
+      raise app.UsageError('remove needs model names.')
+    for name in args:
+      removed = find(index, name)
+      index.models = [m for m in index.models if m not in removed]
+    message = f'Remove {", ".join(args)}'
+  elif command == 'describe':
+    if len(args) != 1 or DESCRIPTION.value is None:
+      raise app.UsageError('Usage: describe <name> --description=...')
+    for m in find(index, args[0]):
+      m.description = DESCRIPTION.value
+    message = f'Describe {args[0]}'
+  else:
+    raise app.UsageError(f'Unknown command "{command}".')
+
   for filename, path in uploads.items():
     print(f'Upload {path} as {filename} ({os.path.getsize(path) / 2**20:.0f} MiB)')
-  if dropped:
-    print(f'Remove from the index: {", ".join(dropped)}')
 
   if DRY_RUN.value:
-    print(json.dumps(models.Index(models=entries).to_json(), indent=2))
+    print(json.dumps(index.to_json(), indent=2))
     return
 
-  api.create_repo(repo, repo_type='model', exist_ok=True)
-
   if uploads:
+    api.create_repo(repo, repo_type='model', exist_ok=True)
     commit = api.create_commit(
         repo,
         operations=[
@@ -114,23 +160,19 @@ def main(_):
             for filename, path in uploads.items()],
         commit_message=f'Upload {", ".join(uploads)}',
     )
-    for info in entries:
-      if info.url == file_url(repo, '<commit>', f'{info.name}.onnx'):
-        info.url = file_url(repo, commit.oid, f'{info.name}.onnx')
+    for info in index.models:
+      info.url = info.url.replace(f'/resolve/{PENDING}/', f'/resolve/{commit.oid}/')
 
-  index = models.Index(
-      models=entries,
-      updated=datetime.datetime.now(datetime.timezone.utc).isoformat(
-          timespec='seconds').replace('+00:00', 'Z'),
-  )
+  index.updated = datetime.datetime.now(datetime.timezone.utc).isoformat(
+      timespec='seconds').replace('+00:00', 'Z')
   data = json.dumps(index.to_json(), indent=2) + '\n'
   api.upload_file(
       path_or_fileobj=data.encode(),
       path_in_repo=INDEX_FILE,
       repo_id=repo,
-      commit_message=f'Update {INDEX_FILE}',
+      commit_message=f'{message} ({INDEX_FILE})',
   )
-  print(f'Published {len(entries)} models to {file_url(repo, "main", INDEX_FILE)}')
+  print_index(index)
 
 
 if __name__ == '__main__':
