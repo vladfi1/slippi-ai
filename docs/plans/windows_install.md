@@ -351,13 +351,14 @@ through the Hub's redirect).
   pins an exact file, for reproducible evals. A name can have several
   entries (e.g. one per `format_version`); the compatible one is used.
 
-### GUI (done, untested with Dolphin)
+### GUI (done)
 
 Done (2026-10-09), in `slippi_ai/gui/app.py` and `gui/models.py`. Checked
 offscreen against the live index with a fresh cache: listing, filtering,
 downloading (with the session start stubbed), cancelling, hiding online
 models, deleting a download, and offline with and without a saved index.
-Not yet: a real session started from a downloaded model, by hand.
+Played by hand: `diamond` downloaded with "Download and start" and played in
+Slippi Dolphin.
 
 - The model list merges published models (in index order, then downloads
   no longer in the index) and the optional local folder's. A published
