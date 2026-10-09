@@ -265,7 +265,8 @@ check and cache code is reused.
 ### Hosting (done)
 
 Done (2026-10-09): https://huggingface.co/vladfi/phillip-models, public, with
-`diamond` and `falco_d21_ditto_v6.1` (fp16, batch size 1).
+`diamond` and `falco_d21_ditto_v6.1` (fp16, batch size 1), and a model card
+with the MIT license.
 
 - A Hugging Face model repo holds the exported `.onnx`
   files and the index. It's free for public models, serves large files from
@@ -403,7 +404,7 @@ need jax), and `hf auth login` with a write token.
 With sections 4 and 5, a technical user's whole setup is
 `pip install slippi-ai[onnx]` (or `uvx`) plus Dolphin and an ISO.
 
-Open: a model card (README.md) for the repo; whether to also publish fp32 files (fp16
+Open: whether to also publish fp32 files (fp16
 storage computes in fp32 and halves downloads, so probably not); whether to
 show download counts from the Hub in the GUI.
 
