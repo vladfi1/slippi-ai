@@ -414,8 +414,11 @@ need jax), and `hf auth login` with a write token.
 2. Publishing script, the Hugging Face repo, and the first two models
    (done).
 3. GUI (done): merged list, Download button and progress, offline handling.
-4. Bundle and installer: check in CI that the frozen GUI fetches the index
-   and downloads a small test model from a staging URL.
+4. Bundle (done): `bundle.yml` runs the frozen `eval_two.exe` with
+   `--p2.ai.model=falco_d21_ditto_v6.1`, which fetches the live index and
+   downloads the model (90 MB) over HTTPS; also checked locally. It uses the
+   CLI because the windowed GUI can't run in CI, but the download code is
+   the same. It depends on the Hub and on that model staying published.
 
 With sections 4 and 5, a technical user's whole setup is
 `pip install slippi-ai[onnx]` (or `uvx`) plus Dolphin and an ISO.

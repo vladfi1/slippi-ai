@@ -53,6 +53,20 @@ jobs:
         grep -q "Running on CPU" out.txt
         grep -q "Unknown path" out.txt
 
+    # Fetches the published model index and downloads a model over HTTPS from
+    # the Hugging Face Hub, which the frozen app must still be able to do.
+    - name: Download a published model
+      shell: bash
+      env:
+        DOLPHIN_PATH: C:/nonexistent
+        PHILLIP_CACHE: ${{ runner.temp }}/phillip-models
+      run: |
+        dist/phillip/eval_two.exe --p1.type=cpu --p2.ai.model=falco_d21_ditto_v6.1 --dolphin.online_delay=0 > out.txt 2>&1 || true
+        grep -v '%|' out.txt
+        ls -l "$PHILLIP_CACHE"/*/
+        ls "$PHILLIP_CACHE"/index-v1.json "$PHILLIP_CACHE"/*/falco_d21_ditto_v6.1.onnx
+        grep -q "Unknown path" out.txt
+
     - name: Build installer
       run: |
         if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
