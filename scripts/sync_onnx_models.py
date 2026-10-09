@@ -70,10 +70,22 @@ def list_models(input_dir: str) -> dict[str, str]:
   return models
 
 
+class Unsupported(Exception):
+  """A model that can't be exported yet, skipped with a warning."""
+
+
+def check_tf_supported(config: dict):
+  # The JAX embedding has no MLP items type to convert to.
+  items_type = config['embed']['items']['type']
+  if getattr(items_type, 'value', items_type) == 'mlp':
+    raise Unsupported('TF checkpoint with an MLP items embedding')
+
+
 def load_jax_state(path: str) -> dict:
   state = saving.load_state_from_disk(path)
   config = saving.upgrade_config(state['config'])
   if saving.get_platform(config) is Platform.TF:
+    check_tf_supported(config)
     # The converter lives next to this script and needs tensorflow.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import convert_tf_checkpoint_to_jax
@@ -114,13 +126,14 @@ def main(_):
       to_delete.append(os.path.join(output_dir, name))
 
   logging.info(f'{len(models)} models: {len(to_export)} to export, '
-        f'{len(to_delete)} to delete.')
+               f'{len(to_delete)} to delete.')
 
   for path in to_delete:
     logging.info(f'Deleting {path}')
     if not DRY_RUN.value:
       os.remove(path)
 
+  skipped = []
   failed = []
   for i, (name, path, output) in enumerate(to_export):
     logging.info(f'[{i + 1}/{len(to_export)}] Exporting {name}')
@@ -128,10 +141,16 @@ def main(_):
       continue
     try:
       export(path, output)
+    except Unsupported as e:
+      logging.info(f'Skipping {name}: {e}')
+      skipped.append(name)
     except Exception:  # Keep going; report failures at the end.
       logging.exception(f'Failed to export {name}')
       failed.append(name)
 
+  if skipped:
+    logging.warning(
+        f'Skipped {len(skipped)} unsupported models: {", ".join(skipped)}')
   if failed:
     logging.error(f'Failed to export {len(failed)} models: {", ".join(failed)}')
     sys.exit(1)
