@@ -11,14 +11,38 @@
 # Produces dist/phillip/phillip.exe (the GUI), eval_two.exe and
 # benchmark_eval_two.exe, sharing one dist/phillip/_internal.
 
+import configparser
+import json
+import os
+import subprocess
+
 from PyInstaller.utils.hooks import (
     collect_data_files, collect_dynamic_libs, collect_submodules)
 
 ROOT = SPECPATH + '/..'
 
+
+def build_info_file() -> str:
+  """What the bundle was built from, logged by the GUI for bug reports."""
+  config = configparser.ConfigParser()
+  config.read(f'{ROOT}/setup.cfg')
+  try:
+    commit = subprocess.run(
+        ['git', 'describe', '--always', '--dirty', '--exclude=*'],
+        cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+  except (OSError, subprocess.CalledProcessError):
+    commit = 'unknown'
+  path = os.path.join(workpath, 'build_info.json')
+  with open(path, 'w') as f:
+    json.dump(dict(slippi_ai=config['metadata']['version'], commit=commit), f)
+  return path
+
+
 datas = (
     # Frame data CSVs and the Gecko codes ini, read relative to the package.
     collect_data_files('melee')
+    # Read next to slippi_ai/gui/version.py.
+    + [(build_info_file(), 'slippi_ai/gui')]
 )
 binaries = collect_dynamic_libs('onnxruntime')
 hiddenimports = []

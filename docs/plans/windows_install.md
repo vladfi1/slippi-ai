@@ -502,7 +502,8 @@ Local play only for now; netplay is on the back burner.
   - Installs per user by default, to `%LOCALAPPDATA%\Programs\phillip` with
     no admin (all users is offered), with a Start menu shortcut and an
     optional desktop one. Upgrades replace `_internal`; uninstalling removes
-    the TensorRT-RTX cache but keeps the GUI's settings.
+    `%LOCALAPPDATA%\phillip` (downloaded models and updates, the TensorRT-RTX
+    cache) but keeps the GUI's settings.
   - If the Windows App SDK Runtime 2.3.1+ isn't installed (checked with
     `Get-AppxPackage`), a checked-by-default task downloads Microsoft's
     installer (113 MB, SHA-256 pinned) on the Ready page and runs it with
@@ -514,10 +515,39 @@ Local play only for now; netplay is on the back burner.
     `eval_two.exe` on TensorRT-RTX, and a silent uninstall. CI builds the
     installer, installs it silently on a runner without the runtime, and
     runs the installed `eval_two.exe` with Windows ML.
-  - To do: try the wizard by hand; publish on GitHub Releases. Code signing
-    (e.g. Azure Trusted Signing) to avoid SmartScreen and antivirus false
-    positives; otherwise document the "More info > Run anyway" step. A
-    startup check against GitHub Releases for new versions. An icon.
+  - To do: try the wizard by hand. Code signing (e.g. Azure Trusted
+    Signing) to avoid SmartScreen and antivirus false positives; otherwise
+    document the "More info > Run anyway" step. An icon.
+- **App version and releases (done, 2026-10-09).** The app (GUI, bundle and
+  installer) has its own version, `VERSION` in `slippi_ai/gui/version.py`,
+  independent of slippi-ai's in `setup.cfg`; it continues from the 0.2.0
+  installer at 0.3.0. Releases are tagged `launcher-v<version>`; pushing one
+  makes `bundle.yml` check it matches `VERSION`, build the installer and
+  publish it as a GitHub release (`gh release create --generate-notes`).
+  The bundle also records the slippi-ai version and git commit it was built
+  from (`build_info.json`), which the GUI writes at the top of each session's
+  log, for bug reports.
+- **In-app updates (done, 2026-10-09).** `slippi_ai/gui/updates.py`: the
+  installed app checks GitHub's releases at startup for a newer
+  `launcher-v*` release (not drafts or prereleases), and shows a bar with
+  "Update", "Later" and a "What's new" link. Update downloads the installer
+  (with progress, cancellable) and checks it against the sha256 GitHub
+  publishes for release assets; without one, the button opens the release
+  page instead. It then runs the installer with `/SILENT /relaunch=1` and
+  closes. The app holds a mutex (`phillip-launcher`); setup waits up to 30
+  s for it to be released (then asks the user to close phillip), upgrades
+  in place and, with `/relaunch=1`, starts the app again. A file the app
+  downloads isn't marked as from the internet, so SmartScreen doesn't flag
+  the unsigned installer. Only the frozen app checks
+  (`$PHILLIP_CHECK_UPDATES=1` forces it, `0` disables it), and not during a
+  session or model download.
+  - Tested: `tests/updates_test.py` (in `play.yml`); the GUI offscreen
+    against a fake releases server (bar, download, cancel, installer
+    started, window closed); and the real installers, with a test AppId
+    (`/DAppId=...`): 0.3.0 installed, then the 0.3.1 installer started by
+    `updates.run_installer` waited while the mutex was held, upgraded once
+    it was released and relaunched the app.
+  - 0.2.0 installs have no update check; their users install 0.3.0 by hand.
 - Recruit Windows testers from Discord once a packaged build exists.
 
 ## Known Windows issues

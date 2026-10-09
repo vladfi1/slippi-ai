@@ -1,17 +1,31 @@
 ; Inno Setup script for the Windows installer, around the PyInstaller bundle.
 ;
 ;   pyinstaller --noconfirm packaging/slippi_ai.spec
-;   iscc /DAppVersion=0.2.0 packaging/slippi_ai.iss
+;   iscc /DAppVersion=0.3.0 packaging/slippi_ai.iss
+;
+; The version is the app's, from slippi_ai/gui/version.py, not slippi-ai's.
 ;
 ; Produces dist/phillip-setup-<version>.exe. It installs per user by
 ; default (no admin), adds a Start menu shortcut and, unless it's already
 ; installed, downloads and installs the Windows App SDK Runtime that Windows
 ; ML needs to run models on the GPU (see slippi_ai/winml.py). Without the
 ; runtime the app runs models on the CPU.
+;
+; The app updates itself by running a newer installer with /SILENT
+; /relaunch=1 and exiting (slippi_ai/gui/updates.py): setup waits for the
+; app's mutex to be released, upgrades in place and starts the app again.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+
+; Overridden only to test installs without touching the real one.
+#ifndef AppId
+  #define AppId "{{725F5556-F82C-491E-918C-7A7B10A0F195}"
+#endif
+
+; Held by the running app; must match APP_MUTEX in slippi_ai/gui/updates.py.
+#define AppMutexName "phillip-launcher"
 
 ; Must match the wasdk packages in setup.cfg's winml extra, and the version
 ; checked for in CI (.github/workflows/bundle.yml).
@@ -23,7 +37,7 @@
 #define RuntimeInstaller "windowsappruntimeinstall-x64.exe"
 
 [Setup]
-AppId={{725F5556-F82C-491E-918C-7A7B10A0F195}
+AppId={#AppId}
 AppName=phillip
 AppVersion={#AppVersion}
 AppPublisher=Vlad Firoiu
@@ -64,8 +78,11 @@ Name: "{autodesktop}\phillip"; Filename: "{app}\phillip.exe"; Tasks: desktopicon
 [Run]
 Filename: "{tmp}\{#RuntimeInstaller}"; Parameters: "--quiet"; StatusMsg: "Installing the Windows App SDK Runtime..."; Flags: runhidden waituntilterminated; Check: RuntimeDownloaded
 Filename: "{app}\phillip.exe"; Description: "{cm:LaunchProgram,phillip}"; Flags: nowait postinstall skipifsilent
+; Restarts the app after an update from inside it.
+Filename: "{app}\phillip.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallDelete]
+; Downloaded models, the saved model index, downloaded updates and
 ; TensorRT-RTX's compiled kernels. Settings in {userappdata} are kept.
 Type: filesandordirs; Name: "{localappdata}\phillip"
 
@@ -105,6 +122,35 @@ end;
 function RuntimeDownloaded: Boolean;
 begin
   Result := Downloaded;
+end;
+
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
+
+// Waits for the app to exit: when it updates itself it starts setup, then
+// exits. If it's still running, asks the user to close it.
+function InitializeSetup: Boolean;
+var
+  Waited: Integer;
+begin
+  Result := True;
+  Waited := 0;
+  while CheckForMutexes('{#AppMutexName}') and (Waited < 30000) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+  while CheckForMutexes('{#AppMutexName}') do
+  begin
+    if SuppressibleMsgBox('phillip is running. Close it, then click OK to continue.',
+        mbError, MB_OKCANCEL, IDCANCEL) = IDCANCEL then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
 end;
 
 procedure InitializeWizard;

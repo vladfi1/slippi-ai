@@ -283,6 +283,47 @@ def downloaded_models() -> list[tuple[ModelInfo, str]]:
   return models
 
 
+def download_file(
+    url: str,
+    dest: pathlib.Path,
+    sha256: str,
+    size: int,
+    progress: tp.Optional[ProgressFn] = None,
+    cancel: tp.Optional[threading.Event] = None,
+) -> pathlib.Path:
+  """Downloads url and checks its hash; returns the not yet renamed file.
+
+  The download goes to dest + '.part', which the caller renames to dest once
+  it's ready for it, so that dest never holds a partial or unchecked file.
+  """
+  dest.parent.mkdir(parents=True, exist_ok=True)
+  partial = dest.with_name(dest.name + '.part')
+  hasher = hashlib.sha256()
+  done = 0
+
+  logging.info(f'Downloading {url}')
+  request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+  try:
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response, \
+         open(partial, 'wb') as f:
+      while chunk := response.read(1 << 20):
+        if cancel is not None and cancel.is_set():
+          raise DownloadCancelled(url)
+        f.write(chunk)
+        hasher.update(chunk)
+        done += len(chunk)
+        if progress is not None:
+          progress(done, size)
+  except BaseException:
+    partial.unlink(missing_ok=True)
+    raise
+
+  if hasher.hexdigest() != sha256:
+    partial.unlink()
+    raise ValueError(f'{url} has sha256 {hasher.hexdigest()}, expected {sha256}.')
+  return partial
+
+
 def download(
     info: ModelInfo,
     progress: tp.Optional[ProgressFn] = None,
@@ -294,33 +335,7 @@ def download(
     return path
 
   dest = _model_dir(info) / info.filename
-  dest.parent.mkdir(parents=True, exist_ok=True)
-  partial = dest.with_name(dest.name + '.part')
-  sha256 = hashlib.sha256()
-  done = 0
-
-  logging.info(f'Downloading {info.name} from {info.url}')
-  request = urllib.request.Request(info.url, headers={'User-Agent': USER_AGENT})
-  try:
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response, \
-         open(partial, 'wb') as f:
-      while chunk := response.read(1 << 20):
-        if cancel is not None and cancel.is_set():
-          raise DownloadCancelled(info.name)
-        f.write(chunk)
-        sha256.update(chunk)
-        done += len(chunk)
-        if progress is not None:
-          progress(done, info.size)
-  except BaseException:
-    partial.unlink(missing_ok=True)
-    raise
-
-  if sha256.hexdigest() != info.sha256:
-    partial.unlink()
-    raise ValueError(
-        f'{info.url} has sha256 {sha256.hexdigest()}, expected {info.sha256}.')
-
+  partial = download_file(info.url, dest, info.sha256, info.size, progress, cancel)
   # The entry goes first, so that a model file always has one.
   _write_atomic(dest.parent / INFO_FILE, json.dumps(info.to_json(), indent=2).encode())
   os.replace(partial, dest)

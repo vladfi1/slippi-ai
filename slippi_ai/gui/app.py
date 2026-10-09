@@ -11,7 +11,8 @@ import melee
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from slippi_ai import models as model_index, onnx_policies, session, utils
-from slippi_ai.gui import models as models_lib, runner, settings as settings_lib
+from slippi_ai.gui import (
+    models as models_lib, runner, settings as settings_lib, updates, version)
 
 _CHARACTER_NAMES = {
     melee.Character.CPTFALCON: 'Captain Falcon',
@@ -169,7 +170,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def __init__(self):
     super().__init__()
-    self.setWindowTitle('Play phillip')
+    self.setWindowTitle(f'Play phillip {version.VERSION}')
     self.settings = settings_lib.load()
 
     self._dolphin_ok = False
@@ -185,11 +186,14 @@ class MainWindow(QtWidgets.QMainWindow):
     self._models_scan_id = 0  # Ignores results from earlier scans.
     self._models_scanning = False
     self._process: tp.Optional[runner.SessionProcess] = None
+    self._update: tp.Optional[updates.Release] = None
+    self._update_cancel: tp.Optional[threading.Event] = None
     self._stop_requested_at: tp.Optional[QtCore.QElapsedTimer] = None
 
     central = QtWidgets.QWidget()
     self.setCentralWidget(central)
     layout = QtWidgets.QVBoxLayout(central)
+    layout.addWidget(self._update_bar())
     layout.addWidget(self._melee_group())
     layout.addWidget(self._phillip_group())
     layout.addWidget(self._opponent_group())
@@ -218,10 +222,31 @@ class MainWindow(QtWidgets.QMainWindow):
     self._load_published()
     self._fetch_index()
     self._find_providers()
+    self._check_for_updates()
     self._update_controls()
     self.resize(720, 800)
 
   # Layout
+
+  def _update_bar(self) -> QtWidgets.QWidget:
+    """Offers a newer version of the app; hidden until there is one."""
+    self.update_bar = QtWidgets.QFrame()
+    self.update_bar.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+    self.update_label = QtWidgets.QLabel()
+    self.update_label.setOpenExternalLinks(True)
+    self.update_label.setWordWrap(True)
+    self.update_button = QtWidgets.QPushButton('Update')
+    self.update_button.clicked.connect(self._update_clicked)
+    later = QtWidgets.QPushButton('Later')
+    later.clicked.connect(self.update_bar.hide)
+    self._update_later = later
+
+    row = QtWidgets.QHBoxLayout(self.update_bar)
+    row.addWidget(self.update_label, 1)
+    row.addWidget(self.update_button)
+    row.addWidget(later)
+    self.update_bar.hide()
+    return self.update_bar
 
   def _melee_group(self) -> QtWidgets.QGroupBox:
     group = QtWidgets.QGroupBox('Melee')
@@ -462,6 +487,82 @@ class MainWindow(QtWidgets.QMainWindow):
       self._refresh_models()
 
     run_in_thread(lambda: models_lib.scan(folder), on_done)
+
+  # App updates
+
+  def _check_for_updates(self):
+    if not updates.enabled():
+      return
+
+    def on_done(release, error):
+      if error is not None:
+        logging.warning('Could not check for updates: %s', error)
+      elif release is not None:
+        self._update = release
+        self._show_update_available()
+        if release.installer_url is None:
+          self.update_button.setText('Download')
+        self.update_bar.show()
+        self._update_controls()
+
+    run_in_thread(updates.check, on_done)
+
+  def _show_update_available(self):
+    release = self._update
+    self.update_label.setText(
+        f'phillip {release.version_str} is available. '
+        f'<a href="{release.page_url}">What\'s new</a>')
+
+  def _update_clicked(self):
+    release = self._update
+    assert release is not None
+    if self._update_cancel is not None:
+      self._update_cancel.set()
+      return
+    if release.installer_url is None:
+      # No installer with a published hash: download it from the page.
+      QtGui.QDesktopServices.openUrl(QtCore.QUrl(release.page_url))
+      return
+
+    cancel = threading.Event()
+    self._update_cancel = cancel
+    self.update_button.setText('Cancel')
+    self._update_later.setEnabled(False)
+    size = f'{release.installer_size / 1e6:.0f} MB'
+    self.update_label.setText(f'Downloading phillip {release.version_str} ({size})...')
+    self._update_controls()
+
+    def on_progress(fraction):
+      if not cancel.is_set():
+        self.update_label.setText(
+            f'Downloading phillip {release.version_str}... {fraction:.0%} of {size}')
+
+    def on_done(path, error):
+      self._update_cancel = None
+      self.update_button.setText('Update')
+      self._update_later.setEnabled(True)
+      if error is None:
+        try:
+          updates.run_installer(path)
+        except OSError as e:
+          error = e
+        else:
+          self.update_label.setText(
+              f'Installing phillip {release.version_str}; it will restart.')
+          self.close()
+          return
+      if isinstance(error, model_index.DownloadCancelled):
+        self._show_update_available()
+      else:
+        logging.warning('Could not update: %s', error)
+        self.update_label.setText(
+            f'Could not update to phillip {release.version_str}: {error}')
+      self._update_controls()
+
+    run_in_thread(
+        lambda progress: updates.download_installer(
+            release, lambda done, total: progress(done / max(total, 1)), cancel),
+        on_done, on_progress)
 
   # Published models
 
@@ -706,8 +807,11 @@ class MainWindow(QtWidgets.QMainWindow):
   def _downloading(self) -> bool:
     return self._download_cancel is not None
 
+  def _updating(self) -> bool:
+    return self._update_cancel is not None
+
   def _busy(self) -> bool:
-    return self._running() or self._downloading()
+    return self._running() or self._downloading() or self._updating()
 
   def _update_controls(self):
     running = self._running()
@@ -730,9 +834,16 @@ class MainWindow(QtWidgets.QMainWindow):
     ready = (
         self._dolphin_ok and self._iso_ok and not self._models_scanning and
         self._character() is not None and self._selected_model() is not None)
+    # Updating closes the app, so not during a session or a model download.
+    self.update_button.setEnabled(
+        self._updating() or not (running or self._downloading()))
+
     if running:
       self.start_button.setText('Stop')
       self.start_button.setEnabled(self._stop_requested_at is None)
+    elif self._updating():
+      self.start_button.setText('Start')
+      self.start_button.setEnabled(False)
     elif self._downloading():
       self.start_button.setText('Cancel download')
       self.start_button.setEnabled(not self._download_cancel.is_set())
@@ -812,6 +923,8 @@ class MainWindow(QtWidgets.QMainWindow):
     self._save_settings()
     config = self._session_config()
     self.log.clear()
+    # For bug reports: which build the log is from.
+    self._append_log(logging.INFO, version.build_info())
     self._append_log(logging.INFO, 'Starting Dolphin...')
     self._process = runner.SessionProcess(config)
     self._stop_requested_at = None
@@ -877,8 +990,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def closeEvent(self, event: QtGui.QCloseEvent):
     self._save_settings()
-    if self._download_cancel is not None:
-      self._download_cancel.set()
+    for cancel in (self._download_cancel, self._update_cancel):
+      if cancel is not None:
+        cancel.set()
     if self._process is not None:
       self._process.request_stop()
       deadline = QtCore.QDeadlineTimer(runner.STOP_TIMEOUT * 1000)
@@ -893,6 +1007,7 @@ def main():
   logging.basicConfig(level=logging.INFO)
   app = QtWidgets.QApplication(sys.argv)
   app.setApplicationName('phillip')
+  updates.hold_app_mutex()
   window = MainWindow()
   window.show()
   return app.exec()

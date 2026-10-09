@@ -5,6 +5,10 @@ name: windows bundle
 # checks that the frozen CLI executables start and load a model, before and
 # after installing. The GUI is only built: windowed exes report errors in a
 # dialog, which would hang CI.
+#
+# Pushing a launcher-v<version> tag, matching slippi_ai/gui/version.py, also
+# publishes the installer as a GitHub release, which installed apps offer as
+# an update (slippi_ai/gui/updates.py).
 
 on: [push, pull_request]
 
@@ -12,6 +16,9 @@ jobs:
   bundle:
 
     runs-on: windows-latest
+
+    permissions:
+      contents: write  # To publish releases.
 
     steps:
     - uses: actions/checkout@v6
@@ -70,7 +77,7 @@ jobs:
     - name: Build installer
       run: |
         if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-        $version = python -c "from importlib.metadata import version; print(version('slippi-ai'))"
+        $version = python -c "from slippi_ai.gui.version import VERSION; print(VERSION)"
         & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" packaging/slippi_ai.iss
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         Get-ChildItem dist/phillip-setup-*.exe
@@ -97,6 +104,20 @@ jobs:
         cat out.txt
         grep -q "Windows ML providers:" out.txt
         grep -q "Unknown path" out.txt
+
+    - name: Publish release
+      if: startsWith(github.ref, 'refs/tags/launcher-v')
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version=$(python -c "from slippi_ai.gui.version import VERSION; print(VERSION)")
+        if [ "$GITHUB_REF_NAME" != "launcher-v$version" ]; then
+          echo "Tag $GITHUB_REF_NAME doesn't match VERSION $version in slippi_ai/gui/version.py."
+          exit 1
+        fi
+        gh release create "$GITHUB_REF_NAME" "dist/phillip-setup-$version.exe" \
+          --title "phillip $version" --generate-notes
 
     - uses: actions/upload-artifact@v4
       with:
