@@ -9,7 +9,9 @@ with CUDA graphs, packed graph I/O and float16 weight storage, benchmarked
 in the real loop with Dolphin. What's left is measuring low-end machines for
 a minimum-spec statement. Step 4, the session library entry point
 (`slippi_ai/session.py`), is done (2026-10-07). Step 5, model downloads, is
-deferred (client on branch `model-downloads`).
+planned as an online model index (2026-10-09) that the GUI browses like local
+models; a first client with a packaged manifest is on branch
+`model-downloads`.
 
 ## Goal
 
@@ -245,21 +247,152 @@ within 0.2 s. It can't interrupt a hung Dolphin, so the GUI should still run
 the session in a child process (kill as a fallback), which also keeps
 Dolphin/libmelee crashes from taking down the UI.
 
-## 5. Model distribution (deferred)
+## 5. Model distribution (planned)
 
-Deferred (2026-10-07): for now users download model files themselves. A
-download client (`--p*.ai.model <name>`, a sha256-pinned manifest shipped with
-the package, caching under `%LOCALAPPDATA%\phillip\models`) is implemented
-and tested on branch `model-downloads`, waiting on hosting.
+For now users download model files themselves. Branch `model-downloads`
+(2026-10-07) has a first download client: `--p*.ai.model <name>` looks the
+name up in a manifest shipped with the package (`slippi_ai/data/models.json`,
+built by `scripts/make_model_manifest.py`), downloads the file, checks its
+sha256 and caches it by hash. It was never merged, since nothing is hosted.
 
-- Host exported `.onnx` files (fp32 and/or fp16) on the Hugging Face Hub, or
-  GitHub Releases, instead of the Google Drive folder.
-- `--p2.ai.model fox` style names that download and cache automatically,
-  with the hub repo/revision pinned per slippi-ai release so model format
-  changes don't break old installs (the metadata already has a
-  `format_version`).
-- With steps 4 and 5, a technical user's whole setup is
-  `pip install slippi-ai[onnx]` (or `uvx`) plus Dolphin and an ISO.
+Decided (2026-10-09): the list of models is hosted online, next to the
+files, instead of shipped with the package, so newly published models show
+up without a new release. The GUI shows published models alongside local
+ones, with the same character, opponent and delay filters, and downloads one
+when it's chosen. The packaged manifest is replaced; its download, sha256
+check and cache code is reused.
+
+### Hosting
+
+- A Hugging Face model repo (name to be decided) holds the exported `.onnx`
+  files and the index. It's free for public models, serves large files from
+  a CDN, keeps every revision, and counts downloads. GitHub Releases would
+  work too, but updating the index there means re-uploading release assets.
+- The index is one JSON file, read at a fixed URL on the `main` branch:
+  `https://huggingface.co/<repo>/resolve/main/index-v1.json`. The schema
+  version is in the file name, so an incompatible schema change publishes
+  `index-v2.json` next to it, and older installs keep reading (and we keep
+  updating, as long as practical) `index-v1.json`.
+- Each entry's file URL is pinned to the commit that uploaded it
+  (`resolve/<commit>/<file>`), and has its sha256. Overwriting or deleting a
+  file on `main` later can't change what an entry downloads, and the hash
+  check catches anything else.
+
+### Index format
+
+```json
+{
+  "updated": "2026-10-09T12:00:00Z",
+  "models": [
+    {
+      "name": "fox-d21",
+      "description": "Fox trained with RL against Falco and Fox.",
+      "url": "https://huggingface.co/<repo>/resolve/<commit>/fox-d21.onnx",
+      "sha256": "...",
+      "size": 98041677,
+      "format_version": 1,
+      "batch_size": 1,
+      "agent_type": "RL",
+      "characters": ["FOX"],
+      "opponents": ["FALCO", "FOX"],
+      "delay": 21,
+      "published": "2026-10-09"
+    }
+  ]
+}
+```
+
+- The entry carries everything the GUI filters and displays without
+  downloading: the fields of `eval_lib.AgentSummary` (type, delay,
+  characters, opponents) plus `batch_size`, read from the exported model's
+  metadata at publish time, the same way `gui/models.scan` reads local
+  files. The client builds an `AgentSummary` from an entry, so local and
+  remote models go through the same filters.
+- Names are unique and stable: a retrained model gets a new name, or the old
+  name points at a new file (new sha256, so the cached copy isn't reused).
+- Compatibility comes from `format_version` instead of per-release pinning:
+  the client hides entries whose `format_version` it can't load
+  (`onnx_policies.FORMAT_VERSION`), and, when there are any, says that a
+  newer phillip has more models. A format change publishes new files for the
+  new version and keeps the old ones (as separate entries) as long as old
+  installs matter. Entries also must have `batch_size` 1 to be listed.
+- Unknown fields are ignored, so adding fields doesn't need a new schema
+  version.
+
+### Client (`slippi_ai/models.py`)
+
+Reworked from the `model-downloads` branch; stdlib only (`urllib`), so the
+bundle doesn't need `huggingface_hub`.
+
+- `fetch_index()` downloads the index (with `If-None-Match`/ETag) and saves
+  it to `%LOCALAPPDATA%\phillip\models\index-v1.json`; `load_index()` reads
+  that saved copy. Offline, or if the fetch fails, the last saved index is
+  used, so the list and downloaded models keep working.
+  `$PHILLIP_INDEX_URL` overrides the URL, for tests and staging.
+- Downloads go to `%LOCALAPPDATA%\phillip\models\<sha256[:16]>\<file>`
+  (named `phillip` instead of the branch's `slippi-ai`, to match the app;
+  `$PHILLIP_CACHE` overrides it), written to a `.part` file and renamed after
+  the sha256 check, with a progress callback and a cancel flag for the GUI.
+- `downloaded_models()` lists what's in the cache, read like local files, so
+  a model removed from the index stays playable once downloaded.
+- CLI: `--p*.ai.model <name>` resolves against the saved index, fetching it
+  first if there isn't one or the name is unknown. `<name>@<sha256 prefix>`
+  pins an exact file, for reproducible evals.
+
+### GUI
+
+- The model list merges three sources: the optional local folder (as now),
+  downloaded models, and the index. A model in the index that's already
+  downloaded shows once, matched by sha256 (cached files are keyed by hash,
+  so this needs no hashing). Local-folder files are listed separately.
+- A new column shows where each model is: "Downloaded", "Local", or the
+  download size for models that are only online. A checkbox hides
+  online-only models, for offline play.
+- The model folder becomes optional: with the index, a new user can play
+  without choosing one.
+- Choosing an online-only model enables a Download button (Start becomes
+  "Download and start"); the download runs in a thread with a progress bar
+  in the status line and can be cancelled. A context menu deletes a
+  downloaded model.
+- The index is fetched in the background at startup, after showing the
+  saved copy, so the list appears immediately; status shows "Couldn't reach
+  the model list; showing models from <date>" when offline.
+- Settings remember the chosen model by name and sha256 (or path, for local
+  ones) instead of only a path.
+- The entry's description is shown as the model's tooltip.
+
+### Publishing (`scripts/publish_models.py`)
+
+Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in the
+`onnx-export` extra.
+
+- Input: the `onnx_models` directory that `scripts/sync_onnx_models.py`
+  keeps in sync, plus a checked-in list of which models are public, with
+  their descriptions (`models/published.json`), so publishing is reviewed in
+  a PR rather than whatever is in `onnx_models`.
+- It reads each published model's metadata, uploads files whose sha256
+  isn't in the index yet in one commit, then rewrites `index-v1.json` with
+  their URLs pinned to that commit, in a second commit. Entries for models
+  dropped from the list are removed from the index; their files stay, so
+  existing downloads and pinned URLs keep working.
+- `--dry_run` prints the new index and what would be uploaded.
+
+### Steps
+
+1. Client: index format, fetch and saved copy, downloads, CLI names; tests
+   with a local HTTP server, run in `play.yml`. Drop `slippi_ai/data/models.json`.
+2. Publishing script; create the Hugging Face repo and publish the current
+   `deployed_models` exports (fp16, batch size 1).
+3. GUI: merged list, Download button and progress, offline handling.
+4. Bundle and installer: check in CI that the frozen GUI fetches the index
+   and downloads a small test model from a staging URL.
+
+With sections 4 and 5, a technical user's whole setup is
+`pip install slippi-ai[onnx]` (or `uvx`) plus Dolphin and an ISO.
+
+Open: the repo name and owner; whether to also publish fp32 files (fp16
+storage computes in fp32 and halves downloads, so probably not); whether to
+show download counts from the Hub in the GUI.
 
 ## 6. Packaging and GUI
 
@@ -329,7 +462,8 @@ Local play only for now; netplay is on the back burner.
     killed if it doesn't stop within 10 s. Start warns if Dolphin is already
     running.
   - Tested against an in-game CPU and with a controller.
-  - Not yet: model downloads (step 5), a Wii U adapter driver check, netplay.
+  - Not yet: browsing and downloading published models (planned in step
+    5), a Wii U adapter driver check, netplay.
 - **Installer: Inno Setup (started).** `packaging/slippi_ai.iss` wraps the
   PyInstaller output in `dist/phillip-setup-<version>.exe` (80 MB).
   - Installs per user by default, to `%LOCALAPPDATA%\Programs\phillip` with
