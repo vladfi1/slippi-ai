@@ -14,7 +14,7 @@ import melee
 
 from slippi_ai import (
   dolphin, data, utils, nametags,
-  observations, flag_utils, policies,
+  observations, flag_utils, policies, models,
 )
 from slippi_ai.policies import RecurrentState
 from slippi_ai.types import Game, Controller, reify_tuple_type, Rank1, BoolArray
@@ -629,13 +629,11 @@ def build_agent(
     controller: tp.Optional[melee.Controller] = None,
     state: tp.Optional[dict] = None,
     path: tp.Optional[str] = None,
+    model: tp.Optional[str] = None,
     **agent_kwargs,
 ) -> Agent:
   if state is None:
-    if path is None:
-      raise ValueError('Must provide either state or path.')
-
-    state = saving.load_state_from_disk(path)
+    state = saving.load_state_from_disk(models.resolve_path(path, model))
 
   return Agent(
       controller=controller,
@@ -688,6 +686,9 @@ BATCH_AGENT_FLAGS = dict(
 
 AGENT_FLAGS = dict(
     BATCH_AGENT_FLAGS,
+    model=ff.String(
+        None, 'Name of a published model to download and use instead of '
+        '--path, e.g. fox-d21, or fox-d21@<sha256 prefix> for an exact file.'),
     name_change_mode=ff.EnumClass(
         NameChangeMode.FIXED, NameChangeMode,
         'How to change the agent name.'),

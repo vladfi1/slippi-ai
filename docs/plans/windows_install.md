@@ -319,10 +319,14 @@ check and cache code is reused.
 - Unknown fields are ignored, so adding fields doesn't need a new schema
   version.
 
-### Client (`slippi_ai/models.py`)
+### Client (`slippi_ai/models.py`, done)
 
-Reworked from the `model-downloads` branch; stdlib only (`urllib`), so the
-bundle doesn't need `huggingface_hub`.
+Done (2026-10-09), reworked from the `model-downloads` branch; stdlib only
+(`urllib`), so the bundle doesn't need `huggingface_hub`. Tested in
+`tests/models_test.py` (in `play.yml`) against a local HTTP server, and by
+hand: a real exported model served locally downloaded by name and loaded.
+`DEFAULT_INDEX_URL` is unset until the repo exists, so for now
+`$PHILLIP_INDEX_URL` is required.
 
 - `fetch_index()` downloads the index (with `If-None-Match`/ETag) and saves
   it to `%LOCALAPPDATA%\phillip\models\index-v1.json`; `load_index()` reads
@@ -333,11 +337,15 @@ bundle doesn't need `huggingface_hub`.
   (named `phillip` instead of the branch's `slippi-ai`, to match the app;
   `$PHILLIP_CACHE` overrides it), written to a `.part` file and renamed after
   the sha256 check, with a progress callback and a cancel flag for the GUI.
-- `downloaded_models()` lists what's in the cache, read like local files, so
-  a model removed from the index stays playable once downloaded.
+- Each download's index entry is saved next to it (`info.json`), and
+  `downloaded_models()` lists those, so a model removed from the index stays
+  playable, and listable with its metadata, once downloaded.
+- `info_from_file()` builds an entry from an exported `.onnx` file, for the
+  publishing script.
 - CLI: `--p*.ai.model <name>` resolves against the saved index, fetching it
   first if there isn't one or the name is unknown. `<name>@<sha256 prefix>`
-  pins an exact file, for reproducible evals.
+  pins an exact file, for reproducible evals. A name can have several
+  entries (e.g. one per `format_version`); the compatible one is used.
 
 ### GUI
 
@@ -379,8 +387,8 @@ Replaces `scripts/make_model_manifest.py`; uses `huggingface_hub`, in the
 
 ### Steps
 
-1. Client: index format, fetch and saved copy, downloads, CLI names; tests
-   with a local HTTP server, run in `play.yml`. Drop `slippi_ai/data/models.json`.
+1. Client (done): index format, fetch and saved copy, downloads, CLI
+   names; tests with a local HTTP server, run in `play.yml`.
 2. Publishing script; create the Hugging Face repo and publish the current
    `deployed_models` exports (fp16, batch size 1).
 3. GUI: merged list, Download button and progress, offline handling.

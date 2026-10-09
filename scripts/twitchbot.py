@@ -76,6 +76,7 @@ agent_flags['tf']['jit_compile'] = ff.Boolean(True)
 agent_flags['jax']['functionalize'] = ff.Boolean(True)
 
 del agent_flags['path']  # not used
+del agent_flags['model']
 AGENT = ff.DEFINE_dict('agent', **agent_flags)
 
 

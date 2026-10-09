@@ -10,7 +10,7 @@ from absl import flags
 import fancyflags as ff
 
 import melee
-from slippi_ai import eval_lib, types, utils, saving
+from slippi_ai import eval_lib, models, types, utils, saving
 from slippi_ai import dolphin as dolphin_lib
 from slippi_db.parse_libmelee import get_controller
 
@@ -39,7 +39,9 @@ def main(_):
 
   port = 1
 
-  agent_state = saving.load_state_from_disk(AGENT.value['path'])
+  agent_kwargs = AGENT.value.copy()
+  agent_state = saving.load_state_from_disk(models.resolve_path(
+      agent_kwargs.pop('path'), agent_kwargs.pop('model')))
 
   player = dolphin_lib.AI(
       character=CHAR.value,
@@ -59,7 +61,7 @@ def main(_):
       console_delay=DOLPHIN.value['online_delay'],
       run_on_cpu=True,
       state=agent_state,
-      **AGENT.value,
+      **agent_kwargs,
   )
 
   try:
