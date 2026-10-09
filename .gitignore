@@ -154,7 +154,8 @@ user_jsons/
 saved_models/
 pickled_models/
 test_models/
-deployed_models/
+deployed_models
+onnx_models
 stripped_models/
 
 # git worktrees
