@@ -8,6 +8,10 @@ so publishing needs no commit here; the Hub keeps the history.
     --description="Plays and faces all characters."
   python scripts/publish_models.py add a.onnx b.onnx
 
+  # Make the index match a folder: publish its new and changed models, and
+  # remove published models that aren't in it.
+  python scripts/publish_models.py sync onnx_models
+
   python scripts/publish_models.py remove diamond
   python scripts/publish_models.py describe diamond --description="..."
   python scripts/publish_models.py list
@@ -59,20 +63,29 @@ def load_current_index(api, repo: str) -> models.Index:
     return models.Index.from_json(json.load(f))
 
 
-def add(index: models.Index, paths: list[str], repo: str) -> dict[str, str]:
-  """Adds models to the index; returns the files to upload (repo name -> path)."""
-  if NAME.value is not None and len(paths) != 1:
-    raise app.UsageError('--name needs exactly one model.')
+def model_name(path: str) -> str:
+  return os.path.splitext(os.path.basename(path))[0]
 
+
+def add(
+    index: models.Index,
+    named_paths: list[tuple[str, str]],
+    repo: str,
+    skip_incompatible: bool = False,
+) -> dict[str, str]:
+  """Adds models to the index; returns the files to upload (repo name -> path)."""
   uploads = {}
-  for path in paths:
-    name = NAME.value or os.path.splitext(os.path.basename(path))[0]
+  for name, path in named_paths:
     filename = f'{name}.onnx'
     info = models.info_from_file(
         path, name, url=file_url(repo, PENDING, filename),
         published=datetime.date.today().isoformat())
     if not info.compatible():
-      raise ValueError(f'{path} is not playable by this version of phillip.')
+      message = f'{path} is not playable by this version of phillip.'
+      if skip_incompatible:
+        print(f'Skipping {message}')
+        continue
+      raise ValueError(message)
 
     old = [m for m in index.models if m.name == name]
     same_format = [m for m in old if m.format_version == info.format_version]
@@ -111,7 +124,7 @@ def print_index(index: models.Index):
 
 def main(argv):
   if len(argv) < 2:
-    raise app.UsageError('Usage: publish_models.py add|remove|describe|list ...')
+    raise app.UsageError('Usage: publish_models.py add|sync|remove|describe|list ...')
   command, args = argv[1], argv[2:]
 
   import huggingface_hub
@@ -119,6 +132,7 @@ def main(argv):
   repo = REPO.value
   index = load_current_index(api, repo)
 
+  before = index.to_json()
   uploads = {}
   if command == 'list':
     print_index(index)
@@ -126,8 +140,23 @@ def main(argv):
   elif command == 'add':
     if not args:
       raise app.UsageError('add needs .onnx files.')
-    uploads = add(index, args, repo)
-    message = f'Add {", ".join(f.removesuffix(".onnx") for f in uploads) or "nothing new"}'
+    if NAME.value is not None and len(args) != 1:
+      raise app.UsageError('--name needs exactly one model.')
+    uploads = add(index, [(NAME.value or model_name(path), path) for path in args], repo)
+    message = f'Add {", ".join(f.removesuffix(".onnx") for f in uploads)}'
+  elif command == 'sync':
+    if len(args) != 1 or NAME.value is not None or DESCRIPTION.value is not None:
+      raise app.UsageError('Usage: sync <folder>')
+    folder = args[0]
+    named_paths = [
+        (model_name(f), os.path.join(folder, f))
+        for f in sorted(os.listdir(folder)) if f.endswith('.onnx')]
+    uploads = add(index, named_paths, repo, skip_incompatible=True)
+    removed = sorted({m.name for m in index.models} - {n for n, _ in named_paths})
+    index.models = [m for m in index.models if m.name not in removed]
+    for name in removed:
+      print(f'Remove {name}')
+    message = f'Sync: add {", ".join(f.removesuffix(".onnx") for f in uploads) or "none"}, '               f'remove {", ".join(removed) or "none"}'
   elif command == 'remove':
     if not args:
       raise app.UsageError('remove needs model names.')
@@ -146,6 +175,10 @@ def main(argv):
 
   for filename, path in uploads.items():
     print(f'Upload {path} as {filename} ({os.path.getsize(path) / 2**20:.0f} MiB)')
+
+  if index.to_json() == before:
+    print('Nothing to change.')
+    return
 
   if DRY_RUN.value:
     print(json.dumps(index.to_json(), indent=2))

@@ -388,6 +388,10 @@ need jax), and `hf auth login` with a write token.
   pinned to that commit, in a second commit. Re-adding a name replaces its
   entry for that format version (keeping the description unless one is
   given); entries for other format versions stay, for older installs.
+- `sync <folder>` (e.g. `onnx_models`) makes the index match a folder:
+  `add` for each `.onnx` file in it, named after the file (skipping ones
+  that aren't playable), then `remove` for published names with no file.
+  Nothing is committed if nothing changed.
 - `remove <name>...` drops entries from the index; the files stay, so
   existing downloads and pinned URLs keep working. `describe <name>
   --description=...` edits a description; `list` prints the index.
