@@ -887,6 +887,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # Models with less delay than the default online delay need less.
     dolphin.online_delay = min(dolphin.online_delay, summary.delay)
     dolphin.copy_home_directory = self.copy_settings_check.isChecked()
+    if dolphin.copy_home_directory:
+      # Keep the user's display settings, e.g. fullscreen.
+      dolphin.fullscreen = None
 
     return session.SessionConfig(
         players={ai_port: ai, other_port: other}, dolphin=dolphin)
