@@ -8,11 +8,13 @@ import dataclasses
 import contextlib
 import logging
 import os
+import threading
 import time
 import typing as tp
 
 import fancyflags as ff
 import melee
+from melee.slippstream import EnetDisconnected
 
 from slippi_ai import eval_lib, flag_utils, utils
 from slippi_ai import dolphin as dolphin_lib
@@ -58,6 +60,9 @@ class StopEvent(tp.Protocol):
   """A threading.Event or multiprocessing.Event."""
 
   def is_set(self) -> bool:
+    ...
+
+  def wait(self, timeout: tp.Optional[float] = None) -> bool:
     ...
 
 
@@ -158,22 +163,50 @@ def run_session(
     config: SessionConfig,
     stop_event: tp.Optional[StopEvent] = None,
 ) -> None:
-  """Plays until `config.num_games` games are done or `stop_event` is set."""
+  """Plays until `config.num_games` games are done or `stop_event` is set.
+
+  The stop event is checked once per frame and, in case Dolphin stops
+  sending frames (e.g. the game was exited), also by a thread that then
+  interrupts the wait for the next frame.
+  """
+  with Session(config) as session:
+    done = threading.Event()
+    if stop_event is not None:
+      threading.Thread(
+          target=_interrupt_on_stop, args=(session, stop_event, done),
+          daemon=True).start()
+    try:
+      _play(session, stop_event)
+    except EnetDisconnected:
+      if stop_event is None or not stop_event.is_set():
+        raise
+      logging.info('Stopped while waiting for Dolphin.')
+    finally:
+      done.set()
+
+
+def _interrupt_on_stop(session: Session, stop_event: StopEvent, done: threading.Event):
+  while not done.is_set():
+    if stop_event.wait(0.5):
+      session.dolphin.interrupt()
+      return
+
+
+def _play(session: Session, stop_event: tp.Optional[StopEvent]):
   # Skip the first step, which may include compilation.
   total_step_time = 0.
   num_steps = 0
 
-  with Session(config) as session:
-    for i, frame in enumerate(session.frames(stop_event)):
-      if i > 0:
-        total_step_time += frame.step_time
-        num_steps += 1
-      gamestate = frame.gamestate
+  for i, frame in enumerate(session.frames(stop_event)):
+    if i > 0:
+      total_step_time += frame.step_time
+      num_steps += 1
+    gamestate = frame.gamestate
 
-      if gamestate.frame > 0 and gamestate.frame % (30 * 60) == 15 * 60:
-        step_time = total_step_time / num_steps
-        logging.info(f'step_time: {step_time:.3f}')
-        if step_time > 0.016:
-          logging.error('running too slow to keep up with the game!')
-        elif step_time > 0.012:
-          logging.warning('running slow, performance may be degraded')
+    if gamestate.frame > 0 and gamestate.frame % (30 * 60) == 15 * 60:
+      step_time = total_step_time / num_steps
+      logging.info(f'step_time: {step_time:.3f}')
+      if step_time > 0.016:
+        logging.error('running too slow to keep up with the game!')
+      elif step_time > 0.012:
+        logging.warning('running slow, performance may be degraded')

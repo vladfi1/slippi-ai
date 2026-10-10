@@ -5,13 +5,15 @@ import logging
 import logging.handlers
 import multiprocessing
 import queue
+import subprocess
 import sys
 import typing as tp
 
 from slippi_ai import session
 
 # Seconds to wait after asking the session to stop before killing it. The
-# session checks for stop once per frame, but not while starting Dolphin.
+# session stops within a frame, or a second if Dolphin isn't sending frames,
+# but not while starting Dolphin.
 STOP_TIMEOUT = 10
 
 _LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
@@ -71,6 +73,15 @@ class SessionProcess:
     self._stop_event.set()
 
   def kill(self):
-    """Kills the session. Dolphin may be left running."""
+    """Kills the session, and on Windows the Dolphin it started."""
+    if sys.platform == 'win32' and self._process.pid is not None:
+      # Dolphin is the session's child; /T kills the whole tree.
+      try:
+        subprocess.run(
+            ['taskkill', '/PID', str(self._process.pid), '/T', '/F'],
+            capture_output=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+      except (OSError, subprocess.SubprocessError):
+        pass
     self._process.kill()
     self._process.join()

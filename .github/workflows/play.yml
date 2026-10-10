@@ -35,6 +35,9 @@ jobs:
     - name: App updates
       run: python tests/updates_test.py
 
+    - name: Stop a session without frames
+      run: python tests/session_stop_test.py
+
     - name: Parse eval_two flags
       run: python scripts/eval_two.py --only_check_args
 
