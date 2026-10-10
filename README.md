@@ -6,7 +6,15 @@ This project is the successor to [Phillip](https://github.com/vladfi1/phillip). 
 
 The bot is available to play via netplay on my [twitch channel](https://twitch.tv/x_pilot). Due to phillip's high delay (18+ frames) and buffer donation, it should feel like playing locally at up to 300ms ping.
 
-### Local Play
+### Local Play (Windows GUI App)
+
+Get the latest installer from [here](https://github.com/vladfi1/slippi-ai/releases/latest). Windows will likely show "Windows protected your PC" on first run -- you can get past this with "More info → Run anyway". Windows 10 1809+ is required. Additional hardware acceleration options are available on Windows 11 24H2 and later.
+
+The app will use your locally installed Slippi Dolphin and Melee ISO (NTSC 1.02 required). Make sure no other dolphin instances are open when playing phillip.
+
+The app will automatically download `.onnx` models from the cloud, or you can download them yourself [here](https://drive.google.com/drive/folders/1U860HfE5FB2VKTN56TTkDffhZnu3B45J?usp=sharing) and put them into a local folder.
+
+### Local Play (Command Line)
 
 Download or `git clone` this repository. From the repository root:
 
@@ -21,7 +29,7 @@ python scripts/eval_two.py --help  # to get a full list of options
 You can change the character by setting `--p2.character <fox/falco/marth/...>`. The full set of released models is in this [Google Drive folder](https://drive.google.com/drive/folders/1etYN_IgVoUPleAsh76s_9443e4XzGKWo?usp=sharing).
 
 #### Notes
-* Tested with python 3.12 and 3.13.
+* Tested with python 3.12-3.14.
 * By default phillip sets up human players as using Wii-U controller adapters. If you want to use your own dolphin configuration (including controller config) pass `--dolphin.copy_home_directory`. You still need to specify which player (p1 or p2) is human.
 * On Windows you may need to [enable long paths](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=powershell#registry-setting-to-enable-long-paths) in order for the pip installs to work.
 * On Windows make sure no other dolphin instances are running as it will prevent the bot from sending inputs to the game.
