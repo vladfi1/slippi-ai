@@ -279,11 +279,9 @@ class Dolphin:
     """Makes a step waiting on Dolphin raise EnetDisconnected. Thread-safe.
 
     Dolphin keeps the connection open but sends no frames once the game is
-    exited (its main window stays up), so a step would wait forever. libmelee's
-    slippstream worker checks this event every second and exits, which closes
-    the console's pipe.
+    exited (its main window stays up), so a step would wait forever.
     """
-    self.console._slippstream._shutdown.set()
+    self.console.interrupt()
 
   def stop(self):
     for controller in self.controllers.values():

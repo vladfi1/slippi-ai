@@ -35,7 +35,7 @@ class SilentDolphin:
       self._host.service(50)
 
   def interrupt(self):
-    self.client._shutdown.set()
+    self.client.interrupt()
 
   def close(self):
     self.client.shutdown()
