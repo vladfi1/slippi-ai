@@ -558,6 +558,16 @@ class ResBlock(nnx.Module):
     return residual + x
 
 
+def _get_activation(
+    activation: str, gelu_approximate: bool = True,
+) -> Callable[[Array], Array]:
+  return dict(
+      relu=nnx.relu,
+      gelu=lambda x: nnx.gelu(x, approximate=gelu_approximate),
+      tanh=nnx.tanh,
+  )[activation]
+
+
 class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
   """Alternates recurrent and FFW layers."""
 
@@ -599,11 +609,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
         gru=GRU,
     )[recurrent_layer]
 
-    activation_fn = dict(
-        relu=nnx.relu,
-        gelu=lambda x: nnx.gelu(x, approximate=gelu_approximate),
-        tanh=nnx.tanh,
-    )[activation]
+    activation_fn = _get_activation(activation, gelu_approximate)
 
     layers: list[Network[Array, Array]] = []
 
@@ -651,7 +657,8 @@ class DilatedFixedMemoryBlock(Network[Array, Array]):
     else:
       batch_shape = tuple(batch_size)
 
-    node = lambda: jnp.zeros(batch_shape + (self._input_size,), dtype=jnp.float32)
+    dtype = jax_utils.module_dtype(self._kernel)
+    node = lambda: jnp.zeros(batch_shape + (self._input_size,), dtype=dtype)
 
     return [[node() for _ in range(self._memory_size)] for _ in range(self._dilation)]
 
@@ -718,6 +725,78 @@ class DilatedFixedMemoryBlock(Network[Array, Array]):
     tail_t = jnp.arange(T - H, T)[:, None]
     tail = jnp.where((tail_t >= last_reset[-1])[..., None], tail, 0)
     return outputs, self._history_to_state(tail)
+
+
+class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
+  """Like TransformerLike, but with dilated convolutions for memory.
+
+  Layer i is a DilatedFixedMemoryBlock with dilation (memory_size + 1) ** i, so
+  the receptive fields of successive layers tile without overlap and the whole
+  network sees exactly the last (memory_size + 1) ** num_layers frames.
+  """
+
+  @classmethod
+  def name(cls) -> str:
+    return 'tcn'
+
+  @classmethod
+  def default_config(cls) -> dict[str, tp.Any]:
+    return dict(
+        hidden_size=128,
+        num_layers=1,
+        memory_size=2,
+        ffw_multiplier=4,
+        activation='gelu',
+        gelu_approximate=True,
+        layer_norm='nnx',
+    )
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      hidden_size: int,
+      num_layers: int,
+      memory_size: int,
+      ffw_multiplier: int,
+      activation: str,
+      gelu_approximate: bool = True,
+      layer_norm: str = 'nnx',
+      remat: bool = False,
+  ):
+    self._hidden_size = hidden_size
+    self._num_layers = num_layers
+    self._memory_size = memory_size
+    self._ffw_multiplier = ffw_multiplier
+
+    activation_fn = _get_activation(activation, gelu_approximate)
+
+    layers: list[Network[Array, Array]] = []
+
+    # We need to encode for the first residual
+    encoder = nnx.Linear(input_size, hidden_size, rngs=rngs)
+    layers.append(FFWWrapper(encoder, output_size=hidden_size))
+
+    dilation = 1
+    for _ in range(num_layers):
+      memory = ResidualWrapper(DilatedFixedMemoryBlock(
+          rngs,
+          input_size=hidden_size,
+          output_size=hidden_size,
+          dilation=dilation,
+          memory_size=memory_size,
+      ))
+      layers.append(memory)
+      # TODO: allow other dilation schedules, e.g. with overlap.
+      dilation *= memory_size + 1
+
+      ffw_layer = ResBlock(
+          rngs, hidden_size, hidden_size * ffw_multiplier,
+          activation=activation_fn,
+          layer_norm=layer_norm)
+      layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
+
+    super().__init__(layers, remat=remat)
 
 
 class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
@@ -1395,7 +1474,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 # Factory functions for network construction
 
 _simple_networks: list[type[BuildableNetwork[Array, Array]]] = [
-    MLP, LSTM, GRU, TransformerLike,
+    MLP, LSTM, GRU, TransformerLike, TemporalConvolution,
 ]
 SIMPLE_CONSTRUCTORS = {
     cls.name(): cls for cls in _simple_networks

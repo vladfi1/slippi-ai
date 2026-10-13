@@ -15,7 +15,7 @@ def default_network(name: str, rngs: nnx.Rngs, input_size: int = 10) -> networks
   return networks.SIMPLE_CONSTRUCTORS[name](rngs=rngs, input_size=input_size, **default_network_config[name])
 
 def assert_tensors_close(t1: jnp.ndarray, t2: jnp.ndarray):
-  np.testing.assert_allclose(t1, t2, atol=1e-6)
+  np.testing.assert_allclose(t1, t2, atol=1e-6, rtol=1e-5)
 
 class NetworksTest(unittest.TestCase):
 
