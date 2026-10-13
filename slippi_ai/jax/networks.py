@@ -627,6 +627,98 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
     super().__init__(layers, remat=remat)
 
+class DilatedFixedMemoryBlock(Network[Array, Array]):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      output_size: int,
+      dilation: int,
+      memory_size: int,
+  ):
+    self._input_size = input_size
+    self._output_size = output_size
+    self._dilation = dilation
+    self._memory_size = memory_size
+
+    self._kernel = nnx.Linear(input_size * (memory_size + 1), output_size, rngs=rngs)
+
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
+    del rngs
+    if isinstance(batch_size, int):
+      batch_shape = (batch_size,)
+    else:
+      batch_shape = tuple(batch_size)
+
+    node = lambda: jnp.zeros(batch_shape + (self._input_size,), dtype=jnp.float32)
+
+    return [[node() for _ in range(self._memory_size)] for _ in range(self._dilation)]
+
+  def step(self, inputs: Array, prev_state: list[list[Array]]):
+    active_nodes = prev_state[0] + [inputs]
+    flat_active_nodes = jnp.concatenate(active_nodes, axis=-1)
+    outputs = self._kernel(flat_active_nodes)
+    next_state = prev_state[1:] + [active_nodes[1:]]
+    return outputs, next_state
+
+  @property
+  def output_size(self) -> int:
+    return self._output_size
+
+  @property
+  def _history_len(self) -> int:
+    return self._memory_size * self._dilation
+
+  def _state_to_history(self, state: list[list[Array]]) -> Array:
+    """Converts the state to the last m*d inputs, oldest first.
+
+    Bucket j, slot i holds x_{t + j - (m - i) * d}, so ordering by time means
+    transposing [d, m] -> [m, d] and flattening.
+    """
+    history = jnp.stack([jnp.stack(memory, axis=0) for memory in state], axis=0)
+    history = jnp.swapaxes(history, 0, 1)
+    return history.reshape((self._history_len,) + history.shape[2:])
+
+  def _history_to_state(self, history: Array) -> list[list[Array]]:
+    history = history.reshape(
+        (self._memory_size, self._dilation) + history.shape[1:])
+    return [
+        [history[i, j] for i in range(self._memory_size)]
+        for j in range(self._dilation)
+    ]
+
+  def unroll(self, inputs: Array, reset: Array, initial_state: list[list[Array]]):
+    if self._memory_size == 0:
+      return self._kernel(inputs), initial_state
+
+    m, d = self._memory_size, self._dilation
+    T = inputs.shape[0]
+    H = self._history_len
+
+    # [H + T, B, D]; x_t is at full[H + t].
+    full = jnp.concatenate([self._state_to_history(initial_state), inputs], 0)
+
+    # Steps since the last reset (inclusive); at least H if there was none.
+    t = jnp.arange(T)[:, None]
+    last_reset = jax.lax.cummax(jnp.where(reset, t, -H - 1), axis=0)
+    since_reset = t - last_reset
+
+    # Tap k is x_{t - k * d}, valid iff there was no reset in (t - k * d, t].
+    # Taps go oldest first to match the concatenation order in step.
+    taps = []
+    for k in reversed(range(m + 1)):
+      tap = full[H - k * d:H - k * d + T]
+      valid = (since_reset >= k * d)[..., None]
+      taps.append(jnp.where(valid, tap, 0))
+    outputs = self._kernel(jnp.concatenate(taps, axis=-1))
+
+    # The final state is the last H inputs, zeroed if they precede the last reset.
+    tail = full[T:]
+    tail_t = jnp.arange(T - H, T)[:, None]
+    tail = jnp.where((tail_t >= last_reset[-1])[..., None], tail, 0)
+    return outputs, self._history_to_state(tail)
+
 
 class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
   """Like a network, but takes StateAction as input."""

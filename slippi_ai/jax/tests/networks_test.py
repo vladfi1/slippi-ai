@@ -40,6 +40,46 @@ class NetworksTest(unittest.TestCase):
       assert_tensors_close(unroll_outputs, step_outputs)
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
 
+  @parameterized.expand([
+      # (dilation, memory_size, unroll_length)
+      (1, 1, 8),
+      (1, 3, 8),
+      (2, 2, 7),
+      (3, 2, 4),  # unroll shorter than the history
+      (4, 1, 9),
+      (2, 0, 5),
+  ])
+  def test_dilated_fixed_memory_unroll_vs_step(
+      self, dilation, memory_size, unroll_length):
+    rngs = nnx.Rngs(0)
+    batch_size = 4
+    input_size = 3
+    network = networks.DilatedFixedMemoryBlock(
+        rngs=rngs,
+        input_size=input_size,
+        output_size=5,
+        dilation=dilation,
+        memory_size=memory_size,
+    )
+
+    for i in range(5):
+      # Use a nonzero initial state to exercise the state <-> history mapping.
+      initial_state = jax.tree.map(
+          lambda x: rngs.normal(x.shape),
+          network.initial_state(batch_size, rngs))
+      inputs = rngs.normal((unroll_length, batch_size, input_size))
+      reset = rngs.bernoulli(0.3, (unroll_length, batch_size))
+      if i == 0:
+        reset = reset.at[0].set(True)
+
+      unroll_outputs, unroll_final_state = network.unroll(
+          inputs, reset, initial_state)
+      step_outputs, step_final_state = jax_utils.dynamic_rnn(
+          network._step_with_reset, (inputs, reset), initial_state)
+
+      assert_tensors_close(unroll_outputs, step_outputs)
+      jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
+
   def _test_unroll_vs_step_sa_net(self, network: networks.StateActionNetwork):
     rngs = nnx.Rngs(0)
     unroll_length = 8
