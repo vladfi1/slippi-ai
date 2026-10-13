@@ -6,6 +6,10 @@ Typical use, after adding or updating something in deployed_models/:
   python scripts/eval_db.py --mode=plan    # just list what would run
   python scripts/eval_db.py --mode=show    # latest leaderboard
 
+To add games to pairs that already have an eval but too few games:
+
+  python scripts/eval_db.py --mode=plan --min_games_per_pair=50
+
 Evaluations run through slippi_ai.evaluation with the same defaults as
 run_scripts/run_evaluator.sh; override them with --eval.<field>. Each eval
 runs in a spawned child process by default (see --isolation): building and
@@ -92,6 +96,12 @@ if __name__ == '__main__':
       'An eval between two agents cycles its envs over their pending '
       'character pairs; cap the pairs per eval so each gets at least this '
       'many envs.')
+  MIN_GAMES_PER_PAIR = flags.DEFINE_integer(
+      'min_games_per_pair', 0,
+      'Top-up mode: instead of planning only player pairs with no eval yet, '
+      'plan every pair with fewer than this many games (pooled over all '
+      'finished evals with these params), sizing evals so the shortest pairs '
+      'should reach it. 0 disables.')
   MAX_EVALS = flags.DEFINE_integer(
       'max_evals', 0, 'Stop after this many evals; 0 means run everything.')
   ISOLATION = flags.DEFINE_enum_class(
@@ -137,8 +147,21 @@ if __name__ == '__main__':
         allowed_opponents=character_set(ALLOWED_OPPONENTS.value),
     )
 
+  # Games per env per rollout step when the db has no finished evals yet;
+  # about 1200 games from 1024 envs x 18000 steps.
+  DEFAULT_GAMES_PER_LANE_STEP = 1200 / (1024 * 18000)
+
+  def games_per_lane(conn) -> float:
+    rate = matchups.games_per_lane_step(conn) or DEFAULT_GAMES_PER_LANE_STEP
+    return rate * params().config.rollout_length
+
   def pending(conn) -> list[matchups.Matchup]:
     num_envs = params().config.num_envs
+    if MIN_GAMES_PER_PAIR.value > 0:
+      return matchups.topup_matchups(
+          conn, params().key(), MIN_GAMES_PER_PAIR.value, num_envs,
+          games_per_lane(conn), pool=POOL.value, filters=filters(),
+          min_lanes_per_pair=max(1, MIN_LANES_PER_PAIR.value))
     max_pairs = max(1, num_envs // max(1, MIN_LANES_PER_PAIR.value))
     return matchups.pending_matchups(
         conn, params().key(), pool=POOL.value, filters=filters(),
@@ -177,6 +200,9 @@ if __name__ == '__main__':
     num_pairs = sum(len(m.character_pairs) for m in todo)
     print(f'plan: {len(active)} active agents, {len(pool)} in the pool, '
           f'{num_pairs} pending player pairs in {len(todo)} evals')
+    if MIN_GAMES_PER_PAIR.value > 0:
+      print(f'  top-up to {MIN_GAMES_PER_PAIR.value} games per player pair, '
+            f'expecting {games_per_lane(conn):.2f} games per env')
     if not active:
       print(f'  ({DB.value} has no agents; run --mode=sync first)')
     for tier in [*matchups.TIERS, 'untiered']:
