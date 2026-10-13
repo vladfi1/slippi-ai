@@ -727,7 +727,10 @@ def _run(config: Config, exit_stack: contextlib.ExitStack):
 
   logger = Logger()
   steps_per_epoch = config.learner.ppo.num_batches
+  # Frames the learner trains on, which includes the opponent's if trained.
   frames_per_step = config.actor.num_envs * config.actor.rollout_length
+  if config.opponent.should_train():
+    frames_per_step *= 2
 
   def flush(epoch: int):
     total_steps = epoch * steps_per_epoch
