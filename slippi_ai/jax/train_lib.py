@@ -655,5 +655,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       logging.info('Reached max step %d, stopping training.', step)
       break
 
+    if (config.runtime.max_epochs is not None
+        and train_manager.last_epoch >= config.runtime.max_epochs):
+      logging.info(
+          'Reached max epochs %.3f, stopping training.', train_manager.last_epoch)
+      break
+
   if config.runtime.profile_trace_dir is not None:
     jax.profiler.stop_trace()

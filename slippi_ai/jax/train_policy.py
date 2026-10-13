@@ -150,6 +150,7 @@ _field = utils.field
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
   max_step: tp.Optional[int] = None  # maximum number of training steps
+  max_epochs: tp.Optional[float] = None  # maximum number of training epochs
   log_interval: int = 10  # seconds between logging
 
   num_evals_per_epoch: float = 1  # number evaluations per training epoch
@@ -666,6 +667,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     if config.runtime.max_step is not None and step >= config.runtime.max_step:
       logging.info('Reached max step %d, stopping training.', step)
+      break
+
+    if (config.runtime.max_epochs is not None
+        and train_manager.last_epoch >= config.runtime.max_epochs):
+      logging.info(
+          'Reached max epochs %.3f, stopping training.', train_manager.last_epoch)
       break
 
   if config.runtime.profile_trace_dir is not None:
