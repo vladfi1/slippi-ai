@@ -367,6 +367,55 @@ class MatchupTest(unittest.TestCase):
     self.assertNotIn(m.p1_hash, first.pair)
     self.assertNotIn(m.p2_hash, first.pair)
 
+  def test_topup(self):
+    params = runner.EvalParams()
+    names = ['multi', 'marth_imitation']
+    kw = dict(
+        agents={self.by_name[n]['hash']: self.by_name[n] for n in names},
+        pool='all', filters=matchups.MatchupFilters(None))
+    # 10 games each at 1 game per lane: 10 lanes per pair, so all three
+    # pairs fit in one 64-env eval.
+    (m,) = matchups.topup_matchups(
+        self.conn, params.key(), 10, 64, 1.0, **kw)
+    self.assertEqual(len(m.character_pairs), 3)
+    pair0, pair1, pair2 = m.player_pairs
+
+    eval_id = runner.start_eval(self.conn, m, params)
+    runner.finish_eval(
+        self.conn, eval_id,
+        fake_games(12, 6, characters=m.character_pairs[0]) +
+        fake_games(4, 2, characters=m.character_pairs[1]))
+    counts = matchups.pair_game_counts(self.conn, params.key())
+    self.assertEqual(counts, {pair0: 12, pair1: 4})
+
+    # pair0 is done. pair2 (short 10) needs 10 of 16 lanes, so it runs
+    # alone; pair1 (short 6) gets the next eval.
+    todo = matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 1.0, **kw)
+    self.assertEqual([x.player_pairs for x in todo], [[pair2], [pair1]])
+    # A higher games-per-lane estimate packs them together, but
+    # min_lanes_per_pair still caps how many share an eval.
+    self.assertEqual(len(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 4.0, **kw)), 1)
+    self.assertEqual(len(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 4.0, min_lanes_per_pair=16, **kw)), 2)
+
+    # Pairs in a running eval are skipped.
+    runner.start_eval(
+        self.conn, matchups.Matchup.from_player_pairs([pair2]), params)
+    todo = matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 1.0, **kw)
+    self.assertEqual([x.player_pairs for x in todo], [[pair1]])
+
+    # Games from evals with other params don't count.
+    other = runner.EvalParams(
+        config=params.config, stage=melee.Stage.FINAL_DESTINATION)
+    self.assertEqual(matchups.pair_game_counts(self.conn, other.key()), {})
+
+    # 16 games over 1024 envs x 18000 steps (the default params).
+    self.assertAlmostEqual(
+        matchups.games_per_lane_step(self.conn), 16 / (1024 * 18000))
+
   def test_ladder_pool(self):
     row = self.by_name['multi']
     self.assertTrue(matchups.is_ladder(row, ['gm-v2']))

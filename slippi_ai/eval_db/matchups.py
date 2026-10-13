@@ -9,6 +9,7 @@ pairs, and the recorded per-game characters attribute results to players.
 
 import collections
 import dataclasses
+import math
 import sqlite3
 import typing as tp
 
@@ -261,10 +262,10 @@ class Matchup:
 def covered_pairs(
     conn: sqlite3.Connection,
     params_key: str,
-    include_running: bool = True,
+    statuses: tp.Sequence[str] = ('done', 'running'),
 ) -> set[PlayerPair]:
-  """Player pairs already covered by a finished (or in-flight) eval."""
-  statuses = ('done', 'running') if include_running else ('done',)
+  """Player pairs in an eval with one of these statuses (default: finished or
+  in flight)."""
   rows = conn.execute(
       f"""SELECT p1_hash, p2_hash, character_pairs FROM evals
           WHERE params_key = ? AND status IN ({','.join('?' * len(statuses))})""",
@@ -326,11 +327,102 @@ def pending_matchups(
   pending = [
       pair for pair in relevant_pairs(agents, filters, tiers)
       if pair not in covered]
-  matchups = batch_pairs(pending, max_pairs_per_eval)
+  return sort_matchups(conn, batch_pairs(pending, max_pairs_per_eval))
+
+
+def sort_matchups(
+    conn: sqlite3.Connection,
+    matchups: list[Matchup],
+) -> list[Matchup]:
+  """Agents with the fewest finished evals first."""
   counts = eval_counts(conn)
-  matchups.sort(key=lambda m: (
+  return sorted(matchups, key=lambda m: (
       min(counts.get(m.p1_hash, 0), counts.get(m.p2_hash, 0)),
       counts.get(m.p1_hash, 0) + counts.get(m.p2_hash, 0),
       m.pair,
   ))
-  return matchups
+
+
+def pair_game_counts(
+    conn: sqlite3.Connection,
+    params_key: str,
+) -> dict[PlayerPair, int]:
+  """Games each player pair has played in finished evals with these params."""
+  rows = conn.execute(
+      """SELECT e.p1_hash, e.p2_hash, g.p1_character, g.p2_character,
+                COUNT(*) AS n
+         FROM games g JOIN evals e ON g.eval_id = e.id
+         WHERE e.status = 'done' AND e.params_key = ?
+           AND g.p1_character IS NOT NULL AND g.p2_character IS NOT NULL
+         GROUP BY 1, 2, 3, 4""", (params_key,)).fetchall()
+  counts: dict[PlayerPair, int] = collections.Counter()
+  for row in rows:
+    pair = canonical_pair(
+        Player(row['p1_hash'], row['p1_character']),
+        Player(row['p2_hash'], row['p2_character']))
+    counts[pair] += row['n']
+  return dict(counts)
+
+
+def games_per_lane_step(conn: sqlite3.Connection) -> tp.Optional[float]:
+  """Games per env per rollout step over all finished evals, or None.
+
+  Pooled over matchups, so a slow (floaty) matchup will come up a bit short.
+  """
+  games, lane_steps = 0, 0
+  for row in conn.execute(
+      "SELECT params, num_games FROM evals WHERE status = 'done'"):
+    params = db.loads(row['params'])
+    games += row['num_games']
+    lane_steps += params['num_envs'] * params['rollout_length']
+  return games / lane_steps if lane_steps else None
+
+
+def topup_matchups(
+    conn: sqlite3.Connection,
+    params_key: str,
+    min_games: int,
+    num_envs: int,
+    games_per_lane: float,
+    agents: tp.Optional[tp.Mapping[str, sqlite3.Row]] = None,
+    pool: str = 'strong',
+    filters: MatchupFilters = MatchupFilters(),
+    min_lanes_per_pair: int = 1,
+) -> list[Matchup]:
+  """Evals that bring every relevant player pair up to `min_games` games.
+
+  Unlike `pending_matchups`, a finished eval doesn't settle a pair: games are
+  pooled over all finished evals with these params, and any pair short of
+  `min_games` is planned again (pairs in a running eval are skipped). Within
+  an agent pair, the neediest pairs are batched first and each eval holds as
+  many pairs as can still get enough lanes for the neediest one, at an
+  expected `games_per_lane` games per env.
+  """
+  if agents is None:
+    agents = db.active_agents(conn)
+  agents = select_pool(conn, agents, pool)
+  tiers = agent_tiers(conn, agents)
+  running = covered_pairs(conn, params_key, statuses=('running',))
+  counts = pair_game_counts(conn, params_key)
+  deficits = {}
+  for pair in relevant_pairs(agents, filters, tiers):
+    deficit = min_games - counts.get(pair, 0)
+    if deficit > 0 and pair not in running:
+      deficits[pair] = deficit
+
+  by_agents: dict[tuple[str, str], list[PlayerPair]] = collections.defaultdict(list)
+  for pair in deficits:
+    by_agents[tuple(sorted((pair[0].hash, pair[1].hash)))].append(pair)  # type: ignore[index]
+  matchups = []
+  for key in sorted(by_agents):
+    group = sorted(by_agents[key], key=lambda p: (-deficits[p], p))
+    start = 0
+    while start < len(group):
+      # The eval cycles its lanes evenly, so each of k pairs gets at least
+      # num_envs // k of them.
+      lanes = max(
+          min_lanes_per_pair, math.ceil(deficits[group[start]] / games_per_lane))
+      size = max(1, num_envs // lanes)
+      matchups.append(Matchup.from_player_pairs(group[start:start + size]))
+      start += size
+  return sort_matchups(conn, matchups)
