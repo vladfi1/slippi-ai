@@ -693,8 +693,13 @@ def _run(
 
   step_profiler = utils.Profiler()
   stalling_threshold = config.learner.reward.stalling_threshold
-  env_frames_per_rollout = config.actor.rollout_length * sum(
-      spec.num_envs for spec in workers)
+  # Every agent plays in the same number of matchups, so they all train on
+  # the same number of frames.
+  agent_batch_sizes = {
+      sum(s.batch_size for s in agent_sources) for agent_sources in sources}
+  assert len(agent_batch_sizes) == 1, agent_batch_sizes
+  agent_frames_per_rollout = (
+      config.actor.rollout_length * agent_batch_sizes.pop())
 
   def get_matchup_stats(
       spec: WorkerSpec,
@@ -723,7 +728,8 @@ def _run(
   ) -> dict:
     step_time = step_profiler.mean_time()
     sps = 1 / step_time
-    fps = len(all_trajectories) * env_frames_per_rollout * sps
+    # Per agent, like total_frames.
+    fps = len(all_trajectories) * agent_frames_per_rollout * sps
     mps = fps / MINUTES_PER_FRAME
 
     timings = dict(
@@ -775,7 +781,8 @@ def _run(
 
   def flush(step: int):
     total_steps = step * steps_per_epoch
-    total_frames = total_steps * env_frames_per_rollout
+    # Per agent: the number of frames each agent's learner has trained on.
+    total_frames = total_steps * agent_frames_per_rollout
     extras = dict(
         total_frames=total_frames,
     )
