@@ -46,6 +46,7 @@ if __name__ == '__main__':
 
   CONFIG.runtime.max_step=50000
   CONFIG.runtime.log_interval=300
+  CONFIG.runtime.save_interval = 1800
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
   CONFIG.dolphin.console_timeout=60
@@ -128,17 +129,17 @@ if __name__ == '__main__':
           teacher='falcon_d21_tx3x1024_rating_noname',
       ),
       Entry(
+          teacher='luigi_d21_tx3x1024_rating',
+          agent=dict(name=['JahRidin', 'RapM']),
+          kl_weight=0.5,
+      ),
+      Entry(
           teacher='ics_d21_tx3x1024_rating_noname',
           kl_weight=0.5,
       ),
       Entry(
           teacher='yoshi_d21_tx3x1024_rating',
           agent=dict(name=['Amsa']),
-          kl_weight=0.5,
-      ),
-      Entry(
-          teacher='luigi_d21_tx3x1024_rating',
-          agent=dict(name=['JahRidin', 'RapM']),
           kl_weight=0.5,
       ),
   ]
