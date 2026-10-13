@@ -318,6 +318,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       max_name=config.max_names,
       rngs=rngs,
   )
+  train_policy.log_num_params(policy)
   value_function = value_function_from_config(config, rngs)
 
   learner = learner_lib.Learner(

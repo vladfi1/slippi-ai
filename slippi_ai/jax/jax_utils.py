@@ -99,6 +99,10 @@ def module_dtype(module: nnx.Module) -> jnp.dtype:
     raise ValueError('No floating point parameters found in module.')
   return dtype
 
+def num_params(module: nnx.Module) -> int:
+  state = nnx.state(module, nnx.Param)
+  return sum(x.size for x in jax.tree.leaves(state))
+
 def cast_floats_to_dtype(struct: T, dtype: jnp.dtype) -> T:
   """Cast all floating point parameters in the module to the given dtype."""
   return jax.tree.map(

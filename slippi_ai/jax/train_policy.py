@@ -146,6 +146,14 @@ def log_stats(
 _field = utils.field
 
 
+def log_num_params(policy: policies_lib.Policy):
+  network = jax_utils.num_params(policy.network)
+  controller_head = jax_utils.num_params(policy.controller_head)
+  logging.info(
+      'Parameter counts: network=%s controller_head=%s total=%s',
+      f'{network:,}', f'{controller_head:,}', f'{network + controller_head:,}')
+
+
 @dataclasses.dataclass
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
@@ -343,6 +351,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       max_name=config.max_names,
       rngs=rngs,
   )
+  log_num_params(policy)
 
   learner = learner_lib.PolicyLearner(
       policy=policy,
