@@ -131,6 +131,7 @@ dmypy.json
 
 # mainly tf checkpoints
 experiments/
+!docs/experiments/
 
 # don't track replays
 untracked/
