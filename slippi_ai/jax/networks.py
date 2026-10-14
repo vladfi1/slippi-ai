@@ -633,6 +633,22 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
 
     super().__init__(layers, remat=remat)
 
+class _DepthwiseKernel(nnx.Module):
+  """Per-channel weighted sum over taps given as [..., num_taps * size]."""
+
+  def __init__(self, rngs: nnx.Rngs, size: int, num_taps: int):
+    self._size = size
+    self._num_taps = num_taps
+    self.kernel = nnx.Param(
+        jax.random.normal(rngs.params(), (num_taps, size)) / math.sqrt(num_taps))
+    self.bias = nnx.Param(jnp.zeros((size,)))
+
+  def __call__(self, x: Array) -> Array:
+    x = x.reshape(x.shape[:-1] + (self._num_taps, self._size))
+    kernel = self.kernel.value.astype(x.dtype)
+    return jnp.sum(x * kernel, axis=-2) + self.bias.value.astype(x.dtype)
+
+
 class DilatedFixedMemoryBlock(Network[Array, Array]):
 
   def __init__(
@@ -642,13 +658,20 @@ class DilatedFixedMemoryBlock(Network[Array, Array]):
       output_size: int,
       dilation: int,
       memory_size: int,
+      depthwise: bool = False,
   ):
     self._input_size = input_size
     self._output_size = output_size
     self._dilation = dilation
     self._memory_size = memory_size
 
-    self._kernel = nnx.Linear(input_size * (memory_size + 1), output_size, rngs=rngs)
+    if depthwise:
+      if output_size != input_size:
+        raise ValueError('Depthwise convolution requires output_size == input_size.')
+      self._kernel = _DepthwiseKernel(rngs, input_size, memory_size + 1)
+    else:
+      self._kernel = nnx.Linear(
+          input_size * (memory_size + 1), output_size, rngs=rngs)
 
   def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
     del rngs
@@ -727,12 +750,78 @@ class DilatedFixedMemoryBlock(Network[Array, Array]):
     return outputs, self._history_to_state(tail)
 
 
+def _make_layer_norm(layer_norm: str, size: int, rngs: nnx.Rngs) -> nnx.Module:
+  if layer_norm == 'nnx':
+    return nnx.LayerNorm(size, rngs=rngs)
+  elif layer_norm == 'tensorflow':
+    return TensorFlowLayerNorm(size, rngs=rngs)
+  raise ValueError(f'Unknown layer norm type: {layer_norm}')
+
+
+_GATES: dict[str, Callable[[Array, Array], Array]] = dict(
+    # WaveNet-style, bounded like an LSTM output.
+    tanh_sigmoid=lambda a, b: nnx.tanh(a) * nnx.sigmoid(b),
+    # ConvS2S-style gated linear unit.
+    glu=lambda a, b: a * nnx.sigmoid(b),
+)
+
+
+class _GatedProjection(nnx.Module):
+  """Splits the input in half, gates one half with the other, and projects."""
+
+  def __init__(self, rngs: nnx.Rngs, size: int, gate: str):
+    self._gate = _GATES[gate]
+    # Zero init so that the residual block starts as identity.
+    self.linear = nnx.Linear(
+        size, size, kernel_init=nnx.initializers.zeros_init(), rngs=rngs)
+
+  def __call__(self, x: Array) -> Array:
+    a, b = jnp.split(x, 2, axis=-1)
+    return self.linear(self._gate(a, b))
+
+
+def gated_conv_block(
+    rngs: nnx.Rngs,
+    size: int,
+    dilation: int,
+    memory_size: int,
+    gate: str,
+    layer_norm: str,
+    depthwise: bool = False,
+) -> Network[Array, Array]:
+  """Pre-norm residual branch: LayerNorm -> dilated conv -> gate -> linear.
+
+  With depthwise=True the conv is per-channel and is followed by a dense
+  projection to the gate inputs, as in ConvNeXt/Mamba-style short convs.
+  """
+  layers: list[Network[Array, Array]] = [
+      FFWWrapper(_make_layer_norm(layer_norm, size, rngs), output_size=size),
+  ]
+  if depthwise:
+    layers.append(DilatedFixedMemoryBlock(
+        rngs, input_size=size, output_size=size,
+        dilation=dilation, memory_size=memory_size, depthwise=True))
+    layers.append(Linear(rngs, size, 2 * size))
+  else:
+    layers.append(DilatedFixedMemoryBlock(
+        rngs, input_size=size, output_size=2 * size,
+        dilation=dilation, memory_size=memory_size))
+  layers.append(FFWWrapper(_GatedProjection(rngs, size, gate), output_size=size))
+  return Sequential(layers)
+
+
 class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
   """Like TransformerLike, but with dilated convolutions for memory.
 
-  Layer i is a DilatedFixedMemoryBlock with dilation (memory_size + 1) ** i, so
-  the receptive fields of successive layers tile without overlap and the whole
-  network sees exactly the last (memory_size + 1) ** num_layers frames.
+  Layer i is a DilatedFixedMemoryBlock with dilation dilation_base ** i. With
+  the default dilation_base of memory_size + 1, the receptive fields of
+  successive layers tile without overlap and the whole network sees exactly the
+  last (memory_size + 1) ** num_layers frames.
+
+  With block='linear' the conv is applied directly to the residual stream; with
+  block='gated' it is a pre-norm gated block whose output projection is zero
+  initialized, like the FFW ResBlocks. block='depthwise' is the same but with a
+  cheap per-channel conv followed by a dense projection.
   """
 
   @classmethod
@@ -745,6 +834,9 @@ class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
         hidden_size=128,
         num_layers=1,
         memory_size=2,
+        dilation_base=None,
+        block='linear',
+        gate='tanh_sigmoid',
         ffw_multiplier=4,
         activation='gelu',
         gelu_approximate=True,
@@ -760,6 +852,9 @@ class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
       memory_size: int,
       ffw_multiplier: int,
       activation: str,
+      dilation_base: tp.Optional[int] = None,
+      block: str = 'linear',
+      gate: str = 'tanh_sigmoid',
       gelu_approximate: bool = True,
       layer_norm: str = 'nnx',
       remat: bool = False,
@@ -768,6 +863,9 @@ class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
     self._num_layers = num_layers
     self._memory_size = memory_size
     self._ffw_multiplier = ffw_multiplier
+
+    if dilation_base is None:
+      dilation_base = memory_size + 1
 
     activation_fn = _get_activation(activation, gelu_approximate)
 
@@ -779,16 +877,23 @@ class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
 
     dilation = 1
     for _ in range(num_layers):
-      memory = ResidualWrapper(DilatedFixedMemoryBlock(
-          rngs,
-          input_size=hidden_size,
-          output_size=hidden_size,
-          dilation=dilation,
-          memory_size=memory_size,
-      ))
-      layers.append(memory)
-      # TODO: allow other dilation schedules, e.g. with overlap.
-      dilation *= memory_size + 1
+      if block == 'linear':
+        memory = DilatedFixedMemoryBlock(
+            rngs,
+            input_size=hidden_size,
+            output_size=hidden_size,
+            dilation=dilation,
+            memory_size=memory_size,
+        )
+      elif block in ('gated', 'depthwise'):
+        memory = gated_conv_block(
+            rngs, hidden_size, dilation, memory_size,
+            gate=gate, layer_norm=layer_norm,
+            depthwise=block == 'depthwise')
+      else:
+        raise ValueError(f'Unknown block type: {block}')
+      layers.append(ResidualWrapper(memory))
+      dilation *= dilation_base
 
       ffw_layer = ResBlock(
           rngs, hidden_size, hidden_size * ffw_multiplier,

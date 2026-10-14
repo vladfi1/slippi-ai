@@ -41,6 +41,41 @@ class NetworksTest(unittest.TestCase):
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
 
   @parameterized.expand([
+      ('linear', None),
+      ('gated', None),
+      ('gated', 2),
+      ('depthwise', 2),
+  ])
+  def test_tcn_unroll_vs_step(self, block, dilation_base):
+    rngs = nnx.Rngs(0)
+    batch_size = 2
+    input_size = 10
+    config = dict(default_network_config['tcn'])
+    config.update(
+        num_layers=2, memory_size=2, block=block, dilation_base=dilation_base)
+    network = networks.TemporalConvolution(
+        rngs=rngs, input_size=input_size, **config)
+    # Randomize the zero-initialized output projections.
+    for _, param in nnx.iter_graph(network):
+      if isinstance(param, nnx.Param):
+        param.value = 0.1 * rngs.normal(param.value.shape)
+    initial_state = network.initial_state(batch_size, rngs)
+
+    for _ in range(3):
+      inputs = rngs.normal((12, batch_size, input_size))
+      reset = rngs.bernoulli(0.1, (12, batch_size))
+
+      unroll_outputs, unroll_final_state = network.unroll(
+          inputs, reset, initial_state)
+      step_outputs, step_final_state = jax_utils.dynamic_rnn(
+          network._step_with_reset, (inputs, reset), initial_state)
+
+      np.testing.assert_allclose(
+          unroll_outputs, step_outputs, atol=1e-4, rtol=1e-4)
+      jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
+      initial_state = unroll_final_state
+
+  @parameterized.expand([
       # (dilation, memory_size, unroll_length)
       (1, 1, 8),
       (1, 3, 8),

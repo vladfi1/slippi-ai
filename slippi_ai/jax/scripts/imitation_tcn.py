@@ -82,6 +82,9 @@ if __name__ == '__main__':
       hidden_size=ff.Integer(512),
       ffw_multiplier=ff.Integer(2),
       memory_size=ff.Integer(5),
+      dilation_base=ff.Integer(None),
+      block=ff.String('linear'),
+      gate=ff.String('tanh_sigmoid'),
       # Omit num_layers to allow different layers for policy and value nets
   )
   EMBED = ff.DEFINE_dict(
@@ -193,7 +196,15 @@ if __name__ == '__main__':
         h = net_config['hidden_size']
         m = net_config['memory_size']
 
-        parts = [char, f'd{delay}{op}', f'tcn{n}x{h}m{m}']
+        net_tag = f'tcn{n}x{h}m{m}'
+        if net_config['dilation_base'] is not None:
+          net_tag += f"b{net_config['dilation_base']}"
+        if net_config['block'] != 'linear':
+          net_tag += f"_{net_config['block']}"
+          if net_config['block'] == 'gated':
+            net_tag += f"_{net_config['gate']}"
+
+        parts = [char, f'd{delay}{op}', net_tag]
 
         rfs = config.policy.frame_skip
         if rfs > 1:
