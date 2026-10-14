@@ -140,7 +140,9 @@ class LoadedModel:
 
 # The parts of a model's state that we keep in memory (and cache on disk).
 # Everything else (e.g. the network weights) is only loaded in the sessions.
-MODEL_STATE_KEYS = ['step', 'config', 'rl_config', 'agent_config', 'opponent']
+MODEL_STATE_KEYS = [
+    'step', 'config', 'rl_config', 'agent_config', 'opponent', 'opponents',
+]
 
 # Bump this whenever the format of the cache entries changes.
 MODEL_CACHE_VERSION = 1
