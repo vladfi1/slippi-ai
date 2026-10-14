@@ -518,14 +518,16 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   last_train_epoch_evaluated = train_epoch
   needs_initial_eval = runtime.eval_at_start
 
-  def maybe_eval():
+  def maybe_eval(force: bool = False):
     nonlocal best_eval_loss, last_train_epoch_evaluated
     nonlocal needs_initial_eval
 
     train_epoch = train_manager.last_epoch
     if (
       (train_epoch - last_train_epoch_evaluated) * runtime.num_evals_per_epoch < 1
-      and not needs_initial_eval):
+      and not needs_initial_eval and not force):
+      return
+    if force and train_epoch == last_train_epoch_evaluated:
       return
     last_train_epoch_evaluated = train_epoch
     needs_initial_eval = False
@@ -682,6 +684,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
         and train_manager.last_epoch >= config.runtime.max_epochs):
       logging.info(
           'Reached max epochs %.3f, stopping training.', train_manager.last_epoch)
+      # The periodic schedule can land just past max_epochs, so make sure we
+      # evaluate the final model.
+      maybe_eval(force=True)
       break
 
   if config.runtime.profile_trace_dir is not None:
