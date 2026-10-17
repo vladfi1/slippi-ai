@@ -1,10 +1,11 @@
 """Exports every model in a directory to ONNX, keeping the output in sync.
 
 Each model <input_dir>/<name> is exported to <output_dir>/<name>.onnx. A model
-is re-exported only when it is newer than its export, judged by mtime; for a
-symlink, the newer of the link and its target counts, so re-pointing a link
-triggers a re-export. Exports whose model has disappeared from the input
-directory are deleted.
+is re-exported when its file, following symlinks, is newer than its export, or
+when it resolves to a different file than it was exported from, e.g. after
+re-pointing a symlink. Recreating a symlink to the same file doesn't count.
+The resolved sources are recorded in <output_dir>/.sources.json. Exports whose
+model has disappeared from the input directory are deleted.
 
 TF checkpoints are converted to JAX in memory first, which needs tensorflow.
 
@@ -13,8 +14,10 @@ TF checkpoints are converted to JAX in memory first, which needs tensorflow.
 Requires the onnx-export extra: pip install .[jax,onnx-export]
 """
 
+import json
 import os
 import sys
+import typing as tp
 
 # Exporting doesn't need a GPU; don't grab one from training jobs.
 os.environ.setdefault('JAX_PLATFORMS', 'cpu')
@@ -22,15 +25,20 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 from absl import app, flags, logging
 import onnx
 
-from slippi_ai import saving
+from slippi_ai import onnx_policies, saving
 from slippi_ai.agents import Platform
-from slippi_ai.jax import onnx_export
+from slippi_ai.jax import networks, onnx_export
 
 INPUT_DIR = flags.DEFINE_string(
     'input_dir', 'deployed_models', 'Directory of models to export.')
 OUTPUT_DIR = flags.DEFINE_string(
     'output_dir', 'onnx_models', 'Directory to write .onnx models to.')
 FORCE = flags.DEFINE_boolean('force', False, 'Re-export every model.')
+REEXPORT_CHAR_ACTION_JOINT = flags.DEFINE_boolean(
+    'reexport_char_action_joint', False,
+    'Also re-export models whose export uses the enhanced embed\'s joint '
+    'character-action embedding, which exported wrongly with widened ints '
+    'before 168db0a8.')
 DRY_RUN = flags.DEFINE_boolean(
     'dry_run', False, 'Only print what would be exported and deleted.')
 BATCH_SIZE = flags.DEFINE_integer(
@@ -48,11 +56,23 @@ WIDEN_INTS = flags.DEFINE_boolean(
 
 SUFFIX = '.onnx'
 TMP_SUFFIX = '.tmp'
+SOURCES = '.sources.json'
 
 
-def source_mtime(path: str) -> float:
-  """The newer of a symlink and its target, so re-pointing a link counts."""
-  return max(os.lstat(path).st_mtime, os.stat(path).st_mtime)
+def load_sources(output_dir: str) -> dict[str, str]:
+  """Each export's resolved source path, see save_sources."""
+  path = os.path.join(output_dir, SOURCES)
+  if not os.path.exists(path):
+    return {}
+  with open(path) as f:
+    return json.load(f)
+
+
+def save_sources(output_dir: str, sources: dict[str, str]):
+  path = os.path.join(output_dir, SOURCES)
+  with open(path + TMP_SUFFIX, 'w') as f:
+    json.dump(sources, f, indent=2, sort_keys=True)
+  os.replace(path + TMP_SUFFIX, path)
 
 
 def list_models(input_dir: str) -> dict[str, str]:
@@ -68,6 +88,28 @@ def list_models(input_dir: str) -> dict[str, str]:
       continue
     models[name] = path
   return models
+
+
+def uses_char_action_joint(onnx_path: str) -> bool:
+  """Whether an export uses the enhanced embed's joint char-action embedding."""
+  config = onnx_policies.read_metadata_from_file(onnx_path)['config']
+  embed_config = config['network']['embed']
+  if embed_config['name'] != 'enhanced':
+    return False
+  enhanced = networks.EnhancedEmbedModule.default_config()
+  enhanced.update(embed_config.get('enhanced', {}))
+  return enhanced['use_learned_action'] and enhanced['use_char_action_joint']
+
+
+def needs_export(path: str, output: str, source: tp.Optional[str]) -> bool:
+  if FORCE.value or not os.path.exists(output):
+    return True
+  if os.path.getmtime(output) < os.path.getmtime(path):
+    return True
+  # Exports from before the sources were recorded count as up to date.
+  if source is not None and source != os.path.realpath(path):
+    return True
+  return REEXPORT_CHAR_ACTION_JOINT.value and uses_char_action_joint(output)
 
 
 class Unsupported(Exception):
@@ -110,13 +152,15 @@ def main(_):
   os.makedirs(output_dir, exist_ok=True)
 
   models = list_models(input_dir)
+  sources = load_sources(output_dir)
 
   to_export = []
   for name, path in models.items():
     output = os.path.join(output_dir, name + SUFFIX)
-    if (FORCE.value or not os.path.exists(output)
-        or os.path.getmtime(output) < source_mtime(path)):
+    if needs_export(path, output, sources.get(name)):
       to_export.append((name, path, output))
+    elif name not in sources:
+      sources[name] = os.path.realpath(path)
 
   expected = {name + SUFFIX for name in models}
   to_delete = []
@@ -132,6 +176,7 @@ def main(_):
     logging.info(f'Deleting {path}')
     if not DRY_RUN.value:
       os.remove(path)
+  sources = {name: src for name, src in sources.items() if name in models}
 
   skipped = []
   failed = []
@@ -140,13 +185,20 @@ def main(_):
     if DRY_RUN.value:
       continue
     try:
+      # Resolve first, in case the symlink changes during the export.
+      source = os.path.realpath(path)
       export(path, output)
+      sources[name] = source
+      save_sources(output_dir, sources)
     except Unsupported as e:
       logging.info(f'Skipping {name}: {e}')
       skipped.append(name)
     except Exception:  # Keep going; report failures at the end.
       logging.exception(f'Failed to export {name}')
       failed.append(name)
+
+  if not DRY_RUN.value:
+    save_sources(output_dir, sources)
 
   if skipped:
     logging.warning(
