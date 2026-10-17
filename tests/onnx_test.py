@@ -7,20 +7,27 @@ same sampling noise through the JAX step function, checking that the sampled
 Requires the onnx-export extra: pip install .[onnx-export]
 """
 
+import copy
 import os
 import tempfile
 
 from absl import app, flags
+from flax import nnx
 import jax
 import numpy as np
 
 from slippi_ai import data, paths, saving, utils
+from slippi_ai.jax import embed as jax_embed
 from slippi_ai.jax import onnx_export
+from slippi_ai.jax import saving as jax_saving
 from slippi_ai import onnx_policies
 
 flags.DEFINE_list(
     'models', ['jax_demo', 'jax_merged_demo', 'jax_policy_demo'],
     f'Checkpoints in {paths.CHECKPOINTS_DIR} to test.')
+flags.DEFINE_boolean(
+    'enhanced_embed', True,
+    'Also test jax_demo with the enhanced embed network, see enhanced_embed_state.')
 flags.DEFINE_integer('steps', 60, 'Number of frames to run.')
 flags.DEFINE_integer('reset_every', 25, 'Reset the agent every this many frames.')
 flags.DEFINE_boolean('fixed_batch', False, 'Export with a fixed batch size.')
@@ -57,8 +64,32 @@ def load_replay():
   return data.read_table(path, compressed=True)
 
 
-def test_model(model: str, replay):
-  state = saving.load_state_from_disk(str(paths.CHECKPOINTS_DIR / model))
+def enhanced_embed_state() -> dict:
+  """jax_demo's config with the enhanced embed network and random weights.
+
+  Its joint character-action embedding (networks.MultiEmbed) has indices that
+  wrap around in small integer types, which the export must keep. The table
+  starts as zeros, which would hide wrong indices, so it is randomized.
+  """
+  state = saving.load_state_from_disk(str(paths.CHECKPOINTS_DIR / 'jax_demo'))
+  config = copy.deepcopy(state['config'])
+  config['network']['embed']['name'] = 'enhanced'
+  # The enhanced embed also embeds Nana and items.
+  config['embed']['player']['with_nana'] = True
+  config['embed']['items']['type'] = jax_embed.ItemsType.FLAT
+  policy = jax_saving.policy_from_config_dict(config)
+  table = policy.network._embed_module._embed_char_action._embed.embedding  # pylint: disable=protected-access
+  table.value = jax.random.normal(jax.random.key(0), table.value.shape)
+  return dict(
+      config=config,
+      name_map=state['name_map'],
+      state=dict(policy=jax.tree.map(np.asarray, nnx.state(policy).to_pure_dict())),
+  )
+
+
+def test_model(model: str, replay, state: dict | None = None):
+  if state is None:
+    state = saving.load_state_from_disk(str(paths.CHECKPOINTS_DIR / model))
   onnx_model = onnx_export.export_state(
       state, batch_size=BATCH_SIZE if FLAGS.fixed_batch else None,
       weight_dtype=FLAGS.weight_dtype,
@@ -145,6 +176,8 @@ def main(_):
   replay = load_replay()
   for model in FLAGS.models:
     test_model(model, replay)
+  if FLAGS.enhanced_embed:
+    test_model('jax_demo (enhanced embed)', replay, enhanced_embed_state())
 
 
 if __name__ == '__main__':

@@ -1078,20 +1078,37 @@ class MultiEmbed(nnx.Module):
   def __call__(self, *inputs: Array) -> Array:
     assert len(inputs) == len(self._sizes)
 
-    index = jnp.zeros_like(inputs[0])
-    # Not jnp.full(index.shape, ...), which jax2onnx can't export with a
-    # dynamic batch size.
+    # The index used to be computed in the inputs' dtypes, so it wraps around
+    # in small integer types (e.g. uint8 characters times the number of
+    # actions), and trained models depend on that. Compute in int32, which
+    # exports to ONNX with widened ints, wrapping as the original dtypes did.
+    dtype = inputs[0].dtype
+    # Not jnp.zeros(shape), which jax2onnx can't export with a dynamic batch
+    # size.
+    index = jnp.zeros_like(inputs[0], dtype=jnp.int32)
     valid = jnp.ones_like(index, dtype=bool)
     for size, inp in zip(self._sizes, inputs):
       # Compare in int32, since onnxruntime's CUDA comparisons lack kernels
       # for small unsigned types.
       inp_int32 = inp.astype(jnp.int32)
       valid &= (inp_int32 >= 0) & (inp_int32 < size)
-      index *= size
-      index += inp
+      index = _wrap_int(index * size, dtype)
+      dtype = jnp.promote_types(dtype, inp.dtype)
+      index = _wrap_int(index + inp_int32, dtype)
 
     embed = jnp.where(valid[..., None], self._embed(index), 0)
     return embed
+
+
+def _wrap_int(x: Array, dtype: jnp.dtype) -> Array:
+  """Wraps int32 values around as integers of `dtype` would overflow."""
+  info = jnp.iinfo(dtype)
+  if info.bits >= 32:
+    return x
+  x = x & ((1 << info.bits) - 1)
+  if info.min < 0:
+    x = jnp.where(x > info.max, x - (1 << info.bits), x)
+  return x
 
 PlayerOrNana = tp.TypeVar('PlayerOrNana', Player, Nana)
 
