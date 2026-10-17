@@ -77,27 +77,42 @@ residual Mamba2 mixer (from
 state size 128, head dim 64, conv kernel 4) each followed by a FFW ResBlock
 with multiplier 2, as in tx_like.
 
-| wandb run | net params | eval @0.25 | eval @0.5 |
-|---|---|---|---|
-| `falco_d21_tx3x1024_rating` (reference) | ~44M (est.) | 0.846 | 0.811 |
-| `falco_d21_tcn8x1024m3b2_depthwise_rating` | 65.0M | 0.852 | 0.822 |
-| `falco_d21_mamba3x1024s128_rating` | 38.6M | 0.839 (@0.24) | 0.806 (@0.49) |
-| `falco_d21_mamba4x1024s128_rating` | 49.4M | **0.834** | **0.800** |
+| wandb run | net params | eval @15.3k steps | eval @30.7k steps | steps/s |
+|---|---|---|---|---|
+| `falco_d21_tx3x1024_rating` (July reference, older dataset, unroll 80) | 44.0M | 0.846 | 0.811 | |
+| `falco_d21_tx3x1024_rating_ds318` | 44.0M | 0.845 | 0.813 | 5.2 |
+| `falco_d21_tx4x1024_rating` | 56.6M | 0.841 | 0.806 | 4.0 |
+| `falco_d21_tcn8x1024m3b2_depthwise_rating` | 65.0M | 0.852 | 0.822 | |
+| `falco_d21_mamba3x1024s128_rating` | 38.6M | 0.839 | 0.806 | 3.2 |
+| `falco_d21_mamba4x1024s128_rating` | 49.4M | **0.834** | **0.800** | 2.5 |
 
-Train loss (mean per 4k steps) was below tx_like's from the first bin on:
-0.887 / 0.847 / 0.841 / 0.827 / 0.808 / 0.799 / 0.799 vs tx_like's
-0.899 / 0.863 / 0.851 / 0.841 / 0.816 / 0.818 / 0.810.
+Evals are at the same training steps in every run (~0.25 / ~0.5 epochs; the
+logged epoch varies slightly between runs). Except for the July reference, all
+runs use `Dataset-3.18.0` with unroll 84; re-running tx_like 3x1024 on it gave
+the same result, so the dataset change does not matter here.
 
-Mamba2 net params include the embedding, as logged. Per layer at h=1024 a
+Train loss (mean per 4k steps), first bin omitted:
+
+| run | | | | | | | |
+|---|---|---|---|---|---|---|---|
+| tx_like 3x1024 (ds318) | 0.885 | 0.866 | 0.847 | 0.823 | 0.824 | 0.814 | 0.817 |
+| tx_like 4x1024 | 0.897 | 0.862 | 0.851 | 0.832 | 0.817 | 0.815 | 0.812 |
+| Mamba2 3x1024 | 0.885 | 0.857 | 0.846 | 0.831 | 0.831 | 0.809 | 0.807 |
+| Mamba2 4x1024 | 0.887 | 0.847 | 0.841 | 0.827 | 0.808 | 0.799 | 0.799 |
+
+All net params include the embedding, as logged. Per layer at h=1024 a
 Mamba2 mixer is ~6.6M (in_proj 1024x4384, out_proj 2048x1024) vs ~8.4M for an
-LSTM, plus ~4.2M for the FFW in both, so tx_like 3x1024 sits between the
-3- and 4-layer Mamba2 runs.
+LSTM, plus ~4.2M for the FFW in both.
 
-Same depth with fewer params, Mamba2 3x1024 still beats tx_like at both evals
-(its evals also land slightly earlier, at 0.24 / 0.49 epochs), so the gain is
-not only from the extra layer; the 4th layer adds about as much again.
-3-layer train loss: 0.885 / 0.857 / 0.846 / 0.831 / 0.831 / 0.809 / 0.807.
-Single seeds, so differences of ~0.005 are within plausible noise.
+Conclusions (single seeds, so ~0.005 differences may be noise):
+
+* At equal depth Mamba2 beats tx_like by ~0.006 with fewer params (3 layers:
+  0.806 vs 0.813; 4 layers: 0.800 vs 0.806), so the gain is not only from
+  the extra layer that its smaller layers allow.
+* Going from 3 to 4 layers helps both by ~0.006.
+* Mamba2 3x1024 matches tx_like 4x1024 with 18M fewer params, but runs at
+  3.2 vs 4.0 steps/s; per unit of wall-clock time tx_like is about even or
+  ahead.
 
 Implementation notes:
 
@@ -111,6 +126,6 @@ Implementation notes:
 * Resets in the middle of an unroll are ignored (state carries across); step
   honors all resets.
 * Mamba2 4x1024 is compute-bound (GPU utilization 89-100% over a few-minute check):
-  2.5 steps/s (~0.4 s/step) vs 3.3-4.8 for tx_like, about 3.7 hours for 0.5
+  2.5 steps/s (~0.4 s/step), about 3.7 hours for 0.5
   epochs. The SSD is ~30 ms of the ~80 ms per layer (fwd + bwd). 3x1024 ran
   at 3.2 steps/s.
