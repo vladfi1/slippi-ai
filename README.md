@@ -2,6 +2,8 @@
 
 This project is the successor to [Phillip](https://github.com/vladfi1/phillip). While the original Phillip used pure deep RL, this one starts with behavioral cloning on slippi replays, which makes it play a lot more like a human. There is a [discord channel](https://discord.gg/hfVTXGu) for discussion/feedback/support.
 
+**Do not run Phillip or any other bots on the Slippi Ranked or Unranked ladders.**
+
 ## Playing the Bot
 
 The bot is available to play via netplay on my [twitch channel](https://twitch.tv/x_pilot). Due to phillip's high delay (18+ frames) and buffer donation, it should feel like playing locally at up to 300ms ping.
