@@ -30,8 +30,10 @@ Notes:
 * The LR 3e-4 run beats tx_like, but tx_like was only run at 1e-4, so that
   comparison is confounded. We are keeping LR fixed at 1e-4 for architecture
   comparisons; at 1e-4 the best TCN is still ~0.011 behind tx_like at 0.5.
-* All runs were data-bound (~0.25 s/step data vs ~0.04 s/step model, even
-  with 8 workers), so wall-clock time does not compare architectures.
+* The logged `timing: data=... step=...` split does not show whether a run is
+  data- or compute-bound: `step` only times the async dispatch, and waiting on
+  the GPU shows up under `data`. The TCN runs ran at ~4 steps/s; whether they
+  were data-bound was not verified (e.g. with GPU utilization).
 
 ## What changed in the network
 
@@ -65,3 +67,50 @@ python slippi_ai/jax/scripts/imitation_tcn.py \
 WaveNet (gated dilated convs), Bai et al. 2018 "An Empirical Evaluation of
 Generic Convolutional and Recurrent Networks", ByteNet, ConvS2S (GLU), and
 the short depthwise convs in Mamba / Hyena / ConvNeXt.
+
+# Mamba2 vs tx_like (2026-10-14)
+
+Same setup as above (LR 1e-4, batch 1024, 0.5 epochs), with the `mamba2`
+network (`slippi_ai/jax/scripts/imitation_mamba2.py`): 4 layers of pre-norm
+residual Mamba2 mixer (from
+[mamba2-jax](https://github.com/jax-state-spaces/mamba2-jax), expand 2,
+state size 128, head dim 64, conv kernel 4) each followed by a FFW ResBlock
+with multiplier 2, as in tx_like.
+
+| wandb run | net params | eval @0.25 | eval @0.5 |
+|---|---|---|---|
+| `falco_d21_tx3x1024_rating` (reference) | ~44M (est.) | 0.846 | 0.811 |
+| `falco_d21_tcn8x1024m3b2_depthwise_rating` | 65.0M | 0.852 | 0.822 |
+| `falco_d21_mamba3x1024s128_rating` | 38.6M | 0.839 (@0.24) | 0.806 (@0.49) |
+| `falco_d21_mamba4x1024s128_rating` | 49.4M | **0.834** | **0.800** |
+
+Train loss (mean per 4k steps) was below tx_like's from the first bin on:
+0.887 / 0.847 / 0.841 / 0.827 / 0.808 / 0.799 / 0.799 vs tx_like's
+0.899 / 0.863 / 0.851 / 0.841 / 0.816 / 0.818 / 0.810.
+
+Mamba2 net params include the embedding, as logged. Per layer at h=1024 a
+Mamba2 mixer is ~6.6M (in_proj 1024x4384, out_proj 2048x1024) vs ~8.4M for an
+LSTM, plus ~4.2M for the FFW in both, so tx_like 3x1024 sits between the
+3- and 4-layer Mamba2 runs.
+
+Same depth with fewer params, Mamba2 3x1024 still beats tx_like at both evals
+(its evals also land slightly earlier, at 0.24 / 0.49 epochs), so the gain is
+not only from the extra layer; the 4th layer adds about as much again.
+3-layer train loss: 0.885 / 0.857 / 0.846 / 0.831 / 0.831 / 0.809 / 0.807.
+Single seeds, so differences of ~0.005 are within plausible noise.
+
+Implementation notes:
+
+* The parameters and projections are the library's `Mamba2Mixer`, but the
+  SSD scan is our own: the library's broadcasts B/C to every head and its
+  einsums materialize multi-GB intermediates (67GB at batch 1024 x 84). Ours
+  matches the library to 1e-4 (`test_mamba2_matches_library`).
+* With `chunk_size >= unroll_length` the SSD runs as a single chunk, which was
+  2x faster and half the memory of chunk 32. The SSD is checkpointed.
+* Projections run in bf16; the conv, SSD and gated norm run in fp32.
+* Resets in the middle of an unroll are ignored (state carries across); step
+  honors all resets.
+* Mamba2 4x1024 is compute-bound (GPU utilization 89-100% over a few-minute check):
+  2.5 steps/s (~0.4 s/step) vs 3.3-4.8 for tx_like, about 3.7 hours for 0.5
+  epochs. The SSD is ~30 ms of the ~80 ms per layer (fwd + bwd). 3x1024 ran
+  at 3.2 steps/s.
