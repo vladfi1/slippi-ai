@@ -116,6 +116,28 @@ class NetworksTest(unittest.TestCase):
           jax_utils.struct_dtype(unroll_final_state), jnp.dtype(dtype))
       initial_state = unroll_final_state
 
+  def test_mamba2_bf16_activations(self):
+    rngs = nnx.Rngs(0)
+    batch_size = 4
+    unroll_length = 12
+    config = dict(default_network_config['mamba2'])
+    config.update(hidden_size=32, num_layers=2, state_size=16, head_dim=8)
+    network = networks.Mamba2(rngs=rngs, input_size=10, **config)
+    network = jax_utils.cast_params_to_dtype(network, jnp.bfloat16)
+    initial_state = network.initial_state(batch_size, rngs)
+    inputs = rngs.normal((unroll_length, batch_size, 10)).astype(jnp.bfloat16)
+    reset = jnp.zeros((unroll_length, batch_size), dtype=bool)
+
+    outputs, _ = network.unroll(inputs, reset, initial_state)
+    for _, layer in nnx.iter_graph(network):
+      if isinstance(layer, networks.Mamba2Layer):
+        layer._act_dtype = jnp.float32
+    fp32_outputs, _ = network.unroll(inputs, reset, initial_state)
+
+    np.testing.assert_allclose(
+        np.asarray(outputs, np.float32), np.asarray(fp32_outputs, np.float32),
+        atol=3e-2, rtol=3e-2)
+
   @parameterized.expand([(32,), (4,)])
   def test_mamba2_matches_library(self, chunk_size):
     import mamba2_jax
