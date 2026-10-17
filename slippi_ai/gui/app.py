@@ -79,18 +79,28 @@ def run_in_thread(
 
 
 def running_dolphins() -> list[str]:
-  """Names of running Dolphin processes (Windows only)."""
-  if sys.platform != 'win32':
+  """Names of running Dolphin processes (Windows and macOS)."""
+  if sys.platform == 'win32':
+    command = ['tasklist', '/FO', 'CSV', '/NH']
+    flags = subprocess.CREATE_NO_WINDOW
+  elif sys.platform == 'darwin':
+    # "<pid> <name>" lines for names containing "dolphin", in any case.
+    command = ['pgrep', '-il', 'dolphin']
+    flags = 0
+  else:
     return []
   try:
     output = subprocess.run(
-        ['tasklist', '/FO', 'CSV', '/NH'], capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW, timeout=10).stdout
+        command, capture_output=True, text=True, creationflags=flags,
+        timeout=10).stdout
   except (OSError, subprocess.SubprocessError):
     return []
   names = set()
   for line in output.splitlines():
-    name = line.split('","')[0].strip('"')
+    if sys.platform == 'win32':
+      name = line.split('","')[0].strip('"')
+    else:
+      name = line.split(' ', 1)[-1]
     if 'dolphin' in name.lower():
       names.add(name)
   return sorted(names)
@@ -108,6 +118,15 @@ def _set_items(
     combo.addItem(text, data)
   combo.setCurrentIndex(max(0, combo.findData(preferred)))
   combo.blockSignals(False)
+
+
+def _form(group: QtWidgets.QGroupBox) -> QtWidgets.QFormLayout:
+  form = QtWidgets.QFormLayout(group)
+  # The default on Windows; macOS keeps fields at their size hint, which
+  # truncates combo boxes and overlaps word-wrapped labels.
+  form.setFieldGrowthPolicy(
+      QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+  return form
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -224,7 +243,12 @@ class MainWindow(QtWidgets.QMainWindow):
     self._find_providers()
     self._check_for_updates()
     self._update_controls()
-    self.resize(720, 800)
+    # Tall enough for every control, which are larger on macOS: when squeezed,
+    # the form layouts overlap rows.
+    height = max(800, self.sizeHint().height())
+    if self.screen() is not None:
+      height = min(height, self.screen().availableGeometry().height())
+    self.resize(720, height)
 
   # Layout
 
@@ -250,7 +274,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def _melee_group(self) -> QtWidgets.QGroupBox:
     group = QtWidgets.QGroupBox('Melee')
-    form = QtWidgets.QFormLayout(group)
+    form = _form(group)
 
     self.dolphin_row = PathRow(choose_dir=True)
     self.dolphin_row.changed.connect(self._check_dolphin)
@@ -276,7 +300,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
   def _phillip_group(self) -> QtWidgets.QGroupBox:
     group = QtWidgets.QGroupBox('phillip')
-    form = QtWidgets.QFormLayout(group)
+    form = _form(group)
 
     self.index_status = QtWidgets.QLabel()
     self.index_status.setWordWrap(True)

@@ -4,7 +4,9 @@ take down the GUI and a stuck session can still be killed."""
 import logging
 import logging.handlers
 import multiprocessing
+import os
 import queue
+import signal
 import subprocess
 import sys
 import typing as tp
@@ -27,6 +29,10 @@ def _child_main(
   root = logging.getLogger()
   root.handlers[:] = [logging.handlers.QueueHandler(log_queue)]
   root.setLevel(logging.INFO)
+
+  if sys.platform != 'win32':
+    # Dolphin joins the session's process group, so kill can stop both.
+    os.setpgrp()
 
   try:
     session.run_session(config, stop_event)
@@ -73,8 +79,13 @@ class SessionProcess:
     self._stop_event.set()
 
   def kill(self):
-    """Kills the session, and on Windows the Dolphin it started."""
-    if sys.platform == 'win32' and self._process.pid is not None:
+    """Kills the session and the Dolphin it started."""
+    if sys.platform != 'win32' and self._process.pid is not None:
+      try:
+        os.killpg(self._process.pid, signal.SIGKILL)
+      except OSError:
+        pass  # The session hasn't made its process group yet, or has exited.
+    elif self._process.pid is not None:
       # Dolphin is the session's child; /T kills the whole tree.
       try:
         subprocess.run(
