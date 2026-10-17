@@ -1,4 +1,5 @@
-# PyInstaller spec for a one-dir Windows build of the GUI and the play CLI.
+# PyInstaller spec for a one-dir build of the GUI and the play CLI, on Windows
+# or macOS.
 #
 #   pip install .[gui,winml] pyinstaller
 #   pyinstaller packaging/slippi_ai.spec
@@ -10,11 +11,16 @@
 #
 # Produces dist/phillip/phillip.exe (the GUI), eval_two.exe and
 # benchmark_eval_two.exe, sharing one dist/phillip/_internal.
+#
+# On macOS, build with .[gui,onnx]; this also produces dist/phillip.app, with
+# the GUI as the app and eval_two and benchmark_eval_two in
+# phillip.app/Contents/MacOS.
 
 import configparser
 import json
 import os
 import subprocess
+import sys
 
 from PyInstaller.utils.hooks import (
     collect_data_files, collect_dynamic_libs, collect_submodules)
@@ -36,6 +42,15 @@ def build_info_file() -> str:
   with open(path, 'w') as f:
     json.dump(dict(slippi_ai=config['metadata']['version'], commit=commit), f)
   return path
+
+
+
+def app_version() -> str:
+  """slippi_ai/gui/version.py's VERSION, without importing slippi_ai."""
+  namespace = {}
+  with open(f'{ROOT}/slippi_ai/gui/version.py') as f:
+    exec(f.read(), namespace)
+  return namespace['VERSION']
 
 
 datas = (
@@ -93,3 +108,18 @@ coll = COLLECT(
     *(a.datas for a in analyses),
     name='phillip',
 )
+
+if sys.platform == 'darwin':
+  app = BUNDLE(
+      coll,
+      name='phillip.app',
+      bundle_identifier='com.github.vladfi1.phillip',
+      version=app_version(),
+      info_plist={
+          # BUNDLE would pick the last executable; the app runs the GUI.
+          'CFBundleExecutable': 'phillip',
+          'NSHighResolutionCapable': True,
+          # Dark mode follows the system, as Qt supports it.
+          'NSRequiresAquaSystemAppearance': False,
+      },
+  )
