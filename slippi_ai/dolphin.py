@@ -82,7 +82,7 @@ class Dolphin:
       blocking_input: bool = True,
       console_timeout: Optional[float] = None,
       slippi_port: Optional[int] = None,  # Picked automatically if None
-      save_replays=False,  # Override default in Console
+      save_replays: Optional[bool] = False,  # Override default in Console
       env_vars: Optional[dict] = None,
       headless: bool = False,
       render: Optional[bool] = None,  # Render even when running headless.
@@ -314,7 +314,7 @@ class DolphinConfig:
   slippi_port: Optional[int] = None  # Local ip port to communicate with dolphin.
   fullscreen: Optional[bool] = False  # Run dolphin in full screen mode; None keeps the home directory's setting.
   render: Optional[bool] = None  # Render frames. Only disable if using vladfi1\'s slippi fork.
-  save_replays: bool = False  # Save slippi replays to the usual location.
+  save_replays: Optional[bool] = False  # Save slippi replays to the usual location; None keeps the home directory's setting.
   replay_dir: Optional[str] = None  # Directory to save replays to.
   replay_monthly_folders: Optional[bool] = None  # Whether to save replays in monthly subfolders.
   gfx_backend: Optional[str] = None  # Graphics backend; '' for the default, None keeps the home directory's setting.

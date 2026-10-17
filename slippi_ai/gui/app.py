@@ -912,8 +912,9 @@ class MainWindow(QtWidgets.QMainWindow):
     dolphin.online_delay = min(dolphin.online_delay, summary.delay)
     dolphin.copy_home_directory = self.copy_settings_check.isChecked()
     if dolphin.copy_home_directory:
-      # Keep the user's display settings, e.g. fullscreen.
+      # Keep the user's display and replay settings.
       dolphin.fullscreen = None
+      dolphin.save_replays = None
 
     return session.SessionConfig(
         players={ai_port: ai, other_port: other}, dolphin=dolphin)
