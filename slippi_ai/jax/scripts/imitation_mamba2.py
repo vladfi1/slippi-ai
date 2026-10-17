@@ -1,0 +1,245 @@
+#!/usr/bin/env python
+
+"""Train a Mamba2 model using imitation learning."""
+
+import logging
+import os
+
+os.environ["JAX_COMPILATION_CACHE_DIR"] = "./untracked/jax_cache"
+
+from absl import app, flags
+import fancyflags as ff
+
+import wandb
+
+import melee
+from slippi_ai import flag_utils, paths
+from slippi_ai.jax import train_lib, train_policy, embed, networks, saving
+from skypilot import launch
+
+NET_NAME = networks.Mamba2.name()
+
+def default_config():
+  config = train_lib.Config(max_names=32)
+
+  config.policy.delay = 21
+  config.data.batch_size=512
+  config.data.unroll_length=84
+  config.data.num_workers=2
+  config.data.balance_characters=True
+  config.learner.learning_rate=1e-4
+
+  config.learner.bf16 = True
+  config.observation.animation.tech_mask_window = 4
+  config.embed.controller.type = 'custom_v1'
+  config.embed.controller.default.axis_spacing=32
+  config.embed.controller.default.shoulder_spacing=10
+  config.embed.player.with_nana = True
+  # MLP Items embed not yet implemented for JAX
+  config.embed.items.type = embed.ItemsType.FLAT
+  # config.embed.items.type = embed.ItemsType.MLP
+  # config.embed.items.mlp_sizes = (128, 32)
+  config.embed.with_fod = True
+  config.embed.with_randall = True
+
+  config.network[NET_NAME].update(
+      num_layers=4,
+  )
+
+  config.value_function.separate_network_config = True
+  config.value_function.network[NET_NAME].update(
+      num_layers=4,
+  )
+
+  ch_name = 'autoregressive'
+  config.controller_head['name'] = ch_name
+  component_config = config.controller_head[ch_name]['component']
+  component_name = 'lstm'
+  component_config['name'] = component_name
+  component_config[component_name]['hidden_size'] = 256
+
+  config.dataset.mirror = False
+  config.dataset.allowed_opponents='all'
+  # config.dataset.banned_names="${BANNED_NAMES}"
+  config.dataset.dataset_path = os.environ.get("DATASET_PATH")
+  config.dataset.data_dir = os.environ.get("DATA_DIR")
+  config.dataset.meta_path = os.environ.get("META_PATH")
+  config.data.wds.cache_dir = './wds-cache'
+  config.runtime.log_interval = 300
+  config.runtime.num_evals_per_epoch = 4
+
+  return config
+
+if __name__ == '__main__':
+  # https://github.com/python/cpython/issues/87115
+  __spec__ = None
+
+  # Config overrides for policy and value networks.
+  NET = ff.DEFINE_dict(
+      'net',
+      name=ff.String(NET_NAME),
+      hidden_size=ff.Integer(512),
+      ffw_multiplier=ff.Integer(2),
+      state_size=ff.Integer(128),
+      head_dim=ff.Integer(64),
+      expand=ff.Integer(2),
+      conv_kernel=ff.Integer(4),
+      chunk_size=ff.Integer(128),
+      # Omit num_layers to allow different layers for policy and value nets
+  )
+  EMBED = ff.DEFINE_dict(
+      'embed',
+      name=ff.String('enhanced'),
+      simple=dict(),
+      enhanced=dict(
+          rnn_cell=ff.String('lstm'),
+          hidden_size=ff.Integer(None),
+          use_controller_rnn=ff.Boolean(False),
+          share_crnn=ff.Boolean(True),
+          use_learned_char=ff.Boolean(False),
+          use_learned_action=ff.Boolean(False),
+          use_char_action_joint=ff.Boolean(True),
+          use_item_sum=ff.Boolean(True),
+          use_items=ff.Boolean(True),
+          hybrid_embed=ff.Boolean(False),
+      ),
+  )
+
+  WITH_VF = flags.DEFINE_bool('with_vf', False, 'Train a value function')
+  TOY_DATA = flags.DEFINE_bool('toy_data', False, 'Use toy data for quick testing')
+
+  CHAR = flags.DEFINE_string('char', 'falco', 'Character to use')
+
+  NUM_DAYS = flags.DEFINE_float('num_days', 14, 'Number of days to train for')
+
+  CONFIG = ff.DEFINE_dict(
+      'config', **flag_utils.get_flags_from_default(default_config()))
+
+  # passed to wandb.init
+  WANDB = ff.DEFINE_dict(
+      'wandb',
+      project=ff.String('slippi-ai'),
+      mode=ff.Enum('online', ['online', 'offline', 'disabled']),
+      group=ff.String('imitation'),
+      name=ff.String(None),
+      notes=ff.String(None),
+      dir=ff.String(None, 'directory to save logs'),
+  )
+
+  flags.adopt_module_key_flags(launch)
+
+  @launch.wrap
+  def main(_):
+    config = flag_utils.dataclass_from_dict(train_lib.Config, CONFIG.value)
+
+    delay = config.policy.delay
+
+    char = CHAR.value
+
+    arch_config = config
+    if config.restore_path is not None:
+      restore_state = saving.load_state_from_disk(config.restore_path)
+      arch_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, saving.upgrade_config(restore_state['config']))
+      del restore_state
+
+      char = arch_config.dataset.allowed_characters
+      config.dataset.copy_characteristics_from(arch_config.dataset)
+      net = arch_config.network['name']
+      net_config = arch_config.network[net]
+    else:
+      net_config = dict(NET.value)
+      net = net_config.pop('name')
+
+      embed_config = dict(EMBED.value)
+      embed_name = embed_config['name']
+      enhanced = embed_config['enhanced']
+      if enhanced['hidden_size'] is None:
+        enhanced['hidden_size'] = net_config['hidden_size'] // 4
+      enhanced['use_self_nana'] = char in ['popo', 'all']
+
+      def update_embed_config(config: dict):
+        config['name'] = embed_name
+        config[embed_name].update(embed_config[embed_name])
+
+      def update_network_config(config: dict):
+        config['name'] = net
+        config[net].update(net_config)
+        update_embed_config(config['embed'])
+
+      update_network_config(config.network)
+
+      vf_net_config = config.value_function.network
+      update_network_config(vf_net_config)
+
+    if TOY_DATA.value:
+      config.dataset.dataset_path = str(paths.TOY_DATASET)
+      config.dataset.test_ratio = 0.5
+      char = 'all'
+      # config.data.cached = True
+      # config.data.num_workers = 0
+      config.runtime.log_interval = 15
+      config.runtime.num_evals_per_epoch = 0
+    else:
+      config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
+
+      if config.tag is None:
+        ops = config.dataset.allowed_opponents
+        if ops == 'all':
+          op = ''
+        elif ops == char:
+          op = '_ditto'
+        else:
+          op = f"_vs_{ops}"
+
+        n = arch_config.network[net]['num_layers']
+        h = net_config['hidden_size']
+        s = net_config['state_size']
+
+        net_tag = f'mamba{n}x{h}s{s}'
+        if net_config['ffw_multiplier'] == 0:
+          net_tag += '_noffw'
+
+        parts = [char, f'd{delay}{op}', net_tag]
+
+        rfs = config.policy.frame_skip
+        if rfs > 1:
+          assert arch_config.controller_head['name'] == 'autoregressive'
+          ch = arch_config.controller_head['autoregressive']['component']
+          assert ch['name'] == 'tx_like'
+          ch = ch['tx_like']
+          chn = ch['num_layers']
+          chs = ch['hidden_size']
+
+          parts.extend([f'ch{chn}x{chs}', f'rfs{rfs}'])
+        else:
+          logging.info('No frame skip, using legacy residual autoregressive controller head')
+          arch_config.controller_head['name'] = 'residual_autoregressive'
+
+        if config.embed.with_rating:
+          parts.append('rating')
+
+        if config.max_names == 0:
+          parts.append('noname')
+
+        config.tag = "_".join(parts)
+
+    config.dataset.allowed_characters = char
+
+    wandb_kwargs = dict(WANDB.value)
+    if wandb_kwargs['name'] is None:
+      wandb_kwargs['name'] = config.tag
+      if TOY_DATA.value:
+        wandb_kwargs['mode'] = 'disabled'
+
+    wandb.init(
+        # config=dataclasses.asdict(config),
+        **wandb_kwargs,
+    )
+
+    if WITH_VF.value:
+      train_lib.train(config)
+    else:
+      train_policy.train(config)
+
+  app.run(main)

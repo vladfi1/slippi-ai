@@ -904,6 +904,260 @@ class TemporalConvolution(Sequential, BuildableNetwork[Array, Array]):
     super().__init__(layers, remat=remat)
 
 
+# The fp32 [B, H, T, T] intermediates are large but cheap to recompute.
+@functools.partial(jax.checkpoint, static_argnums=(6,))
+def _ssd(
+    x: Array,  # [B, T, H, P]
+    dt: Array,  # [B, T, H], after softplus
+    A: Array,  # [H]
+    B: Array,  # [B, T, N]
+    C: Array,  # [B, T, N]
+    initial_state: Array,  # [B, H, P, N]
+    chunk_size: int,
+) -> tuple[Array, Array]:
+  """Chunked SSD scan, without the D skip connection.
+
+  Same algorithm as mamba2_jax.ssd_forward, but B and C are shared across
+  heads (a single group) instead of being broadcast to every head, and the
+  contractions are ordered to avoid materializing [.., H, N] intermediates.
+  """
+  batch, T = x.shape[:2]
+  Q = min(chunk_size, T)
+  pad = (Q - T % Q) % Q
+  if pad:
+    pad_time = lambda a: jnp.pad(a, [(0, 0), (0, pad)] + [(0, 0)] * (a.ndim - 2))
+    # dt = 0 means padded steps neither decay nor update the state.
+    x, dt, B, C = map(pad_time, (x, dt, B, C))
+  num_chunks = (T + pad) // Q
+  chunk = lambda a: a.reshape((batch, num_chunks, Q) + a.shape[2:])
+  x, dt, B, C = map(chunk, (x, dt, B, C))
+
+  x = x * dt[..., None]  # [B, c, Q, H, P]
+  log_decay = jnp.cumsum(A * dt, axis=2)  # [B, c, Q, H]
+  log_decay = jnp.moveaxis(log_decay, 3, 2)  # [B, c, H, Q]
+
+  # 1. Within each chunk: y_l = sum_{s <= l} C_l.B_s exp(sum_{s<k<=l} a_k) x_s.
+  segsum = log_decay[..., :, None] - log_decay[..., None, :]  # [B, c, H, l, s]
+  causal = jnp.tril(jnp.ones((Q, Q), dtype=bool))
+  L = jnp.exp(jnp.where(causal, segsum, -jnp.inf))
+  CB = jnp.einsum('bcln,bcsn->bcls', C, B)
+  y = jnp.einsum('bchls,bcshp->bclhp', CB[:, :, None] * L, x)
+
+  # 2. The state contributed by each chunk at its end.
+  decay_to_end = jnp.exp(log_decay[..., -1:] - log_decay)  # [B, c, H, Q]
+  x_to_end = x * jnp.moveaxis(decay_to_end, 2, 3)[..., None]
+  chunk_states = jnp.einsum('bcsn,bcshp->bchpn', B, x_to_end)
+
+  # 3. Carry states across chunks.
+  chunk_decay = jnp.exp(log_decay[..., -1])  # [B, c, H]
+
+  def carry(state, inputs):
+    decay, update = inputs
+    return decay[..., None, None] * state + update, state
+
+  final_state, states_in = jax.lax.scan(
+      carry, initial_state,
+      (jnp.moveaxis(chunk_decay, 1, 0), jnp.moveaxis(chunk_states, 1, 0)))
+  states_in = jnp.moveaxis(states_in, 0, 1)  # [B, c, H, P, N]
+
+  # 4. The incoming state's contribution to each output.
+  y_in = jnp.einsum('bcln,bchpn->bclhp', C, states_in)
+  y = y + y_in * jnp.exp(jnp.moveaxis(log_decay, 2, 3))[..., None]
+
+  y = y.reshape((batch, num_chunks * Q) + y.shape[3:])[:, :T]
+  return y, final_state
+
+
+class Mamba2Layer(Network[Array, Array]):
+  """RMSNorm followed by a Mamba2 mixer (no residual).
+
+  The parameters and projections are those of mamba2_jax.Mamba2Mixer; the SSD
+  scan is our own (see _ssd) as the library's runs out of memory at our batch
+  sizes, and step is a direct recurrence instead of a padded chunk.
+
+  Resets are only honored at the start of an unroll; a reset in the middle of
+  an unroll does not clear the SSM or conv state. Step honors all resets.
+
+  The projections run in the param dtype, but the conv, SSM and gated norm run
+  in fp32, as the SSD's decays and cumulative sums are too imprecise in bf16.
+  The recurrent state is stored in the param dtype.
+  """
+
+  def __init__(self, rngs: nnx.Rngs, cfg):
+    import mamba2_jax
+    self._cfg = cfg
+    self.norm = mamba2_jax.RMSNorm(
+        cfg.hidden_size, eps=cfg.layer_norm_epsilon, rngs=rngs)
+    self.mixer = mamba2_jax.Mamba2Mixer(cfg, layer_idx=0, rngs=rngs)
+
+  @property
+  def output_size(self) -> int:
+    return self._cfg.hidden_size
+
+  def initial_state(self, batch_size: Shape, rngs: nnx.Rngs):
+    del rngs
+    if isinstance(batch_size, int):
+      batch_shape = (batch_size,)
+    else:
+      batch_shape = tuple(batch_size)
+    cfg = self._cfg
+    dtype = jax_utils.module_dtype(self)
+    conv_dim = cfg.intermediate_size + 2 * cfg.state_size
+    conv_state = jnp.zeros(
+        batch_shape + (conv_dim, cfg.conv_kernel - 1), dtype=dtype)
+    ssm_state = jnp.zeros(
+        batch_shape + (cfg.num_heads, cfg.head_dim, cfg.state_size),
+        dtype=dtype)
+    return conv_state, ssm_state
+
+  def _mix(self, inputs: Array, prev_state, ssm_fn):
+    """Runs the mixer on [B, T, D] inputs, with ssm_fn doing the SSM scan.
+
+    ssm_fn(x, dt, A, B, C, ssm_state) -> (y, ssm_state), without the D skip.
+    """
+    dtype = inputs.dtype
+    conv_state, ssm_state = jax_utils.cast_floats_to_dtype(
+        prev_state, jnp.float32)
+    mixer = self.mixer
+    cfg = self._cfg
+    num_heads, head_dim = cfg.num_heads, cfg.head_dim
+    inner, state_size = cfg.intermediate_size, cfg.state_size
+    fp32 = lambda x: x.astype(jnp.float32)
+
+    zxbcdt = fp32(mixer.in_proj(self.norm(inputs)))
+    d_mlp = (zxbcdt.shape[-1] - 2 * inner - 2 * state_size - num_heads) // 2
+    z0, x0, z, xBC, dt = jnp.split(
+        zxbcdt,
+        [d_mlp, 2 * d_mlp, 2 * d_mlp + inner,
+         2 * d_mlp + 2 * inner + 2 * state_size],
+        axis=-1)
+
+    conv1d = jax_utils.cast_params_to_dtype(mixer.conv1d, jnp.float32)
+    xBC, conv_state = conv1d(xBC, conv_state=conv_state)
+    xBC = mixer.act(xBC)
+    x, B, C = jnp.split(xBC, [inner, inner + state_size], axis=-1)
+    x = x.reshape(x.shape[:-1] + (num_heads, head_dim))
+
+    dt = jax.nn.softplus(dt + fp32(mixer.dt_bias.value))
+    dt = jnp.clip(dt, mixer.dt_min, mixer.dt_max)
+    A = -jnp.exp(fp32(mixer.A_log.value))
+    y, ssm_state = ssm_fn(x, dt, A, B, C, ssm_state)
+    y = y + fp32(mixer.D.value)[:, None] * x
+
+    norm = jax_utils.cast_params_to_dtype(mixer.norm, jnp.float32)
+    y = norm(y.reshape(y.shape[:-2] + (inner,)), residual=z)
+    if d_mlp > 0:
+      y = jnp.concatenate([mixer.act(z0) * x0, y], axis=-1)
+    outputs = mixer.out_proj(y.astype(dtype)).astype(dtype)
+    return outputs, (conv_state.astype(dtype), ssm_state.astype(dtype))
+
+  def unroll(self, inputs: Array, reset: Array, initial_state):
+    fresh_state = self.initial_state(reset.shape[1:], nnx.Rngs(0))
+    initial_state = where_pytree(reset[0], fresh_state, initial_state)
+
+    def ssm_fn(x, dt, A, B, C, ssm_state):
+      return _ssd(x, dt, A, B, C, ssm_state, self._cfg.chunk_size)
+
+    outputs, final_state = self._mix(
+        jnp.swapaxes(inputs, 0, 1), initial_state, ssm_fn)
+    return jnp.swapaxes(outputs, 0, 1), final_state
+
+  def step(self, inputs: Array, prev_state):
+    # Flatten the batch dims and add a time dim, as the conv expects [B, T, C].
+    batch_shape = inputs.shape[:-1]
+    flatten = lambda x, n: x.reshape((-1,) + x.shape[x.ndim - n:])
+    inputs = flatten(inputs, 1)[:, None]
+    prev_state = jax.tree.map(flatten, prev_state, (2, 3))
+
+    def ssm_fn(x, dt, A, B, C, ssm_state):
+      x, dt, B, C = x[:, 0], dt[:, 0], B[:, 0], C[:, 0]
+      decay = jnp.exp(A * dt)[..., None, None]
+      update = (dt[..., None] * x)[..., None] * B[:, None, None, :]
+      ssm_state = decay * ssm_state + update  # [B, H, P, N]
+      y = jnp.einsum('bhpn,bn->bhp', ssm_state, C)
+      return y[:, None], ssm_state
+
+    outputs, next_state = self._mix(inputs, prev_state, ssm_fn)
+    unflatten = lambda x: x.reshape(batch_shape + x.shape[1:])
+    return unflatten(outputs[:, 0]), jax.tree.map(unflatten, next_state)
+
+
+class Mamba2(Sequential, BuildableNetwork[Array, Array]):
+  """Like TransformerLike, but with Mamba2 mixers for memory.
+
+  Uses the Mamba2Mixer from https://github.com/jax-state-spaces/mamba2-jax.
+  Each layer is a pre-norm residual Mamba2 mixer, optionally followed by a FFW
+  ResBlock (disabled with ffw_multiplier=0, as in the original Mamba2).
+  """
+
+  @classmethod
+  def name(cls) -> str:
+    return 'mamba2'
+
+  @classmethod
+  def default_config(cls) -> dict[str, tp.Any]:
+    return dict(
+        hidden_size=128,
+        num_layers=1,
+        state_size=128,
+        head_dim=64,
+        expand=2,
+        conv_kernel=4,
+        chunk_size=128,
+        ffw_multiplier=4,
+        activation='gelu',
+        gelu_approximate=True,
+        layer_norm='nnx',
+        remat=False,
+    )
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      input_size: int,
+      hidden_size: int,
+      num_layers: int,
+      state_size: int,
+      head_dim: int,
+      expand: int,
+      conv_kernel: int,
+      chunk_size: int,
+      ffw_multiplier: int,
+      activation: str,
+      gelu_approximate: bool = True,
+      layer_norm: str = 'nnx',
+      remat: bool = False,
+  ):
+    import mamba2_jax
+    cfg = mamba2_jax.Mamba2Config(
+        hidden_size=hidden_size,
+        state_size=state_size,
+        head_dim=head_dim,
+        expand=expand,
+        conv_kernel=conv_kernel,
+        chunk_size=chunk_size,
+        num_hidden_layers=num_layers,
+    )
+    activation_fn = _get_activation(activation, gelu_approximate)
+
+    layers: list[Network[Array, Array]] = []
+
+    encoder = nnx.Linear(input_size, hidden_size, rngs=rngs)
+    layers.append(FFWWrapper(encoder, output_size=hidden_size))
+
+    for _ in range(num_layers):
+      layers.append(ResidualWrapper(Mamba2Layer(rngs, cfg)))
+
+      if ffw_multiplier > 0:
+        ffw_layer = ResBlock(
+            rngs, hidden_size, hidden_size * ffw_multiplier,
+            activation=activation_fn,
+            layer_norm=layer_norm)
+        layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
+
+    super().__init__(layers, remat=remat)
+
+
 class StateActionNetwork(nnx.Module, abc.ABC, tp.Generic[Action]):
   """Like a network, but takes StateAction as input."""
 
@@ -1579,7 +1833,7 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 # Factory functions for network construction
 
 _simple_networks: list[type[BuildableNetwork[Array, Array]]] = [
-    MLP, LSTM, GRU, TransformerLike, TemporalConvolution,
+    MLP, LSTM, GRU, TransformerLike, TemporalConvolution, Mamba2,
 ]
 SIMPLE_CONSTRUCTORS = {
     cls.name(): cls for cls in _simple_networks

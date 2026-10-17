@@ -19,7 +19,9 @@ def assert_tensors_close(t1: jnp.ndarray, t2: jnp.ndarray):
 
 class NetworksTest(unittest.TestCase):
 
-  @parameterized.expand(networks.SIMPLE_CONSTRUCTORS)
+  # Mamba2 ignores resets in the middle of an unroll; see test_mamba2.
+  @parameterized.expand(
+      [name for name in networks.SIMPLE_CONSTRUCTORS if name != 'mamba2'])
   def test_unroll_vs_step(self, name='mlp'):
     rngs = nnx.Rngs(0)
     unroll_length = 8
@@ -74,6 +76,71 @@ class NetworksTest(unittest.TestCase):
           unroll_outputs, step_outputs, atol=1e-4, rtol=1e-4)
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
       initial_state = unroll_final_state
+
+  @parameterized.expand([
+      # (chunk_size, unroll_length, dtype)
+      (32, 12, 'float32'),  # single padded chunk
+      (4, 10, 'float32'),  # several chunks, the last one padded
+      (4, 8, 'bfloat16'),
+  ])
+  def test_mamba2_unroll_vs_step(self, chunk_size, unroll_length, dtype):
+    rngs = nnx.Rngs(0)
+    batch_size = 2
+    input_size = 10
+    config = dict(default_network_config['mamba2'])
+    config.update(
+        hidden_size=32, num_layers=2, state_size=16, head_dim=8,
+        chunk_size=chunk_size)
+    network = networks.Mamba2(rngs=rngs, input_size=input_size, **config)
+    network = jax_utils.cast_params_to_dtype(network, jnp.dtype(dtype))
+    initial_state = network.initial_state(batch_size, rngs)
+
+    for i in range(3):
+      inputs = rngs.normal((unroll_length, batch_size, input_size)).astype(dtype)
+      # Only resets at the start of the unroll are supported.
+      reset = jnp.zeros((unroll_length, batch_size), dtype=bool)
+      reset = reset.at[0].set(rngs.bernoulli(0.5, (batch_size,)) | (i == 0))
+
+      unroll_outputs, unroll_final_state = network.unroll(
+          inputs, reset, initial_state)
+      step_outputs, step_final_state = jax_utils.dynamic_rnn(
+          network._step_with_reset, (inputs, reset), initial_state)
+
+      tol = 1e-4 if dtype == 'float32' else 3e-2
+      close = lambda a, b: np.testing.assert_allclose(
+          np.asarray(a, np.float32), np.asarray(b, np.float32),
+          atol=tol, rtol=tol)
+      close(unroll_outputs, step_outputs)
+      jax.tree.map(close, unroll_final_state, step_final_state)
+      self.assertEqual(
+          jax_utils.struct_dtype(unroll_final_state), jnp.dtype(dtype))
+      initial_state = unroll_final_state
+
+  @parameterized.expand([(32,), (4,)])
+  def test_mamba2_matches_library(self, chunk_size):
+    import mamba2_jax
+    rngs = nnx.Rngs(0)
+    batch_size = 3
+    unroll_length = 10
+    cfg = mamba2_jax.Mamba2Config(
+        hidden_size=32, state_size=16, head_dim=8, chunk_size=chunk_size)
+    layer = networks.Mamba2Layer(rngs, cfg)
+
+    # Nonzero initial state to exercise the state carry.
+    initial_state = jax.tree.map(
+        lambda x: rngs.normal(x.shape),
+        layer.initial_state(batch_size, rngs))
+    inputs = rngs.normal((unroll_length, batch_size, cfg.hidden_size))
+    reset = jnp.zeros((unroll_length, batch_size), dtype=bool)
+
+    outputs, (conv_state, ssm_state) = layer.unroll(inputs, reset, initial_state)
+
+    lib_outputs, lib_conv_state, lib_ssm_state = layer.mixer(
+        layer.norm(jnp.swapaxes(inputs, 0, 1)), *initial_state)
+    np.testing.assert_allclose(
+        outputs, jnp.swapaxes(lib_outputs, 0, 1), atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(conv_state, lib_conv_state, atol=1e-5)
+    np.testing.assert_allclose(ssm_state, lib_ssm_state, atol=1e-4, rtol=1e-4)
 
   @parameterized.expand([
       # (dilation, memory_size, unroll_length)
