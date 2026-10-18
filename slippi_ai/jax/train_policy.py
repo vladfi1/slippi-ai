@@ -47,7 +47,7 @@ class TrainManager:
   def __init__(
       self,
       learner: learner_lib.PolicyLearner,
-      data_source: data_lib.AbstractDataSource,
+      make_data_source: tp.Callable[[], data_lib.AbstractDataSource],
       *,
       frame_skip: int,
       step_kwargs={},
@@ -57,7 +57,8 @@ class TrainManager:
       epoch_offset: float = 0,
   ):
     self.learner = learner
-    self.data_source = data_source
+    self.make_data_source = make_data_source
+    self.data_source = make_data_source()
     self.frame_skip = frame_skip
     self.rngs = rngs or nnx.Rngs(0)
     self.step_kwargs = step_kwargs
@@ -72,7 +73,9 @@ class TrainManager:
     self._encode_state_action = learner.policy.network.encode
 
     self.prefetch = prefetch
+    self._start_batch_iterator()
 
+  def _start_batch_iterator(self):
     def iter_batches():
       while True:
         yield self.fetch_batch()
@@ -81,8 +84,9 @@ class TrainManager:
 
     self.cleanup_fns = []
 
-    if prefetch > 0:
-      self.batch_iterator = utils.PrefetchIteratorMT(self.batch_iterator, prefetch)
+    if self.prefetch > 0:
+      self.batch_iterator = utils.PrefetchIteratorMT(
+          self.batch_iterator, self.prefetch)
       self.cleanup_fns.append(self.batch_iterator.stop)
 
   def fetch_batch(self) -> tuple[data_lib.BatchWithMeta, float, data_lib.Frames]:
@@ -112,6 +116,14 @@ class TrainManager:
   def stop(self):
     for fn in self.cleanup_fns:
       fn()
+    self.data_source.shutdown()
+
+  def reset(self):
+    """Restarts with a fresh data source and hidden state."""
+    self.stop()
+    self.data_source = self.make_data_source()
+    self._start_batch_iterator()
+    self.reset_hidden_state()
 
   def step(self) -> tuple[dict, data_lib.BatchWithMeta]:
     stats = {}
@@ -376,9 +388,13 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   test_data_config = dataclasses.replace(
       train_data_config,
       num_workers=2 * train_data_config.num_workers,
+      # Each eval restarts the test source; start every row at the beginning
+      # of a game so that the fresh hidden state is correct.
+      stagger=False,
+      burnin=0,
   )
 
-  train_data, test_data, name_map = data_lib.build_sources(
+  make_train_data, make_test_data, name_map = data_lib.build_source_factories(
       dataset_config=config.dataset,
       train_data_config=train_data_config,
       test_data_config=test_data_config,
@@ -388,8 +404,6 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       observation_config=config.observation,
       reward_kwargs=dataclasses.asdict(config.reward),
   )
-  exit_stack.callback(train_data.shutdown)
-  exit_stack.callback(test_data.shutdown)
 
   logging.info(name_map)
   name_map_path = os.path.join(expt_dir, 'name_map.json')
@@ -414,12 +428,12 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   )
 
   train_manager = TrainManager(
-      learner, train_data,
+      learner, make_train_data,
       step_kwargs=dict(train=True, compile=runtime.compile),
       epoch_offset=train_epoch,
       **manager_kwargs)
   test_manager = TrainManager(
-      learner, test_data,
+      learner, make_test_data,
       step_kwargs=dict(train=False, compile=runtime.compile),
       **manager_kwargs)
 
@@ -548,6 +562,11 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       assert x.shape[0] == config.data.batch_size
       return np.mean(np.asarray(x, np.float32), axis=1)
 
+    # Restart the test data at the beginning of games with a fresh hidden
+    # state. The state left over from the previous eval was computed with
+    # older params, which can badly hurt recurrent nets such as Mamba2.
+    test_manager.reset()
+
     start_time = time.perf_counter()
     initial_test_epoch = test_manager.last_epoch
     test_stats_jax = None
@@ -577,7 +596,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     step_time = test_manager.step_profiler.mean_time()
 
     sps = len(per_step_eval_stats) / eval_time
-    frames_per_step = test_data.batch_size * config.data.unroll_length
+    frames_per_step = test_data_config.batch_size * config.data.unroll_length
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
     train_epoch = epoch_tracker.last
@@ -620,7 +639,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       save(path=os.path.join(expt_dir, f'step_{step}.pkl'))
 
     loss = eval_stats['policy']['loss']
-    assert loss.shape == (len(per_step_eval_stats), test_data.batch_size)
+    assert loss.shape == (len(per_step_eval_stats), test_data_config.batch_size)
 
     meta = utils.batch_nest_nt(metas)  # [num eval steps, batch size]
 
