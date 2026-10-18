@@ -359,6 +359,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       stagger=False,
       burnin=0,
   )
+  if runtime.eval_batch_size is not None:
+    test_data_config.batch_size = runtime.eval_batch_size
+  if runtime.eval_unroll_length is not None:
+    test_data_config.unroll_length = runtime.eval_unroll_length
 
   make_train_data, make_test_data, name_map = data_lib.build_source_factories(
       dataset_config=config.dataset,
@@ -532,7 +536,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     metas: list[data_lib.ChunkMeta] = []
 
     def time_mean(x: jax.Array) -> np.ndarray:
-      assert x.shape[0] == config.data.batch_size
+      assert x.shape[0] == test_data_config.batch_size
       # time dim is unroll_length [+ overlap for value stats]
       return np.mean(np.asarray(x), axis=1)
 
@@ -572,7 +576,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     step_time = test_manager.step_profiler.mean_time()
 
     sps = len(per_step_eval_stats) / eval_time
-    frames_per_step = test_data_config.batch_size * config.data.unroll_length
+    frames_per_step = test_data_config.batch_size * test_data_config.unroll_length
     mps = sps * frames_per_step / FRAMES_PER_MINUTE
 
 
