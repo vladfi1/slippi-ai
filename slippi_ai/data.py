@@ -763,6 +763,7 @@ class TrajectoryManager:
       encode_name: Callable[[str], int],
       overlap: int = 1,
       random_offset: int = 0,
+      stagger: bool = True,
       game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
@@ -772,6 +773,7 @@ class TrajectoryManager:
     self.unroll_length = unroll_length
     self.overlap = overlap
     self.random_offset = random_offset
+    self.stagger = stagger
     self.rng = random.Random() if rng is None else rng
     self.game_filter = game_filter or (lambda _: True)
     self.observation_filter = observation_filter
@@ -801,15 +803,15 @@ class TrajectoryManager:
     self.flat_game = utils.cached_flatten(Game)(game)
     self.game_len = game_len(game)
     # TODO: make offset based on epoch instead of random
-    if self.first_game:
+    if self.first_game and self.stagger:
       # Stagger managers within their first game so that they don't all
       # exhaust their replays (and request new ones) at the same time.
       self.frame = self.rng.randint(0, self.game_len - self.unroll_length)
-      self.first_game = False
     elif self.random_offset > 0:
       self.frame = self.rng.randint(0, self.random_offset - 1)
     else:
       self.frame = 0
+    self.first_game = False
     self.info = info
     # self.flat_meta = utils.cached_flatten(ReplayMeta)(info.meta)
     self.name_code = self.encode_name(info.main_player.name)
@@ -946,6 +948,7 @@ class WebDataSource(AbstractDataSource):
       unroll_length: int,
       extra_frames: int = 1,
       random_offset: int = 0,
+      stagger: bool = True,
       reward_kwargs: dict = {},
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
@@ -1052,6 +1055,7 @@ class WebDataSource(AbstractDataSource):
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             random_offset=random_offset,
+            stagger=stagger,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
@@ -1169,6 +1173,7 @@ class DataSource(AbstractDataSource):
       unroll_length: int = 64,
       extra_frames: int = 1,
       random_offset: int = 0,
+      stagger: bool = True,
       reward_kwargs: dict = {},
       balance_characters: bool = False,
       group_characters: bool = False,
@@ -1220,6 +1225,7 @@ class DataSource(AbstractDataSource):
             unroll_length=self.chunk_size,
             overlap=extra_frames,
             random_offset=random_offset,
+            stagger=stagger,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
@@ -1279,6 +1285,7 @@ def _shared_memory_data_worker(
     chunk_size: int,
     extra_frames: int,
     random_offset: int,
+    stagger: bool,
     reward_kwargs: dict,
     seed: Optional[int],
     balance_characters: bool,
@@ -1336,6 +1343,7 @@ def _shared_memory_data_worker(
             unroll_length=chunk_size,
             overlap=extra_frames,
             random_offset=random_offset,
+            stagger=stagger,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=encode_name,
@@ -1405,6 +1413,7 @@ class SharedMemoryDataSource(AbstractDataSource):
       unroll_length: int = 64,
       extra_frames: int = 1,
       random_offset: int = 0,
+      stagger: bool = True,
       reward_kwargs: dict = {},
       balance_characters: bool = False,
       group_characters: bool = False,
@@ -1505,6 +1514,7 @@ class SharedMemoryDataSource(AbstractDataSource):
               chunk_size=self.chunk_size,
               extra_frames=extra_frames,
               random_offset=random_offset,
+              stagger=stagger,
               reward_kwargs=reward_kwargs,
               seed=seed,
               balance_characters=balance_characters,
@@ -1690,6 +1700,8 @@ class DataConfig:
   unroll_chunks: int = 0
   burnin: int = 5  # get rid of early-game correlations
   random_offset: int = 0  # improve data diversity for frameskip
+  # Start each row at a random point in its first game.
+  stagger: bool = True
   # Assemble batches in worker processes via shared memory (non-wds only).
   shared_memory: bool = True
 
@@ -1759,6 +1771,11 @@ class Sources(NamedTuple):
   test: AbstractDataSource
   name_map: dict[str, int]
 
+class SourceFactories(NamedTuple):
+  train: Callable[[], AbstractDataSource]
+  test: Callable[[], AbstractDataSource]
+  name_map: dict[str, int]
+
 def build_sources(
     dataset_config: DatasetConfig,
     train_data_config: DataConfig,
@@ -1767,6 +1784,24 @@ def build_sources(
     max_names: Optional[int] = None,
     **kwargs,  # observation_config, extra_frames
 ) -> Sources:
+  factories = build_source_factories(
+      dataset_config, train_data_config, test_data_config,
+      name_map=name_map, max_names=max_names, **kwargs)
+  return Sources(
+      train=factories.train(),
+      test=factories.test(),
+      name_map=factories.name_map,
+  )
+
+def build_source_factories(
+    dataset_config: DatasetConfig,
+    train_data_config: DataConfig,
+    test_data_config: Optional[DataConfig] = None,
+    name_map: Optional[dict[str, int]] = None,
+    max_names: Optional[int] = None,
+    **kwargs,  # observation_config, extra_frames
+) -> SourceFactories:
+  """Like build_sources, but each call of a factory builds a fresh source."""
   test_data_config = test_data_config or train_data_config
 
   if name_map is None and max_names is None:
@@ -1794,7 +1829,8 @@ def build_sources(
     sources = {}
 
     for split, data_config in zip(SPLITS, [train_data_config, test_data_config]):
-      sources[split] = make_source(
+      sources[split] = functools.partial(
+          make_source,
           wds_path=dataset_config.wds_path,
           split=split,
           name_map=name_map,
@@ -1803,7 +1839,7 @@ def build_sources(
           **kwargs,
       )
 
-    return Sources(**sources, name_map=name_map)
+    return SourceFactories(**sources, name_map=name_map)
 
   train_and_test = train_test_split(dataset_config)
   train_replays, test_replays = train_and_test
@@ -1825,11 +1861,12 @@ def build_sources(
 
   for split, split_replays, data_config in zip(
       SPLITS, train_and_test, [train_data_config, test_data_config]):
-    sources[split] = make_source(
+    sources[split] = functools.partial(
+        make_source,
         replays=split_replays,
         name_map=name_map,
         **dataclasses.asdict(data_config),
         **kwargs,
     )
 
-  return Sources(**sources, name_map=name_map)
+  return SourceFactories(**sources, name_map=name_map)
