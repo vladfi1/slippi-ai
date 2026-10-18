@@ -66,11 +66,7 @@ class TrainManager:
     self.epoch_offset = epoch_offset
     self.last_epoch = 0.
 
-    # Initialize hidden state (and shard if multi-device)
-    hidden_state = learner.initial_state(data_source.batch_size, self.rngs)
-    if data_sharding is not None:
-      hidden_state = jax_utils.device_put(hidden_state, data_sharding)
-    self.hidden_state = hidden_state
+    self.reset_hidden_state()
 
     self._encode_state_action = learner.policy.network.encode
 
@@ -116,6 +112,14 @@ class TrainManager:
       frames = jax_utils.device_put(frames, self.data_sharding)
 
     return (batch_with_meta, epoch, frames)
+
+  def reset_hidden_state(self):
+    # Shard the hidden state if multi-device.
+    hidden_state = self.learner.initial_state(
+        self.data_source.batch_size, self.rngs)
+    if self.data_sharding is not None:
+      hidden_state = jax_utils.device_put(hidden_state, self.data_sharding)
+    self.hidden_state = hidden_state
 
   def stop(self):
     for fn in self.cleanup_fns:
@@ -429,6 +433,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
   if restored:
     assert isinstance(combined_state, dict)  # appease type checker
+    # The hidden state from the initial step came from the unrestored params.
+    train_manager.reset_hidden_state()
     jax_utils.set_module_state(learner, combined_state['state'])
     train_loss = _get_loss(train_manager.step()[0])
     logging.info('loss post-restore: %f', train_loss)
