@@ -170,6 +170,8 @@ class RuntimeConfig:
   num_eval_epochs: float = 1  # number of epochs per evaluation
   max_eval_steps: tp.Optional[int] = None  # for testing
   eval_at_start: bool = False
+  # Also save a step_{step}.pkl checkpoint at every eval, not just the best.
+  save_every_eval: bool = False
 
   compile: bool = True  # whether to JIT compile the training step
   multi_device: bool = True  # whether to use multi-device data parallelism
@@ -433,7 +435,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
   else:
     logging.info('GPU memory usage not available (pynvml not installed)')
 
-  def save(eval_loss=None):
+  def save(eval_loss=None, path=pickle_path):
     nonlocal best_eval_loss
     state = jax_utils.get_module_state(learner)
 
@@ -454,8 +456,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     )
     pickled_state = pickle.dumps(combined)
 
-    logging.info('saving state to %s', pickle_path)
-    with open(pickle_path, 'wb') as f:
+    logging.info('saving state to %s', path)
+    with open(path, 'wb') as f:
       f.write(pickled_state)
 
   if restored:
@@ -613,6 +615,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
+
+    if runtime.save_every_eval:
+      save(path=os.path.join(expt_dir, f'step_{step}.pkl'))
 
     loss = eval_stats['policy']['loss']
     assert loss.shape == (len(per_step_eval_stats), test_data.batch_size)

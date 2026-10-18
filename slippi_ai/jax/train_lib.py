@@ -404,7 +404,7 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     logging.info('GPU memory usage not available (pynvml not installed)')
 
   # TODO: use orbax instead?
-  def save(eval_loss=None):
+  def save(eval_loss=None, path=pickle_path):
     nonlocal best_eval_loss
     # Local Save
     state = jax_utils.get_module_state(learner)
@@ -427,8 +427,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
     )
     pickled_state = pickle.dumps(combined)
 
-    logging.info('saving state to %s', pickle_path)
-    with open(pickle_path, 'wb') as f:
+    logging.info('saving state to %s', path)
+    with open(path, 'wb') as f:
       f.write(pickled_state)
 
   if restored:
@@ -594,6 +594,9 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       logging.info('New best eval loss: %f (previous: %f)', eval_loss, best_eval_loss)
       best_eval_loss = eval_loss
       save(eval_loss=best_eval_loss)
+
+    if runtime.save_every_eval:
+      save(path=os.path.join(expt_dir, f'step_{step}.pkl'))
 
     # Stats have shape [num_eval_steps, batch_size]
     loss = eval_stats['policy']['loss']
