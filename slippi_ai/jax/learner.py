@@ -97,6 +97,7 @@ class Learner(nnx.Module):
           explicit_pmean=config.explicit_pmean,
           smap_optimizer=config.smap_optimizer,
           pack_data=config.pack_data,
+          with_grad_norm=True,
       )
 
       self.sharded_run_policy = jax_utils.shard_map_loss_fn(
@@ -164,6 +165,8 @@ class Learner(nnx.Module):
       loss, (tm_metrics, final_states) = loss_fn(self.policy)
 
     bm_metrics = jax.tree.map(swap_axes, tm_metrics)
+    if train:
+      bm_metrics['grad_norm'] = optax.global_norm(grads)
 
     return loss, bm_metrics, final_states
 
@@ -219,8 +222,9 @@ class Learner(nnx.Module):
     if compile and self.config.use_shard_map:
       if train:
         with jax.profiler.TraceAnnotation("sharded_train_policy"):
-          policy_metrics, policy_final_states = self.sharded_train_policy(
-              bm_frames, policy_initial_states)
+          policy_metrics, policy_final_states, grad_norm = (
+              self.sharded_train_policy(bm_frames, policy_initial_states))
+          policy_metrics = dict(policy_metrics, grad_norm=grad_norm)
         with jax.profiler.TraceAnnotation("sharded_train_value_function"):
           value_metrics, value_final_states = self.sharded_train_value_function(
               bm_frames, value_initial_states, discount=self.discount)

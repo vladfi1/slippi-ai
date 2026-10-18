@@ -11,6 +11,7 @@ import types
 import numpy as np
 import jax
 import jax.numpy as jnp
+import optax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
 from flax import nnx
 from flax.nnx.transforms.transforms import _resolve_bound_callable
@@ -1369,7 +1370,9 @@ def data_parallel_train(
     smap_optimizer: bool = True,
     pack_data: bool = False,
     dtype: tp.Optional[jnp.dtype] = None,
+    with_grad_norm: bool = False,
 ) -> tp.Callable[tp.Concatenate[Data, State, P], tuple[AuxT, State, *Outputs]]:
+  """If with_grad_norm, the global gradient norm is appended to the outputs."""
   if data_axis_name not in mesh.axis_names:
     raise ValueError(f'Axis name {data_axis_name} not in mesh axis names {mesh.axis_names}.')
 
@@ -1389,6 +1392,8 @@ def data_parallel_train(
       _extra_out_specs = tuple()
     else:
       _extra_out_specs = tuple(extra_out_specs)
+    if with_grad_norm:
+      _extra_out_specs += (PS(),)
 
     if not smap_optimizer:
       raise NotImplementedError('shard_map without sharding the optimizer is not implemented yet.')
@@ -1422,7 +1427,10 @@ def data_parallel_train(
       grads_and_outputs = sharded_grads_fn(module, data, state, *args, **kwargs)
       grads = grads_and_outputs[0]
       optimizer.update(module, grads)
-      return grads_and_outputs[1:]
+      outputs = grads_and_outputs[1:]
+      if with_grad_norm:
+        outputs += (optax.global_norm(grads),)
+      return outputs
 
     return update_fn(module, optimizer, data, state, *args)
 
