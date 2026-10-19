@@ -217,6 +217,8 @@ class Batch(NamedTuple, tp.Generic[S]):
   rating: FloatArray[S]
   is_resetting: BoolArray[S]
   reward: FloatArray[S]
+  # False on the padding at the end of a game's final chunk.
+  is_valid: BoolArray[S]
 
   def to_frames(
     self,
@@ -248,6 +250,7 @@ class Batch(NamedTuple, tp.Generic[S]):
     assert len(actions) == frame_skip
 
     is_resetting = reshaped.is_resetting.any(axis=-1)
+    is_valid = reshaped.is_valid.all(axis=-1)
 
     discounts = discount ** np.arange(frame_skip)
     reward = np.vecdot(reshaped.reward, discounts)
@@ -261,6 +264,7 @@ class Batch(NamedTuple, tp.Generic[S]):
         ),
         is_resetting=is_resetting,
         reward=reward,
+        is_valid=is_valid,
     )
 
 
@@ -314,6 +318,11 @@ def delayed_frames(
       rating=keep_states(frames.state_action.rating),
   )
 
+  # Validity follows the actions, which end the unroll.
+  is_valid = frames.is_valid
+  if is_valid is not None:
+    is_valid = keep_actions(is_valid)
+
   if keep_prefix_rewards:
     reward = frames.reward[:unroll_length - 1]
   else:
@@ -324,6 +333,7 @@ def delayed_frames(
       state_action=state_action,
       is_resetting=keep_states(frames.is_resetting),
       reward=reward,
+      is_valid=is_valid,
   )
 
 
@@ -764,6 +774,7 @@ class TrajectoryManager:
       overlap: int = 1,
       random_offset: int = 0,
       stagger: bool = True,
+      pad_final_chunk: bool = False,
       game_filter: Optional[Callable[[Game[Rank1]], bool]] = None,
       observation_filter: Optional[observations.ObservationFilter] = None,
       reward_kwargs: dict = {},
@@ -774,6 +785,7 @@ class TrajectoryManager:
     self.overlap = overlap
     self.random_offset = random_offset
     self.stagger = stagger
+    self.pad_final_chunk = pad_final_chunk
     self.rng = random.Random() if rng is None else rng
     self.game_filter = game_filter or (lambda _: True)
     self.observation_filter = observation_filter
@@ -787,7 +799,9 @@ class TrajectoryManager:
     while True:
       info = next(self.source)
       game = info.read_game()
-      if game_len(game) < self.unroll_length:
+      # A padded chunk needs at least one frame beyond the overlap.
+      min_len = self.overlap + 1 if self.pad_final_chunk else self.unroll_length
+      if game_len(game) < min_len:
         continue
       if not self.game_filter(game):
         continue
@@ -806,7 +820,8 @@ class TrajectoryManager:
     if self.first_game and self.stagger:
       # Stagger managers within their first game so that they don't all
       # exhaust their replays (and request new ones) at the same time.
-      self.frame = self.rng.randint(0, self.game_len - self.unroll_length)
+      self.frame = self.rng.randint(
+          0, max(0, self.game_len - self.unroll_length))
     elif self.random_offset > 0:
       self.frame = self.rng.randint(0, self.random_offset - 1)
     else:
@@ -820,13 +835,17 @@ class TrajectoryManager:
     self.rating_chunk = np.full([self.unroll_length], self.info.main_player.rating, np.float32)
     self.needs_game = False
 
+  def _game_over(self) -> bool:
+    if self.pad_final_chunk:
+      # Keep going while the chunk has frames beyond the overlap.
+      return self.frame + self.overlap >= self.game_len
+    return self.frame + self.unroll_length > self.game_len
+
   def grab_chunk(self) -> tuple[list[np.ndarray], ChunkMeta]:
     """Grabs a chunk from a trajectory."""
     # TODO: write a unit test for this
 
-    needs_reset = (
-        self.needs_game or
-        self.frame + self.unroll_length > self.game_len)
+    needs_reset = self.needs_game or self._game_over()
 
     if needs_reset:
       self.find_game()
@@ -838,6 +857,18 @@ class TrajectoryManager:
 
     # Rewards could be deferred to the learner.
     rewards = self.reward[start:end - 1]
+
+    # Pad the final chunk of a game by repeating its last frame.
+    num_valid = min(end, self.game_len) - start
+    num_pad = self.unroll_length - num_valid
+    if num_pad > 0:
+      flat_game = [
+          np.concatenate([x, np.repeat(x[-1:], num_pad, axis=0)])
+          for x in flat_game]
+      rewards = np.concatenate(
+          [rewards, np.zeros([num_pad], dtype=rewards.dtype)])
+    is_valid = np.arange(self.unroll_length) < num_valid
+
     is_resetting = np.full([self.unroll_length], False)
     is_resetting[0] = needs_reset
 
@@ -847,6 +878,7 @@ class TrajectoryManager:
         self.rating_chunk,
         is_resetting,
         rewards,
+        is_valid,
     ])
 
     meta = ChunkMeta(start=start, end=end, meta=self.info.meta)
@@ -949,6 +981,7 @@ class WebDataSource(AbstractDataSource):
       extra_frames: int = 1,
       random_offset: int = 0,
       stagger: bool = True,
+      pad_final_chunk: bool = False,
       reward_kwargs: dict = {},
       name_map: Optional[dict[str, int]] = None,
       observation_config: Optional[observations.ObservationConfig] = None,
@@ -1056,6 +1089,7 @@ class WebDataSource(AbstractDataSource):
             overlap=extra_frames,
             random_offset=random_offset,
             stagger=stagger,
+            pad_final_chunk=pad_final_chunk,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
@@ -1174,6 +1208,7 @@ class DataSource(AbstractDataSource):
       extra_frames: int = 1,
       random_offset: int = 0,
       stagger: bool = True,
+      pad_final_chunk: bool = False,
       reward_kwargs: dict = {},
       balance_characters: bool = False,
       group_characters: bool = False,
@@ -1226,6 +1261,7 @@ class DataSource(AbstractDataSource):
             overlap=extra_frames,
             random_offset=random_offset,
             stagger=stagger,
+            pad_final_chunk=pad_final_chunk,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=self.encode_name,
@@ -1286,6 +1322,7 @@ def _shared_memory_data_worker(
     extra_frames: int,
     random_offset: int,
     stagger: bool,
+    pad_final_chunk: bool,
     reward_kwargs: dict,
     seed: Optional[int],
     balance_characters: bool,
@@ -1344,6 +1381,7 @@ def _shared_memory_data_worker(
             overlap=extra_frames,
             random_offset=random_offset,
             stagger=stagger,
+            pad_final_chunk=pad_final_chunk,
             observation_filter=build_observation_filter(),
             reward_kwargs=reward_kwargs,
             encode_name=encode_name,
@@ -1414,6 +1452,7 @@ class SharedMemoryDataSource(AbstractDataSource):
       extra_frames: int = 1,
       random_offset: int = 0,
       stagger: bool = True,
+      pad_final_chunk: bool = False,
       reward_kwargs: dict = {},
       balance_characters: bool = False,
       group_characters: bool = False,
@@ -1515,6 +1554,7 @@ class SharedMemoryDataSource(AbstractDataSource):
               extra_frames=extra_frames,
               random_offset=random_offset,
               stagger=stagger,
+              pad_final_chunk=pad_final_chunk,
               reward_kwargs=reward_kwargs,
               seed=seed,
               balance_characters=balance_characters,
@@ -1655,6 +1695,7 @@ class TimeBatchedDataSource(AbstractDataSource):
             rating=slice(batch.rating),
             is_resetting=slice(batch.is_resetting),
             reward=batch.reward[:, start:end - 1],
+            is_valid=slice(batch.is_valid),
         ),
         meta=ChunkMeta(
             start=batch_with_meta.meta.start + start,
@@ -1702,6 +1743,9 @@ class DataConfig:
   random_offset: int = 0  # improve data diversity for frameskip
   # Start each row at a random point in its first game.
   stagger: bool = True
+  # Pad the final chunk of each game (masking the padding) instead of
+  # dropping it. Matters for long unrolls.
+  pad_final_chunk: bool = False
   # Assemble batches in worker processes via shared memory (non-wds only).
   shared_memory: bool = True
 

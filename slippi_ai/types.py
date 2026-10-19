@@ -273,3 +273,5 @@ class Frames(NamedTuple, Generic[S, Action]):
   is_resetting: BoolArray[S]
   # The reward will have length one less than the states and actions.
   reward: FloatArray[S]
+  # Which frames are real rather than end-of-game padding; None if all are.
+  is_valid: tp.Optional[BoolArray[S]] = None

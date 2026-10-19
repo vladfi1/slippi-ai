@@ -53,6 +53,14 @@ class DelayedFramesTest(unittest.TestCase):
     # Rewards follow the delayed actions.
     np.testing.assert_array_equal(delayed.reward, t[:-1] + skip_delay)
 
+  def test_is_valid_follows_actions(self):
+    unroll_length, skip_delay, batch_size = 5, 2, 3
+    num_states = unroll_length + skip_delay + 1
+    frames = _make_frames(num_states, batch_size, frame_skip=1, with_rating=True)
+    is_valid = np.arange(num_states)[:, np.newaxis] < np.array([8, 6, 3])
+    delayed = data.delayed_frames(frames._replace(is_valid=is_valid), skip_delay)
+    np.testing.assert_array_equal(delayed.is_valid, is_valid[skip_delay:])
+
   def test_keep_prefix_rewards(self):
     unroll_length, skip_delay, batch_size = 5, 2, 3
     frames = _make_frames(

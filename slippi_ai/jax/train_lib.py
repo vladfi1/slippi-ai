@@ -358,6 +358,8 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
       # of a game so that the fresh hidden state is correct.
       stagger=False,
       burnin=0,
+      # Keep evals comparable across unroll lengths.
+      pad_final_chunk=False,
   )
   if runtime.eval_batch_size is not None:
     test_data_config.batch_size = runtime.eval_batch_size

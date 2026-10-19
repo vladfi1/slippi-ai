@@ -47,6 +47,64 @@ def _make_toy_wds(output_dir: str):
     data.write_wds_shards(toy_config, output_dir)
 
 
+class TrajectoryManagerPadTest(unittest.TestCase):
+
+    def test_pad_final_chunk(self):
+        """Padded chunks cover every frame of a game exactly once."""
+        dataset_config = data.DatasetConfig(
+            data_dir=str(paths.TOY_DATA_DIR),
+            meta_path=str(paths.TOY_META_PATH),
+        )
+        replays = data.replays_from_meta(dataset_config)
+        unroll_length, overlap = 1000, 3
+        manager = data.TrajectoryManager(
+            iter(replays),
+            unroll_length=unroll_length,
+            encode_name=lambda _: 0,
+            overlap=overlap,
+            stagger=False,
+            pad_final_chunk=True,
+        )
+
+        chunks = []
+        while True:
+            flat_batch, meta = manager.grab_chunk()
+            chunks.append((flat_batch, meta))
+            if len(chunks) > 1 and flat_batch[-3][0]:  # is_resetting
+                chunks.pop()
+                break
+
+        game_length = data.game_len(replays[0].read_game())
+        flat_game = data.utils.cached_flatten(data.Game)(
+            replays[0].read_game())
+        stage = flat_game[0]  # any per-frame leaf
+        self.assertGreater(game_length % (unroll_length - overlap), 0)
+
+        covered = []
+        for flat_batch, meta in chunks:
+            is_valid = flat_batch[-1]
+            rewards = flat_batch[-2]
+            num_valid = is_valid.sum()
+            # Validity is a prefix.
+            np.testing.assert_array_equal(
+                is_valid, np.arange(unroll_length) < num_valid)
+            self.assertGreater(num_valid, overlap)
+            chunk_stage = flat_batch[0]
+            np.testing.assert_array_equal(
+                chunk_stage[:num_valid],
+                stage[meta.start:meta.start + num_valid])
+            # Padding repeats the last frame and has zero reward.
+            np.testing.assert_array_equal(
+                chunk_stage[num_valid:], chunk_stage[num_valid - 1])
+            np.testing.assert_array_equal(rewards[num_valid:], 0)
+            self.assertEqual(rewards.shape, (unroll_length - 1,))
+            start = meta.start if not covered else meta.start + overlap
+            covered.extend(range(start, meta.start + num_valid))
+
+        np.testing.assert_array_equal(covered, np.arange(game_length))
+        self.assertLess(chunks[-1][0][-1].sum(), unroll_length)
+
+
 class DataSourceWdsTest(unittest.TestCase):
 
     def test_data_source_wds(self):

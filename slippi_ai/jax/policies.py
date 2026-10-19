@@ -172,6 +172,13 @@ class Policy(nnx.Module, policies.Policy[ControllerType, RecurrentState]):
     # Take time-mean
     # metrics = jax.tree.map(lambda t: jnp.mean(t, axis=0), metrics)
 
+    if frames.is_valid is not None:
+      # Each step predicts the following action; drop padded ones. Rescaling
+      # makes the mean over [T, B] equal the mean over valid steps.
+      mask = frames.is_valid[1:].astype(jnp.float32)
+      scale = mask / jnp.maximum(jnp.mean(mask), 1e-6)
+      metrics = jax.tree.map(lambda m: m * scale.astype(m.dtype), metrics)
+
     loss = metrics['loss']
 
     # All metrics and loss should have shape [T, B]

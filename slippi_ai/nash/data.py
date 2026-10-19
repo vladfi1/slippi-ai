@@ -47,6 +47,7 @@ class DoubleBatch(tp.NamedTuple):
         rating=_p1_rating(batch_with_meta),
         is_resetting=batch.is_resetting,
         reward=-batch.reward,  # assume 0-sum
+        is_valid=batch.is_valid,
     )
 
     return cls(
@@ -101,6 +102,7 @@ def convert_batch(
       rating=_p1_rating(batch_with_meta),
       is_resetting=batch.is_resetting,
       reward=-batch.reward,  # assume 0-sum
+      is_valid=batch.is_valid,
   )
 
   p0_frames = batch.to_frames(frame_skip, discount=discount)
