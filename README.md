@@ -53,7 +53,7 @@ My [youtube channel](https://www.youtube.com/channel/UCzpDWSOtWpDaNPC91dqmPQg) a
 * [altf4](https://github.com/altf4) for creating the [libmelee](https://github.com/altf4/libmelee) interface to slippi dolphin, making melee AI development accessible to everyone.
 * Enzyme for creating a decomp-based simulator that runs melee even faster than dolphin. He is also the creator of "Doubles Phillip" which you can check out on [discord](https://discord.gg/k7ZuNmh7ed).
 * The many players who have generously shared their replays.
-* My dad for proving the computing hardware used to train phillip.
+* My dad for providing the computing hardware used to train phillip.
 
 # Code Overview
 
