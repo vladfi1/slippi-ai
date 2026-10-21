@@ -17,10 +17,10 @@ NET_NAME = networks.TransformerLike.name()
 def default_config():
   config = train_vf.Config(max_names=32)
 
-  config.data.batch_size = 512
+  config.data.batch_size = 1024
   config.data.unroll_length = 84
   config.test_unroll_multiplier = 16
-  config.data.num_workers = 2
+  config.data.num_workers = 4
   config.data.unroll_chunks = 4
   config.data.balance_characters = True
   config.learner.learning_rate = 1e-4
@@ -58,6 +58,9 @@ if __name__ == '__main__':
   CONFIG = ff.DEFINE_dict(
       'config', **flag_utils.get_flags_from_default(default_config()))
 
+  NO_REWARD_HACKS = flags.DEFINE_boolean(
+      'no_reward_hacks', False, 'Disable reward hacks for training')
+
   EMBED = ff.DEFINE_dict(
       'embed',
       name=ff.String('enhanced'),
@@ -89,12 +92,18 @@ if __name__ == '__main__':
     config = flag_utils.dataclass_from_dict(train_vf.Config, CONFIG.value)
     config.runtime.max_runtime = int(NUM_DAYS.value * 24 * 60 * 60)
 
-    assert config.compatible_policy is not None
-    imitation_state = saving.load_state_from_disk(config.compatible_policy)
-    imitation_config = flag_utils.dataclass_from_dict(
-        train_lib.Config, imitation_state['config'])
+    if NO_REWARD_HACKS.value:
+      config.reward.approaching_factor = 0
+      config.reward.ledge_grab_penalty = 0
+      config.reward.stalling_penalty = 0
 
-    char = imitation_config.dataset.allowed_characters
+    if config.compatible_policy is not None:
+      imitation_state = saving.load_state_from_disk(config.compatible_policy)
+      imitation_config = flag_utils.dataclass_from_dict(
+          train_lib.Config, imitation_state['config'])
+      config.make_compatible_with(imitation_config)
+
+    char = config.dataset.allowed_characters
 
     net = config.network['name']
     net_config = config.network[net]
@@ -130,7 +139,7 @@ if __name__ == '__main__':
 
       parts.extend([f'tx{n}x{h}', embed])
 
-      rfs = imitation_config.policy.frame_skip
+      rfs = config.frame_skip
       if rfs > 1:
         parts.append(f'rfs{rfs}')
 
@@ -141,13 +150,10 @@ if __name__ == '__main__':
       if gae != 0:
         parts.append(f"gae{gae:.1f}")
 
-      if imitation_config.max_names == 0:
+      if config.max_names == 0:
         parts.append("noname")
 
       config.tag = '_'.join(parts)
-
-        if imitation_config.max_names == 0:
-          config.tag += "_noname"
 
     wandb_kwargs = dict(WANDB.value)
     if wandb_kwargs['name'] is None:
