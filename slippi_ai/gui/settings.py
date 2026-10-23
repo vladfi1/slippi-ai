@@ -86,6 +86,25 @@ def save(settings: Settings):
     json.dump(dataclasses.asdict(settings), f, indent=2)
 
 
+# Windows builds of the Slippi beta (mainline) Dolphin lack the pipe controller
+# input that phillip plays through: its CMakeLists.txt only defines USE_PIPES
+# on Unix, and unlike Ishiiruka it builds with CMake on Windows. So there we
+# use the stable (Ishiiruka) Dolphin, whatever the Slippi Launcher is set to.
+BETA_LACKS_PIPES = sys.platform == 'win32'
+
+
+def prefer_stable_dolphin(path: str) -> str:
+  """Swaps Slippi Launcher's beta Dolphin folder for the stable one if needed."""
+  if not (BETA_LACKS_PIPES and path
+          and os.path.basename(os.path.normpath(path)) == 'netplay-beta'):
+    return path
+  stable = os.path.join(os.path.dirname(os.path.normpath(path)), 'netplay')
+  if not os.path.isdir(stable):
+    return path
+  logging.info(f'Using the stable Slippi Dolphin at {stable} instead of {path}')
+  return stable
+
+
 def detect_slippi() -> tuple[str, str]:
   """Returns Slippi Launcher's Dolphin folder and ISO path, or empty strings."""
   try:
@@ -93,7 +112,7 @@ def detect_slippi() -> tuple[str, str]:
   except Exception as e:  # Slippi Launcher isn't installed, or has moved.
     logging.info(f'Could not find Slippi Launcher: {e}')
     return '', ''
-  return info.install_dir, info.iso_path or ''
+  return prefer_stable_dolphin(info.install_dir), info.iso_path or ''
 
 
 def check_dolphin(path: str) -> tp.Optional[str]:
@@ -103,9 +122,12 @@ def check_dolphin(path: str) -> tp.Optional[str]:
   if not os.path.isdir(path):
     return 'Folder not found.'
   try:
-    dolphin_lib.get_dolphin_version(path)
+    version = dolphin_lib.get_dolphin_version(path)
   except Exception as e:
     return f'Not a Slippi Dolphin folder: {e}'
+  if BETA_LACKS_PIPES and version.mainline:
+    return ("The Slippi beta Dolphin can't take phillip's inputs on Windows. "
+            "Choose the stable one (Slippi Launcher's netplay folder).")
   return None
 
 
