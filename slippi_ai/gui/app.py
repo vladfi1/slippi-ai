@@ -209,13 +209,25 @@ class MainWindow(QtWidgets.QMainWindow):
     self._update_cancel: tp.Optional[threading.Event] = None
     self._stop_requested_at: tp.Optional[QtCore.QElapsedTimer] = None
 
-    central = QtWidgets.QWidget()
-    self.setCentralWidget(central)
-    layout = QtWidgets.QVBoxLayout(central)
+    # The settings scroll and a splitter separates them from the log, so on
+    # short screens the log stays visible and the form layouts aren't squeezed
+    # (which overlaps their rows).
+    settings_widget = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(settings_widget)
     layout.addWidget(self._update_bar())
     layout.addWidget(self._melee_group())
     layout.addWidget(self._phillip_group())
     layout.addWidget(self._opponent_group())
+    layout.addStretch()
+    settings_scroll = QtWidgets.QScrollArea()
+    settings_scroll.setWidget(settings_widget)
+    settings_scroll.setWidgetResizable(True)
+    settings_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    settings_scroll.setHorizontalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    session_widget = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(session_widget)
 
     buttons = QtWidgets.QHBoxLayout()
     self.start_button = QtWidgets.QPushButton('Start')
@@ -231,7 +243,16 @@ class MainWindow(QtWidgets.QMainWindow):
     self.log.setMaximumBlockCount(5000)
     self.log.setFont(QtGui.QFontDatabase.systemFont(
         QtGui.QFontDatabase.SystemFont.FixedFont))
+    self.log.setMinimumHeight(120)
     layout.addWidget(self.log, 1)
+
+    splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+    splitter.addWidget(settings_scroll)
+    splitter.addWidget(session_widget)
+    splitter.setChildrenCollapsible(False)
+    splitter.setStretchFactor(0, 0)
+    splitter.setStretchFactor(1, 1)
+    self.setCentralWidget(splitter)
 
     self._poll_timer = QtCore.QTimer(self)
     self._poll_timer.setInterval(100)
@@ -243,12 +264,17 @@ class MainWindow(QtWidgets.QMainWindow):
     self._find_providers()
     self._check_for_updates()
     self._update_controls()
-    # Tall enough for every control, which are larger on macOS: when squeezed,
-    # the form layouts overlap rows.
-    height = max(800, self.sizeHint().height())
+    # Tall enough for every control (which are larger on macOS) and some log;
+    # on shorter screens the settings scroll.
+    settings_height = settings_widget.sizeHint().height()
+    session_height = max(250, session_widget.sizeHint().height())
+    height = max(800, settings_height + session_height)
     if self.screen() is not None:
       height = min(height, self.screen().availableGeometry().height())
     self.resize(720, height)
+    log_height = max(session_widget.minimumSizeHint().height(),
+                     height - settings_height)
+    splitter.setSizes([height - log_height, log_height])
 
   # Layout
 
