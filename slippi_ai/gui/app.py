@@ -413,6 +413,8 @@ class MainWindow(QtWidgets.QMainWindow):
       dolphin_path, iso_path = settings_lib.detect_slippi()
       s.dolphin_path = s.dolphin_path or dolphin_path
       s.iso_path = s.iso_path or iso_path
+    # Also replaces a beta Dolphin saved by earlier versions.
+    s.dolphin_path = settings_lib.prefer_stable_dolphin(s.dolphin_path)
 
     (self.human_radio if s.opponent == 'human' else self.cpu_radio).setChecked(True)
     self.port_combo.setCurrentIndex(max(0, self.port_combo.findData(s.human_port)))
