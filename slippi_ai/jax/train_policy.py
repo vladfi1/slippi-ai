@@ -122,6 +122,8 @@ class TrainManager:
     """Restarts with a fresh data source and hidden state."""
     self.stop()
     self.data_source = self.make_data_source()
+    # The new source's epoch count starts over.
+    self.last_epoch = self.epoch_offset
     self._start_batch_iterator()
     self.reset_hidden_state()
 
