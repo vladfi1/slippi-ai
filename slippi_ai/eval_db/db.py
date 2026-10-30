@@ -147,6 +147,13 @@ def connect(path: str) -> sqlite3.Connection:
   return conn
 
 
+def connect_readonly(path: str) -> sqlite3.Connection:
+  """Opens an existing database without creating or migrating it."""
+  conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+  conn.row_factory = sqlite3.Row
+  return conn
+
+
 def now() -> str:
   return datetime.datetime.now(datetime.timezone.utc).isoformat(
       timespec='seconds')
@@ -201,3 +208,18 @@ def display_name(conn: sqlite3.Connection, agent_hash: str) -> str:
         (agent_hash,)).fetchone()
     return row['stripped_path'] if row else agent_hash[:8]
   return '/'.join(names)
+
+
+def latest_ratings_by_name(
+    conn: sqlite3.Connection,
+) -> dict[tuple[str, str], float]:
+  """Latest rating run's ratings keyed by (active deployed name, character).
+
+  Lives here rather than in ratings.py so that readers like the twitchbot
+  don't need that module's dependencies.
+  """
+  rows = conn.execute(
+      """SELECT d.name, r.character, r.rating FROM ratings r
+         JOIN deployed_names d ON d.hash = r.hash AND d.active = 1
+         WHERE r.run_id = (SELECT MAX(id) FROM rating_runs)""").fetchall()
+  return {(row['name'], row['character']): row['rating'] for row in rows}

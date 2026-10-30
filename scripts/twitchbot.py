@@ -9,6 +9,7 @@ import logging
 import os
 import pickle
 import random
+import sqlite3
 import time
 import threading
 import typing as tp
@@ -28,6 +29,7 @@ import melee
 from slippi_ai import saving
 from slippi_ai import flag_utils, eval_lib, utils
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai.eval_db import db as eval_db_lib
 
 NAME_TO_STAGE = {
     'fd': melee.Stage.FINAL_DESTINATION,
@@ -92,6 +94,11 @@ STATE_DIR = flags.DEFINE_string(
     'state_dir', '.twitchbot',
     'Directory for state that persists across restarts: the model config'
     ' cache and user preferences. Empty string disables persistence.')
+
+EVAL_DB = flags.DEFINE_string(
+    'eval_db', 'untracked/eval_db.sqlite',
+    'Eval database (see scripts/eval_db.py) whose ratings pick the auto-*'
+    ' agents. Falls back to the training matchups if missing or empty.')
 
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
@@ -394,16 +401,20 @@ class AutoAgent(AgentConfig):
       self,
       character: melee.Character,
       models_path: str,
-      agent_summaries: dict[str, eval_lib.AgentSummary],
-      delay: int = 18,
+      opponent_table: dict[melee.Character, str],
+      delay: int,
       agent_kwargs: dict = {},
   ):
+    """
+    Args:
+      opponent_table: Maps opponent character to model name.
+      delay: The smallest delay of the models in opponent_table, which bounds
+        the console delay since that is fixed before the opponent is known.
+    """
     self._character = character
     self._delay = delay
     self.models_path = models_path
-    # Cached model summaries keyed by model name, so that building the agent
-    # doesn't need to re-read every checkpoint from disk.
-    self.agent_summaries = agent_summaries
+    self.opponent_table = opponent_table
     self.agent_kwargs = agent_kwargs
 
   @property
@@ -430,10 +441,8 @@ class AutoAgent(AgentConfig):
       console_delay: int,
   ) -> eval_lib.EnsembleAgent:
     return eval_lib.EnsembleAgent(
-        character=self.character,
-        delay=self.delay,
         models_path=self.models_path,
-        agent_summaries=self.agent_summaries,
+        opponent_table=self.opponent_table,
         port=port,
         opponent_port=opponent_port,
         controller=controller,
@@ -866,6 +875,7 @@ class Bot(commands.Bot):
       bot: Optional[str] = None,
       bot2: Optional[str] = None,
       auto_delay: int = 18,
+      eval_db_path: Optional[str] = None,
       default_agent: Optional[str] = None,
       costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
@@ -874,6 +884,9 @@ class Bot(commands.Bot):
   ):
     """
     Args:
+      auto_delay: Delay of the basic-* agents, and of the auto-* agents when
+        there are no eval ratings.
+      eval_db_path: Eval database whose ratings pick the auto-* agents.
       state_dir: Directory for state that persists across restarts (model
         config cache, user preferences). None disables persistence.
     """
@@ -923,6 +936,7 @@ class Bot(commands.Bot):
         bots_lock_minutes=bots_lock_minutes)
 
     self._models_path = models_path
+    self._eval_db_path = eval_db_path
     self._default_agent = default_agent
     # Cache of loaded model states, keyed by model name. Each entry holds the
     # file mtime it was loaded at, the (trimmed) state, and its summary.
@@ -983,15 +997,36 @@ class Bot(commands.Bot):
   def _auto_agent(
       self,
       char: melee.Character,
+      opponent_table: dict[melee.Character, str],
       agent_summaries: dict[str, eval_lib.AgentSummary],
   ) -> AutoAgent:
+    delay = min(agent_summaries[model].delay
+                for model in set(opponent_table.values()))
     return AutoAgent(
         character=char,
         models_path=self._models_path,
-        agent_summaries=agent_summaries,
-        delay=self._auto_delay,
+        opponent_table=opponent_table,
+        delay=delay,
         agent_kwargs=self.agent_kwargs,
     )
+
+  def _load_ratings(self) -> dict[tuple[str, melee.Character], float]:
+    """Latest eval ratings keyed by (model, character); empty if unavailable."""
+    if not self._eval_db_path or not os.path.exists(self._eval_db_path):
+      return {}
+    try:
+      conn = eval_db_lib.connect_readonly(self._eval_db_path)
+      try:
+        by_name = eval_db_lib.latest_ratings_by_name(conn)
+      finally:
+        conn.close()
+    except sqlite3.Error:
+      logging.exception(f'Could not read ratings from {self._eval_db_path}')
+      return {}
+    return {
+        (name, melee.Character[char]): rating
+        for (name, char), rating in by_name.items()
+    }
 
   @commands.command()
   async def help(self, ctx: commands.Context):
@@ -1137,11 +1172,18 @@ class Bot(commands.Bot):
 
     # auto agents
     self._auto_agents: dict[melee.Character, AutoAgent] = {}
-    matchup_table = eval_lib.build_matchup_table_from_summaries(
-        summaries, delay=self._auto_delay)
+    matchup_table = eval_lib.build_matchup_table_from_ratings(
+        summaries, self._load_ratings())
+    if matchup_table:
+      logging.info('Picked auto agents using eval ratings.')
+    else:
+      logging.warning(
+          'No eval ratings; picking auto agents by training matchups.')
+      matchup_table = eval_lib.build_matchup_table_from_summaries(
+          summaries, delay=self._auto_delay)
     auto_names = []
     for character, opponent_table in matchup_table.items():
-      agent_config = self._auto_agent(character, summaries)
+      agent_config = self._auto_agent(character, opponent_table, summaries)
       self._auto_agents[character] = agent_config
       add_agent(agent_config, char=character, opponents=opponent_table.keys())
       auto_names.append(character.name.lower())
@@ -1874,6 +1916,7 @@ def main(_):
       prefix='!',
       channel=CHANNEL.value,
       models_path=MODELS_PATH.value,
+      eval_db_path=EVAL_DB.value,
       max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),

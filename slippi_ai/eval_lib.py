@@ -875,36 +875,61 @@ def build_matchup_table(
   return build_matchup_table_from_summaries(
       load_agent_summaries(models_path), delay)
 
+def build_matchup_table_from_ratings(
+    agent_summaries: dict[str, AgentSummary],
+    ratings: tp.Mapping[tuple[str, melee.Character], float],
+) -> dict[melee.Character, dict[melee.Character, str]]:
+  """Picks the highest rated model for each matchup, regardless of delay.
+
+  For each character, the model is the highest rated one trained against the
+  opponent, or the highest rated one overall if none were.
+
+  Args:
+    agent_summaries: Summaries keyed by model name.
+    ratings: Ratings keyed by (model name, character played). Models missing
+      from agent_summaries are ignored.
+  """
+  # Rated models for each character, best first.
+  ranked: dict[melee.Character, list[tuple[float, str]]] = {}
+  for (model, char), rating in ratings.items():
+    summary = agent_summaries.get(model)
+    if summary is None or char not in summary.characters:
+      continue
+    ranked.setdefault(char, []).append((rating, model))
+
+  table: dict[melee.Character, dict[melee.Character, str]] = {}
+  for char, candidates in ranked.items():
+    candidates.sort(reverse=True)
+    best_overall = candidates[0][1]
+    opponent_table = table[char] = {}
+    for opponent in melee.Character:
+      opponent_table[opponent] = next(
+          (model for _, model in candidates
+           if opponent in agent_summaries[model].opponents),
+          best_overall)
+
+  return table
+
 class EnsembleAgent:
 
   def __init__(
       self,
-      character: melee.Character,
       models_path: str,
       opponent_port: int,
-      delay: int,
-      agent_summaries: tp.Optional[dict[str, AgentSummary]] = None,
+      opponent_table: dict[melee.Character, str],
       **agent_kwargs,
   ):
     """An agent that picks a model based on the opponent's character.
 
     Args:
-      character: The character this agent plays.
       models_path: Directory containing the model checkpoints.
       opponent_port: The opponent's port.
-      delay: Only models with this delay are considered.
-      agent_summaries: Optional precomputed summaries keyed by model name
-        (relative to models_path). If None, they are loaded from models_path.
+      opponent_table: Maps opponent character to model name (relative to
+        models_path), e.g. a row of `build_matchup_table_from_ratings`.
       agent_kwargs: Passed through to `build_agent`.
     """
     self._models_path = models_path
-
-    if agent_summaries is None:
-      agent_summaries = load_agent_summaries(models_path)
-
-    # Maps opponent character to model name.
-    self.opponent_table: dict[melee.Character, str] = (
-        build_matchup_table_from_summaries(agent_summaries, delay)[character])
+    self.opponent_table = opponent_table
 
     self.opponent_port = opponent_port
     self._agent_kwargs = agent_kwargs.copy()
