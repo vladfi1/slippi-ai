@@ -13,6 +13,7 @@ from unittest import mock
 import melee
 
 from slippi_ai import eval_lib, models, onnx_policies
+from slippi_ai.gui import models as gui_models
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -147,6 +148,16 @@ class ModelsTest(unittest.TestCase):
         characters=[melee.Character.FOX],
         opponents=[melee.Character.FALCO, melee.Character.FOX],
     ))
+
+  def test_ratings(self):
+    info = models.ModelInfo.from_json(self.entry())
+    self.assertEqual(info.ratings, {})
+    info = models.ModelInfo.from_json(
+        self.entry(ratings={'FOX': 2400}, rating_games={'FOX': 1000}))
+    self.assertEqual(models.ModelInfo.from_json(info.to_json()), info)
+    model = gui_models.published(models.Index(models=[info]), [])[0]
+    self.assertEqual(model.rating(melee.Character.FOX), (2400, 1000))
+    self.assertEqual(model.rating(melee.Character.FALCO), (None, None))
 
   def test_compatible(self):
     self.assertTrue(models.ModelInfo.from_json(self.entry()).compatible())

@@ -39,6 +39,15 @@ class Model:
   def plays_against(self, character: melee.Character) -> bool:
     return character in self.summary.opponents
 
+  def rating(
+      self, character: melee.Character,
+  ) -> tuple[tp.Optional[float], tp.Optional[int]]:
+    """The published rating playing character, and how many games it's from."""
+    if self.info is None:
+      return None, None
+    return (self.info.ratings.get(character.name),
+            self.info.rating_games.get(character.name))
+
 
 def local_key(path: str) -> str:
   return os.path.normcase(os.path.normpath(path))

@@ -8,6 +8,11 @@ so publishing needs no commit here; the Hub keeps the history.
     --description="Plays and faces all characters."
   python scripts/publish_models.py add a.onnx b.onnx
 
+  # Also attach the latest ratings from scripts/eval_db.py's database; with
+  # sync, this refreshes the ratings of models that haven't changed, too.
+  python scripts/publish_models.py sync onnx_models \
+    --eval_db=untracked/eval_db.sqlite
+
   # Make the index match a folder: publish its new and changed models, and
   # remove published models that aren't in it.
   python scripts/publish_models.py sync onnx_models
@@ -23,6 +28,9 @@ of the model are kept, for older installs. Removing a model only removes it
 from the index; its files stay on the Hub, so existing downloads and pinned
 URLs keep working.
 
+Without --eval_db, a model keeps its ratings while its file is unchanged, and
+a new version of it has none.
+
 Requires the publish extra (pip install .[publish]) and `hf auth login` with
 a write token.
 """
@@ -30,6 +38,8 @@ a write token.
 import datetime
 import json
 import os
+import sqlite3
+import typing as tp
 
 from absl import app, flags
 
@@ -40,6 +50,16 @@ NAME = flags.DEFINE_string(
     'name', None, 'Name for the model being added; defaults to the file name.')
 DESCRIPTION = flags.DEFINE_string(
     'description', None, 'Description for add or describe.')
+EVAL_DB = flags.DEFINE_string(
+    'eval_db', None,
+    'Database of scripts/eval_db.py to take the ratings of added models from.')
+DEPLOYED_DIR = flags.DEFINE_string(
+    'deployed_dir', 'deployed_models',
+    'Where the models were exported from, to check that --eval_db rated the '
+    'same versions.')
+RATING_OFFSET = flags.DEFINE_integer(
+    'rating_offset', 2000,
+    'Added to the ratings, which have mean zero, to keep them positive.')
 DRY_RUN = flags.DEFINE_boolean(
     'dry_run', False, 'Only print the new index and what would be uploaded.')
 
@@ -67,13 +87,77 @@ def model_name(path: str) -> str:
   return os.path.splitext(os.path.basename(path))[0]
 
 
+class Ratings(tp.NamedTuple):
+  ratings: dict[str, float]  # by character name
+  games: dict[str, int]
+
+
+def load_ratings(
+    db_path: str,
+    named_paths: list[tuple[str, str]],
+    deployed_dir: str,
+    offset: float,
+) -> dict[str, Ratings]:
+  """The latest ratings in an eval_db database of the given .onnx models.
+
+  A model is only rated if the database's agent for its name is the file in
+  deployed_dir, judging by size and mtime as eval_db's sync does, and the
+  .onnx file was exported after it. Copies made with rsync -a, as by
+  run_scripts/pull_all_models.sh, keep the mtimes, so this works on a machine
+  other than the one with the database's models.
+  """
+  conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+  try:
+    run_id = conn.execute('SELECT MAX(id) FROM rating_runs').fetchone()[0]
+    rows = conn.execute(
+        """SELECT d.name, a.mtime, a.size, r.character, r.rating, r.num_games
+           FROM deployed_names d
+           JOIN agents a ON a.hash = d.hash
+           JOIN ratings r ON r.hash = d.hash AND r.run_id = ?
+           WHERE d.active = 1""", (run_id,)).fetchall()
+  finally:
+    conn.close()
+
+  rated: dict[str, tuple[float, int, Ratings]] = {}
+  for name, mtime, size, character, rating, games in rows:
+    entry = rated.setdefault(name, (mtime, size, Ratings({}, {})))
+    entry[2].ratings[character] = round(rating + offset)
+    entry[2].games[character] = games
+
+  result = {}
+  for name, path in named_paths:
+    if name not in rated:
+      print(f'No ratings for {name}.')
+      continue
+    mtime, size, ratings = rated[name]
+    source = os.path.join(deployed_dir, name)
+    if not os.path.exists(source):
+      print(f'Not rating {name}: {source} not found.')
+      continue
+    stat = os.stat(source)
+    if (stat.st_mtime, stat.st_size) != (mtime, size):
+      print(f'Not rating {name}: rated another version of {source}; '
+            'run eval_db.py sync and rate, or pull the models and database '
+            'again (run_scripts/pull_all_models.sh).')
+      continue
+    if os.path.getmtime(path) < stat.st_mtime:
+      print(f'Not rating {name}: {path} is older than {source}.')
+      continue
+    result[name] = ratings
+  return result
+
+
 def add(
     index: models.Index,
     named_paths: list[tuple[str, str]],
     repo: str,
     skip_incompatible: bool = False,
+    ratings: tp.Optional[dict[str, Ratings]] = None,
 ) -> dict[str, str]:
-  """Adds models to the index; returns the files to upload (repo name -> path)."""
+  """Adds models to the index; returns the files to upload (repo name -> path).
+
+  With ratings, from load_ratings, they replace the models' ratings.
+  """
   uploads = {}
   for name, path in named_paths:
     filename = f'{name}.onnx'
@@ -91,11 +175,19 @@ def add(
     same_format = [m for m in old if m.format_version == info.format_version]
     info.description = DESCRIPTION.value or next(
         (m.description for m in same_format or old), '')
-    if same_format and same_format[0].sha256 == info.sha256:
+    unchanged = bool(same_format) and same_format[0].sha256 == info.sha256
+    if unchanged:
       print(f'{name} is already published.')
       info.url, info.published = same_format[0].url, same_format[0].published
     else:
       uploads[filename] = path
+
+    if ratings is not None:
+      if name in ratings:
+        info.ratings, info.rating_games = ratings[name]
+    elif unchanged:
+      info.ratings = same_format[0].ratings
+      info.rating_games = same_format[0].rating_games
 
     # Replace the entry for this format version, in place for a new version.
     position = index.models.index(same_format[0]) if same_format else len(index.models)
@@ -118,8 +210,20 @@ def print_index(index: models.Index):
     print(f'{m.name}: {characters}, delay {m.delay}, '
           f'{m.size / 2**20:.0f} MiB, format {m.format_version}, '
           f'published {m.published}')
+    if m.ratings:
+      ratings = ', '.join(f'{c} {r:.0f}' for c, r in m.ratings.items())
+      print(f'  Ratings: {ratings}')
     if m.description:
       print(f'  {m.description}')
+
+
+def maybe_load_ratings(
+    named_paths: list[tuple[str, str]],
+) -> tp.Optional[dict[str, Ratings]]:
+  if EVAL_DB.value is None:
+    return None
+  return load_ratings(
+      EVAL_DB.value, named_paths, DEPLOYED_DIR.value, RATING_OFFSET.value)
 
 
 def main(argv):
@@ -142,7 +246,8 @@ def main(argv):
       raise app.UsageError('add needs .onnx files.')
     if NAME.value is not None and len(args) != 1:
       raise app.UsageError('--name needs exactly one model.')
-    uploads = add(index, [(NAME.value or model_name(path), path) for path in args], repo)
+    named_paths = [(NAME.value or model_name(path), path) for path in args]
+    uploads = add(index, named_paths, repo, ratings=maybe_load_ratings(named_paths))
     message = f'Add {", ".join(f.removesuffix(".onnx") for f in uploads)}'
   elif command == 'sync':
     if len(args) != 1 or NAME.value is not None or DESCRIPTION.value is not None:
@@ -151,7 +256,8 @@ def main(argv):
     named_paths = [
         (model_name(f), os.path.join(folder, f))
         for f in sorted(os.listdir(folder)) if f.endswith('.onnx')]
-    uploads = add(index, named_paths, repo, skip_incompatible=True)
+    uploads = add(index, named_paths, repo, skip_incompatible=True,
+                  ratings=maybe_load_ratings(named_paths))
     removed = sorted({m.name for m in index.models} - {n for n, _ in named_paths})
     index.models = [m for m in index.models if m.name not in removed]
     for name in removed:

@@ -18,7 +18,9 @@ models show up without a new release:
         "characters": ["FOX"],             # melee.Character names
         "opponents": ["FALCO", "FOX"],
         "delay": 21,
-        "published": "2026-10-09"          # optional
+        "published": "2026-10-09",         # optional
+        "ratings": {"FOX": 2428},          # optional, per character
+        "rating_games": {"FOX": 2787}      # optional, games behind each
       }
     ]
   }
@@ -83,6 +85,9 @@ class ModelInfo:
   delay: int
   description: str = ''
   published: str = ''
+  # Elo-like ratings against the other bots, by character it plays.
+  ratings: dict[str, float] = dataclasses.field(default_factory=dict)
+  rating_games: dict[str, int] = dataclasses.field(default_factory=dict)
 
   @classmethod
   def from_json(cls, entry: dict) -> 'ModelInfo':

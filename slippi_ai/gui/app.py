@@ -354,7 +354,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     self.model_list = QtWidgets.QTreeWidget()
     self.model_list.setHeaderLabels(
-        ['Model', 'Reaction delay', 'Trained against', 'Status'])
+        ['Model', 'Rating', 'Reaction delay', 'Trained against', 'Status'])
+    self.model_list.headerItem().setToolTip(
+        1, 'Elo-like rating as phillip\'s character, from games against the '
+        'other published bots. A difference of 400 is about 10:1 odds.')
     self.model_list.setRootIsDecorated(False)
     self.model_list.setMinimumHeight(110)
     self.model_list.itemSelectionChanged.connect(self._model_chosen)
@@ -826,13 +829,17 @@ class MainWindow(QtWidgets.QMainWindow):
       else:
         against = ', '.join(character_name(c) for c in opponents)
       frames = 'frame' if summary.delay == 1 else 'frames'
-      item = QtWidgets.QTreeWidgetItem(
-          [model.name, f'{summary.delay} {frames}', against, _source_text(model)])
+      rating, games = model.rating(character)
+      item = QtWidgets.QTreeWidgetItem([
+          model.name, '' if rating is None else f'{rating:.0f}',
+          f'{summary.delay} {frames}', against, _source_text(model)])
+      if games is not None:
+        item.setToolTip(1, f'From {games} games.')
       item.setData(0, QtCore.Qt.ItemDataRole.UserRole, model)
       tooltip = [model.info.description] if model.info and model.info.description else []
       tooltip.append(model.path or model.info.url)
       item.setToolTip(0, '\n'.join(tooltip))
-      item.setToolTip(2, ', '.join(character_name(c) for c in opponents))
+      item.setToolTip(3, ', '.join(character_name(c) for c in opponents))
       self.model_list.addTopLevelItem(item)
       if selected is None and self._is_chosen(model):
         selected = item
