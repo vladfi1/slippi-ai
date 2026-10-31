@@ -817,6 +817,10 @@ class MainWindow(QtWidgets.QMainWindow):
         m for m in self._models
         if character and m.plays(character)
         and (opponent is None or m.plays_against(opponent))]
+    # Best first, then unrated models in their usual order.
+    ratings = {id(m): m.rating(character)[0] for m in matching}
+    matching.sort(key=lambda m: (
+        ratings[id(m)] is None, -(ratings[id(m)] or 0)))
 
     self.model_list.blockSignals(True)
     self.model_list.clear()
