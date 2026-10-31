@@ -8,7 +8,7 @@ and .github/workflows/bundle.yml).
 import json
 import pathlib
 
-VERSION = '0.3.3'
+VERSION = '0.3.4'
 
 
 def build_info() -> str:
