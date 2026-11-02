@@ -100,6 +100,10 @@ EVAL_DB = flags.DEFINE_string(
     'Eval database (see scripts/eval_db.py) whose ratings pick the auto-*'
     ' agents. Falls back to the training matchups if missing or empty.')
 
+RATING_OFFSET = flags.DEFINE_float(
+    'rating_offset', 2000,
+    'Added to the (mean zero) eval ratings shown by !rating and !auto.')
+
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
@@ -743,6 +747,8 @@ EXTRA_HELP_MESSAGE = """
 !stop: Stop the bot after you are done. Doesn't work if the game is paused.
 !reset: Stop the bot and start a new game with the same agent.
 !stages: Specify a space-separated list of stages to play on.
+!auto <char> <opp>: Show which model auto-<char> plays vs. <opp>.
+!rating <agent>: Show an agent's rating from our evals.
 !stocks <n>: Have the bot SD down to n stocks at the start of each game. Use "!stocks 4" to disable.
 !bots <agent1> [<agent2>]: Set one or two "screensaver" agents to play while no one is on stream. Locks the bots for {bots_lock_minutes} minutes or until you !relinquish.
 !about: Print some info about the this AI.
@@ -876,6 +882,7 @@ class Bot(commands.Bot):
       bot2: Optional[str] = None,
       auto_delay: int = 18,
       eval_db_path: Optional[str] = None,
+      rating_offset: float = 2000,
       default_agent: Optional[str] = None,
       costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
@@ -887,6 +894,7 @@ class Bot(commands.Bot):
       auto_delay: Delay of the basic-* agents, and of the auto-* agents when
         there are no eval ratings.
       eval_db_path: Eval database whose ratings pick the auto-* agents.
+      rating_offset: Added to the eval ratings, which have mean zero.
       state_dir: Directory for state that persists across restarts (model
         config cache, user preferences). None disables persistence.
     """
@@ -937,6 +945,7 @@ class Bot(commands.Bot):
 
     self._models_path = models_path
     self._eval_db_path = eval_db_path
+    self._rating_offset = rating_offset
     self._default_agent = default_agent
     # Cache of loaded model states, keyed by model name. Each entry holds the
     # file mtime it was loaded at, the (trimmed) state, and its summary.
@@ -1024,7 +1033,7 @@ class Bot(commands.Bot):
       logging.exception(f'Could not read ratings from {self._eval_db_path}')
       return {}
     return {
-        (name, melee.Character[char]): rating
+        (name, melee.Character[char]): rating + self._rating_offset
         for (name, char), rating in by_name.items()
     }
 
@@ -1172,8 +1181,13 @@ class Bot(commands.Bot):
 
     # auto agents
     self._auto_agents: dict[melee.Character, AutoAgent] = {}
+    # Eval ratings of the loaded models, for !rating, !auto and auto agents.
+    self._ratings: dict[tuple[str, melee.Character], float] = {
+        key: rating for key, rating in self._load_ratings().items()
+        if key[0] in summaries
+    }
     matchup_table = eval_lib.build_matchup_table_from_ratings(
-        summaries, self._load_ratings())
+        summaries, self._ratings)
     if matchup_table:
       logging.info('Picked auto agents using eval ratings.')
     else:
@@ -1299,6 +1313,93 @@ class Bot(commands.Bot):
       return
 
     await send_list(ctx, names)
+
+  def _rating_rank(self, model: str, char: melee.Character) -> tuple[int, int]:
+    """A rated model's rank among the models playing char, and their count."""
+    rating = self._ratings[(model, char)]
+    peers = [r for (_, c), r in self._ratings.items() if c == char]
+    return 1 + sum(r > rating for r in peers), len(peers)
+
+  @commands.command()
+  async def rating(self, ctx: commands.Context):
+    words = tokens(ctx.message.content)[1:]
+    if len(words) != 1:
+      await ctx.send('Usage: !rating <agent>')
+      return
+    name = words[0]
+
+    agent_config = self._agents.get(name)
+    if isinstance(agent_config, AutoAgent):
+      char_name = agent_config.character.name.lower()
+      await ctx.send(
+          f'{name} picks a model per opponent; try !auto {char_name} <opp>.')
+      return
+
+    if isinstance(agent_config, SingleAgent):
+      model = os.path.basename(agent_config.agent_kwargs['path'])
+      chars = [self._agent_infos[name].character]
+    elif name in self._loaded_models:
+      # A multi-character model, listed as <model>-<char>.
+      model = name
+      chars = self._loaded_models[name].summary.characters
+    else:
+      await ctx.send(f'{name} is not a valid agent')
+      return
+
+    rated = [c for c in chars if (model, c) in self._ratings]
+    if not rated:
+      await ctx.send(f'{name} has no rating.')
+      return
+    if len(rated) == 1:
+      char = rated[0]
+      char_name = char.name.lower()
+      rank, count = self._rating_rank(model, char)
+      await ctx.send(
+          f'{model} ({char_name}): rating {self._ratings[(model, char)]:.0f},'
+          f' #{rank} of {count} {char_name} agents.')
+      return
+
+    # One compact entry per character, e.g. "fox 460 (#24/37)".
+    items = [f'{model} ratings:']
+    for char in rated:
+      rank, count = self._rating_rank(model, char)
+      items.append(
+          f'{char.name.lower()} {self._ratings[(model, char)]:.0f}'
+          f' (#{rank}/{count}),')
+    items[-1] = items[-1].rstrip(',')
+    await send_list(ctx, items)
+
+  @commands.command()
+  async def auto(self, ctx: commands.Context):
+    words = tokens(ctx.message.content)[1:]
+    if len(words) != 2:
+      await ctx.send('Usage: !auto <character> <opponent>')
+      return
+
+    chars: list[melee.Character] = []
+    for word in words:
+      char = parse_character(word)
+      if char is None:
+        await ctx.send(f'Unknown character "{word}".')
+        return
+      chars.append(char)
+    char, opponent = chars
+
+    auto_agent = self._auto_agents.get(char)
+    if auto_agent is None:
+      await ctx.send(f'There is no {auto_prefix}{char.name.lower()} agent.')
+      return
+
+    model = auto_agent.opponent_table[opponent]
+    summary = self._loaded_models[model].summary
+    trained = 'trained' if opponent in summary.opponents else 'not trained'
+    message = (
+        f'{auto_agent.name} vs. {opponent.name.lower()} plays {model}'
+        f' ({trained} vs. {opponent.name.lower()}).')
+    rating = self._ratings.get((model, char))
+    if rating is not None:
+      message += f' Rating {rating:.0f}.'
+    await ctx.send(message)
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
@@ -1917,6 +2018,7 @@ def main(_):
       channel=CHANNEL.value,
       models_path=MODELS_PATH.value,
       eval_db_path=EVAL_DB.value,
+      rating_offset=RATING_OFFSET.value,
       max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),
