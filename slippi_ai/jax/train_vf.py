@@ -39,6 +39,7 @@ _field = utils.field
 @dataclasses.dataclass
 class RuntimeConfig:
   max_runtime: int = 1 * 60 * 60  # maximum runtime in seconds
+  max_epochs: tp.Optional[float] = None  # maximum number of training epochs
   log_interval: int = 10  # seconds between logging
   save_interval: int = 300  # seconds between saving to disk
 
@@ -522,5 +523,10 @@ def _train(config: Config, exit_stack: contextlib.ExitStack):
 
     maybe_log(train_stats)
     maybe_eval()
+
+    if (runtime.max_epochs is not None
+        and train_manager.last_epoch >= runtime.max_epochs):
+      logging.info('Reached max_epochs=%s', runtime.max_epochs)
+      break
 
   maybe_eval(force=True)
