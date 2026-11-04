@@ -123,8 +123,9 @@ Implementation notes:
 * With `chunk_size >= unroll_length` the SSD runs as a single chunk, which was
   2x faster and half the memory of chunk 32. The SSD is checkpointed.
 * Projections run in bf16; the conv, SSD and gated norm run in fp32.
-* Resets in the middle of an unroll are ignored (state carries across); step
-  honors all resets.
+* Resets in the middle of an unroll are honored, matching step: terms that
+  cross a reset are masked out of the SSD and the conv. (Earlier runs ignored
+  them, which broke RL, where sim-env games end mid-rollout.)
 * Mamba2 4x1024 is compute-bound (GPU utilization 89-100% over a few-minute check):
   2.5 steps/s (~0.4 s/step), about 3.7 hours for 0.5
   epochs. The SSD is ~30 ms of the ~80 ms per layer (fwd + bwd). 3x1024 ran

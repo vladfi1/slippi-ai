@@ -911,12 +911,18 @@ def _ssd_chunk(
     B: Array,  # [Q, B, N]
     C: Array,  # [Q, B, N]
     initial_state: Array,  # [B, H, P, N], fp32
+    reset: tp.Optional[Array] = None,  # [Q, B], bool
 ) -> tuple[Array, Array]:
   """SSD over a single chunk, time-major, without the D skip connection.
 
   The decays are computed in fp32; the large [Q, B, H, P] and [B, H, Q, Q]
   operands are stored in x.dtype and contracted with fp32 accumulation.
   Returns fp32 outputs and final state.
+
+  A reset at step q zeroes the state before step q, as in step_with_reset.
+  Rather than zeroing the decay, which would lose precision in the cumulative
+  sums, terms that cross a reset are masked out: s contributes to l iff
+  there is no reset in (s, l].
   """
   dtype = x.dtype
   Q = x.shape[0]
@@ -924,10 +930,19 @@ def _ssd_chunk(
 
   log_decay = jnp.cumsum(A * dt, axis=0)  # [Q, B, H]
 
+  # Episode index within the chunk; the incoming state is episode 0.
+  if reset is None:
+    reset = jnp.zeros(x.shape[:2], dtype=bool)
+  episode = jnp.cumsum(reset.astype(jnp.int32), axis=0)  # [Q, B]
+  from_start = (episode == 0)[..., None]  # [Q, B, 1]
+  to_end = (episode == episode[-1:])[..., None]  # [Q, B, 1]
+
   # 1. Within the chunk: y_l = sum_{s <= l} C_l.B_s exp(sum_{s<k<=l} a_k) x_s.
   ld = jnp.transpose(log_decay, (1, 2, 0))  # [B, H, Q]
   segsum = ld[..., :, None] - ld[..., None, :]  # [B, H, l, s]
-  causal = jnp.tril(jnp.ones((Q, Q), dtype=bool))
+  ep = jnp.transpose(episode)  # [B, Q]
+  same_episode = (ep[:, :, None] == ep[:, None, :])[:, None]  # [B, 1, l, s]
+  causal = jnp.tril(jnp.ones((Q, Q), dtype=bool)) & same_episode
   L = jnp.exp(jnp.where(causal, segsum, -jnp.inf))
   CB = jnp.einsum('lbn,sbn->bls', C, B, preferred_element_type=f32)
   M = (CB[:, None] * L).astype(dtype)  # [B, H, l, s]
@@ -938,14 +953,15 @@ def _ssd_chunk(
   y_in = jnp.einsum(
       'lbn,bhpn->lbhp', C, initial_state.astype(dtype),
       preferred_element_type=f32)
-  y = y + y_in * jnp.exp(log_decay)[..., None]
+  y = y + y_in * (jnp.exp(log_decay) * from_start)[..., None]
 
   # 3. The state at the end of the chunk.
-  decay_to_end = jnp.exp(log_decay[-1:] - log_decay)  # [Q, B, H]
+  decay_to_end = jnp.exp(log_decay[-1:] - log_decay) * to_end  # [Q, B, H]
   x_to_end = (xdt * decay_to_end[..., None]).astype(dtype)
   final_state = jnp.einsum(
       'sbn,sbhp->bhpn', B, x_to_end, preferred_element_type=f32)
-  final_state += jnp.exp(log_decay[-1])[..., None, None] * initial_state
+  initial_decay = jnp.exp(log_decay[-1]) * from_start[-1]  # [B, H]
+  final_state += initial_decay[..., None, None] * initial_state
   return y, final_state
 
 
@@ -957,17 +973,21 @@ def _ssd(
     C: Array,  # [T, B, N]
     initial_state: Array,  # [B, H, P, N], fp32
     chunk_size: int,
+    reset: tp.Optional[Array] = None,  # [T, B], bool
 ) -> tuple[Array, Array]:
   """Chunked SSD scan, time-major, without the D skip connection.
 
   Same algorithm as mamba2_jax.ssd_forward, but B and C are shared across
   heads (a single group) instead of being broadcast to every head, and chunks
   are processed sequentially. With T <= chunk_size it is a single chunk.
+  A reset at step t zeroes the state before step t (see _ssd_chunk).
   """
   T = x.shape[0]
   ssd_chunk = jax.checkpoint(_ssd_chunk)
+  if reset is None:
+    reset = jnp.zeros(x.shape[:2], dtype=bool)
   if T <= chunk_size:
-    return ssd_chunk(x, dt, A, B, C, initial_state)
+    return ssd_chunk(x, dt, A, B, C, initial_state, reset)
 
   pad = (chunk_size - T % chunk_size) % chunk_size
   # dt = 0 means padded steps neither decay nor update the state.
@@ -976,12 +996,12 @@ def _ssd(
   chunk = lambda a: pad_time(a).reshape((num_chunks, chunk_size) + a.shape[1:])
 
   def step(state, inputs):
-    x, dt, B, C = inputs
-    y, state = ssd_chunk(x, dt, A, B, C, state)
+    x, dt, B, C, reset = inputs
+    y, state = ssd_chunk(x, dt, A, B, C, state, reset)
     return state, y
 
   final_state, y = jax.lax.scan(
-      step, initial_state, tuple(map(chunk, (x, dt, B, C))))
+      step, initial_state, tuple(map(chunk, (x, dt, B, C, reset))))
   y = y.reshape((num_chunks * chunk_size,) + y.shape[2:])[:T]
   return y, final_state
 
@@ -993,8 +1013,9 @@ class Mamba2Layer(Network[Array, Array]):
   scan is our own (see _ssd) as the library's runs out of memory at our batch
   sizes, and step is a direct recurrence instead of a padded chunk.
 
-  Resets are only honored at the start of an unroll; a reset in the middle of
-  an unroll does not clear the SSM or conv state. Step honors all resets.
+  A reset at step t of an unroll zeroes the SSM and conv state before step t,
+  matching step_with_reset; rather than zeroing the state, contributions that
+  cross a reset are masked out.
 
   Everything is time-major. Activations are stored in the param dtype, but the
   conv, gated norm and SSD accumulations are computed in fp32, as are the SSD's
@@ -1032,11 +1053,18 @@ class Mamba2Layer(Network[Array, Array]):
         dtype=dtype)
     return conv_state, ssm_state
 
-  def _mix(self, inputs: Array, prev_state, ssm_fn):
+  def _mix(
+      self, inputs: Array, prev_state, ssm_fn,
+      reset: tp.Optional[Array] = None,
+  ):
     """Runs the mixer on time-major [T, B, D] inputs.
 
     ssm_fn(x, dt, A, B, C, ssm_state) -> (y, ssm_state), without the D skip,
     with fp32 dt, A and ssm_state, returning fp32 y and ssm_state.
+
+    reset: optional [T, B] bool; a reset at step t hides the conv inputs
+      before t, as if the conv state were zeroed. ssm_fn must handle resets
+      itself.
     """
     dtype = inputs.dtype
     act_dtype = self._act_dtype or dtype
@@ -1061,11 +1089,27 @@ class Mamba2Layer(Network[Array, Array]):
     kernel = f32(conv.kernel.value[:, 0, :])  # [K, C]
     history = jnp.transpose(conv_state, (2, 0, 1)).astype(xBC.dtype)
     padded = jnp.concatenate([history, xBC], axis=0)  # [K - 1 + T, B, C]
-    xBC = sum(kernel[j] * f32(padded[j:j + T]) for j in range(cfg.conv_kernel))
+    K = cfg.conv_kernel
+    if reset is None:
+      taps = [f32(padded[j:j + T]) for j in range(K)]
+      final_history = padded[T:]
+    else:
+      # Input s is visible from step t iff there is no reset in (s, t]. The
+      # history is episode 0 and each reset starts a new episode.
+      episode = jnp.cumsum(reset.astype(jnp.int32), axis=0)  # [T, B]
+      padded_episode = jnp.concatenate(
+          [jnp.zeros((K - 1,) + episode.shape[1:], episode.dtype), episode])
+      taps = [
+          f32(padded[j:j + T])
+          * (padded_episode[j:j + T] == episode)[..., None]
+          for j in range(K)]
+      final_history = padded[T:] * (
+          padded_episode[T:] == episode[-1:])[..., None].astype(padded.dtype)
+    xBC = sum(kernel[j] * taps[j] for j in range(K))
     if conv.bias is not None:
       xBC = xBC + f32(conv.bias.value)
     xBC = mixer.act(xBC).astype(act_dtype)
-    conv_state = jnp.transpose(padded[T:], (1, 2, 0))
+    conv_state = jnp.transpose(final_history, (1, 2, 0))
 
     x, B, C = jnp.split(xBC, [inner, inner + state_size], axis=-1)
     x = x.reshape(x.shape[:-1] + (num_heads, head_dim))
@@ -1088,13 +1132,10 @@ class Mamba2Layer(Network[Array, Array]):
     return outputs, next_state
 
   def unroll(self, inputs: Array, reset: Array, initial_state):
-    fresh_state = self.initial_state(reset.shape[1:], nnx.Rngs(0))
-    initial_state = where_pytree(reset[0], fresh_state, initial_state)
-
     def ssm_fn(x, dt, A, B, C, ssm_state):
-      return _ssd(x, dt, A, B, C, ssm_state, self._cfg.chunk_size)
+      return _ssd(x, dt, A, B, C, ssm_state, self._cfg.chunk_size, reset)
 
-    return self._mix(inputs, initial_state, ssm_fn)
+    return self._mix(inputs, initial_state, ssm_fn, reset)
 
   def step(self, inputs: Array, prev_state):
     # Flatten the batch dims and add a time dim.

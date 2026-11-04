@@ -19,7 +19,7 @@ def assert_tensors_close(t1: jnp.ndarray, t2: jnp.ndarray):
 
 class NetworksTest(unittest.TestCase):
 
-  # Mamba2 ignores resets in the middle of an unroll; see test_mamba2.
+  # Mamba2's chunked SSD needs a looser tolerance; see test_mamba2_unroll_vs_step.
   @parameterized.expand(
       [name for name in networks.SIMPLE_CONSTRUCTORS if name != 'mamba2'])
   def test_unroll_vs_step(self, name='mlp'):
@@ -82,6 +82,7 @@ class NetworksTest(unittest.TestCase):
       (32, 12, 'float32'),  # single padded chunk
       (4, 10, 'float32'),  # several chunks, the last one padded
       (4, 8, 'bfloat16'),
+      (4, 3, 'float32'),  # shorter than the conv history
   ])
   def test_mamba2_unroll_vs_step(self, chunk_size, unroll_length, dtype):
     rngs = nnx.Rngs(0)
@@ -97,9 +98,8 @@ class NetworksTest(unittest.TestCase):
 
     for i in range(3):
       inputs = rngs.normal((unroll_length, batch_size, input_size)).astype(dtype)
-      # Only resets at the start of the unroll are supported.
-      reset = jnp.zeros((unroll_length, batch_size), dtype=bool)
-      reset = reset.at[0].set(rngs.bernoulli(0.5, (batch_size,)) | (i == 0))
+      reset = rngs.bernoulli(0.2, (unroll_length, batch_size))
+      reset = reset.at[0].set(reset[0] | (i == 0))
 
       unroll_outputs, unroll_final_state = network.unroll(
           inputs, reset, initial_state)
