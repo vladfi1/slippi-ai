@@ -493,6 +493,47 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
         output_size=hidden_size,
         remat=remat)
 
+  def _fused_params(self, input_dtype):
+    """The cell's eight Linears as [D, 4H] and [H, 4H] kernels and a [4H] bias
+    (gate order i, f, g, o), in the dtype the cell would compute in."""
+    cell = self._core
+    Wi = jnp.concatenate(
+        [cell.ii.kernel[...], cell.if_.kernel[...], cell.ig.kernel[...], cell.io.kernel[...]], axis=1)
+    Wh = jnp.concatenate(
+        [cell.hi.kernel[...], cell.hf.kernel[...], cell.hg.kernel[...], cell.ho.kernel[...]], axis=1)
+    b = jnp.concatenate(
+        [cell.hi.bias[...], cell.hf.bias[...], cell.hg.bias[...], cell.ho.bias[...]])
+    dtype = jnp.result_type(input_dtype, Wi.dtype)
+    return Wi.astype(dtype), Wh.astype(dtype), b.astype(dtype), dtype
+
+  def unroll(self, inputs: Array, reset: Array, initial_state):
+    """Fused unroll: one input projection for the whole sequence, hoisted out
+    of the scan, and a single [B, H] x [H, 4H] matmul per step instead of
+    nnx.LSTMCell's eight small ones. Same parameters and math as stepping the
+    cell with resets."""
+    cell = self._core
+    Wi, Wh, b, dtype = self._fused_params(inputs.dtype)
+    gx = jnp.einsum('tbd,dg->tbg', inputs.astype(dtype), Wi) + b  # [T, B, 4H]
+    gate_fn, act_fn = cell.gate_fn, cell.activation_fn
+
+    def step(carry, xs):
+      c, h = carry
+      gx_t, r_t = xs
+      c = jnp.where(r_t[:, None], 0, c)
+      h = jnp.where(r_t[:, None], 0, h)
+      i, f, g, o = jnp.split(gx_t + jnp.dot(h.astype(dtype), Wh), 4, axis=-1)
+      new_c = gate_fn(f) * c + gate_fn(i) * act_fn(g)
+      new_h = gate_fn(o) * act_fn(new_c)
+      return (new_c.astype(c.dtype), new_h.astype(h.dtype)), new_h.astype(h.dtype)
+
+    if self._remat:
+      step = jax.checkpoint(step, prevent_cse=False)
+    # Workaround for scan under shard_map, as in jax_utils.dynamic_rnn.
+    state_shape, _ = jax.eval_shape(step, initial_state, (gx[0], reset[0]))
+    initial_state = jax.tree.map(jax_utils.as_vma, initial_state, state_shape)
+    final_state, ys = jax.lax.scan(step, initial_state, (gx, reset))
+    return ys, final_state
+
 
 # This deliberately does not use `nnx.LayerNorm`.
 #
