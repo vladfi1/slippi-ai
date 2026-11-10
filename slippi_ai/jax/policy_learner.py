@@ -93,9 +93,11 @@ def check_compute_dtypes(policy: Policy[ControllerType]) -> dict[str, str]:
   from slippi_ai.jax import networks
   assert isinstance(policy.network, networks.SimpleEmbedNetwork)
 
-  # Enhanced embed output before the compute_dtype cast
-  results['enhanced_embed_out'] = str(
-      jax_utils.eval_shape_method(policy.network._embed_module.__call__, dummy_sa).dtype)
+  # Enhanced embed output before the compute_dtype cast. The simple embed
+  # module is not an nnx.Module, which nnx.eval_shape needs.
+  if isinstance(policy.network._embed_module, nnx.Module):
+    results['enhanced_embed_out'] = str(
+        jax_utils.eval_shape_method(policy.network._embed_module.__call__, dummy_sa).dtype)
 
   # After compute_dtype cast in _embed
   results['embed_out'] = str(
