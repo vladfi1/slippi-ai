@@ -604,6 +604,34 @@ class TensorFlowLayerNorm(nnx.Module):
     return centered / stddev * self.scale + self.bias
 
 
+def _fused_resblock(residual: Array, block: 'ResBlock') -> Optional[Array]:
+  """The whole block via ffw_pallas.resblock when that computes the same thing
+  in the same dtype (nnx.LayerNorm with fast variance, bf16 everywhere,
+  default precision) and the shapes are supported, else None."""
+  from slippi_ai.jax import ffw_pallas  # pylint: disable=g-import-not-at-top
+  ln = block.layernorm
+  if not isinstance(ln, nnx.LayerNorm) or not ln.use_fast_variance:
+    return None
+  if ln.scale is None or ln.bias is None or ln.reduction_axes != -1 or ln.feature_axes != -1:
+    return None
+  for module in (ln, block.linear1, block.linear2):
+    if module.dtype is not None and jnp.dtype(module.dtype) != jnp.bfloat16:
+      return None
+  for linear in (block.linear1, block.linear2):
+    if linear.bias is None or linear.precision is not None:
+      return None
+  params = (ln.scale[...], ln.bias[...], block.linear1.kernel[...], block.linear1.bias[...],
+            block.linear2.kernel[...], block.linear2.bias[...])
+  if any(a.dtype != jnp.bfloat16 for a in (residual, *params)):
+    return None
+  lead, D = residual.shape[:-1], residual.shape[-1]
+  M = math.prod(lead)
+  if not ffw_pallas.supported(M, D, params[2].shape[1], residual.dtype):
+    return None
+  out = ffw_pallas.resblock(residual.reshape(M, D), *params, ln.epsilon)
+  return out.reshape(residual.shape)
+
+
 class ResBlock(nnx.Module):
 
   def __init__(
@@ -613,7 +641,11 @@ class ResBlock(nnx.Module):
       hidden_size: Optional[int] = None,
       activation: Callable[[Array], Array] = nnx.relu,
       layer_norm: str = 'nnx',
+      fused_gelu: bool = False,
   ):
+    # Set only when `activation` is jax.nn.gelu(approximate=True): the block
+    # may then run as fused GPU kernels (ffw_pallas.resblock).
+    self._fused_gelu = fused_gelu
     if layer_norm == 'nnx':
       self.layernorm = nnx.LayerNorm(residual_size, rngs=rngs)
     elif layer_norm == 'tensorflow':
@@ -629,6 +661,10 @@ class ResBlock(nnx.Module):
         rngs=rngs)
 
   def __call__(self, residual: Array) -> Array:
+    if self._fused_gelu:
+      out = _fused_resblock(residual, self)
+      if out is not None:
+        return out
     x = self.layernorm(residual)
     x = self.linear1(x)
     x = self.activation(x)
@@ -697,7 +733,8 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
       ffw_layer = ResBlock(
           rngs, hidden_size, hidden_size * ffw_multiplier,
           activation=activation_fn,
-          layer_norm=layer_norm)
+          layer_norm=layer_norm,
+          fused_gelu=activation == 'gelu' and gelu_approximate)
       layers.append(FFWWrapper(ffw_layer, output_size=hidden_size))
 
     # Don't use RematWrapper as it changes the network state structure which
