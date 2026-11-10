@@ -3,6 +3,7 @@ import copy
 import functools
 import logging
 import math
+import os
 from typing import Any, Callable, Optional, Tuple
 import typing as tp
 
@@ -441,6 +442,10 @@ class ResidualWrapper(Network[InputTree, InputTree]):
     return self._combine(inputs, outputs), next_state
 
   def unroll(self, inputs, reset, initial_state):
+    # Some layers can produce inputs + outputs themselves (LSTM's GPU kernel).
+    unroll_residual = getattr(self._net, 'unroll_residual', None)
+    if unroll_residual is not None:
+      return unroll_residual(inputs, reset, initial_state)
     outputs, final_state = self._net.unroll(inputs, reset, initial_state)
     return self._combine(inputs, outputs), final_state
 
@@ -470,6 +475,17 @@ class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
         input_size=input_size,
         output_size=hidden_size,
         remat=remat)
+
+def _use_lstm_pallas(batch: int, hidden: int) -> bool:
+  """Whether LSTM unrolls use lstm_pallas's kernels: on GPU (or in Pallas
+  interpret mode) for shapes they support. SLIPPI_LSTM_PALLAS=0 disables."""
+  if os.environ.get('SLIPPI_LSTM_PALLAS', '1') == '0':
+    return False
+  from slippi_ai.jax import lstm_pallas, pallas_utils  # pylint: disable=g-import-not-at-top
+  if jax.default_backend() != 'gpu' and not pallas_utils.interpret():
+    return False
+  return lstm_pallas.supported(batch, hidden)
+
 
 class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
   @classmethod
@@ -508,12 +524,33 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
 
   def unroll(self, inputs: Array, reset: Array, initial_state):
     """Fused unroll: one input projection for the whole sequence, hoisted out
-    of the scan, and a single [B, H] x [H, 4H] matmul per step instead of
+    of the recurrence, then on GPU lstm_pallas's persistent kernels and
+    elsewhere a scan with a single [B, H] x [H, 4H] matmul per step instead of
     nnx.LSTMCell's eight small ones. Same parameters and math as stepping the
     cell with resets."""
+    return self._unroll(inputs, reset, initial_state, residual=False)
+
+  def unroll_residual(self, inputs: Array, reset: Array, initial_state):
+    """inputs + unroll(inputs); on GPU the kernel writes the sum itself."""
+    return self._unroll(inputs, reset, initial_state, residual=True)
+
+  def _unroll(self, inputs: Array, reset: Array, initial_state, residual: bool):
     cell = self._core
     Wi, Wh, b, dtype = self._fused_params(inputs.dtype)
-    gx = jnp.einsum('tbd,dg->tbg', inputs.astype(dtype), Wi) + b  # [T, B, 4H]
+    xw = jnp.einsum('tbd,dg->tbg', inputs.astype(dtype), Wi)  # [T, B, 4H]
+
+    if _use_lstm_pallas(inputs.shape[1], Wh.shape[0]):
+      from slippi_ai.jax import lstm_pallas  # pylint: disable=g-import-not-at-top
+      c0, h0 = initial_state
+      # The kernel adds the bias itself, so XLA can hand it the projection
+      # straight from the matmul instead of a separate bias-add pass.
+      reset_i = reset.astype(jnp.int32)
+      if residual and inputs.dtype == dtype:
+        return lstm_pallas.lstm_recurrence_residual(xw, Wh, b, h0, c0, reset_i, inputs)
+      ys, (cT, hT) = lstm_pallas.lstm_recurrence(xw, Wh, b, h0, c0, reset_i)
+      return (inputs + ys if residual else ys), (cT, hT)
+
+    gx = xw + b
     gate_fn, act_fn = cell.gate_fn, cell.activation_fn
 
     def step(carry, xs):
@@ -532,7 +569,7 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
     state_shape, _ = jax.eval_shape(step, initial_state, (gx[0], reset[0]))
     initial_state = jax.tree.map(jax_utils.as_vma, initial_state, state_shape)
     final_state, ys = jax.lax.scan(step, initial_state, (gx, reset))
-    return ys, final_state
+    return (inputs + ys if residual else ys), final_state
 
 
 # This deliberately does not use `nnx.LayerNorm`.
