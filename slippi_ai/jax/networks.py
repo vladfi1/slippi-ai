@@ -14,6 +14,7 @@ import tree
 
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
+from slippi_ai.jax import embed_lookup
 from slippi_ai.types import (
   Controller, Game, Player, Nana, Item, S,
   Action, StateAction, Frames,
@@ -245,6 +246,20 @@ class RecurrentWrapper(Network[Array, Array]):
       core = nnx.remat(self._core, prevent_cse=False)
     next_state, output = core(prev_state, inputs)
     return output, next_state
+
+
+class EmbedLinear(nnx.Linear):  # pylint: disable=too-few-public-methods
+  """nnx.Linear that also takes a SparseEmbedded (one-hot leaves as indices).
+
+  tx_like's first layer. Same parameters as nnx.Linear; see embed_lookup.
+  """
+
+  def __call__(self, inputs):
+    if isinstance(inputs, embed_lookup.SparseEmbedded):
+      bias = None if self.bias is None else self.bias[...]
+      return embed_lookup.linear(inputs, self.kernel[...], bias)
+    return super().__call__(inputs)
+
 
 class FFWWrapper(Network[InputTree, OutputTree]):
   """Wraps a feedforward module as a Network.
@@ -722,7 +737,7 @@ class TransformerLike(Sequential, BuildableNetwork[Array, Array]):
     layers: list[Network[Array, Array]] = []
 
     # We need to encode for the first residual
-    encoder = nnx.Linear(input_size, hidden_size, rngs=rngs)
+    encoder = EmbedLinear(input_size, hidden_size, rngs=rngs)
     layers.append(FFWWrapper(encoder, output_size=hidden_size))
 
     for _ in range(num_layers):
@@ -952,6 +967,20 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     x = x.astype(jax_utils.module_dtype(self))
     return x
 
+  def _embed_for_unroll(self, state_action: StateAction[S, Action]):
+    """Like _embed, but keeps one-hot leaves as indices when the first layer
+    can look up their kernel rows (embed_lookup)."""
+    first = getattr(self._network, '_layers', [None])[0]
+    if not (isinstance(self._embed_module, SimpleEmbedModule)
+            and isinstance(first, FFWWrapper)
+            and isinstance(first._module, EmbedLinear)):  # pylint: disable=protected-access
+      return self._embed(state_action)
+    dtype = jax_utils.module_dtype(self)
+    if not embed_lookup.supported(first._module.out_features, dtype):  # pylint: disable=protected-access
+      return self._embed(state_action)
+    embedding = self._embed_module._embed_state_action  # pylint: disable=protected-access
+    return embed_lookup.embed(embedding, state_action).astype(dtype)
+
   def _check_state_dtype(self, state: RecurrentState) -> RecurrentState:
     # Initial state might come from an fp32 version of the network,
     # so we need to cast it to make sure it's in bf16.
@@ -978,7 +1007,7 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
       reset: Array,
       initial_state: RecurrentState,
   ) -> Tuple[Array, RecurrentState]:
-    embedded = self._embed(state_action)
+    embedded = self._embed_for_unroll(state_action)
     output, final_state = self._network.unroll(embedded, reset, self._check_state_dtype(initial_state))
     assert isinstance(output, Array)
     return output, final_state
