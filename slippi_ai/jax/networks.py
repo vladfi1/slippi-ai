@@ -15,6 +15,7 @@ import tree
 from slippi_ai.jax import jax_utils
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import embed_lookup
+from slippi_ai.jax import item_sum
 from slippi_ai.types import (
   Controller, Game, Player, Nana, Item, S,
   Action, StateAction, Frames,
@@ -982,7 +983,11 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
 
   def _embed_for_unroll(self, state_action: StateAction[S, Action]):
     """Like _embed, but keeps one-hot leaves as indices when the first layer
-    can look up their kernel rows (embed_lookup)."""
+    can look up their kernel rows (embed_lookup), and runs the enhanced
+    embed's item MLP on occupied item slots only (item_sum)."""
+    if isinstance(self._embed_module, EnhancedEmbedModule) and item_sum.enabled():
+      x = self._embed_module(state_action, remat=self._remat, compact_items=True)
+      return x.astype(jax_utils.module_dtype(self))
     first = getattr(self._network, '_layers', [None])[0]
     if not (isinstance(self._embed_module, SimpleEmbedModule)
             and isinstance(first, FFWWrapper)
@@ -1424,7 +1429,14 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       parts.append(self._embed_player_or_nana(raw.nana, default.nana))
     return jnp.concatenate(parts, axis=-1)
 
-  def __call__(self, state_action: StateAction[tp.Any, Action], remat: bool = False) -> Array:
+  def __call__(
+      self,
+      state_action: StateAction[tp.Any, Action],
+      remat: bool = False,
+      compact_items: bool = False,
+  ) -> Array:
+    """compact_items: run the item MLP on occupied item slots only
+    (item_sum.mlp_sum); same function, for unrolls."""
     dtype = jax_utils.module_dtype(self)
 
     raw_game = state_action.state
@@ -1450,6 +1462,11 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       # Process items as a batch
       stacked_items: Item = jax.tree.map(
         lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
+    if self._use_items and self._use_item_sum and compact_items:
+      parts.append(item_sum.mlp_sum(
+          self._item_mlp, self._item_embedding, stacked_items,
+          stacked_items.exists, dtype))
+    elif self._use_items:
       item_embed = self._item_embedding(stacked_items).astype(dtype)
       assert item_embed.shape[-2:] == (len(raw_game.items), self._item_embedding.size)
       if self._use_item_sum:
