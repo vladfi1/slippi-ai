@@ -497,7 +497,7 @@ def _use_lstm_pallas(batch: int, hidden: int) -> bool:
   if os.environ.get('SLIPPI_LSTM_PALLAS', '1') == '0':
     return False
   from slippi_ai.jax import lstm_pallas, pallas_utils  # pylint: disable=g-import-not-at-top
-  if jax.default_backend() != 'gpu' and not pallas_utils.interpret():
+  if not pallas_utils.enabled():
     return False
   return lstm_pallas.supported(batch, hidden)
 

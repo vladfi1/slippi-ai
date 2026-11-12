@@ -24,10 +24,10 @@ import typing as tp
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
-from jax.experimental.pallas import triton as plgpu
 
 from slippi_ai.jax import embed as embed_lib
 from slippi_ai.jax import pallas_utils
+from slippi_ai.jax.pallas_utils import plgpu
 
 Array = jax.Array
 
@@ -40,7 +40,7 @@ def supported(H: int, dtype) -> bool:
   """Whether `linear` runs for a [*, H] output in `dtype`. Read at trace time."""
   if os.environ.get('SLIPPI_EMBED_LOOKUP', '1') == '0':
     return False
-  if jax.default_backend() != 'gpu' and not pallas_utils.interpret():
+  if not pallas_utils.enabled():
     return False
   return dtype == jnp.bfloat16 and H % BN == 0
 

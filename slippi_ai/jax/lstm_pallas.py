@@ -45,9 +45,9 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
-from jax.experimental.pallas import triton as plgpu
 
 from slippi_ai.jax import pallas_utils
+from slippi_ai.jax.pallas_utils import plgpu
 
 F32 = jnp.float32
 

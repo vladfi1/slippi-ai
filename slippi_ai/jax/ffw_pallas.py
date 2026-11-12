@@ -29,9 +29,9 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
-from jax.experimental.pallas import triton as plgpu
 
 from slippi_ai.jax import pallas_utils
+from slippi_ai.jax.pallas_utils import plgpu
 
 F32 = jnp.float32
 _C = math.sqrt(2 / math.pi)
@@ -192,7 +192,7 @@ def supported(M, D, F, dtype) -> bool:
   disables."""
   if os.environ.get('SLIPPI_FFW_PALLAS', '1') == '0':
     return False
-  if jax.default_backend() != 'gpu' and not pallas_utils.interpret():
+  if not pallas_utils.enabled():
     return False
   if dtype != jnp.bfloat16:
     return False
