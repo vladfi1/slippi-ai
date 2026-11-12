@@ -211,7 +211,10 @@ class AutoRegressiveComponent(nnx.Module):
       residual: NetworkState,
       prev_raw: Array,
       target_raw: Array,
+      step: bool = True,
   ) -> tp.Tuple[NetworkState, DistanceOutputs]:
+    """With step=False the network step is skipped and the residual returned
+    unchanged, for when nothing reads it."""
     output, state = residual
     # Directly connect from the same component at time t-1
     prev_embedding = self.embedder(prev_raw).astype(output.dtype)
@@ -220,6 +223,8 @@ class AutoRegressiveComponent(nnx.Module):
     logits = self.encoder(input_)
     # Compute the distance between prediction and target
     distance = self.embedder.distance(logits, target_raw)
+    if not step:
+      return residual, DistanceOutputs(distance=distance, logits=logits)
     # Auto-regress using the target (aka teacher forcing)
     target_embedding = self.embedder(target_raw).astype(output.dtype)
     residual = self.network.step(target_embedding, state)
@@ -339,37 +344,50 @@ class AutoRegressive(ControllerHead[ControllerType]):
     else:
       residual = self.encoder(inputs)
 
+    # A factory rather than a keyword argument, which nnx.scan would bind.
+    def make_single_action_distance(step_last_component: bool):
+      def single_action_distance(
+          res_blocks: tp.Iterable[AutoRegressiveComponent],
+          prev_controller: ControllerType,
+          target_controller: ControllerType,
+          residual: NetworkState,
+      ):
+        prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
+        target_controller_flat = list(self.embed_controller.flatten(target_controller))
+        n = len(prev_controller_flat)
+
+        component_distances: list[DistanceOutputs] = []
+        for i, (res_block, prev, target) in enumerate(zip(
+            res_blocks, prev_controller_flat, target_controller_flat)):
+          residual, distance = res_block.distance(
+              residual, prev, target, step=step_last_component or i + 1 < n)
+          component_distances.append(distance)
+
+        distances, logits = zip(*component_distances)
+        distance_outputs = DistanceOutputs(
+            distance=self.embed_controller.unflatten(iter(distances)),
+            logits=self.embed_controller.unflatten(iter(logits)),
+        )
+        return output_fn(distance_outputs), residual
+
+      if self.remat:
+        return nnx.remat(single_action_distance)
+      return single_action_distance
+
+    if len(prev_controller_state) == 1:
+      # One action per network step (no frame skip): nothing reads the
+      # residual after the last component, so skip that component's network
+      # step, and the zero-cotangent backward a scan would run through it.
+      output, _ = make_single_action_distance(False)(
+          self.res_blocks[0], prev_controller_state[0], target_controller_state[0], residual)
+      return [output]
+
     stack = lambda *xs: jnp.stack(xs, axis=0)
     stacked_prev_controller_state = utils.map_nt(stack, *prev_controller_state)
     stacked_target_controller_state = utils.map_nt(stack, *target_controller_state)
 
-    def single_action_distance(
-        res_blocks: tp.Iterable[AutoRegressiveComponent],
-        prev_controller: ControllerType,
-        target_controller: ControllerType,
-        residual: NetworkState,
-    ):
-      prev_controller_flat = list(self.embed_controller.flatten(prev_controller))
-      target_controller_flat = list(self.embed_controller.flatten(target_controller))
-
-      component_distances: list[DistanceOutputs] = []
-      for res_block, prev, target in zip(
-          res_blocks, prev_controller_flat, target_controller_flat):
-        residual, distance = res_block.distance(residual, prev, target)
-        component_distances.append(distance)
-
-      distances, logits = zip(*component_distances)
-      distance_outputs = DistanceOutputs(
-          distance=self.embed_controller.unflatten(iter(distances)),
-          logits=self.embed_controller.unflatten(iter(logits)),
-      )
-      return output_fn(distance_outputs), residual
-
-    if self.remat:
-      single_action_distance = nnx.remat(single_action_distance)
-
     stacked_outputs, _ = nnx.scan(
-        single_action_distance,
+        make_single_action_distance(True),
         in_axes=(None, 0, 0, nnx.Carry), out_axes=(0, nnx.Carry))(
         self.res_blocks[0], stacked_prev_controller_state,
         stacked_target_controller_state, residual)
