@@ -1,13 +1,15 @@
 """The one-hot lookup must match concatenate-then-Linear (embed_lookup).
 
-Builds a small bf16 tx_like policy with the simple embed and compares the
-unrolled output and every parameter gradient with the lookup on and off, on
-random inputs that include out-of-range one-hot classes. On GPU this runs the
-real kernel; without a GPU it runs in Pallas interpret mode.
+Builds small bf16 tx_like policies with the simple and the enhanced embed and
+compares the unrolled output and every parameter gradient with the lookup on
+and off, on random inputs (for the simple embed including out-of-range one-hot
+classes). On GPU this runs the real kernel; without a GPU it runs in Pallas
+interpret mode.
 """
 # Shapes use the usual math names (T, B, H).
 # pylint: disable=invalid-name
 import os
+import typing as tp
 import unittest
 from unittest import mock
 
@@ -24,11 +26,23 @@ ON_GPU = jax.default_backend() == 'gpu'
 INTERPRET = {} if ON_GPU else {'SLIPPI_PALLAS_INTERPRET': '1'}
 
 
-def _small_policy(hidden_size: int):
+# Enhanced embed options: the defaults, and those of the newest public models.
+ENHANCED = {
+    'enhanced': {},
+    'enhanced_v6': dict(use_learned_char=False, use_learned_action=False, use_self_nana=False),
+}
+
+
+def _small_policy(hidden_size: int, embed: str = 'simple', options: tp.Optional[dict] = None):
   config = networks.default_config()
   config['name'] = 'tx_like'
   config['tx_like'].update(hidden_size=hidden_size, num_layers=1, ffw_multiplier=2)
-  config['embed']['name'] = 'simple'
+  if embed == 'simple':
+    config['embed']['name'] = 'simple'
+  else:
+    config['embed']['name'] = 'enhanced'
+    config['embed']['enhanced'].update(
+        hidden_size=32, **(ENHANCED[embed] if options is None else options))
   net = networks.build_embed_network(
       rngs=nnx.Rngs(0), embed_config=embed_lib.EmbedConfig(), num_names=8,
       frame_skip=1, network_config=config)
@@ -37,14 +51,15 @@ def _small_policy(hidden_size: int):
   return graphdef, state
 
 
-def _random_inputs(embedding, shape, seed):
+def _random_inputs(embedding, shape, seed, out_of_range=3):
   rng = np.random.default_rng(seed)
 
   def leaf(e, x):
     x = np.asarray(x)
     if isinstance(e, embed_lib.OneHotEmbedding):
-      # Includes classes past the end (all-zero one-hot).
-      return rng.integers(0, e.size + 3, size=shape).astype(x.dtype)
+      # Includes classes past the end (all-zero one-hot). The enhanced embed's
+      # learned tables give NaN for those, so its tests use in-range classes.
+      return rng.integers(0, e.size + out_of_range, size=shape).astype(x.dtype)
     if x.dtype == np.bool_:
       return rng.random(shape) < 0.5
     return (rng.standard_normal(shape) * 3).astype(x.dtype)
@@ -68,12 +83,25 @@ class EmbedLookupTest(unittest.TestCase):
     np.testing.assert_array_equal(np.asarray(sparse.to_dense()), np.asarray(embedding(sa)))
     self.assertGreater(int((sparse.idx < 0).sum()), 0)  # out-of-range classes
 
-  @parameterized.expand([((5, 3), 128), ((8, 16), 256)] if ON_GPU else [((5, 3), 128)])
-  def test_unroll_matches_plain(self, shape, hidden_size):
-    graphdef, state = _small_policy(hidden_size)
+  @parameterized.expand(
+      list(ENHANCED.items())
+      + [('flat_items', dict(use_item_sum=False)), ('hybrid', dict(hybrid_embed=True))])
+  def test_enhanced_parts_reassemble(self, _, options):
+    graphdef, state = _small_policy(128, 'enhanced', options)
+    module = nnx.merge(graphdef, jax.tree.map(lambda p: p.astype(jnp.float32), state))._embed_module  # pylint: disable=protected-access
+    sa = _random_inputs(module._embed_state_action, (5, 3), seed=0, out_of_range=0)  # pylint: disable=protected-access
+    sparse = embed_lookup.from_parts(module.parts(sa))
+    self.assertEqual(sparse.layout.size, module.output_size)
+    np.testing.assert_array_equal(np.asarray(sparse.to_dense()), np.asarray(module(sa)))
+
+  @parameterized.expand(
+      [((5, 3), 128, embed) for embed in ('simple', *ENHANCED)]
+      + ([((8, 16), 256, embed) for embed in ('simple', *ENHANCED)] if ON_GPU else []))
+  def test_unroll_matches_plain(self, shape, hidden_size, embed):
+    graphdef, state = _small_policy(hidden_size, embed)
     net = nnx.merge(graphdef, state)
     embedding = net._embed_module._embed_state_action  # pylint: disable=protected-access
-    sa = _random_inputs(embedding, shape, seed=1)
+    sa = _random_inputs(embedding, shape, seed=1, out_of_range=3 if embed == 'simple' else 0)
     reset = jnp.zeros(shape, bool).at[2, 1].set(True)
     init = net.initial_state(shape[1], nnx.Rngs(0))
     g = jax.random.normal(jax.random.PRNGKey(1), (*shape, net.output_size))

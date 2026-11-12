@@ -985,19 +985,23 @@ class SimpleEmbedNetwork(StateActionNetwork[Action]):
     """Like _embed, but keeps one-hot leaves as indices when the first layer
     can look up their kernel rows (embed_lookup), and runs the enhanced
     embed's item MLP on occupied item slots only (item_sum)."""
-    if isinstance(self._embed_module, EnhancedEmbedModule) and item_sum.enabled():
-      x = self._embed_module(state_action, remat=self._remat, compact_items=True)
-      return x.astype(jax_utils.module_dtype(self))
-    first = getattr(self._network, '_layers', [None])[0]
-    if not (isinstance(self._embed_module, SimpleEmbedModule)
-            and isinstance(first, FFWWrapper)
-            and isinstance(first._module, EmbedLinear)):  # pylint: disable=protected-access
-      return self._embed(state_action)
     dtype = jax_utils.module_dtype(self)
-    if not embed_lookup.supported(first._module.out_features, dtype):  # pylint: disable=protected-access
-      return self._embed(state_action)
-    embedding = self._embed_module._embed_state_action  # pylint: disable=protected-access
-    return embed_lookup.embed(embedding, state_action).astype(dtype)
+    first = getattr(self._network, '_layers', [None])[0]
+    lookup = (isinstance(first, FFWWrapper)
+              and isinstance(first._module, EmbedLinear)  # pylint: disable=protected-access
+              and embed_lookup.supported(first._module.out_features, dtype))  # pylint: disable=protected-access
+    if isinstance(self._embed_module, EnhancedEmbedModule):
+      compact = item_sum.enabled()
+      if lookup:
+        parts = self._embed_module.parts(
+            state_action, remat=self._remat, compact_items=compact)
+        return embed_lookup.from_parts(parts).astype(dtype)
+      x = self._embed_module(state_action, remat=self._remat, compact_items=compact)
+      return x.astype(dtype)
+    if lookup and isinstance(self._embed_module, SimpleEmbedModule):
+      embedding = self._embed_module._embed_state_action  # pylint: disable=protected-access
+      return embed_lookup.embed(embedding, state_action).astype(dtype)
+    return self._embed(state_action)
 
   def _check_state_dtype(self, state: RecurrentState) -> RecurrentState:
     # Initial state might come from an fp32 version of the network,
@@ -1273,6 +1277,7 @@ def _wrap_int(x: Array, dtype: jnp.dtype) -> Array:
   return x
 
 PlayerOrNana = tp.TypeVar('PlayerOrNana', Player, Nana)
+EmbedPart = tp.Union[Array, embed_lookup.LazyEmbed]
 
 class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
 
@@ -1386,48 +1391,107 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
   def encode_game(self, game: Game[S]) -> Game[S]:
     return self._embed_game.from_state(game)
 
-  def _embed_player_or_nana(self, raw: PlayerOrNana, default: PlayerOrNana) -> Array:
+  def _player_or_nana_parts(self, raw: PlayerOrNana, leaf: PlayerOrNana) -> list[EmbedPart]:
+    """`leaf` holds embed_lookup.LazyEmbed leaves of the default embedding."""
     dtype = jax_utils.module_dtype(self)
 
     if self._use_learned_action:
       action = self._embed_action(raw.action).astype(dtype)
       if self._use_char_action_joint:
         action = action + self._embed_char_action(raw.character, raw.action)
-      if self._hybrid_embed:
-        action = jnp.concatenate([action, default.action], axis=-1)
+      action_parts = [action, leaf.action] if self._hybrid_embed else [action]
     else:
-      action = default.action
+      action_parts = [leaf.action]
 
     if self._use_learned_char:
       char = self._embed_char(raw.character).astype(dtype)
-      if self._hybrid_embed:
-        char = jnp.concatenate([char, default.character], axis=-1)
+      char_parts = [char, leaf.character] if self._hybrid_embed else [char]
     else:
-      char = default.character
+      char_parts = [leaf.character]
 
     parts = [
-        default.percent,
-        default.facing,
-        default.x, default.y,
-        action,
-        default.invulnerable,
-        char,
-        default.jumps_left,
-        default.shield_strength,
-        default.on_ground,
+        leaf.percent,
+        leaf.facing,
+        leaf.x, leaf.y,
+        *action_parts,
+        leaf.invulnerable,
+        *char_parts,
+        leaf.jumps_left,
+        leaf.shield_strength,
+        leaf.on_ground,
     ]
 
-    if isinstance(default, Nana):
-      parts.append(default.exists)
+    if isinstance(leaf, Nana):
+      parts.append(leaf.exists)
 
-    return jnp.concatenate(parts, axis=-1)
+    return parts
 
-  def _embed_player(self, raw: Player, default: Player, with_nana: bool) -> Array:
-    parts = [self._embed_player_or_nana(raw, default)]
-
+  def _player_parts(self, raw: Player, leaf: Player, with_nana: bool) -> list[EmbedPart]:
+    parts = self._player_or_nana_parts(raw, leaf)
     if with_nana:
-      parts.append(self._embed_player_or_nana(raw.nana, default.nana))
-    return jnp.concatenate(parts, axis=-1)
+      parts.extend(self._player_or_nana_parts(raw.nana, leaf.nana))
+    return parts
+
+  def parts(
+      self,
+      state_action: StateAction[tp.Any, Action],
+      remat: bool = False,
+      compact_items: bool = False,
+  ) -> list[EmbedPart]:
+    """The embedding as an ordered list of parts: Arrays (learned parts) and
+    embed_lookup.LazyEmbed leaves of the default embedding. Concatenated, they
+    are __call__'s output; embed_lookup.from_parts keeps their one-hots as
+    indices.
+
+    compact_items: run the item MLP on occupied item slots only
+    (item_sum.mlp_sum); same function, for unrolls.
+    """
+    dtype = jax_utils.module_dtype(self)
+
+    raw_game = state_action.state
+    leaves = self._embed_state_action.map(embed_lookup.LazyEmbed, state_action)
+    game = leaves.state
+
+    parts = [
+        *self._player_parts(raw_game.p0, game.p0, with_nana=self._use_self_nana),
+        *self._player_parts(raw_game.p1, game.p1, with_nana=True),
+        game.stage,
+        *game.randall,
+        *game.fod_platforms,
+    ]
+
+    if self._use_items:
+      # Process items as a batch
+      stacked_items: Item = jax.tree.map(
+        lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
+      if self._use_item_sum and compact_items:
+        parts.append(item_sum.mlp_sum(
+            self._item_mlp, self._item_embedding, stacked_items,
+            stacked_items.exists, dtype))
+      elif self._use_item_sum:
+        item_embed = self._item_embedding(stacked_items).astype(dtype)
+        assert item_embed.shape[-2:] == (len(raw_game.items), self._item_embedding.size)
+        item_embed = self._item_mlp(item_embed)
+        item_embed = jnp.where(stacked_items.exists[..., None], item_embed, 0)
+        parts.append(jnp.sum(item_embed, axis=-2))
+      else:
+        # The items' embeddings, concatenated.
+        parts.extend(embed_lookup.LazyEmbed(self._item_embedding, item)
+                     for item in raw_game.items)
+
+    if isinstance(leaves.name, embed_lookup.LazyEmbed):
+      parts.append(leaves.name)
+
+    if isinstance(leaves.rating, embed_lookup.LazyEmbed):
+      parts.append(leaves.rating)
+
+    if self._use_controller_rnn:
+      parts.append(self._controller_rnns[0].unroll(state_action.action, remat=remat))
+    else:
+      parts.extend(embed_lookup.LazyEmbed(self._embed_controller, action, cast=False)
+                   for action in state_action.action)
+
+    return parts
 
   def __call__(
       self,
@@ -1435,61 +1499,12 @@ class EnhancedEmbedModule(nnx.Module, EmbedModule[Action]):
       remat: bool = False,
       compact_items: bool = False,
   ) -> Array:
-    """compact_items: run the item MLP on occupied item slots only
-    (item_sum.mlp_sum); same function, for unrolls."""
+    """compact_items: see `parts`."""
     dtype = jax_utils.module_dtype(self)
-
-    raw_game = state_action.state
-    default_state_action_embed = self._embed_state_action.map(
-        lambda e, v: e(v).astype(dtype), state_action)
-    default_game = default_state_action_embed.state
-
-    parts = [
-        self._embed_player(
-            raw_game.p0, default_game.p0,
-            with_nana=self._use_self_nana,
-        ),
-        self._embed_player(
-            raw_game.p1, default_game.p1,
-            with_nana=True,
-        ),
-        default_game.stage,
-        *default_game.randall,
-        *default_game.fod_platforms,
-    ]
-
-    if self._use_items:
-      # Process items as a batch
-      stacked_items: Item = jax.tree.map(
-        lambda *args: jnp.stack(args, axis=-1), *raw_game.items)
-    if self._use_items and self._use_item_sum and compact_items:
-      parts.append(item_sum.mlp_sum(
-          self._item_mlp, self._item_embedding, stacked_items,
-          stacked_items.exists, dtype))
-    elif self._use_items:
-      item_embed = self._item_embedding(stacked_items).astype(dtype)
-      assert item_embed.shape[-2:] == (len(raw_game.items), self._item_embedding.size)
-      if self._use_item_sum:
-        item_embed = self._item_mlp(item_embed)
-        item_embed = jnp.where(stacked_items.exists[..., None], item_embed, 0)
-        items_embed = jnp.sum(item_embed, axis=-2)
-      else:
-        # Flatten items to concatenate them
-        items_embed = item_embed.reshape(*item_embed.shape[:-2], -1)
-      parts.append(items_embed)
-
-    if isinstance(default_state_action_embed.name, jax.Array):
-      parts.append(default_state_action_embed.name)
-
-    if isinstance(default_state_action_embed.rating, jax.Array):
-      parts.append(default_state_action_embed.rating)
-
-    if self._use_controller_rnn:
-      parts.append(self._controller_rnns[0].unroll(state_action.action, remat=remat))
-    else:
-      parts.extend(map(self._embed_controller, state_action.action))
-
-    return jnp.concatenate(parts, axis=-1)
+    parts = self.parts(state_action, remat=remat, compact_items=compact_items)
+    return jnp.concatenate(
+        [p(dtype) if isinstance(p, embed_lookup.LazyEmbed) else p for p in parts],
+        axis=-1)
 
 # Factory functions for network construction
 
