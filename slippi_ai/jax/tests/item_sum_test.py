@@ -91,6 +91,9 @@ class ItemSumTest(unittest.TestCase):
             in_specs=(P(), P(None, 'data'), P(None, 'data'), P('data'), P(None, 'data')),
             out_specs=(P(None, 'data'), P()))
       out, grads = jax.jit(fn)(state, sa, reset, init, g)
+      # Finish before mock.patch.dict restores os.environ: setenv racing
+      # XLA's worker threads' getenv can segfault.
+      jax.block_until_ready((out, grads))
     return out, grads
 
   def _compare(self, dtype, items_per_frame, tol, shard=False):

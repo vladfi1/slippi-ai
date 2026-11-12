@@ -116,7 +116,9 @@ class EmbedLookupTest(unittest.TestCase):
         jaxpr = str(jax.make_jaxpr(lambda s: loss(s)[0])(state))
         self.assertEqual('embed_lookup' in jaxpr, lookup)  # the pallas_call's name
         (_, out), grads = jax.jit(jax.value_and_grad(loss, has_aux=True))(state)
-        return out, grads
+        # Finish before mock.patch.dict restores os.environ: setenv racing
+        # XLA's worker threads' getenv can segfault.
+        return jax.block_until_ready((out, grads))
 
     out0, grads0 = run(False)
     out1, grads1 = run(True)
