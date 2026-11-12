@@ -40,6 +40,26 @@ class NetworksTest(unittest.TestCase):
       assert_tensors_close(unroll_outputs, step_outputs)
       jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
 
+  @parameterized.expand(networks.SIMPLE_CONSTRUCTORS)
+  def test_unroll_vs_step_batch_dims(self, name='mlp'):
+    """Several batch dims, as the Q-function's action net unrolls."""
+    rngs = nnx.Rngs(0)
+    unroll_length = 8
+    batch_shape = (2, 3)
+    input_size = 10
+    network = default_network(name, rngs, input_size)
+    initial_state = network.initial_state(batch_shape, rngs)
+    inputs = rngs.normal((unroll_length, *batch_shape, input_size))
+    reset = rngs.bernoulli(0.1, (unroll_length, *batch_shape))
+
+    unroll_outputs, unroll_final_state = network.unroll(
+        inputs, reset, initial_state)
+    step_outputs, step_final_state = jax_utils.dynamic_rnn(
+        network._step_with_reset, (inputs, reset), initial_state)
+
+    assert_tensors_close(unroll_outputs, step_outputs)
+    jax.tree.map(assert_tensors_close, unroll_final_state, step_final_state)
+
   def _test_unroll_vs_step_sa_net(self, network: networks.StateActionNetwork):
     rngs = nnx.Rngs(0)
     unroll_length = 8

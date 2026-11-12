@@ -550,6 +550,19 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
     return self._unroll(inputs, reset, initial_state, residual=True)
 
   def _unroll(self, inputs: Array, reset: Array, initial_state, residual: bool):
+    batch_shape = inputs.shape[1:-1]
+    if len(batch_shape) != 1:
+      # One batch dim for the kernels and the scan below, e.g. for the
+      # Q-function's action net, which unrolls [FS, T, B] inputs.
+      n = math.prod(batch_shape)
+      outputs, final_state = self._unroll(
+          inputs.reshape(inputs.shape[0], n, inputs.shape[-1]),
+          reset.reshape(reset.shape[0], n),
+          jax.tree.map(lambda s: s.reshape(n, s.shape[-1]), initial_state),
+          residual)
+      return (outputs.reshape(*inputs.shape[:-1], outputs.shape[-1]),
+              jax.tree.map(lambda s: s.reshape(*batch_shape, s.shape[-1]), final_state))
+
     cell = self._core
     Wi, Wh, b, dtype = self._fused_params(inputs.dtype)
     xw = jnp.einsum('tbd,dg->tbg', inputs.astype(dtype), Wi)  # [T, B, 4H]
