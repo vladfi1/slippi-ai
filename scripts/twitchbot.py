@@ -581,6 +581,8 @@ class Session:
       sd_stocks: If set, the agent will self-destruct at the start of each game
         until it has at most this many stocks left.
     """
+    logging.basicConfig(level=logging.INFO)
+
     if run_on_cpu:
       eval_lib.disable_gpus()
     else:
