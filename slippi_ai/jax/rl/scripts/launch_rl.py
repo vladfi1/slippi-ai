@@ -35,6 +35,7 @@ if __name__ == '__main__':
 
   CONFIG.runtime.max_step=20000
   CONFIG.runtime.log_interval=300
+  CONFIG.runtime.save_interval = 1800
   CONFIG.dolphin.path=os.environ.get('MAINLINE_EXI_AI')
   CONFIG.dolphin.iso=os.environ.get('ISO_PATH')
   CONFIG.dolphin.console_timeout=60
