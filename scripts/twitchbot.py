@@ -38,6 +38,9 @@ WEB_PORT = flags.DEFINE_integer(
 WEB_HOST = flags.DEFINE_string(
     'web_host', '127.0.0.1',
     'Address to serve the web frontend on; 0.0.0.0 for the local network.')
+WEB_PREFS_DAYS = flags.DEFINE_float(
+    'web_prefs_days', 30,
+    'Forget the preferences of web users not seen for this many days.')
 
 STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
 
@@ -601,6 +604,7 @@ def main(_):
       botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
       botmatch_max_games=BOTMATCH_MAX_GAMES.value,
       state_dir=STATE_DIR.value,
+      prefs_max_days={'web': WEB_PREFS_DAYS.value},
   )
 
   try:

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import pickle
+import time
 import typing as tp
 from typing import Optional
 
@@ -101,16 +102,37 @@ class ModelCache:
           except FileNotFoundError:
             pass  # Another process may have removed it.
 
+# Stored with each user's preferences: when they were last seen, in seconds
+# since the epoch. Used to prune users who have gone away.
+LAST_SEEN = 'last_seen'
+# Seeing a user again within this long doesn't update LAST_SEEN, so that
+# frequent visits don't rewrite the file.
+TOUCH_INTERVAL = 60 * 60  # seconds
+
 class UserPrefs:
   """Per-user preferences persisted to a JSON file.
 
-  The file maps user id (e.g. "twitch:<name>") to a dict of preferences.
+  The file maps user id (e.g. "twitch:<name>") to a dict of preferences,
+  including when the user was last seen.
   """
 
-  def __init__(self, path: Optional[str]):
+  def __init__(
+      self,
+      path: Optional[str],
+      clock: tp.Callable[[], float] = time.time,
+  ):
     self._path = path
+    self._clock = clock
     self._prefs: dict[str, dict[str, tp.Any]] = {}
     self._load()
+
+    # Users from before LAST_SEEN was tracked count as seen now.
+    now = self._clock()
+    unseen = [p for p in self._prefs.values() if LAST_SEEN not in p]
+    for user_prefs in unseen:
+      user_prefs[LAST_SEEN] = now
+    if unseen:
+      self._save()
 
   def _load(self):
     if self._path is None or not os.path.isfile(self._path):
@@ -145,8 +167,40 @@ class UserPrefs:
     return self._prefs.get(user, {}).get(key)
 
   def set(self, user: str, key: str, value: tp.Any):
-    self._prefs.setdefault(user, {})[key] = value
+    user_prefs = self._prefs.setdefault(user, {})
+    user_prefs[key] = value
+    user_prefs[LAST_SEEN] = self._clock()
     self._save()
+
+  def touch(self, user: str):
+    """Notes that a user with preferences has been seen."""
+    user_prefs = self._prefs.get(user)
+    if user_prefs is None:
+      return
+    now = self._clock()
+    if now - user_prefs.get(LAST_SEEN, 0) >= TOUCH_INTERVAL:
+      user_prefs[LAST_SEEN] = now
+      self._save()
+
+  def prune(
+      self,
+      should_prune: tp.Callable[[str], bool],
+      max_age: float,
+  ) -> list[str]:
+    """Forgets the users not seen for max_age seconds that should_prune.
+
+    Returns the pruned users.
+    """
+    cutoff = self._clock() - max_age
+    pruned = [
+        user for user, user_prefs in self._prefs.items()
+        if should_prune(user) and user_prefs.get(LAST_SEEN, 0) < cutoff
+    ]
+    for user in pruned:
+      del self._prefs[user]
+    if pruned:
+      self._save()
+    return pruned
 
   def rename_users(self, rename: tp.Callable[[str], str]):
     """Renames users, e.g. to migrate to a new format of user ids."""
@@ -160,6 +214,6 @@ class UserPrefs:
     if user_prefs is None or key not in user_prefs:
       return
     del user_prefs[key]
-    if not user_prefs:
+    if not user_prefs.keys() - {LAST_SEEN}:
       del self._prefs[user]
     self._save()

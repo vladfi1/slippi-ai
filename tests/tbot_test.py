@@ -10,6 +10,7 @@ import os
 import pickle
 import sys
 import tempfile
+import time
 import types
 import typing as tp
 import unittest
@@ -21,6 +22,7 @@ from slippi_ai import dolphin as dolphin_lib
 from slippi_ai.tbot import manager as manager_lib
 from slippi_ai.tbot import sessions as sessions_lib
 from slippi_ai.tbot import web as web_lib
+from slippi_ai.tbot.persistence import LAST_SEEN, TOUCH_INTERVAL, UserPrefs
 from slippi_ai.tbot.manager import User, UserError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -59,6 +61,7 @@ MODELS = {
 }
 
 BOT_CONNECT_CODE = 'PHAI#591'
+DAY = 24 * 60 * 60
 
 
 # Fake ray actors.
@@ -167,6 +170,7 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
   max_sessions = 3
   bot_session_interval = -1.0  # no bot session on stream
   user_prefs: dict = {}
+  prefs_max_days: dict = {}
 
   def setUp(self):
     self.tmp = tempfile.TemporaryDirectory()
@@ -211,6 +215,7 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
         botmatch_replay_dir=os.path.join(root, 'botmatch'),
         botmatch_max_games=5,
         state_dir=self.state_dir,
+        prefs_max_days=self.prefs_max_days,
     )
     self.announcements: list[str] = []
 
@@ -515,6 +520,109 @@ class PrefsMigrationTest(ManagerTestCase):
     self.assertEqual(self.manager.connect_code(alice), 'AAA#1')
     with open(os.path.join(self.state_dir, 'user_prefs.json')) as f:
       self.assertEqual(list(json.load(f)), ['twitch:alice'])
+
+
+class FakeClock:
+
+  def __init__(self):
+    self.now = 1e9
+
+  def __call__(self) -> float:
+    return self.now
+
+class UserPrefsTest(unittest.TestCase):
+
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.path = os.path.join(self.tmp.name, 'prefs.json')
+    self.clock = FakeClock()
+
+  def tearDown(self):
+    self.tmp.cleanup()
+
+  def load(self) -> UserPrefs:
+    return UserPrefs(self.path, clock=self.clock)
+
+  def saved(self) -> dict:
+    with open(self.path) as f:
+      return json.load(f)
+
+  def test_set_records_last_seen(self):
+    prefs = self.load()
+    prefs.set('web:a', 'agent', 'fox')
+    self.assertEqual(self.saved(), {'web:a': {'agent': 'fox', LAST_SEEN: 1e9}})
+    self.assertEqual(self.load().get('web:a', 'agent'), 'fox')
+
+  def test_touch(self):
+    prefs = self.load()
+    prefs.touch('web:unknown')  # Users without prefs aren't added.
+    prefs.set('web:a', 'agent', 'fox')
+
+    self.clock.now += TOUCH_INTERVAL / 2
+    prefs.touch('web:a')
+    self.assertEqual(self.saved()['web:a'][LAST_SEEN], 1e9)
+
+    self.clock.now += TOUCH_INTERVAL
+    prefs.touch('web:a')
+    self.assertEqual(self.saved()['web:a'][LAST_SEEN], self.clock.now)
+    self.assertNotIn('web:unknown', self.saved())
+
+  def test_prune(self):
+    prefs = self.load()
+    prefs.set('web:old', 'agent', 'fox')
+    prefs.set('twitch:old', 'agent', 'fox')
+    self.clock.now += 10 * DAY
+    prefs.set('web:new', 'agent', 'fox')
+
+    is_web = lambda user: user.startswith('web:')
+    self.assertEqual(prefs.prune(is_web, max_age=5 * DAY), ['web:old'])
+    self.assertCountEqual(self.saved(), ['web:new', 'twitch:old'])
+    self.assertEqual(prefs.prune(is_web, max_age=5 * DAY), [])
+
+  def test_unseen_users_count_as_seen_on_load(self):
+    with open(self.path, 'w') as f:
+      json.dump({'web:a': {'agent': 'fox'}}, f)
+    prefs = self.load()
+    self.assertEqual(self.saved()['web:a'][LAST_SEEN], 1e9)
+    self.clock.now += DAY
+    self.assertEqual(prefs.prune(lambda _: True, max_age=2 * DAY), [])
+
+  def test_delete_last_pref_removes_user(self):
+    prefs = self.load()
+    prefs.set('web:a', 'agent', 'fox')
+    prefs.delete('web:a', 'agent')
+    self.assertEqual(self.saved(), {})
+
+
+class PrefsPruningTest(ManagerTestCase):
+
+  user_prefs = {
+      'web:' + 'o' * 32: {'connect_code': 'OLD#1', LAST_SEEN: 0},
+      'web:' + 'n' * 32: {'connect_code': 'NEW#1'},
+      # Seen a while ago, but not long enough to be pruned.
+      'web:' + 'r' * 32: {
+          'connect_code': 'RECENT#1', LAST_SEEN: time.time() - DAY},
+      'twitch:old': {'connect_code': 'TWO#1', LAST_SEEN: 0},
+  }
+  prefs_max_days = {'web': 30}
+
+  def user(self, frontend: str, key: str) -> User:
+    return User(frontend=frontend, key=key, name=key)
+
+  def test_old_web_users_pruned(self):
+    self.assertIsNone(self.manager.connect_code(self.user('web', 'o' * 32)))
+    self.assertEqual(
+        self.manager.connect_code(self.user('web', 'n' * 32)), 'NEW#1')
+    # Only web users are pruned.
+    self.assertEqual(
+        self.manager.connect_code(self.user('twitch', 'old')), 'TWO#1')
+
+  async def test_playing_counts_as_seen(self):
+    user = self.user('web', 'r' * 32)
+    await self.manager.play(user)
+    with open(os.path.join(self.state_dir, 'user_prefs.json')) as f:
+      last_seen = json.load(f)[user.id][LAST_SEEN]
+    self.assertGreater(last_seen, time.time() - 60)
 
 
 class FakeContext:

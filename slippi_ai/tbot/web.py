@@ -161,7 +161,10 @@ class WebFrontend:
   # Preferences
 
   async def _get_me(self, request: web.Request) -> web.Response:
-    return json_response(self._me_json(self._user(request)))
+    # Called when the page loads, so it marks the user as seen.
+    user = self._user(request)
+    self.manager.touch(user)
+    return json_response(self._me_json(user))
 
   async def _set_me(self, request: web.Request) -> web.Response:
     user = self._user(request)

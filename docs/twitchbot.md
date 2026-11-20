@@ -127,7 +127,9 @@ as a systemd service:
 - The page has no login and no limits beyond `--max_sessions`, which it
   shares with Twitch chat. Each browser is identified by a random token that
   it keeps. Every visitor who changes a setting adds an entry to
-  `user_prefs.json` in `--state_dir`.
+  `user_prefs.json` in `--state_dir`. Entries for web users who haven't
+  played, changed a setting or loaded the page for `--web_prefs_days` (30 by
+  default) are removed. Twitch users' entries are kept.
 - To take the page down, stop the tunnel. To remove it completely, also run
   `cloudflared tunnel delete phillip2` and delete the DNS record in the
   Cloudflare dashboard.

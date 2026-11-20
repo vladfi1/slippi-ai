@@ -173,6 +173,7 @@ class SessionManager:
       botmatch_replay_dir: str = 'Replays/BotMatch',
       botmatch_max_games: int = 10,
       state_dir: Optional[str] = None,
+      prefs_max_days: tp.Mapping[str, float] = {},
   ):
     """
     Args:
@@ -182,6 +183,9 @@ class SessionManager:
       rating_offset: Added to the eval ratings, which have mean zero.
       state_dir: Directory for state that persists across restarts (model
         config cache, user preferences). None disables persistence.
+      prefs_max_days: Maps a frontend (e.g. 'web') to how many days to keep
+        the preferences of its users after they were last seen. Users of
+        other frontends are kept forever.
     """
     self.dolphin_config = dolphin_config
     self.agent_kwargs = agent_kwargs
@@ -263,6 +267,9 @@ class SessionManager:
     self._stages: dict[str, list[melee.Stage]] = {}
     # Number of stocks the bot should SD down to at the start of each game.
     self._sd_stocks: dict[str, int] = {}
+
+    self._prefs_max_days = dict(prefs_max_days)
+    self._prune_prefs()
 
   def add_listener(self, listener: Listener):
     self._listeners.append(listener)
@@ -672,6 +679,24 @@ class SessionManager:
       await self._stop_sessions([self._sessions[user.id]])
       return SelectResult(restarted=await self._play(user))
 
+  def touch(self, user: User):
+    """Notes that the user is around, so their preferences are kept."""
+    self._user_prefs.touch(user.id)
+
+  def _prune_prefs(self):
+    for frontend, days in self._prefs_max_days.items():
+      prefix = f'{frontend}:'
+      pruned = self._user_prefs.prune(
+          lambda user_id: user_id.startswith(prefix),
+          max_age=days * 24 * 60 * 60)
+      for user_id in pruned:
+        self._stages.pop(user_id, None)
+        self._sd_stocks.pop(user_id, None)
+      if pruned:
+        logging.info(
+            f'Forgot the preferences of {len(pruned)} {frontend} users'
+            f' not seen for {days} days.')
+
   def connect_code(self, user: User) -> Optional[str]:
     return self._user_prefs.get(user.id, CONNECT_CODE_PREF)
 
@@ -730,6 +755,7 @@ class SessionManager:
     if len(self._sessions) == self.max_sessions:
       raise UserError('Sorry, too many sessions already active.')
 
+    self.touch(user)
     agent_config = self._get_opponent_config(user)
     is_weak_agent = parse_imitation_char(agent_config.name) is not None
 
@@ -811,6 +837,7 @@ class SessionManager:
       if len(self._sessions) == self.max_sessions:
         raise UserError('Sorry, too many sessions already active.')
 
+      self.touch(user)
       agent_configs = {1: agent1_config, 2: agent2_config}
       session = self._start_user_bot_session(
           agent_configs, max_games=self.botmatch_max_games)
@@ -1056,6 +1083,7 @@ class SessionManager:
           raise UserError(f'Unknown agent: {name}')
         bot_configs[port] = agent_config
 
+      self.touch(user)
       self._bot_configs = bot_configs
       now = datetime.datetime.now()
       # Only a new initiator gets a fresh timer. The same user setting the
@@ -1159,6 +1187,7 @@ class SessionManager:
         async with self._lock:
           await self._gc_sessions()
           await self._maybe_start_bot_session()
+          self._prune_prefs()
       except Exception:
         logging.exception('Chores failed')
       await asyncio.sleep(interval)
