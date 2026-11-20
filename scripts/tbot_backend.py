@@ -74,6 +74,11 @@ RATING_OFFSET = flags.DEFINE_float(
     'rating_offset', 2000,
     'Added to the (mean zero) eval ratings shown by !rating and !auto.')
 
+MIN_STREAM_RATING = flags.DEFINE_float(
+    'min_stream_rating', 1800,
+    'Only sessions against agents rated at least this (rating_offset'
+    ' included) go on stream; unrated agents never do.')
+
 MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
 
 # Serves as the default agent people play against, and the "screensaver" agent.
@@ -126,6 +131,7 @@ def main(_):
       models_path=MODELS_PATH.value,
       eval_db_path=EVAL_DB.value,
       rating_offset=RATING_OFFSET.value,
+      min_stream_rating=MIN_STREAM_RATING.value,
       max_sessions=MAX_SESSIONS.value,
       dolphin_config=flag_utils.dataclass_from_dict(
           dolphin_lib.DolphinConfig, DOLPHIN.value),

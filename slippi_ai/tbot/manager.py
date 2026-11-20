@@ -84,6 +84,7 @@ class SessionManager:
       auto_delay: int = 18,
       eval_db_path: Optional[str] = None,
       rating_offset: float = 2000,
+      min_stream_rating: float = 1800,
       default_agent: Optional[str] = None,
       costume: Optional[int] = None,
       botmatch_replay_dir: str = 'Replays/BotMatch',
@@ -97,6 +98,8 @@ class SessionManager:
         there are no eval ratings.
       eval_db_path: Eval database whose ratings pick the auto-* agents.
       rating_offset: Added to the eval ratings, which have mean zero.
+      min_stream_rating: Only sessions against agents rated at least this
+        (offset included) go on stream; unrated agents never do.
       state_dir: Directory for state that persists across restarts (model
         config cache, user preferences). None disables persistence.
       prefs_max_days: Maps a frontend (e.g. 'web') to how many days to keep
@@ -151,6 +154,7 @@ class SessionManager:
     self._models_path = models_path
     self._eval_db_path = eval_db_path
     self._rating_offset = rating_offset
+    self._min_stream_rating = min_stream_rating
     self._default_agent = default_agent
     # Cache of loaded model states, keyed by model name. Each entry holds the
     # file mtime it was loaded at, the (trimmed) state, and its summary.
@@ -555,6 +559,26 @@ class SessionManager:
     peers = [r for (_, c), r in self._ratings.items() if c == char]
     return 1 + sum(r > rating for r in peers), len(peers)
 
+  def _agent_rating(self, agent_config: AgentConfig) -> Optional[float]:
+    """An agent's eval rating; for an auto agent, that of its best pick."""
+    if isinstance(agent_config, AutoAgent):
+      char = agent_config.character
+      ratings = [
+          self._ratings[(model, char)]
+          for model in set(agent_config.opponent_table.values())
+          if (model, char) in self._ratings]
+      return max(ratings, default=None)
+
+    assert isinstance(agent_config, SingleAgent)
+    model = os.path.basename(agent_config.agent_kwargs['path'])
+    char = self._agent_infos[agent_config.name].character
+    return self._ratings.get((model, char))
+
+  def _is_stream_worthy(self, agent_config: AgentConfig) -> bool:
+    """Whether a session against this agent may go on stream."""
+    rating = self._agent_rating(agent_config)
+    return rating is not None and rating >= self._min_stream_rating
+
   def ratings(self, name: str) -> tuple[str, list[CharacterRating]]:
     """The model behind a (non-auto) agent and its ratings, maybe empty."""
     agent_config = self._agents.get(name)
@@ -708,9 +732,9 @@ class SessionManager:
     agent_config = self._get_opponent_config(user)
     is_weak_agent = parse_imitation_char(agent_config.name) is not None
 
-    is_stream = self._stream and (self._streaming_against is None)
-    if is_weak_agent:
-      is_stream = False
+    is_stream = (
+        self._stream and self._streaming_against is None
+        and self._is_stream_worthy(agent_config))
 
     if is_stream:
       await self._stop_bot_session()

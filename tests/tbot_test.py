@@ -174,6 +174,9 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
   bot_session_interval = -1.0  # no bot session on stream
   user_prefs: dict = {}
   prefs_max_days: dict = {}
+  # Eval ratings keyed by (model, character), offset included. Only rated
+  # agents go on stream.
+  ratings: dict = {('fox_vs_falco', melee.Character.FOX): 2000.0}
 
   def setUp(self):
     self.tmp = tempfile.TemporaryDirectory()
@@ -204,6 +207,9 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
       self._patch(sessions_lib, name, FakeRemote(kind, self.sessions))
     self._patch(manager_lib, 'STOP_TIMEOUT', 0.2)
     self._patch(manager_lib, 'KILL_TIMEOUT', 2)
+    ratings = self.ratings
+    self._patch(
+        manager_lib.SessionManager, '_load_ratings', lambda _: dict(ratings))
 
     self.manager = manager_lib.SessionManager(
         dolphin_config=dolphin_lib.DolphinConfig(
@@ -316,6 +322,13 @@ class PlayTest(ManagerTestCase):
     await self.manager.stop(alice)
     await self.manager.stop(bob)
     self.assertTrue((await self.manager.play(bob)).on_stream)
+
+  async def test_unrated_agents_off_stream(self):
+    alice = self.player('alice', 'AAA#1')
+    await self.manager.select_agent(alice, 'basic-fox')
+    self.assertFalse((await self.manager.play(alice)).on_stream)
+    # The stream slot is still free.
+    self.assertTrue((await self.manager.play(self.player('bob', 'BBB#2'))).on_stream)
 
   async def test_connect_code_in_one_session(self):
     await self.manager.play(self.player('alice', 'AAA#1'))
@@ -471,6 +484,38 @@ class GcTest(ManagerTestCase):
     self.human_sessions()[0].starting = True
     self.assertEqual(await self.manager.gc(), [])
     self.assertIsNotNone(self.manager.session_id(alice))
+
+
+class StreamRatingTest(ManagerTestCase):
+  ratings = {
+      ('fox_vs_falco', melee.Character.FOX): 1700.0,
+      ('fox_vs_marth', melee.Character.FOX): 1900.0,
+      ('fox_imitation', melee.Character.FOX): 1850.0,
+      ('marth_vs_fox', melee.Character.MARTH): 1500.0,
+  }
+
+  async def on_stream(self, agent: str) -> bool:
+    alice = self.player('alice', 'AAA#1')
+    await self.manager.select_agent(alice, agent)
+    result = await self.manager.play(alice)
+    await self.manager.stop(alice)
+    return result.on_stream
+
+  async def test_below_min_rating(self):
+    self.assertFalse(await self.on_stream('fox_vs_falco'))
+
+  async def test_above_min_rating(self):
+    self.assertTrue(await self.on_stream('fox_vs_marth'))
+
+  async def test_rated_basic_agent(self):
+    self.assertTrue(await self.on_stream('basic-fox'))
+
+  async def test_unrated_agent(self):
+    self.assertFalse(await self.on_stream('multi-falco'))
+
+  async def test_auto_agent_uses_best_pick(self):
+    self.assertTrue(await self.on_stream('auto-fox'))
+    self.assertFalse(await self.on_stream('auto-marth'))
 
 
 class AnnouncementsTest(ManagerTestCase):
