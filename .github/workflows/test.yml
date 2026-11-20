@@ -23,7 +23,7 @@ jobs:
     - name: Install
       run: |
         pip install -r jax-requirements.txt
-        pip install .[train,tf,jax]
+        pip install .[train,tf,jax,twitchbot]
         pip install pytest  # imported by slippi_ai/jax/nash/optimization_test.py
         sudo apt update
         sudo apt install -y zipmerge
@@ -39,6 +39,7 @@ jobs:
         python tests/no_jax_import.py
         python tests/data_test.py
         python tests/data_batch_snapshot.py
+        python tests/tbot_test.py
 
     - name: Cache the test dataset
       uses: actions/cache@v5
