@@ -72,8 +72,9 @@ all there is to go on.
 - No other limits up front. Per-IP limits, rate limits or a separate web cap
   get added if abuse actually shows up.
 - Not on the web: the admin commands `!kick` (mods only), `!reload`, `!gc`.
-- Deployment: behind a reverse proxy with TLS. Ray's ports and dashboard stay
-  bound to localhost.
+- Deployment: a Cloudflare tunnel to the bot on localhost provides HTTPS
+  without port forwarding (set up as in `docs/twitchbot.md`). Ray's ports
+  and dashboard are not exposed.
 
 On the local network, the same code runs with `--web_host=0.0.0.0`.
 
@@ -104,7 +105,7 @@ agents, so the page doesn't stall behind them.
 4. `WebFrontend`: FastAPI routes, browser token, SSE status, enabled by a
    `--web_port` absl flag in the same process. Test on the local network.
 5. The static page.
-6. Before going public: reverse proxy, and a check that Ray isn't reachable
-   from outside.
+6. Before going public: Cloudflare tunnel (done 2026-11-20,
+   `https://phillip2.ssbm.ai`; see `docs/twitchbot.md`).
 7. (Optional) Phase 2: the manager as a detached Ray actor, with separate
    Twitch and web entry points.
