@@ -42,6 +42,13 @@ NAME_TO_STAGE = {
 
 MAX_STOCKS = 4
 
+# How long to wait for a session to stop before killing its Dolphin. Stopping
+# can hang while the game is paused, until the console times out.
+STOP_TIMEOUT = 10  # seconds
+# How long a session may take to stop after its Dolphin has been killed;
+# netplay notices that Dolphin is gone within about 30 seconds.
+KILL_TIMEOUT = 60  # seconds
+
 # Keys into UserPrefs.
 AGENT_PREF = 'agent'
 CONNECT_CODE_PREF = 'connect_code'
@@ -209,6 +216,8 @@ class SessionManager:
 
     self._lock = asyncio.Lock()
     self._listeners: list[Listener] = []
+    # Sessions that are still stopping after their Dolphin was killed.
+    self._background_stops: set[asyncio.Task] = set()
 
     with open(dolphin_config.user_json_path) as f:
       user_json = json.load(f)
@@ -929,12 +938,43 @@ class SessionManager:
         max_games=max_games,
     )
 
+  async def _stop_actor(self, session: sessions_lib.Session, label: str):
+    """Stops a session, killing its Dolphin if that takes too long.
+
+    Waits at most STOP_TIMEOUT. A session whose Dolphin had to be killed
+    finishes stopping in the background.
+    """
+    stop = asyncio.ensure_future(session.stop.remote())
+    done, _ = await asyncio.wait([stop], timeout=STOP_TIMEOUT)
+    if done:
+      _log_stop_error(stop, label)
+      return
+
+    logging.warning(
+        f'{label} did not stop within {STOP_TIMEOUT}s; killing its Dolphin.')
+    # Runs alongside the hung stop, since sessions take concurrent calls.
+    session.kill_dolphin.remote()
+
+    async def finish():
+      done, _ = await asyncio.wait([stop], timeout=KILL_TIMEOUT)
+      if done:
+        _log_stop_error(stop, label)
+        logging.info(f'{label} stopped after its Dolphin was killed.')
+      else:
+        logging.error(f'{label} still has not stopped.')
+
+    task = asyncio.create_task(finish())
+    self._background_stops.add(task)
+    task.add_done_callback(self._background_stops.discard)
+
   async def _stop_sessions(self, infos: list[SessionInfo]):
     """All (non-bot) session stops go through this method."""
     if not infos:
       return
 
-    await asyncio.gather(*[info.session.stop.remote() for info in infos])
+    await asyncio.gather(*[
+        self._stop_actor(info.session, f'Session with {info.user.id}')
+        for info in infos])
 
     logging.info(f'Stopped {len(infos)} human sessions.')
 
@@ -978,7 +1018,7 @@ class SessionManager:
     if not self._bot_session:
       return
     logging.info('Stopping bot session.')
-    await self._bot_session.stop.remote()
+    await self._stop_actor(self._bot_session, 'Bot session')
     self._bot_session = None
 
   async def stop_bot_session(self) -> bool:
@@ -1060,16 +1100,9 @@ class SessionManager:
           lock_remaining=self._bots_lock_remaining(),
       )
 
-    async def get_status(
-        info: SessionInfo) -> Optional[sessions_lib.SessionStatus]:
-      # Sessions don't answer until they have loaded their agents.
-      try:
-        return await asyncio.wait_for(info.session.status.remote(), timeout=1)
-      except asyncio.TimeoutError:
-        return None
-
     infos = list(self._sessions.values())
-    statuses = await asyncio.gather(*map(get_status, infos))
+    statuses = await asyncio.gather(
+        *[_get_status(info.session, timeout=1) for info in infos])
 
     sessions = []
     for info, status in zip(infos, statuses):
@@ -1091,18 +1124,19 @@ class SessionManager:
   async def _gc_sessions(self) -> list[User]:
     """Stop sessions that have died or been in the menu for too long."""
     if self._bot_session is not None:
-      status: sessions_lib.SessionStatus = (
-          await self._bot_session.status.remote())
-      if not status.is_alive:
+      status = await _get_status(self._bot_session)
+      if status is not None and not status.is_alive:
         logging.info('Bot session died.')
         await self._stop_bot_session()
 
     infos = list(self._sessions.values())
-    statuses: list[sessions_lib.SessionStatus] = await asyncio.gather(
-        *[info.session.status.remote() for info in infos])
+    statuses = await asyncio.gather(
+        *[_get_status(info.session) for info in infos])
 
     to_gc: list[SessionInfo] = []
     for info, status in zip(infos, statuses):
+      if status is None:
+        continue  # Still starting up.
       menu_minutes = status.num_menu_frames / (60 * 60)
       if not status.is_alive or menu_minutes > self._menu_timeout:
         to_gc.append(info)
@@ -1132,13 +1166,47 @@ class SessionManager:
   def shutdown(self):
     """Stops all sessions. Blocks, so call it once the event loop is done."""
     logging.info('Shutting down')
-    refs = [info.session.stop.remote() for info in self._sessions.values()]
+    sessions = [info.session for info in self._sessions.values()]
     if self._bot_session is not None:
-      refs.append(self._bot_session.stop.remote())
-    if refs:
-      ray.wait(refs, num_returns=len(refs))
+      sessions.append(self._bot_session)
     self._sessions.clear()
     self._bot_session = None
+    if not sessions:
+      return
+
+    refs = [session.stop.remote() for session in sessions]
+    _, pending = ray.wait(refs, num_returns=len(refs), timeout=STOP_TIMEOUT)
+    if not pending:
+      return
+
+    logging.warning(f'{len(pending)} sessions did not stop; killing Dolphin.')
+    for session, ref in zip(sessions, refs):
+      if ref in pending:
+        session.kill_dolphin.remote()
+    ray.wait(pending, num_returns=len(pending), timeout=KILL_TIMEOUT)
+
+async def _get_status(
+    session: sessions_lib.Session,
+    timeout: float = 5,
+) -> Optional[sessions_lib.SessionStatus]:
+  """The session's status; None if it doesn't answer in time.
+
+  Sessions don't answer until they have loaded their agents. A session whose
+  actor has crashed is reported as not alive.
+  """
+  try:
+    return await asyncio.wait_for(session.status.remote(), timeout=timeout)
+  except asyncio.TimeoutError:
+    return None
+  except Exception as e:
+    logging.error(f'Failed to get session status: {e!r}')
+    return sessions_lib.SessionStatus(num_menu_frames=0, is_alive=False)
+
+def _log_stop_error(stop: asyncio.Future, label: str):
+  """Logs a failed stop; the session is treated as stopped either way."""
+  error = stop.exception()
+  if error is not None:
+    logging.error(f'{label} failed to stop cleanly: {error!r}')
 
 def format_td(td: datetime.timedelta) -> str:
   """Chop off microseconds."""

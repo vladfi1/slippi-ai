@@ -70,6 +70,17 @@ class LogBuffer(logging.Handler):
     with self._lock:
       return self._next, [line for i, line in self._lines if i >= start]
 
+def kill_dolphin(dolphin: dolphin_lib.Dolphin):
+  """Kills Dolphin, for when stopping hangs (e.g. while the game is paused).
+
+  The session's loop exits once netplay notices that Dolphin is gone.
+  """
+  # Read once, since Console.stop may set it to None concurrently.
+  process = dolphin.console._process
+  if process is not None:
+    logging.warning('Killing Dolphin.')
+    process.kill()
+
 def set_memory_growth():
   """Set memory growth for all available GPUs."""
   import tensorflow as tf
@@ -118,6 +129,7 @@ class BotSession:
         players=players,
         **dolphin_kwargs,
     )
+    self._dolphin = dolphin
 
     agents: dict[int, Agent] = {}
     for port, opponent_port in zip(ports, reversed(ports)):
@@ -166,6 +178,9 @@ class BotSession:
 
   def logs(self, since: int) -> tuple[int, list[str]]:
     return self._log_buffer.since(since)
+
+  def kill_dolphin(self):
+    kill_dolphin(self._dolphin)
 
   def status(self) -> SessionStatus:
     return SessionStatus(
@@ -249,6 +264,7 @@ class Session:
         players={port: player},
         **dolphin_kwargs,
     )
+    self._dolphin = dolphin
     controller = dolphin.controllers[port]
 
     agent = agent_config.build(
@@ -377,6 +393,9 @@ class Session:
 
   def logs(self, since: int) -> tuple[int, list[str]]:
     return self._log_buffer.since(since)
+
+  def kill_dolphin(self):
+    kill_dolphin(self._dolphin)
 
 RemoteSession = ray.remote(num_gpus=0, max_concurrency=MAX_CONCURRENCY)(Session)
 RemoteGpuSession = ray.remote(**GPU_KWARGS)(Session)
