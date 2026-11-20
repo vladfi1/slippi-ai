@@ -46,7 +46,7 @@ def supported(H: int, dtype) -> bool:
   """Whether `linear` runs for a [*, H] output in `dtype`. Read at trace time."""
   if os.environ.get('SLIPPI_EMBED_LOOKUP', '1') == '0':
     return False
-  if not pallas_utils.enabled():
+  if os.environ.get('SLIPPI_EMBED_LOOKUP') != 'xla' and not pallas_utils.enabled():
     return False
   return dtype == jnp.bfloat16 and H % BN == 0
 
@@ -217,7 +217,26 @@ def _lookup_kernel(rows_ref, w_ref, dense_ref, wd_ref, b_ref, o_ref, *, F, R, Dp
   o_ref[pl.ds(m0, BM), cols] = y.astype(o_ref.dtype)
 
 
+def _forward_xla(layout: Layout, kernel: Array, bias: Array, dense: Array, idx: Array) -> Array:
+  # EXPERIMENT: plain-JAX gathers; XLA should fuse the gathers and adds.
+  R, H = kernel.shape
+  offsets = jnp.asarray(layout.onehot_offsets, jnp.int32)
+  rows = jnp.where(idx >= 0, idx + offsets, R)
+  wpad = jnp.concatenate([kernel, jnp.zeros((1, H), kernel.dtype)])
+  acc = None
+  for f in range(idx.shape[-1]):
+    g = wpad[rows[..., f]].astype(jnp.float32)
+    acc = g if acc is None else acc + g
+  if layout.dense_rows:
+    w_dense = kernel[jnp.asarray(layout.dense_rows, jnp.int32)]
+    acc = acc + jnp.einsum('...d,dh->...h', dense.astype(kernel.dtype), w_dense,
+                           preferred_element_type=jnp.float32)
+  return acc.astype(kernel.dtype) + bias.astype(kernel.dtype)
+
+
 def _forward(layout: Layout, kernel: Array, bias: Array, dense: Array, idx: Array) -> Array:
+  if os.environ.get('SLIPPI_EMBED_LOOKUP') == 'xla':
+    return _forward_xla(layout, kernel, bias, dense, idx)
   lead = idx.shape[:-1]
   F = idx.shape[-1]
   R, H = kernel.shape

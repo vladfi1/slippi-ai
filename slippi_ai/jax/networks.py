@@ -495,7 +495,7 @@ class GRU(RecurrentWrapper, BuildableNetwork[Array, Array]):
 def _use_lstm_pallas(batch: int, hidden: int) -> bool:
   """Whether LSTM unrolls use lstm_pallas's kernels: on GPU (or in Pallas
   interpret mode) for shapes they support. SLIPPI_LSTM_PALLAS=0 disables."""
-  if os.environ.get('SLIPPI_LSTM_PALLAS', '1') == '0':
+  if os.environ.get('SLIPPI_LSTM_PALLAS', '1') in ('0', 'xla'):
     return False
   from slippi_ai.jax import lstm_pallas, pallas_utils  # pylint: disable=g-import-not-at-top
   if not pallas_utils.enabled():
@@ -578,6 +578,13 @@ class LSTM(RecurrentWrapper, BuildableNetwork[Array, Array]):
         return lstm_pallas.lstm_recurrence_residual(xw, Wh, b, h0, c0, reset_i, inputs)
       ys, (cT, hT) = lstm_pallas.lstm_recurrence(xw, Wh, b, h0, c0, reset_i)
       return (inputs + ys if residual else ys), (cT, hT)
+
+    if os.environ.get('SLIPPI_LSTM_PALLAS') == 'xla':  # EXPERIMENT
+      from slippi_ai.jax import lstm_xla  # pylint: disable=g-import-not-at-top
+      c0, h0 = initial_state
+      ys, (cT, hT) = lstm_xla.lstm_recurrence(
+          xw, Wh, b, h0.astype(dtype), c0.astype(dtype), reset.astype(jnp.int32))
+      return (inputs + ys if residual else ys), (cT.astype(c0.dtype), hT.astype(h0.dtype))
 
     gx = xw + b
     gate_fn, act_fn = cell.gate_fn, cell.activation_fn
