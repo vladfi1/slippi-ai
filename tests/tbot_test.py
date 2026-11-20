@@ -1,7 +1,7 @@
 """Tests for slippi_ai.tbot and the twitchbot. Run with `python tests/tbot_test.py`.
 
-Sessions are replaced by fakes, so no Dolphin or ray workers are started.
-Needs the twitchbot extras (twitchio, ray, aiohttp).
+Sessions are replaced by fakes, so no Dolphin is started. Only RemoteCallTest
+starts Ray. Needs the twitchbot extras (twitchio, ray, aiohttp).
 """
 
 import asyncio
@@ -17,13 +17,16 @@ import unittest
 
 from aiohttp import test_utils
 import melee
+import ray
 
 from slippi_ai import dolphin as dolphin_lib
+from slippi_ai.tbot import api
 from slippi_ai.tbot import manager as manager_lib
 from slippi_ai.tbot import sessions as sessions_lib
 from slippi_ai.tbot import web as web_lib
+from slippi_ai.tbot.api import User, UserError
+from slippi_ai.tbot.client import ManagerClient
 from slippi_ai.tbot.persistence import LAST_SEEN, TOUCH_INTERVAL, UserPrefs
-from slippi_ai.tbot.manager import User, UserError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import twitchbot  # pylint: disable=wrong-import-position
@@ -217,12 +220,6 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
         state_dir=self.state_dir,
         prefs_max_days=self.prefs_max_days,
     )
-    self.announcements: list[str] = []
-
-    async def listener(message: str):
-      self.announcements.append(message)
-
-    self.manager.add_listener(listener)
 
   def _patch(self, module, name: str, value):
     self.patches.append((module, name, getattr(module, name)))
@@ -241,6 +238,9 @@ class ManagerTestCase(unittest.IsolatedAsyncioTestCase):
 
   def human_sessions(self) -> list[FakeSession]:
     return [s for s in self.sessions if s.kind == 'human']
+
+  async def announced(self) -> list[str]:
+    return (await self.manager.announcements(0, timeout=0)).messages
 
 
 class AgentsTest(ManagerTestCase):
@@ -352,7 +352,7 @@ class PlayTest(ManagerTestCase):
     self.assertEqual(session.kwargs['stages'], [melee.Stage.BATTLEFIELD])
     self.assertEqual(session.kwargs['sd_stocks'], 2)
 
-    self.manager.set_sd_stocks(alice, manager_lib.MAX_STOCKS)
+    self.manager.set_sd_stocks(alice, api.MAX_STOCKS)
     self.assertIsNone(self.manager.sd_stocks(alice))
     self.manager.set_stages(alice, None)
     self.assertIsNone(self.manager.stages(alice))
@@ -429,23 +429,23 @@ class StopTest(ManagerTestCase):
     self.assertIsNone(self.manager.session_id(alice))
 
   async def test_shutdown_kills_hung_sessions(self):
-    # shutdown() blocks on ray.wait, which is faked here.
     await self.manager.play(self.player('alice', 'AAA#1'))
-    session, = self.human_sessions()
-    session.hang_stop = True
+    await self.manager.play(self.player('bob', 'BBB#2'))
+    hung, fine = self.human_sessions()
+    hung.hang_stop = True
 
-    waits = []
+    await asyncio.wait_for(self.manager.shutdown(), timeout=1)
+    self.assertTrue(hung.killed)
+    self.assertFalse(fine.killed)
+    self.assertFalse(hung.alive)
+    self.assertFalse(fine.alive)
+    self.assertEqual((await self.manager.status()).sessions, [])
 
-    def fake_wait(refs, num_returns, timeout):
-      waits.append(len(refs))
-      # The first wait times out on the hung session; then it is killed.
-      pending = [r for r in refs if not session.killed]
-      return [r for r in refs if r not in pending], pending
-
-    self._patch(manager_lib.ray, 'wait', fake_wait)
-    self.manager.shutdown()
-    self.assertTrue(session.killed)
-    self.assertEqual(waits, [1, 1])
+  async def test_shutdown_ends_chores(self):
+    chores = asyncio.create_task(self.manager.run_chores(interval=3600))
+    await asyncio.sleep(0)
+    await self.manager.shutdown()
+    await asyncio.wait_for(chores, timeout=1)
 
 
 class GcTest(ManagerTestCase):
@@ -462,7 +462,7 @@ class GcTest(ManagerTestCase):
       gced = await self.manager.gc()
     self.assertCountEqual([u.name for u in gced], ['idle', 'dead', 'crashed'])
     self.assertEqual(
-        self.announcements,
+        await self.announced(),
         ['Stopped idle session against idle, dead, crashed'])
 
   async def test_gc_skips_starting_sessions(self):
@@ -471,6 +471,62 @@ class GcTest(ManagerTestCase):
     self.human_sessions()[0].starting = True
     self.assertEqual(await self.manager.gc(), [])
     self.assertIsNotNone(self.manager.session_id(alice))
+
+
+class AnnouncementsTest(ManagerTestCase):
+
+  async def test_since_none_gets_next_number(self):
+    await self.manager._announce('one')
+    result = await self.manager.announcements(None)
+    self.assertEqual((result.next, result.messages), (1, []))
+
+  async def test_waits_for_announcement(self):
+    waiting = asyncio.create_task(self.manager.announcements(0, timeout=5))
+    await asyncio.sleep(0.01)
+    self.assertFalse(waiting.done())
+    await self.manager._announce('one')
+    result = await asyncio.wait_for(waiting, timeout=1)
+    self.assertEqual((result.next, result.messages), (1, ['one']))
+    await self.manager._announce('two')
+    await self.manager._announce('three')
+    result = await self.manager.announcements(result.next, timeout=0)
+    self.assertEqual((result.next, result.messages), (3, ['two', 'three']))
+
+  async def test_timeout(self):
+    result = await self.manager.announcements(0, timeout=0.01)
+    self.assertEqual((result.next, result.messages), (0, []))
+
+  async def test_old_announcements_dropped(self):
+    for i in range(manager_lib.MAX_ANNOUNCEMENTS + 5):
+      await self.manager._announce(str(i))
+    result = await self.manager.announcements(0, timeout=0)
+    self.assertEqual(len(result.messages), manager_lib.MAX_ANNOUNCEMENTS)
+    self.assertEqual(result.messages[0], '5')
+
+  async def test_number_from_before_restart(self):
+    # A frontend may still have a number from a backend that had more.
+    waiting = asyncio.create_task(self.manager.announcements(10, timeout=5))
+    await asyncio.sleep(0.01)
+    await self.manager._announce('one')
+    result = await asyncio.wait_for(waiting, timeout=1)
+    self.assertEqual(result.messages, ['one'])
+
+  async def test_listen(self):
+    client = ManagerClient.local(self.manager)
+    await self.manager._announce('before listening')
+    heard: list[str] = []
+    async def listener(message: str):
+      heard.append(message)
+    listening = asyncio.create_task(client.listen(listener))
+    await asyncio.sleep(0.01)
+    await self.manager._announce('one')
+    await self.manager._announce('two')
+    for _ in range(100):
+      if len(heard) == 2:
+        break
+      await asyncio.sleep(0.01)
+    listening.cancel()
+    self.assertEqual(heard, ['one', 'two'])
 
 
 class BotsTest(ManagerTestCase):
@@ -482,7 +538,8 @@ class BotsTest(ManagerTestCase):
     bot, = self.sessions
     self.assertEqual(bot.kind, 'bot')
     self.assertEqual(
-        self.announcements, ['Started fox_vs_falco vs. fox_vs_falco on stream.'])
+        await self.announced(),
+        ['Started fox_vs_falco vs. fox_vs_falco on stream.'])
 
     # A player on stream replaces the bots.
     await self.manager.play(self.player('alice', 'AAA#1'))
@@ -641,7 +698,8 @@ class TwitchTest(ManagerTestCase):
 
   async def asyncSetUp(self):
     self.bot = twitchbot.Bot(
-        token='test', prefix='!', channel='test', manager=self.manager)
+        token='test', prefix='!', channel='test',
+        manager=ManagerClient.local(self.manager), info=self.manager.info())
 
   async def command(
       self, name: str, content: str, is_mod: bool = False) -> list[str]:
@@ -685,7 +743,8 @@ OTHER_TOKEN = 'b' * 32
 class WebTest(ManagerTestCase):
 
   async def asyncSetUp(self):
-    frontend = web_lib.WebFrontend(self.manager, twitch_channel='test')
+    frontend = web_lib.WebFrontend(
+        ManagerClient.local(self.manager), twitch_channel='test')
     self.client = test_utils.TestClient(test_utils.TestServer(frontend.app))
     await self.client.start_server()
 
@@ -801,6 +860,77 @@ class WebTest(ManagerTestCase):
     # Tokens are secret: never sent in events.
     self.assertNotIn(TOKEN, raw)
     self.assertNotIn(OTHER_TOKEN, raw)
+
+  async def test_announcements(self):
+    response = await self.client.get(f'/api/events?token={TOKEN}')
+    async def read() -> tp.Any:
+      event = None
+      async for line in response.content:
+        line = line.decode()
+        if line.startswith('event: '):
+          event = line.removeprefix('event: ').strip()
+        elif line.startswith('data: ') and event == 'announce':
+          return json.loads(line[6:])
+    reading = asyncio.create_task(read())
+    await asyncio.sleep(0.1)  # Lets the page's listener start.
+    await self.manager._announce('hello')
+    self.assertEqual(await asyncio.wait_for(reading, timeout=5), 'hello')
+    response.close()
+
+
+class FakeManager:
+  """Stands in for the SessionManager actor."""
+
+  async def info(self) -> str:
+    return 'info'
+
+  async def fail(self):
+    raise UserError('Not allowed.')
+
+  async def crash(self):
+    raise RuntimeError('A bug.')
+
+class RemoteCallTest(unittest.IsolatedAsyncioTestCase):
+  """ManagerClient with the manager in a Ray actor."""
+
+  @classmethod
+  def setUpClass(cls):
+    ray.init(num_cpus=1, include_dashboard=False, namespace='tbot_test')
+
+  @classmethod
+  def tearDownClass(cls):
+    ray.shutdown()
+
+  def start_actor(self) -> ray.actor.ActorHandle:
+    actor = ray.remote(FakeManager).options(name='manager').remote()
+    ray.get(actor.info.remote())
+    return actor
+
+  async def test_errors(self):
+    actor = self.start_actor()
+    client = ManagerClient.connect(name='manager', namespace='tbot_test')
+    self.assertEqual(await client.info(), 'info')
+
+    # User errors keep their message.
+    with self.assertRaises(UserError) as context:
+      await client._call('fail')
+    self.assertEqual(str(context.exception), 'Not allowed.')
+    with self.assertRaises(ray.exceptions.RayTaskError):
+      await client._call('crash')
+
+    ray.kill(actor)
+    with self.assertRaisesRegex(UserError, 'down'):
+      await client.info()
+
+    # A new manager is found again. Ray removes named actors without handles.
+    actor = self.start_actor()  # pylint: disable=unused-variable
+    with self.assertRaisesRegex(UserError, 'restarted'):
+      await client.info()
+    self.assertEqual(await client.info(), 'info')
+
+  def test_no_backend(self):
+    with self.assertRaisesRegex(RuntimeError, 'backend'):
+      ManagerClient.connect(name='missing', namespace='tbot_test')
 
 
 if __name__ == '__main__':

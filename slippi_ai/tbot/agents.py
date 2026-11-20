@@ -16,22 +16,6 @@ Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
 auto_prefix = 'auto-'
 imitation_prefix = 'basic-'
 
-# Convenience aliases on top of the lowercased melee.Character names.
-CHARACTER_ALIASES = {
-    'puff': melee.Character.JIGGLYPUFF,
-    'falcon': melee.Character.CPTFALCON,
-    'ics': melee.Character.POPO,
-    'icies': melee.Character.POPO,
-    'ganon': melee.Character.GANONDORF,
-    'gnw': melee.Character.GAMEANDWATCH,
-}
-
-def parse_character(name: str) -> Optional[melee.Character]:
-  name = name.lower()
-  if name in CHARACTER_ALIASES:
-    return CHARACTER_ALIASES[name]
-  return eval_lib.data.name_to_character.get(name)
-
 @dataclasses.dataclass
 class AgentInfo:
   character: melee.Character

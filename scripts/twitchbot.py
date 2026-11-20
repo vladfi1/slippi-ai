@@ -1,7 +1,7 @@
-"""Bot that runs on twitch and lets people play against phillip 2.
+"""Twitch chat frontend: lets people play phillip 2 from twitch chat.
 
-With --web_port, also serves a web page (slippi_ai/tbot/web.py) that shares
-the sessions with twitch chat.
+Needs the backend (scripts/tbot_backend.py) to be running, and can be started
+and stopped without it.
 """
 
 import asyncio
@@ -9,106 +9,23 @@ import json
 import os
 from typing import Optional
 
-# Allow each agent to only use as much memory as it needs.
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
 from absl import app, flags
-import fancyflags as ff
+import ray
 from twitchio.ext import commands
 
 import melee
 
-from slippi_ai import flag_utils, eval_lib, utils
-from slippi_ai import dolphin as dolphin_lib
-from slippi_ai.tbot import manager as manager_lib
-from slippi_ai.tbot import web as web_lib
-from slippi_ai.tbot.agents import parse_character
-from slippi_ai.tbot.manager import format_td
+from slippi_ai.tbot import api
+from slippi_ai.tbot import client as client_lib
+from slippi_ai.tbot.api import format_td, parse_character
+from slippi_ai.tbot.client import ManagerClient
 
-# Twitch settings
-TWITCH = flags.DEFINE_boolean('twitch', True, 'Run the twitch chat bot.')
 ACCESS_TOKEN = flags.DEFINE_string(
     'token', os.environ.get('TWITCHBOT_ACCESS_TOKEN'),
     'Access token for the twitch bot.')
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
-
-# Web settings
-WEB_PORT = flags.DEFINE_integer(
-    'web_port', None, 'Port for the web frontend; None disables it.')
-WEB_HOST = flags.DEFINE_string(
-    'web_host', '127.0.0.1',
-    'Address to serve the web frontend on; 0.0.0.0 for the local network.')
-WEB_PREFS_DAYS = flags.DEFINE_float(
-    'web_prefs_days', 30,
-    'Forget the preferences of web users not seen for this many days.')
-
-STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
-
-BOT_SESSION_INTERVAL = flags.DEFINE_float(
-    'bot_session_interval', 1,
-    'minutes before starting a bot session, negative means disabled')
-
-BOTS_LOCK_MINUTES = flags.DEFINE_float(
-    'bots_lock_minutes', 15,
-    'Minutes after !bots during which only the initiator or a mod can'
-    ' change the bots.')
-
-# Bot settings
-_DOLPHIN_CONFIG = dolphin_lib.DolphinConfig(
-    infinite_time=False,
-    save_replays=True,
-    replay_dir='Replays/Twitchbot',
-    console_timeout=120,  # allow opponent to pause
-)
-# STAGES = flags.DEFINE_multi_enum(
-#     'stage', ['all'], stages.keys(), 'Stages to play on.')
-DOLPHIN = ff.DEFINE_dict(
-    'dolphin', **flag_utils.get_flags_from_default(_DOLPHIN_CONFIG))
-
-MODELS_PATH = flags.DEFINE_string('models', 'pickled_models', 'Path to models')
-STATE_DIR = flags.DEFINE_string(
-    'state_dir', '.twitchbot',
-    'Directory for state that persists across restarts: the model config'
-    ' cache and user preferences. Empty string disables persistence.')
-
-EVAL_DB = flags.DEFINE_string(
-    'eval_db', 'untracked/eval_db.sqlite',
-    'Eval database (see scripts/eval_db.py) whose ratings pick the auto-*'
-    ' agents. Falls back to the training matchups if missing or empty.')
-
-RATING_OFFSET = flags.DEFINE_float(
-    'rating_offset', 2000,
-    'Added to the (mean zero) eval ratings shown by !rating and !auto.')
-
-MAX_SESSIONS = flags.DEFINE_integer('max_sessions', 4, 'Maximum number of concurrent sessions.')
-
-# Serves as the default agent people play against, and the "screensaver" agent.
-agent_flags = utils.map_nt(lambda x: x, eval_lib.AGENT_FLAGS)
-agent_flags.update(
-    async_inference=ff.Boolean(True),
-    run_on_cpu=ff.Boolean(False),
-)
-agent_flags['tf']['jit_compile'] = ff.Boolean(True)
-agent_flags['jax']['functionalize'] = ff.Boolean(True)
-
-del agent_flags['path']  # not used
-AGENT = ff.DEFINE_dict('agent', **agent_flags)
-
-
-BOT = flags.DEFINE_string('bot', None, 'Path to first bot agent.')
-BOT2 = flags.DEFINE_string('bot2', None, 'Path to second bot agent.')
-
-DEFAULT_AGENT = flags.DEFINE_string('default_agent', None, 'Name of default agent.')
-
-COSTUME = flags.DEFINE_integer(
-    'costume', 0, 'Costume index for the bot when playing against humans.')
-
-BOTMATCH_REPLAY_DIR = flags.DEFINE_string(
-    'botmatch_replay_dir', 'Replays/BotMatch',
-    'Base directory for user bot-match replays.')
-BOTMATCH_MAX_GAMES = flags.DEFINE_integer(
-    'botmatch_max_games', 25,
-    'Max games per bot-match session before it auto-stops.')
+RAY_ADDRESS = flags.DEFINE_string(
+    'ray_address', 'auto', 'Address of the Ray cluster the backend runs in.')
 
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
@@ -162,7 +79,7 @@ async def send_list(ctx: commands.Context, items: list[str]):
     assert len(message) <= max_chars
     await ctx.send(message)
 
-def play_message(user: manager_lib.User, result: manager_lib.PlayResult) -> str:
+def play_message(user: api.User, result: api.PlayResult) -> str:
   on_off = "on" if result.on_stream else "off"
   return f"Connecting to {user.name} ({result.connect_code}) {on_off} stream."
 
@@ -172,22 +89,23 @@ class Bot(commands.Bot):
 
   def __init__(
       self, token: str, prefix: str, channel: str,
-      manager: manager_lib.SessionManager,
+      manager: ManagerClient, info: api.ManagerInfo,
   ):
+    """Run manager.listen(bot.send_to_channel) to pass on announcements."""
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
     self.manager = manager
-    manager.add_listener(self._send_to_channel)
+    self.botmatch_max_games = info.botmatch_max_games
 
     self.help_message = HELP_MESSAGE.format(
-        max_players=manager.max_sessions,
-        bot_code=manager.bot_connect_code,
-        botmatch_max_games=manager.botmatch_max_games,
+        max_players=info.max_sessions,
+        bot_code=info.bot_connect_code,
+        botmatch_max_games=info.botmatch_max_games,
     )
     self.extra_help_message = EXTRA_HELP_MESSAGE.format(
-        bots_lock_minutes=manager.bots_lock_minutes)
+        bots_lock_minutes=info.bots_lock_minutes)
 
-  async def _send_to_channel(self, message: str):
+  async def send_to_channel(self, message: str):
     chan = self.get_channel(self.owner)
     # Might be None if we haven't logged in yet
     if chan:
@@ -195,7 +113,7 @@ class Bot(commands.Bot):
 
   async def event_command_error(
       self, context: commands.Context, error: Exception):
-    if isinstance(error, manager_lib.UserError):
+    if isinstance(error, api.UserError):
       await context.send(str(error))
       return
     await super().event_command_error(context, error)
@@ -235,10 +153,10 @@ class Bot(commands.Bot):
 
     agent = words[1]
     try:
-      config = self.manager.model_config(agent)
-    except manager_lib.UserError as e:
+      config = await self.manager.model_config(agent)
+    except api.UserError as e:
       await ctx.send(str(e))
-      models_str = ", ".join(self.manager.model_names())
+      models_str = ", ".join(await self.manager.model_names())
       await ctx.send(f'Available agents: {models_str}')
       return
 
@@ -260,7 +178,7 @@ class Bot(commands.Bot):
     words = tokens(ctx.message.content)[1:]
 
     if len(words) == 0:
-      await send_list(ctx, self.manager.special_agents())
+      await send_list(ctx, await self.manager.special_agents())
       return
 
     if len(words) > 2:
@@ -281,7 +199,7 @@ class Bot(commands.Bot):
     char = filters[0]
     opponent = filters[1] if len(filters) > 1 else None
 
-    names = self.manager.find_agents(char, opponent)
+    names = await self.manager.find_agents(char, opponent)
     if len(names) == 0:
       await ctx.send('No matching agents.')
       return
@@ -296,14 +214,14 @@ class Bot(commands.Bot):
       return
     name = words[0]
 
-    auto_char = self.manager.auto_agent_character(name)
+    auto_char = await self.manager.auto_agent_character(name)
     if auto_char is not None:
       char_name = auto_char.name.lower()
       await ctx.send(
           f'{name} picks a model per opponent; try !auto {char_name} <opp>.')
       return
 
-    model, ratings = self.manager.ratings(name)
+    model, ratings = await self.manager.ratings(name)
     if not ratings:
       await ctx.send(f'{name} has no rating.')
       return
@@ -339,7 +257,7 @@ class Bot(commands.Bot):
       chars.append(char)
     char, opponent = chars
 
-    pick = self.manager.auto_pick(char, opponent)
+    pick = await self.manager.auto_pick(char, opponent)
     opp_name = opponent.name.lower()
     trained = 'trained' if pick.trained else 'not trained'
     message = (
@@ -351,7 +269,7 @@ class Bot(commands.Bot):
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
-    await send_list(ctx, self.manager.agent_names())
+    await send_list(ctx, await self.manager.agent_names())
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
@@ -378,27 +296,27 @@ class Bot(commands.Bot):
 
     stage_names = words[1:]
     if len(stage_names) == 0:
-      stages = self.manager.stages(user)
+      stages = await self.manager.stages(user)
       if stages is None:
         stages_string = 'all'
       else:
         stages_string = ", ".join([s.name.lower() for s in stages])
       await ctx.send(
           f'{name} has selected {stages_string}.'
-          f' Available stages: {", ".join(manager_lib.NAME_TO_STAGE)}')
+          f' Available stages: {", ".join(api.NAME_TO_STAGE)}')
       return
 
     stages: list[melee.Stage] = []
     for stage_name in stage_names:
       stage_name = stage_name.lower()
-      if stage_name not in manager_lib.NAME_TO_STAGE:
+      if stage_name not in api.NAME_TO_STAGE:
           await ctx.send(
               f'{name}, {stage_name} is not a valid stage.'
-              f' Available stages: {", ".join(manager_lib.NAME_TO_STAGE)}')
+              f' Available stages: {", ".join(api.NAME_TO_STAGE)}')
           return
-      stages.append(manager_lib.NAME_TO_STAGE[stage_name])
+      stages.append(api.NAME_TO_STAGE[stage_name])
 
-    self.manager.set_stages(user, stages)
+    await self.manager.set_stages(user, stages)
     await ctx.send(f'{name} has set the stages to {", ".join(stage_names)}')
 
   @commands.command()
@@ -408,7 +326,7 @@ class Bot(commands.Bot):
     words = ctx.message.content.split(' ')
 
     if len(words) == 1:
-      stocks = self.manager.sd_stocks(user)
+      stocks = await self.manager.sd_stocks(user)
       if stocks is None:
         await ctx.send(
             f'{name}, the bot will play with all its stocks.'
@@ -423,9 +341,9 @@ class Bot(commands.Bot):
       await ctx.send(f'{name}, "{words[1]}" is not a number.')
       return
 
-    self.manager.set_sd_stocks(user, stocks)
+    await self.manager.set_sd_stocks(user, stocks)
 
-    if stocks == manager_lib.MAX_STOCKS:
+    if stocks == api.MAX_STOCKS:
       await ctx.send(
           f'{name}, the bot will play with all its stocks.'
           ' Takes effect on your next game.')
@@ -447,7 +365,7 @@ class Bot(commands.Bot):
     words = ctx.message.content.split(' ')
 
     if len(words) > 1:
-      self.manager.set_connect_code(user, words[1])
+      await self.manager.set_connect_code(user, words[1])
 
     result = await self.manager.play(user)
     await ctx.send(play_message(user, result))
@@ -468,7 +386,7 @@ class Bot(commands.Bot):
         twitch_user(ctx), agent1_name, agent2_name)
     await ctx.send(
         f'Started bot match: {agent_label}'
-        f' ({self.manager.botmatch_max_games} games).')
+        f' ({self.botmatch_max_games} games).')
 
   @commands.command()
   async def reset(self, ctx: commands.Context):
@@ -507,7 +425,7 @@ class Bot(commands.Bot):
   @commands.command()
   async def status(self, ctx: commands.Context):
     user = twitch_user(ctx)
-    await ctx.send(f'Selected agent: {self.manager.selected_agent(user)}')
+    await ctx.send(f'Selected agent: {await self.manager.selected_agent(user)}')
 
     status = await self.manager.status()
 
@@ -574,70 +492,32 @@ class Bot(commands.Bot):
     names = ", ".join(user.name for user in users)
     await ctx.send(f"GCed ({names})")
 
-def twitch_user(ctx: commands.Context) -> manager_lib.User:
+def twitch_user(ctx: commands.Context) -> api.User:
   name = ctx.author.name
   assert isinstance(name, str)
-  return manager_lib.User(frontend='twitch', key=name, name=name)
+  return api.User(frontend='twitch', key=name, name=name)
 
 def main(_):
-  if TWITCH.value and not ACCESS_TOKEN.value:
-    raise app.UsageError(
-        'Set --token or TWITCHBOT_ACCESS_TOKEN, or pass --notwitch.')
-  if not TWITCH.value and WEB_PORT.value is None:
-    raise app.UsageError('Enable at least one of --twitch and --web_port.')
+  if not ACCESS_TOKEN.value:
+    raise app.UsageError('Set --token or TWITCHBOT_ACCESS_TOKEN.')
 
-  manager = manager_lib.SessionManager(
-      models_path=MODELS_PATH.value,
-      eval_db_path=EVAL_DB.value,
-      rating_offset=RATING_OFFSET.value,
-      max_sessions=MAX_SESSIONS.value,
-      dolphin_config=flag_utils.dataclass_from_dict(
-          dolphin_lib.DolphinConfig, DOLPHIN.value),
-      agent_kwargs=AGENT.value,
-      stream=STREAM.value,
-      bot_session_interval=BOT_SESSION_INTERVAL.value,
-      bots_lock_minutes=BOTS_LOCK_MINUTES.value,
-      bot=BOT.value,
-      bot2=BOT2.value,
-      default_agent=DEFAULT_AGENT.value,
-      costume=COSTUME.value,
-      botmatch_replay_dir=BOTMATCH_REPLAY_DIR.value,
-      botmatch_max_games=BOTMATCH_MAX_GAMES.value,
-      state_dir=STATE_DIR.value,
-      prefs_max_days={'web': WEB_PREFS_DAYS.value},
-  )
-
+  ray.init(address=RAY_ADDRESS.value, namespace=client_lib.NAMESPACE)
+  manager = ManagerClient.connect()
   try:
     asyncio.run(run(manager))
   except KeyboardInterrupt:
     pass
-  finally:
-    manager.shutdown()
 
-async def run(manager: manager_lib.SessionManager):
-  tasks = [manager.run_chores()]
-
-  if TWITCH.value:
-    # Made inside the event loop, which twitchio picks up.
-    bot = Bot(
-        token=ACCESS_TOKEN.value,
-        prefix='!',
-        channel=CHANNEL.value,
-        manager=manager,
-    )
-    tasks.append(bot.start())
-
-  runner = None
-  if WEB_PORT.value is not None:
-    frontend = web_lib.WebFrontend(
-        manager, twitch_channel=CHANNEL.value if TWITCH.value else None)
-    runner = await web_lib.start(frontend, WEB_HOST.value, WEB_PORT.value)
-
-  try:
-    await asyncio.gather(*tasks)
-  finally:
-    if runner is not None:
-      await runner.cleanup()
+async def run(manager: ManagerClient):
+  # Made inside the event loop, which twitchio picks up.
+  bot = Bot(
+      token=ACCESS_TOKEN.value,
+      prefix='!',
+      channel=CHANNEL.value,
+      manager=manager,
+      info=await manager.info(),
+  )
+  await asyncio.gather(bot.start(), manager.listen(bot.send_to_channel))
 
 if __name__ == '__main__':
-    app.run(main)
+  app.run(main)

@@ -1,1 +1,1 @@
-"""Backend for the twitchbot (scripts/twitchbot.py) and its other frontends."""
+"""The twitchbot: its backend (scripts/tbot_backend.py) and frontends."""

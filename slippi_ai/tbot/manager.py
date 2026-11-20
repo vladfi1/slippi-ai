@@ -1,6 +1,11 @@
-"""Sessions and state shared by the bot's frontends (twitch, web)."""
+"""Sessions and state shared by the bot's frontends (twitch, web).
+
+scripts/tbot_backend.py runs the SessionManager as a named Ray actor, which
+the frontends reach through slippi_ai.tbot.client.
+"""
 
 import asyncio
+import collections
 import dataclasses
 import datetime
 import json
@@ -12,7 +17,6 @@ import typing as tp
 from typing import Optional
 
 import portpicker
-import ray
 
 import melee
 
@@ -21,6 +25,11 @@ from slippi_ai import eval_lib
 from slippi_ai import dolphin as dolphin_lib
 from slippi_ai.eval_db import db as eval_db_lib
 from slippi_ai.tbot import sessions as sessions_lib
+from slippi_ai.tbot.api import (
+    MAX_STOCKS, AgentRow, Announcements, AutoPick, BotsStatus,
+    CharacterRating, ManagerInfo, ManagerStatus, PlayResult, SelectResult,
+    SessionLogs, SessionStatusInfo, User, UserError, format_td,
+)
 from slippi_ai.tbot.agents import (
     AgentConfig, AgentInfo, AutoAgent, SingleAgent,
     auto_prefix, imitation_prefix,
@@ -30,18 +39,6 @@ from slippi_ai.tbot.persistence import (
     LoadedModel, ModelCache, UserPrefs, trim_model_state,
 )
 
-NAME_TO_STAGE = {
-    'fd': melee.Stage.FINAL_DESTINATION,
-    'fod': melee.Stage.FOUNTAIN_OF_DREAMS,
-    'dl': melee.Stage.DREAMLAND,
-    'ys': melee.Stage.YOSHIS_STORY,
-    'ps': melee.Stage.POKEMON_STADIUM,
-    'bf': melee.Stage.BATTLEFIELD,
-    'all': melee.Stage.RANDOM_STAGE,
-}
-
-MAX_STOCKS = 4
-
 # How long to wait for a session to stop before killing its Dolphin. Stopping
 # can hang while the game is paused, until the console times out.
 STOP_TIMEOUT = 10  # seconds
@@ -49,23 +46,12 @@ STOP_TIMEOUT = 10  # seconds
 # netplay notices that Dolphin is gone within about 30 seconds.
 KILL_TIMEOUT = 60  # seconds
 
+# How many announcements are kept for frontends that fall behind.
+MAX_ANNOUNCEMENTS = 100
+
 # Keys into UserPrefs.
 AGENT_PREF = 'agent'
 CONNECT_CODE_PREF = 'connect_code'
-
-class UserError(Exception):
-  """A request that can't be done; the message is shown to the user."""
-
-@dataclasses.dataclass(frozen=True)
-class User:
-  """A user of one of the frontends; users are equal if their ids are."""
-  frontend: str  # e.g. 'twitch' or 'web'
-  key: str  # unique within the frontend; may be secret
-  name: str = dataclasses.field(compare=False)  # shown to other users
-
-  @property
-  def id(self) -> str:
-    return f'{self.frontend}:{self.key}'
 
 @dataclasses.dataclass
 class SessionInfo:
@@ -76,81 +62,11 @@ class SessionInfo:
   connect_code: Optional[str]  # None for bot matches
   agent: str
 
-@dataclasses.dataclass
-class PlayResult:
-  connect_code: str
-  agent: str
-  on_stream: bool
-
-@dataclasses.dataclass
-class SelectResult:
-  # Set if the user was playing and their session was restarted.
-  restarted: Optional[PlayResult] = None
-
-@dataclasses.dataclass
-class AgentRow:
-  """An agent as listed by the web frontend."""
-  name: str
-  kind: str  # 'auto', 'basic' or 'model'
-  character: melee.Character
-  opponents: list[melee.Character]  # trained against, or picked for (auto)
-  delay: int
-  model: Optional[str]  # None for auto agents
-  rating: Optional[float]
-
-@dataclasses.dataclass
-class SessionLogs:
-  session_id: int
-  next: int  # number of the next log line
-  lines: list[str]
-
-@dataclasses.dataclass
-class CharacterRating:
-  character: melee.Character
-  rating: float
-  rank: int  # among the models that play this character
-  count: int  # number of rated models that play this character
-
-@dataclasses.dataclass
-class AutoPick:
-  agent: str
-  model: str
-  trained: bool  # whether the model was trained against the opponent
-  rating: Optional[float]
-
-@dataclasses.dataclass
-class BotsStatus:
-  bot1: str
-  bot2: str
-  set_by: Optional[str]
-  playing_for: Optional[datetime.timedelta]
-  lock_remaining: Optional[datetime.timedelta]
-
-@dataclasses.dataclass
-class SessionStatusInfo:
-  session_id: int
-  user: User
-  agent: str
-  duration: datetime.timedelta
-  # Bot matches have no connect code and count games instead of menu time.
-  connect_code: Optional[str]
-  on_stream: bool
-  # None while the session is starting up (or otherwise not responding).
-  menu_time: Optional[datetime.timedelta]
-  games_completed: Optional[int]
-
-@dataclasses.dataclass
-class ManagerStatus:
-  bots: Optional[BotsStatus]  # set if a bot session is on stream
-  sessions: list[SessionStatusInfo]
-
-# Called with messages for everyone, e.g. when idle sessions are stopped.
-Listener = tp.Callable[[str], tp.Awaitable[None]]
-
 class SessionManager:
   """Owns the sessions, the stream slot and the models.
 
   Public async methods take the lock; private methods assume it is held.
+  Runs as an async Ray actor, whose methods all run on one event loop.
   """
 
   def __init__(
@@ -219,7 +135,12 @@ class SessionManager:
     self._bots_lock_until: Optional[datetime.datetime] = None
 
     self._lock = asyncio.Lock()
-    self._listeners: list[Listener] = []
+    # The latest announcements, numbered from _num_announcements - len.
+    self._announcements: collections.deque[str] = collections.deque(
+        maxlen=MAX_ANNOUNCEMENTS)
+    self._num_announcements = 0
+    self._announced = asyncio.Condition()
+    self._shutting_down = asyncio.Event()
     # Sessions that are still stopping after their Dolphin was killed.
     self._background_stops: set[asyncio.Task] = set()
 
@@ -271,15 +192,43 @@ class SessionManager:
     self._prefs_max_days = dict(prefs_max_days)
     self._prune_prefs()
 
-  def add_listener(self, listener: Listener):
-    self._listeners.append(listener)
+  def info(self) -> ManagerInfo:
+    return ManagerInfo(
+        bot_connect_code=self.bot_connect_code,
+        max_sessions=self.max_sessions,
+        botmatch_max_games=self.botmatch_max_games,
+        bots_lock_minutes=self.bots_lock_minutes,
+    )
+
+  # Announcements
 
   async def _announce(self, message: str):
-    for listener in self._listeners:
+    async with self._announced:
+      self._announcements.append(message)
+      self._num_announcements += 1
+      self._announced.notify_all()
+
+  async def announcements(
+      self, since: Optional[int], timeout: float = 30) -> Announcements:
+    """Announcements numbered since or later.
+
+    Waits up to timeout for one if there are none yet. since=None returns no
+    messages, only the number of the next announcement.
+    """
+    async with self._announced:
+      if since is None:
+        return Announcements(next=self._num_announcements, messages=[])
+      # A frontend may have numbers from before the backend restarted.
+      since = min(since, self._num_announcements)
       try:
-        await listener(message)
-      except Exception:
-        logging.exception('Listener failed')
+        await asyncio.wait_for(
+            self._announced.wait_for(lambda: self._num_announcements > since),
+            timeout=timeout)
+      except asyncio.TimeoutError:
+        pass
+      first = self._num_announcements - len(self._announcements)
+      messages = list(self._announcements)[max(since - first, 0):]
+      return Announcements(next=self._num_announcements, messages=messages)
 
   # Agents
 
@@ -1181,38 +1130,48 @@ class SessionManager:
       return await self._gc_sessions()
 
   async def run_chores(self, interval: float = 60):
-    """Runs forever, cleaning up sessions and starting the bot session."""
-    while True:
+    """Cleans up sessions and starts the bot session until shutdown."""
+    while not self._shutting_down.is_set():
       try:
         async with self._lock:
+          if self._shutting_down.is_set():
+            break
           await self._gc_sessions()
           await self._maybe_start_bot_session()
           self._prune_prefs()
       except Exception:
         logging.exception('Chores failed')
-      await asyncio.sleep(interval)
+      try:
+        await asyncio.wait_for(self._shutting_down.wait(), timeout=interval)
+      except asyncio.TimeoutError:
+        pass
 
-  def shutdown(self):
-    """Stops all sessions. Blocks, so call it once the event loop is done."""
+  async def shutdown(self):
+    """Stops all sessions, killing the Dolphins of those that don't stop."""
     logging.info('Shutting down')
-    sessions = [info.session for info in self._sessions.values()]
-    if self._bot_session is not None:
-      sessions.append(self._bot_session)
-    self._sessions.clear()
-    self._bot_session = None
-    if not sessions:
-      return
+    self._shutting_down.set()
+    async with self._lock:
+      sessions = [info.session for info in self._sessions.values()]
+      if self._bot_session is not None:
+        sessions.append(self._bot_session)
+      self._sessions.clear()
+      self._streaming_against = None
+      self._bot_session = None
 
-    refs = [session.stop.remote() for session in sessions]
-    _, pending = ray.wait(refs, num_returns=len(refs), timeout=STOP_TIMEOUT)
-    if not pending:
-      return
+    if sessions:
+      stops = [asyncio.ensure_future(s.stop.remote()) for s in sessions]
+      _, pending = await asyncio.wait(stops, timeout=STOP_TIMEOUT)
+      if pending:
+        logging.warning(
+            f'{len(pending)} sessions did not stop; killing Dolphin.')
+        for session, stop in zip(sessions, stops):
+          if stop in pending:
+            session.kill_dolphin.remote()
+        await asyncio.wait(pending, timeout=KILL_TIMEOUT)
 
-    logging.warning(f'{len(pending)} sessions did not stop; killing Dolphin.')
-    for session, ref in zip(sessions, refs):
-      if ref in pending:
-        session.kill_dolphin.remote()
-    ray.wait(pending, num_returns=len(pending), timeout=KILL_TIMEOUT)
+    # Sessions killed earlier that are still stopping.
+    if self._background_stops:
+      await asyncio.wait(self._background_stops, timeout=KILL_TIMEOUT)
 
 async def _get_status(
     session: sessions_lib.Session,
@@ -1236,7 +1195,3 @@ def _log_stop_error(stop: asyncio.Future, label: str):
   error = stop.exception()
   if error is not None:
     logging.error(f'{label} failed to stop cleanly: {error!r}')
-
-def format_td(td: datetime.timedelta) -> str:
-  """Chop off microseconds."""
-  return str(td).split('.')[0]

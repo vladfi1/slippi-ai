@@ -1,25 +1,55 @@
 # Twitchbot and web frontend
 
-`scripts/twitchbot.py` lets people play phillip over Slippi netplay. Players
-use Twitch chat commands (`!play <code>`, `!agent <name>`, ...) or a web page.
-Both share the same sessions and the stream. The backend is in
-`slippi_ai/tbot/`, and the design is in `docs/plans/web_frontend.md`.
+The twitchbot lets people play phillip over Slippi netplay. Players use
+Twitch chat commands (`!play <code>`, `!agent <name>`, ...) or a web page.
+Both share the same sessions and the stream. The code is in `slippi_ai/tbot/`,
+and the design is in `docs/plans/web_frontend.md`.
 
 ## Running
 
-`run_scripts/twitchbot.sh` has the usual flags. Useful additions:
+It runs as three processes:
 
-- `--web_port=8080` also serves the web page.
-- `--web_host` sets the address it listens on. The default, `127.0.0.1`,
-  accepts only local connections, which is what the Cloudflare tunnel below
-  needs. `0.0.0.0` makes the page reachable from the local network, for
-  testing.
-- `--notwitch` runs only the web page, for example to test it without
-  joining the Twitch channel.
+- `scripts/tbot_backend.py`: the backend. It loads the models and runs the
+  sessions. It takes the Dolphin, agent and session flags (`--dolphin.*`,
+  `--models`, `--max_sessions`, ...).
+- `scripts/twitchbot.py`: the Twitch chat bot. Needs `--token` or
+  `TWITCHBOT_ACCESS_TOKEN`, and `--channel`.
+- `scripts/tbot_web.py`: the web page. `--port` (default 8080) and `--host`
+  set where it listens. The default host, `127.0.0.1`, accepts only local
+  connections, which is what the Cloudflare tunnel below needs. `0.0.0.0`
+  makes the page reachable from the local network, for testing. `--channel`
+  is the Twitch channel the page links to.
+
+Start the backend first, then either or both frontends, for example in
+separate windows of a tmux session:
 
 ```
-run_scripts/twitchbot.sh --web_port=8080
+python scripts/tbot_backend.py --dolphin.path=... --models=deployed_models ...
+python scripts/twitchbot.py --channel=x_pilot_bot
+python scripts/tbot_web.py --channel=x_pilot_bot
 ```
+
+The backend runs the session manager as a named actor in a Ray cluster, and
+the frontends join that cluster to call it. A frontend can be stopped,
+changed and restarted without affecting games in progress. Stopping the
+backend (Ctrl-C) stops all sessions.
+
+By default the backend starts its own Ray cluster, which stops with it. The
+frontends then lose their connection and exit about a minute later, so they
+have to be restarted along with the backend. To restart the backend without
+restarting the frontends, start a Ray cluster yourself and run the backend in
+it:
+
+```
+ray start --head --include-dashboard=false
+python scripts/tbot_backend.py --ray_address=auto ...
+```
+
+While the backend is down, the frontends tell users that the bot is down, and
+they find the new backend once it is up. `ray stop` stops the cluster. The
+backend passes `XLA_PYTHON_CLIENT_PREALLOCATE`, `XLA_FLAGS` and `TF_XLA_FLAGS`
+on to the sessions; other environment variables reach them only if they were
+set when the cluster was started.
 
 ## Public access with a Cloudflare tunnel
 
@@ -78,7 +108,7 @@ credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
 
 ingress:
   - hostname: phillip2.ssbm.ai
-    service: http://127.0.0.1:8080  # must match --web_port
+    service: http://127.0.0.1:8080  # must match tbot_web.py's --port
   - service: http_status:404
 ```
 
@@ -127,9 +157,10 @@ as a systemd service:
 - The page has no login and no limits beyond `--max_sessions`, which it
   shares with Twitch chat. Each browser is identified by a random token that
   it keeps. Every visitor who changes a setting adds an entry to
-  `user_prefs.json` in `--state_dir`. Entries for web users who haven't
-  played, changed a setting or loaded the page for `--web_prefs_days` (30 by
-  default) are removed. Twitch users' entries are kept.
+  `user_prefs.json` in the backend's `--state_dir`. Entries for web users who
+  haven't played, changed a setting or loaded the page for the backend's
+  `--web_prefs_days` (30 by default) are removed. Twitch users' entries are
+  kept.
 - To take the page down, stop the tunnel. To remove it completely, also run
   `cloudflared tunnel delete phillip2` and delete the DNS record in the
   Cloudflare dashboard.

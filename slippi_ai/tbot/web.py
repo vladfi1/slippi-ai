@@ -1,4 +1,4 @@
-"""Web frontend to the SessionManager.
+"""Web frontend to the SessionManager. Run by scripts/tbot_web.py.
 
 Users have no accounts: the page makes a random token, keeps it in the
 browser and sends it with each request. The token is the user's key, so it is
@@ -19,8 +19,9 @@ from typing import Optional
 from aiohttp import web
 import melee
 
-from slippi_ai.tbot import manager as manager_lib
-from slippi_ai.tbot.manager import SessionManager, User, UserError
+from slippi_ai.tbot import api
+from slippi_ai.tbot.api import User, UserError
+from slippi_ai.tbot.client import ManagerClient
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 
@@ -44,24 +45,23 @@ def json_response(data: tp.Any, status: int = 200) -> web.Response:
 def error_response(message: str, status: int = 400) -> web.Response:
   return json_response({'error': message}, status=status)
 
-def play_json(result: manager_lib.PlayResult) -> dict:
+def play_json(result: api.PlayResult) -> dict:
   return dataclasses.asdict(result)
 
 class WebFrontend:
 
-  def __init__(self, manager: SessionManager, twitch_channel: Optional[str]):
+  def __init__(self, manager: ManagerClient, twitch_channel: Optional[str]):
     self.manager = manager
     self.twitch_channel = twitch_channel
 
     # One poller shares the status among all the open event streams.
-    self._status: Optional[manager_lib.ManagerStatus] = None
+    self._status: Optional[api.ManagerStatus] = None
     self._status_version = 0
     self._status_task: Optional[asyncio.Task] = None
     self._subscribers: set[asyncio.Queue] = set()
 
-    manager.add_listener(self._announce)
-
     self.app = web.Application(middlewares=[self._errors])
+    self.app.cleanup_ctx.append(self._listening)
     self.app.add_routes([
         web.get('/', self._index),
         web.static('/static', STATIC_DIR),
@@ -87,15 +87,21 @@ class WebFrontend:
       logging.exception(f'Error handling {request.path}')
       return error_response('Internal error.', status=500)
 
+  async def _listening(self, app: web.Application):
+    """Passes the manager's announcements on while the app is running."""
+    task = asyncio.create_task(self.manager.listen(self._announce))
+    yield
+    task.cancel()
+
   # Users
 
-  def _user(self, request: web.Request) -> User:
+  async def _user(self, request: web.Request) -> User:
     token = request.headers.get(TOKEN_HEADER) or request.query.get('token')
     if token is None or not TOKEN_RE.match(token):
       raise UserError('Missing or invalid token; try reloading the page.')
 
     user = User(frontend='web', key=token, name='')
-    connect_code = self.manager.connect_code(user)
+    connect_code = await self.manager.connect_code(user)
     if connect_code is None:
       # A stable name that doesn't reveal the token.
       tag = hashlib.sha256(token.encode()).hexdigest()[:6]
@@ -104,16 +110,16 @@ class WebFrontend:
       name = connect_code
     return dataclasses.replace(user, name=name)
 
-  def _me_json(self, user: User) -> dict:
-    stages = self.manager.stages(user)
+  async def _me_json(self, user: User) -> dict:
+    stages = await self.manager.stages(user)
     stage_names = {
-        stage: name for name, stage in manager_lib.NAME_TO_STAGE.items()}
+        stage: name for name, stage in api.NAME_TO_STAGE.items()}
     return dict(
         name=user.name,
-        connect_code=self.manager.connect_code(user),
-        agent=self.manager.selected_agent(user),
+        connect_code=await self.manager.connect_code(user),
+        agent=await self.manager.selected_agent(user),
         stages=None if stages is None else [stage_names[s] for s in stages],
-        sd_stocks=self.manager.sd_stocks(user),
+        sd_stocks=await self.manager.sd_stocks(user),
     )
 
   async def _json_body(self, request: web.Request) -> dict:
@@ -131,17 +137,18 @@ class WebFrontend:
     return web.FileResponse(os.path.join(STATIC_DIR, 'index.html'))
 
   async def _info(self, request: web.Request) -> web.Response:
+    info = await self.manager.info()
     return json_response(dict(
-        bot_connect_code=self.manager.bot_connect_code,
-        max_sessions=self.manager.max_sessions,
-        stages=[s for s in manager_lib.NAME_TO_STAGE if s != 'all'],
-        max_stocks=manager_lib.MAX_STOCKS,
+        bot_connect_code=info.bot_connect_code,
+        max_sessions=info.max_sessions,
+        stages=[s for s in api.NAME_TO_STAGE if s != 'all'],
+        max_stocks=api.MAX_STOCKS,
         twitch_channel=self.twitch_channel,
     ))
 
   async def _agents(self, request: web.Request) -> web.Response:
     rows = []
-    for row in self.manager.agent_table():
+    for row in await self.manager.agent_table():
       rows.append(dict(
           name=row.name,
           kind=row.kind,
@@ -157,37 +164,37 @@ class WebFrontend:
 
   async def _get_me(self, request: web.Request) -> web.Response:
     # Called when the page loads, so it marks the user as seen.
-    user = self._user(request)
-    self.manager.touch(user)
-    return json_response(self._me_json(user))
+    user = await self._user(request)
+    await self.manager.touch(user)
+    return json_response(await self._me_json(user))
 
   async def _set_me(self, request: web.Request) -> web.Response:
-    user = self._user(request)
+    user = await self._user(request)
     body = await self._json_body(request)
 
     if 'connect_code' in body:
       code = body['connect_code']
       if not isinstance(code, str):
         raise UserError('Invalid connect code.')
-      self.manager.set_connect_code(user, code.strip())
-      user = self._user(request)  # The name may have changed.
+      await self.manager.set_connect_code(user, code.strip())
+      user = await self._user(request)  # The name may have changed.
 
     if 'stages' in body:
       names = body['stages']
       if not isinstance(names, list) or not all(
-          name in manager_lib.NAME_TO_STAGE for name in names):
+          name in api.NAME_TO_STAGE for name in names):
         raise UserError('Invalid stages.')
       if names and 'all' not in names:
-        self.manager.set_stages(
-            user, [manager_lib.NAME_TO_STAGE[name] for name in names])
+        await self.manager.set_stages(
+            user, [api.NAME_TO_STAGE[name] for name in names])
       else:
-        self.manager.set_stages(user, None)  # All stages.
+        await self.manager.set_stages(user, None)  # All stages.
 
     if 'sd_stocks' in body:
       stocks = body['sd_stocks']
       if not isinstance(stocks, int):
         raise UserError('Invalid number of stocks.')
-      self.manager.set_sd_stocks(user, stocks)
+      await self.manager.set_sd_stocks(user, stocks)
 
     restarted = None
     if 'agent' in body:
@@ -198,20 +205,20 @@ class WebFrontend:
       if result.restarted is not None:
         restarted = play_json(result.restarted)
 
-    return json_response(dict(me=self._me_json(user), restarted=restarted))
+    return json_response(dict(me=await self._me_json(user), restarted=restarted))
 
   # Sessions
 
   async def _play(self, request: web.Request) -> web.Response:
-    result = await self.manager.play(self._user(request))
+    result = await self.manager.play(await self._user(request))
     return json_response(play_json(result))
 
   async def _stop(self, request: web.Request) -> web.Response:
-    await self.manager.stop(self._user(request))
+    await self.manager.stop(await self._user(request))
     return json_response({})
 
   async def _reset(self, request: web.Request) -> web.Response:
-    result = await self.manager.reset(self._user(request))
+    result = await self.manager.reset(await self._user(request))
     return json_response(play_json(result))
 
   # Live updates
@@ -265,7 +272,7 @@ class WebFrontend:
 
   async def _events(self, request: web.Request) -> web.StreamResponse:
     """Server-sent events: status, announcements and the user's logs."""
-    user = self._user(request)
+    user = await self._user(request)
 
     response = web.StreamResponse(headers={
         'Content-Type': 'text/event-stream',
@@ -306,7 +313,7 @@ class WebFrontend:
           last_write = loop.time()
 
         # The logs of a finished session stay on the page until the next.
-        session_id = self.manager.session_id(user)
+        session_id = await self.manager.session_id(user)
         if session_id is not None and session_id != log_session:
           log_session = session_id
           log_next = 0

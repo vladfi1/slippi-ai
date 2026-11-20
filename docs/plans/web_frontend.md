@@ -1,10 +1,11 @@
 # Plan: web frontend for the twitchbot
 
-Status: Steps 1-5 implemented (2026-11-20). Steps 1-2 (`slippi_ai/tbot/`
+Status: Steps 1-7 implemented (2026-11-20). Steps 1-2 (`slippi_ai/tbot/`
 and `SessionManager`, with `scripts/twitchbot.py` as the Twitch frontend)
 are tested on stream. Steps 3-5 (session logs, `slippi_ai/tbot/web.py` and
-`static/index.html`) are tested against fake sessions and in headless
-Chromium, not yet with real Dolphin sessions.
+`static/index.html`) are tested on the local network. Step 7 (separate
+backend and frontend processes) is tested with fake sessions, not yet with
+real Dolphin sessions.
 
 ## Goal
 
@@ -42,17 +43,32 @@ WebFrontend               slippi_ai/tbot/web.py, aiohttp + static page + SSE
 
 ### Processes and Ray
 
-Phase 1: one process. The manager is a plain object; the twitch bot, the
-aiohttp server and the chores loop run on one asyncio loop. aiohttp rather
-than FastAPI because twitchio already depends on it. `--notwitch` runs only
-the web frontend.
+Phase 1 (replaced by phase 2): one process. The manager is a plain object;
+the twitch bot, the aiohttp server and the chores loop run on one asyncio
+loop. aiohttp rather than FastAPI because twitchio already depends on it.
 
-Phase 2 (optional): the manager becomes a detached, named async Ray actor
-that creates the session actors, and each frontend is its own process that
-finds it with `ray.get_actor`. This lets a frontend be restarted or
-redeployed without killing games in progress. Restarting the manager still
-does. Ray is chosen only because sessions are already Ray actors; without
-that, an HTTP service the Twitch bot calls would be the conventional split.
+Phase 2 (done): the manager is a named async Ray actor that creates the
+session actors, and each frontend is its own process that finds it with
+`ray.get_actor`. This lets a frontend be restarted or redeployed without
+killing games in progress. Restarting the manager still does. Ray is chosen
+only because sessions are already Ray actors; without that, an HTTP service
+the Twitch bot calls would be the conventional split.
+
+- `scripts/tbot_backend.py` creates the actor and runs its chores. The actor
+  is not detached: it lives as long as the backend process, and Ctrl-C stops
+  its sessions. An async actor runs all its methods, including the plain
+  ones, on one event loop, so the manager's state needs no extra locking.
+- `slippi_ai/tbot/client.py`'s `ManagerClient` gives the frontends typed
+  async methods. It calls either the actor or, in tests, a manager in the
+  same process. It unwraps `UserError`s from Ray's errors and finds the
+  actor again after a backend restart.
+- Callbacks can't cross processes, so the manager keeps the last 100
+  announcements, and each frontend long-polls `announcements(since)`.
+- `slippi_ai/tbot/api.py` has the types the frontends unpickle, without TF
+  or JAX imports, so the frontends start in about a second.
+- A backend restart keeps the frontends running only in a Ray cluster that
+  outlives the backend (`ray start --head`, then `--ray_address=auto`).
+  Otherwise the frontends exit once the cluster is gone.
 
 ## Public with no login
 
@@ -112,5 +128,6 @@ agents, so the page doesn't stall behind them.
 5. The static page.
 6. Before going public: Cloudflare tunnel (done 2026-11-20,
    `https://phillip2.ssbm.ai`; see `docs/twitchbot.md`).
-7. (Optional) Phase 2: the manager as a detached Ray actor, with separate
-   Twitch and web entry points.
+7. Phase 2: the manager as a Ray actor, with separate backend, Twitch and
+   web entry points (`scripts/tbot_backend.py`, `scripts/twitchbot.py`,
+   `scripts/tbot_web.py`).
