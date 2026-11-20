@@ -1,63 +1,23 @@
 """Bot that runs on twitch and lets people play against phillip 2."""
 
-import abc
-import dataclasses
-import datetime
-import enum
 import json
-import logging
 import os
-import pickle
-import random
-import sqlite3
-import time
-import threading
-import typing as tp
-from typing import Optional, Union
+from typing import Optional
 
 # Allow each agent to only use as much memory as it needs.
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 from absl import app, flags
 import fancyflags as ff
-from twitchio.ext import commands, routines
-import portpicker
-import ray
+from twitchio.ext import commands
 
 import melee
 
-from slippi_ai import saving
 from slippi_ai import flag_utils, eval_lib, utils
 from slippi_ai import dolphin as dolphin_lib
-from slippi_ai.eval_db import db as eval_db_lib
-
-NAME_TO_STAGE = {
-    'fd': melee.Stage.FINAL_DESTINATION,
-    'fod': melee.Stage.FOUNTAIN_OF_DREAMS,
-    'dl': melee.Stage.DREAMLAND,
-    'ys': melee.Stage.YOSHIS_STORY,
-    'ps': melee.Stage.POKEMON_STADIUM,
-    'bf': melee.Stage.BATTLEFIELD,
-    'all': melee.Stage.RANDOM_STAGE,
-}
-
-MAX_STOCKS = 4
-
-# Action states in which the player is dead or on the respawn platform.
-# All action states up to ON_HALO_WAIT are death/respawn states.
-_MAX_RESPAWN_ACTION = melee.Action.ON_HALO_WAIT.value
-
-def is_dead_or_respawning(player: melee.PlayerState) -> bool:
-  return player.action.value <= _MAX_RESPAWN_ACTION
-
-class SDPhase(enum.Enum):
-  """Phases of the crew-battle style self-destruct at the start of a game."""
-  # Holding away from center until we have SD'd down to the desired stocks.
-  SD = 0
-  # Standing still until our respawn invincibility has worn off.
-  WAIT = 1
-  # The agent is in control.
-  DONE = 2
+from slippi_ai.tbot import manager as manager_lib
+from slippi_ai.tbot.agents import parse_character
+from slippi_ai.tbot.manager import format_td
 
 # Twitch settings
 default_access_token = os.environ.get('TWITCHBOT_ACCESS_TOKEN')
@@ -134,607 +94,6 @@ BOTMATCH_MAX_GAMES = flags.DEFINE_integer(
     'botmatch_max_games', 25,
     'Max games per bot-match session before it auto-stops.')
 
-@dataclasses.dataclass
-class SessionStatus:
-  num_menu_frames: int
-  is_alive: bool
-  games_completed: int = 0
-
-Agent = Union[eval_lib.Agent, eval_lib.EnsembleAgent]
-
-@dataclasses.dataclass
-class LoadedModel:
-  mtime: float  # file modification time when loaded
-  size: int  # file size when loaded
-  state: dict  # trimmed to the keys shown by !config
-  summary: eval_lib.AgentSummary
-
-# The parts of a model's state that we keep in memory (and cache on disk).
-# Everything else (e.g. the network weights) is only loaded in the sessions.
-MODEL_STATE_KEYS = [
-    'step', 'config', 'rl_config', 'agent_config', 'opponent', 'opponents',
-]
-
-# Bump this whenever the format of the cache entries changes.
-MODEL_CACHE_VERSION = 1
-
-def trim_model_state(state: dict) -> dict:
-  return {k: state[k] for k in MODEL_STATE_KEYS if k in state}
-
-class ModelCache:
-  """On-disk cache of trimmed model states, one pickle file per model.
-
-  An entry is only valid if the model file's mtime and size match those
-  recorded when the entry was written.
-  """
-
-  def __init__(self, path: str):
-    self._path = path
-    os.makedirs(path, exist_ok=True)
-
-  def _entry_path(self, model: str) -> str:
-    return os.path.join(self._path, model)
-
-  def get(self, model: str, mtime: float, size: int) -> Optional[dict]:
-    """Returns the cached trimmed state, or None if missing or stale."""
-    entry_path = self._entry_path(model)
-    if not os.path.isfile(entry_path):
-      return None
-
-    try:
-      with open(entry_path, 'rb') as f:
-        entry = saving.CustomUnpickler(f).load()
-    except Exception as e:
-      logging.warning(f'Failed to read model cache entry {entry_path}: {e}')
-      return None
-
-    if (
-        not isinstance(entry, dict)
-        or entry.get('version') != MODEL_CACHE_VERSION
-        or entry.get('mtime') != mtime
-        or entry.get('size') != size
-        or set(entry.get('keys', [])) != set(MODEL_STATE_KEYS)
-    ):
-      return None
-
-    return entry['state']
-
-  def put(self, model: str, mtime: float, size: int, state: dict):
-    entry = dict(
-        version=MODEL_CACHE_VERSION,
-        mtime=mtime,
-        size=size,
-        keys=MODEL_STATE_KEYS,
-        state=state,
-    )
-    entry_path = self._entry_path(model)
-    # Write to a temporary file and rename so that a concurrent reader (or a
-    # crash mid-write) never sees a partial entry.
-    tmp_path = f'{entry_path}.tmp{os.getpid()}'
-    try:
-      with open(tmp_path, 'wb') as f:
-        pickle.dump(entry, f)
-      os.replace(tmp_path, entry_path)
-    except Exception as e:
-      logging.warning(f'Failed to write model cache entry {entry_path}: {e}')
-      if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-
-  def prune(self, current_models: tp.Collection[str]):
-    """Removes entries for models that no longer exist."""
-    for entry in os.listdir(self._path):
-      if entry not in current_models:
-        entry_path = self._entry_path(entry)
-        if os.path.isfile(entry_path):
-          logging.info(f'Removing stale model cache entry {entry}')
-          try:
-            os.remove(entry_path)
-          except FileNotFoundError:
-            pass  # Another process may have removed it.
-
-class UserPrefs:
-  """Per-user preferences persisted to a JSON file.
-
-  The file maps twitch user name to a dict of preferences.
-  """
-
-  def __init__(self, path: Optional[str]):
-    self._path = path
-    self._prefs: dict[str, dict[str, tp.Any]] = {}
-    self._load()
-
-  def _load(self):
-    if self._path is None or not os.path.isfile(self._path):
-      return
-    try:
-      with open(self._path) as f:
-        prefs = json.load(f)
-    except Exception as e:
-      logging.warning(f'Failed to read user prefs from {self._path}: {e}')
-      return
-    if not isinstance(prefs, dict):
-      logging.warning(f'Ignoring malformed user prefs in {self._path}')
-      return
-    self._prefs = prefs
-    logging.info(f'Loaded prefs for {len(prefs)} users from {self._path}')
-
-  def _save(self):
-    if self._path is None:
-      return
-    os.makedirs(os.path.dirname(self._path) or '.', exist_ok=True)
-    tmp_path = f'{self._path}.tmp{os.getpid()}'
-    try:
-      with open(tmp_path, 'w') as f:
-        json.dump(self._prefs, f, indent=2, sort_keys=True)
-      os.replace(tmp_path, self._path)
-    except Exception as e:
-      logging.warning(f'Failed to write user prefs to {self._path}: {e}')
-      if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-
-  def get(self, user: str, key: str) -> tp.Any:
-    return self._prefs.get(user, {}).get(key)
-
-  def set(self, user: str, key: str, value: tp.Any):
-    self._prefs.setdefault(user, {})[key] = value
-    self._save()
-
-  def delete(self, user: str, key: str):
-    user_prefs = self._prefs.get(user)
-    if user_prefs is None or key not in user_prefs:
-      return
-    del user_prefs[key]
-    if not user_prefs:
-      del self._prefs[user]
-    self._save()
-
-# Keys into UserPrefs.
-AGENT_PREF = 'agent'
-CONNECT_CODE_PREF = 'connect_code'
-
-class AgentConfig(abc.ABC):
-
-  @property
-  @abc.abstractmethod
-  def name(self) -> str:
-    """This agent's name."""
-
-  @property
-  @abc.abstractmethod
-  def delay(self) -> int:
-    """The agent's delay."""
-
-  @property
-  @abc.abstractmethod
-  def batch_steps(self) -> int:
-    """Number of (time)steps to batch during inference."""
-
-  @property
-  def target_console_delay(self) -> int:
-    # Leave a local delay of 1 for async inference.
-    target_delay = max(self.delay - self.batch_steps, 0)
-    return min(target_delay, MAX_DOLPHIN_DELAY)
-
-  @abc.abstractmethod
-  def build(
-      self,
-      controller: melee.Controller,
-      # Actual (netplay) port may different from Controller's (local) port
-      port: int,
-      opponent_port: int,
-      console_delay: int,
-  ) -> Agent:
-    """Builds an agent for the given port and opponent port."""
-
-  @property
-  @abc.abstractmethod
-  def character(self) -> melee.Character:
-    """The character associated with this agent."""
-
-# Depends on gecko code. TODO: configure
-MAX_DOLPHIN_DELAY = 24
-
-class SingleAgent(AgentConfig):
-
-  def __init__(
-      self,
-      agent_kwargs: dict[str, tp.Any],
-      # For models trained to play multiple characters, specify
-      # the preferred one for this session.
-      character: Optional[melee.Character] = None,
-      name: Optional[str] = None,
-  ):
-    self.agent_kwargs = agent_kwargs
-    self._loaded = False
-    self._character = character
-    self._name = name or os.path.basename(agent_kwargs['path'])
-
-  @property
-  def name(self) -> str:
-    return self._name
-
-  def _load(self):
-    # can't use functools.cache because it isn't serializable
-    if self._loaded:
-      return
-    self.state = saving.load_state_from_disk(self.agent_kwargs['path'])
-    self._loaded = True
-
-  @property
-  def delay(self) -> int:
-    self._load()
-    # TODO: find a more robust way of doing this.
-    # Note that this could be a tf or jax state/config.
-    return self.state['config']['policy']['delay']
-
-  @property
-  def batch_steps(self) -> int:
-    return self.agent_kwargs['batch_steps'] or 1
-
-  def build(
-      self,
-      controller: melee.Controller,
-      port: int,
-      opponent_port: int,
-      console_delay: int,
-  ) -> eval_lib.Agent:
-    self._load()
-    return eval_lib.build_agent(
-        controller=controller,
-        port=port,
-        opponent_port=opponent_port,
-        console_delay=console_delay,
-        state=self.state,
-        **self.agent_kwargs,
-    )
-
-  @property
-  def character(self) -> melee.Character:
-    self._load()
-    chars = eval_lib.allowed_characters(self.state['config'])
-
-    if self._character is not None:
-      assert self._character in chars
-      return self._character
-
-    return chars[0]  # Default to the first character in the list.
-
-class AutoAgent(AgentConfig):
-
-  def __init__(
-      self,
-      character: melee.Character,
-      models_path: str,
-      opponent_table: dict[melee.Character, str],
-      delay: int,
-      agent_kwargs: dict = {},
-  ):
-    """
-    Args:
-      opponent_table: Maps opponent character to model name.
-      delay: The smallest delay of the models in opponent_table, which bounds
-        the console delay since that is fixed before the opponent is known.
-    """
-    self._character = character
-    self._delay = delay
-    self.models_path = models_path
-    self.opponent_table = opponent_table
-    self.agent_kwargs = agent_kwargs
-
-  @property
-  def name(self) -> str:
-    return auto_prefix + self.character.name.lower()
-
-  @property
-  def character(self) -> melee.Character:
-    return self._character
-
-  @property
-  def delay(self) -> int:
-    return self._delay
-
-  @property
-  def batch_steps(self) -> int:
-    return self.agent_kwargs['batch_steps'] or 1
-
-  def build(
-      self,
-      controller: melee.Controller,
-      port: int,
-      opponent_port: int,
-      console_delay: int,
-  ) -> eval_lib.EnsembleAgent:
-    return eval_lib.EnsembleAgent(
-        models_path=self.models_path,
-        opponent_table=self.opponent_table,
-        port=port,
-        opponent_port=opponent_port,
-        controller=controller,
-        console_delay=console_delay,
-        **self.agent_kwargs,
-    )
-
-class BotSession:
-  """Session between two bots playing locally."""
-
-  def __init__(
-      self,
-      dolphin_config: dolphin_lib.DolphinConfig,
-      agent_configs: dict[int, AgentConfig],
-      extra_dolphin_kwargs: dict = {},
-      run_on_cpu: bool = False,
-      max_games: Optional[int] = None,
-  ):
-    logging.basicConfig(level=logging.INFO)
-
-    if run_on_cpu:
-      eval_lib.disable_gpus()
-    else:
-      set_memory_growth()
-
-    self.dolphin_config = dolphin_config
-    self.stop_requested = threading.Event()
-    self._games_completed = 0
-
-    ports = agent_configs.keys()
-    dolphin_kwargs = dolphin_config.to_kwargs()
-    dolphin_kwargs.update(extra_dolphin_kwargs)
-
-    players = {
-        port: dolphin_lib.AI(character=config.character)
-        for port, config in agent_configs.items()
-    }
-    dolphin = dolphin_lib.Dolphin(
-        players=players,
-        **dolphin_kwargs,
-    )
-
-    agents: dict[int, Agent] = {}
-    for port, opponent_port in zip(ports, reversed(ports)):
-      agents[port] = agent_configs[port].build(
-          controller=dolphin.controllers[port],
-          port=port,
-          opponent_port=opponent_port,
-          console_delay=dolphin.console.online_delay,
-      )
-
-    def run():
-      # Don't block in the menu so that we can stop if asked to.
-      gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
-
-      # Main loop
-      for agent in agents.values():
-        agent.start()
-      try:
-        was_in_game = False
-        while not self.stop_requested.is_set():
-          gamestate = next(gamestates)
-          in_game = not dolphin_lib.is_menu_state(gamestate)
-          if in_game:
-            for agent in agents.values():
-              agent.step(gamestate)
-          # Detect game-end transition: was in game, now in menu.
-          if was_in_game and not in_game:
-            self._games_completed += 1
-            if max_games is not None:
-              logging.info(f'Bot session: game {self._games_completed} completed.')
-              if self._games_completed >= max_games:
-                logging.info(f'Bot session: reached max_games={max_games}, stopping.')
-                break
-          was_in_game = in_game
-      finally:
-        for agent in agents.values():
-          agent.stop()
-        dolphin.stop()
-
-    self._thread = threading.Thread(target=run)
-    self._thread.start()
-
-  def stop(self):
-    self.stop_requested.set()
-    self._thread.join()
-
-  def status(self) -> SessionStatus:
-    return SessionStatus(
-        num_menu_frames=0,
-        is_alive=self._thread.is_alive(),
-        games_completed=self._games_completed,
-    )
-
-GPU_KWARGS = dict(
-  num_gpus=0.1,
-  runtime_env={
-    'XLA_PYTHON_CLIENT_PREALLOCATE': 'false',
-  }
-)
-
-RemoteBotSession = ray.remote(num_gpus=0)(BotSession)
-RemoteGpuBotSession = ray.remote(**GPU_KWARGS)(BotSession)
-
-def get_ports(gamestate: melee.GameState, display_name: str):
-  name_to_port = {
-      player.displayName: port for port, player in gamestate.players.items()
-  }
-  if display_name not in name_to_port:
-    raise ValueError(f'Could not find display name {display_name} in {name_to_port}')
-  actual_port = name_to_port[display_name]
-  ports = list(gamestate.players)
-  ports.remove(actual_port)
-  opponent_port = ports[0]
-  return actual_port, opponent_port
-
-
-class Session:
-
-  def __init__(
-      self,
-      dolphin_config: dolphin_lib.DolphinConfig,
-      agent_config: AgentConfig,
-      extra_dolphin_kwargs: dict = {},
-      stages: Optional[list[melee.Stage]] = None,
-      run_on_cpu: bool = False,
-      costume: Optional[int] = None,
-      sd_stocks: Optional[int] = None,
-  ):
-    """
-    Args:
-      sd_stocks: If set, the agent will self-destruct at the start of each game
-        until it has at most this many stocks left.
-    """
-    logging.basicConfig(level=logging.INFO)
-
-    if run_on_cpu:
-      eval_lib.disable_gpus()
-    else:
-      set_memory_growth()
-
-    self.dolphin_config = dolphin_config
-    self.agent_config = agent_config
-    self.stop_requested = threading.Event()
-    stages = stages or [dolphin_config.stage]
-    self._sd_stocks = sd_stocks
-    self._sd_phase = SDPhase.DONE
-
-    dolphin_config.online_delay = agent_config.target_console_delay
-    logging.info(f'Setting console delay to {agent_config.target_console_delay}')
-
-    port = 1
-    dolphin_kwargs = dolphin_config.to_kwargs()
-    dolphin_kwargs.update(extra_dolphin_kwargs)
-
-    player = dolphin_lib.AI(
-        character=agent_config.character,
-        costume=costume,
-    )
-    dolphin = dolphin_lib.Dolphin(
-        players={port: player},
-        **dolphin_kwargs,
-    )
-    controller = dolphin.controllers[port]
-
-    agent = agent_config.build(
-        controller=controller,
-        console_delay=agent_config.target_console_delay,
-        # Ports will be set once we're in game.
-        port=0, opponent_port=0,
-    )
-
-    # In netplay the ports are going to be randomized. We use the displayName
-    # to figure out which port we actually are. The connect code would be better
-    # but doesn't appear to work :(
-    with open(dolphin_config.user_json_path) as f:
-      user_json = json.load(f)
-    display_name = user_json['displayName']
-
-    self._num_menu_frames = 0
-
-    def run():
-      # Don't block in the menu so that we can stop if asked to.
-      gamestates = dolphin.iter_gamestates(skip_menu_frames=False)
-
-      # The agent's actual (netplay) port, set at the start of each game.
-      actual_port: Optional[int] = None
-      # Set at the start of each game and cleared once the agent has been
-      # stepped, so that the agent sees a reset even if we skipped stepping
-      # it on the first frame (e.g. while self-destructing).
-      agent_needs_reset = False
-
-      # Main loop
-      agent.start()
-      try:
-        while not self.stop_requested.is_set():
-          gamestate = next(gamestates)
-
-          if not dolphin_lib.is_menu_state(gamestate):
-            # Ports may change if opponent disconnects and reconnects.
-            if gamestate.frame == -123:
-              actual_port, opponent_port = get_ports(gamestate, display_name)
-              agent.set_ports(actual_port, opponent_port)
-              agent_needs_reset = True
-              if self._sd_stocks is not None:
-                self._sd_phase = SDPhase.SD
-
-            if self._sd_step(gamestate, actual_port, controller):
-              # We are self-destructing or waiting out our invincibility; the
-              # agent is not stepped so that it doesn't see any of this.
-              pass
-            else:
-              agent.step(gamestate, needs_reset=agent_needs_reset)
-              agent_needs_reset = False
-
-            self._num_menu_frames = 0
-          else:
-            controller.release_all()
-
-            if self._num_menu_frames == 0:
-              dolphin.stage = random.choice(stages)
-              logging.info(f'Setting stage to {dolphin.stage.name}')
-
-            self._num_menu_frames += 1
-      finally:
-        agent.stop()
-        dolphin.stop()
-
-    self._thread = threading.Thread(target=run)
-    self._thread.start()
-
-  def _sd_step(
-      self, gamestate: melee.GameState, port: Optional[int],
-      controller: melee.Controller,
-  ) -> bool:
-    """Crew-battle style start of game: SD down to the desired stock count.
-
-    Returns True if we took control of the controller (and the agent should
-    therefore not be stepped), False if the agent is in control.
-    """
-    if self._sd_phase is SDPhase.DONE or port is None:
-      return False
-
-    player = gamestate.players.get(port)
-    if player is None:
-      return False
-
-    if self._sd_phase is SDPhase.SD:
-      if player.stock > self._sd_stocks:
-        # Hold the control stick away from the center of the stage so that we
-        # walk/fall off and die. All legal stages are centered at x=0.
-        away_x = 1.0 if player.position.x >= 0 else 0.0
-        controller.release_all()
-        controller.tilt_analog(melee.Button.BUTTON_MAIN, away_x, 0.5)
-        return True
-      logging.info('SD complete, waiting out invincibility.')
-      self._sd_phase = SDPhase.WAIT
-
-    if self._sd_phase is SDPhase.WAIT:
-      # As in a crew battle, do nothing until our respawn invincibility is
-      # over. Note that libmelee's `invulnerable` also covers intangibility
-      # (e.g. ledge grabs), which is why this is only checked right after
-      # respawning rather than any time we have the desired number of stocks.
-      if is_dead_or_respawning(player) or player.invulnerable:
-        controller.release_all()
-        return True
-      logging.info('Invincibility over, handing control to the agent.')
-      self._sd_phase = SDPhase.DONE
-
-    return False
-
-  def num_menu_frames(self) -> int:
-    return self._num_menu_frames
-
-  def status(self) -> SessionStatus:
-    # Return current_model from EnsembleAgent
-    return SessionStatus(
-        num_menu_frames=self._num_menu_frames,
-        is_alive=self._thread.is_alive(),
-    )
-
-  def stop(self):
-    self.stop_requested.set()
-    self._thread.join()
-
-RemoteSession = ray.remote(num_gpus=0)(Session)
-RemoteGpuSession = ray.remote(**GPU_KWARGS)(Session)
-
 HELP_MESSAGE = """
 !play <code>: Have the bot connect to you. Connect to the bot with code {bot_code}.
 !agents [<char> [<opp>]]: List available agents to play against, e.g. "!agents fox falco" lists fox agents trained vs. falco (use "all" for any). The auto-* agents will pick the strongest agent based the matchup. The basic-* agents are much weaker, and the medium-* agents are in the middle.
@@ -764,86 +123,6 @@ Melee AI trained with a combination of imitation learning from slippi replays an
  Code: https://github.com/vladfi1/slippi-ai. Discord: https://discord.gg/hfVTXGu.
 """.strip()
 
-@dataclasses.dataclass
-class SessionInfo:
-  session: Session  # actually a RemoteSession or RemoteBotSession
-  start_time: datetime.datetime
-  twitch_name: str
-  connect_code: Optional[str]
-  agent: str
-
-def format_td(td: datetime.timedelta) -> str:
-  """Chop off microseconds."""
-  return str(td).split('.')[0]
-
-
-auto_prefix = 'auto-'
-imitation_prefix = 'basic-'
-
-# Convenience aliases on top of the lowercased melee.Character names.
-CHARACTER_ALIASES = {
-    'puff': melee.Character.JIGGLYPUFF,
-    'falcon': melee.Character.CPTFALCON,
-    'ics': melee.Character.POPO,
-    'icies': melee.Character.POPO,
-    'ganon': melee.Character.GANONDORF,
-    'gnw': melee.Character.GAMEANDWATCH,
-}
-
-def parse_character(name: str) -> Optional[melee.Character]:
-  name = name.lower()
-  if name in CHARACTER_ALIASES:
-    return CHARACTER_ALIASES[name]
-  return eval_lib.data.name_to_character.get(name)
-
-@dataclasses.dataclass
-class AgentInfo:
-  character: melee.Character
-  opponents: frozenset[melee.Character]
-  # For "special" agents named <group>-<character> (multi-character models
-  # and imitation agents), the group prefix; None for regular agents.
-  group: Optional[str] = None
-  # Whether the underlying model is an imitation model.
-  imitation: bool = False
-
-def names_to_str(names: tp.Sequence[str]) -> str:
-  if len(names) > 1:
-    return "[" + ",".join(names) + "]"
-  return names[0]
-
-def group_special_agents(pairs: tp.Iterable[tuple[str, str]]) -> list[str]:
-  """Compresses (group, character) pairs into "[groups]-[characters]" strings.
-
-  Characters that share the same set of groups are merged into one entry.
-  """
-  chars_by_group: dict[str, list[str]] = {}
-  for group, char_name in pairs:
-    chars_by_group.setdefault(group, []).append(char_name)
-
-  groups_by_chars: dict[tuple[str, ...], list[str]] = {}
-  for group, char_names in chars_by_group.items():
-    key = tuple(sorted(char_names))
-    groups_by_chars.setdefault(key, []).append(group)
-
-  return [
-      names_to_str(sorted(groups)) + '-' + names_to_str(char_tuple)
-      for char_tuple, groups in groups_by_chars.items()
-  ]
-
-def parse_auto_char(agent: str) -> Optional[melee.Character]:
-  if not agent.startswith(auto_prefix):
-    return None
-
-  char_str = agent.removeprefix(auto_prefix)
-  return eval_lib.data.name_to_character.get(char_str)
-
-def parse_imitation_char(agent: str) -> Optional[melee.Character]:
-  if not agent.startswith(imitation_prefix):
-    return None
-
-  char_str = agent.removeprefix(imitation_prefix)
-  return eval_lib.data.name_to_character.get(char_str)
-
 def tokens(message: str) -> list[str]:
   return [x for x in message.split(' ') if x != '']
 
@@ -867,177 +146,49 @@ async def send_list(ctx: commands.Context, items: list[str]):
     assert len(message) <= max_chars
     await ctx.send(message)
 
+def play_message(user: manager_lib.User, result: manager_lib.PlayResult) -> str:
+  on_off = "on" if result.on_stream else "off"
+  return f"Connecting to {user.name} ({result.connect_code}) {on_off} stream."
+
 
 class Bot(commands.Bot):
+  """Twitch chat frontend to the SessionManager."""
 
   def __init__(
       self, token: str, prefix: str, channel: str,
-      dolphin_config: dolphin_lib.DolphinConfig,
-      agent_kwargs: dict,
-      models_path: str,
-      max_sessions: int = 4,  # Includes stream session.
-      menu_timeout: float = 3,  # in minutes
-      stream: bool = True,
-      bot_session_interval: float = 1, # in minutes
-      bots_lock_minutes: float = 15,
-      bot: Optional[str] = None,
-      bot2: Optional[str] = None,
-      auto_delay: int = 18,
-      eval_db_path: Optional[str] = None,
-      rating_offset: float = 2000,
-      default_agent: Optional[str] = None,
-      costume: Optional[int] = None,
-      botmatch_replay_dir: str = 'Replays/BotMatch',
-      botmatch_max_games: int = 10,
-      state_dir: Optional[str] = None,
+      manager: manager_lib.SessionManager,
   ):
-    """
-    Args:
-      auto_delay: Delay of the basic-* agents, and of the auto-* agents when
-        there are no eval ratings.
-      eval_db_path: Eval database whose ratings pick the auto-* agents.
-      rating_offset: Added to the eval ratings, which have mean zero.
-      state_dir: Directory for state that persists across restarts (model
-        config cache, user preferences). None disables persistence.
-    """
     super().__init__(token=token, prefix=prefix, initial_channels=[channel])
     self.owner = channel
-
-    self.dolphin_config = dolphin_config
-    self.agent_kwargs = agent_kwargs
-    self.run_on_cpu = agent_kwargs['run_on_cpu']
-
-    if self.run_on_cpu:
-      eval_lib.disable_gpus()
-    else:
-      set_memory_growth()
-
-    self._max_sessions = max_sessions
-    self._menu_timeout = menu_timeout
-    self._stream = stream
-    self._bot_session_interval = bot_session_interval
-    self._bots_lock_minutes = bots_lock_minutes
-
-    self._auto_delay = auto_delay
-    self._costume = costume
-    self._botmatch_replay_dir = botmatch_replay_dir
-    self._botmatch_max_games = botmatch_max_games
-
-    self._sessions: dict[str, SessionInfo] = {}
-    self._streaming_against: Optional[str] = None
-    self._last_stream_time: Optional[float] = None
-    self._bot_session: Optional[BotSession] = None  # actually RemoteBotSession
-    # Who last ran !bots and when (for !status), and when their lock expires.
-    self._bots_set_by: Optional[str] = None
-    self._bots_set_time: Optional[datetime.datetime] = None
-    self._bots_lock_until: Optional[datetime.datetime] = None
-
-    self.lock = threading.RLock()
-
-    with open(dolphin_config.user_json_path) as f:
-      user_json = json.load(f)
+    self.manager = manager
+    manager.add_listener(self._send_to_channel)
 
     self.help_message = HELP_MESSAGE.format(
-        max_players=max_sessions,
-        bot_code=user_json['connectCode'],
-        botmatch_max_games=botmatch_max_games,
+        max_players=manager.max_sessions,
+        bot_code=manager.bot_connect_code,
+        botmatch_max_games=manager.botmatch_max_games,
     )
     self.extra_help_message = EXTRA_HELP_MESSAGE.format(
-        bots_lock_minutes=bots_lock_minutes)
+        bots_lock_minutes=manager.bots_lock_minutes)
 
-    self._models_path = models_path
-    self._eval_db_path = eval_db_path
-    self._rating_offset = rating_offset
-    self._default_agent = default_agent
-    # Cache of loaded model states, keyed by model name. Each entry holds the
-    # file mtime it was loaded at, the (trimmed) state, and its summary.
-    self._loaded_models: dict[str, LoadedModel] = {}
-    # Optional on-disk cache of the trimmed states, to speed up startup.
-    self._model_cache: Optional[ModelCache] = None
-    user_prefs_path: Optional[str] = None
-    if state_dir:
-      self._model_cache = ModelCache(os.path.join(state_dir, 'cached_models'))
-      user_prefs_path = os.path.join(state_dir, 'user_prefs.json')
-    self._reload_models()
+  async def _send_to_channel(self, message: str):
+    chan = self.get_channel(self.owner)
+    # Might be None if we haven't logged in yet
+    if chan:
+      await chan.send(message)
 
-    # Persisted per-user preferences (currently just the selected agent).
-    self._user_prefs = UserPrefs(user_prefs_path)
+  async def event_command_error(
+      self, context: commands.Context, error: Exception):
+    if isinstance(error, manager_lib.UserError):
+      await context.send(str(error))
+      return
+    await super().event_command_error(context, error)
 
-    if bot is None:
-      bot1_config = self._default_agent_config
-    else:
-      bot1_config = self._single_agent(path=bot)
-
-    if bot2 is None:
-      bot2_config = bot1_config
-    else:
-      bot2_config = self._single_agent(path=bot2)
-
-    self._bot_configs: dict[int, AgentConfig] = {
-        1: bot1_config,
-        2: bot2_config,
-    }
-
-    # User-specific state (not persisted).
-    self._stages: dict[str, list[melee.Stage]] = {}
-    # Number of stocks the bot should SD down to at the start of each game.
-    self._sd_stocks: dict[str, int] = {}
-
-    self._do_chores.start()
-
-  def _single_agent(
-      self,
-      model: Optional[str] = None,
-      path: Optional[str] = None,
-      char: Optional[melee.Character] = None,
-      name: Optional[str] = None,
-  ) -> SingleAgent:
-    if model is not None:
-      if path is not None:
-        raise ValueError('Cannot specify both model and path for SingleAgent')
-      path = os.path.join(self._models_path, model)
-    elif path is None:
-      raise ValueError('Must specify either model or path for SingleAgent')
-
-    return SingleAgent(
-        agent_kwargs=dict(self.agent_kwargs, path=path),
-        character=char,
-        name=name or model,
-    )
-
-  def _auto_agent(
-      self,
-      char: melee.Character,
-      opponent_table: dict[melee.Character, str],
-      agent_summaries: dict[str, eval_lib.AgentSummary],
-  ) -> AutoAgent:
-    delay = min(agent_summaries[model].delay
-                for model in set(opponent_table.values()))
-    return AutoAgent(
-        character=char,
-        models_path=self._models_path,
-        opponent_table=opponent_table,
-        delay=delay,
-        agent_kwargs=self.agent_kwargs,
-    )
-
-  def _load_ratings(self) -> dict[tuple[str, melee.Character], float]:
-    """Latest eval ratings keyed by (model, character); empty if unavailable."""
-    if not self._eval_db_path or not os.path.exists(self._eval_db_path):
-      return {}
-    try:
-      conn = eval_db_lib.connect_readonly(self._eval_db_path)
-      try:
-        by_name = eval_db_lib.latest_ratings_by_name(conn)
-      finally:
-        conn.close()
-    except sqlite3.Error:
-      logging.exception(f'Could not read ratings from {self._eval_db_path}')
-      return {}
-    return {
-        (name, melee.Character[char]): rating + self._rating_offset
-        for (name, char), rating in by_name.items()
-    }
+  async def event_ready(self):
+    # Notify us when everything is ready!
+    # We are logged in and ready to chat and use commands...
+    print(f'Logged in as | {self.nick}')
+    print(f'User id is | {self.user_id}')
 
   @commands.command()
   async def help(self, ctx: commands.Context):
@@ -1053,180 +204,9 @@ class Bot(commands.Bot):
   async def about(self, ctx: commands.Context):
     await ctx.send(ABOUT_MESSAGE)
 
-  def _refresh_loaded_models(self) -> int:
-    """Loads models that are new or have changed since they were loaded.
-
-    Models whose files have been removed are dropped from the in-memory (and
-    on-disk) cache. Returns the number of models (re)loaded from disk, not
-    counting those served from the on-disk cache.
-    """
-    num_loaded = 0
-    num_cached = 0
-
-    current_models = set(os.listdir(self._models_path))
-    for model in list(self._loaded_models):
-      if model not in current_models:
-        logging.info(f'Model {model} removed from disk')
-        del self._loaded_models[model]
-    if self._model_cache is not None:
-      self._model_cache.prune(current_models)
-
-    for model in sorted(current_models):
-      path = os.path.join(self._models_path, model)
-      stat = os.stat(path)
-      mtime = stat.st_mtime
-      size = stat.st_size
-
-      loaded = self._loaded_models.get(model)
-      if loaded is not None and (loaded.mtime, loaded.size) == (mtime, size):
-        continue
-
-      state = None
-      if self._model_cache is not None:
-        state = self._model_cache.get(model, mtime, size)
-        if state is not None:
-          num_cached += 1
-
-      if state is None:
-        logging.info(f'Loading model {model}')
-        state = trim_model_state(saving.load_state_from_disk(path))
-        num_loaded += 1
-        if self._model_cache is not None:
-          self._model_cache.put(model, mtime, size, state)
-
-      self._loaded_models[model] = LoadedModel(
-          mtime=mtime,
-          size=size,
-          state=state,
-          summary=eval_lib.AgentSummary.from_state(state),
-      )
-
-    if num_cached:
-      logging.info(f'Loaded {num_cached} models from the cache.')
-
-    return num_loaded
-
-  def _reload_models(self) -> int:
-    """Rebuilds the agent tables, loading only new or updated model files.
-
-    Returns the number of models (re)loaded from disk.
-    """
-    num_loaded = self._refresh_loaded_models()
-
-    self._special_agents: list[str] = []
-    self._agents: dict[str, AgentConfig] = {}
-    # Character played, opponents trained against, and special-agent group,
-    # for filtering and grouping in !agents.
-    self._agent_infos: dict[str, AgentInfo] = {}
-
-    # For inspection by the !config command
-    self._model_configs: dict[str, dict] = {
-        model: loaded.state for model, loaded in self._loaded_models.items()
-    }
-    summaries: dict[str, eval_lib.AgentSummary] = {
-        model: loaded.summary for model, loaded in self._loaded_models.items()
-    }
-
-    def add_agent(
-        agent_config: AgentConfig,
-        char: melee.Character,
-        opponents: tp.Iterable[melee.Character],
-        group: Optional[str] = None,
-        imitation: bool = False,
-    ):
-      if agent_config.name in self._agents:
-        logging.warning(f'Duplicate agents named {agent_config.name}')
-      self._agents[agent_config.name] = agent_config
-      self._agent_infos[agent_config.name] = AgentInfo(
-          character=char, opponents=frozenset(opponents), group=group,
-          imitation=imitation)
-
-    # (group, character name) pairs for the special agents.
-    special_pairs: list[tuple[str, str]] = []
-
-    # Regular agents
-    for model, summary in summaries.items():
-      imitation = summary.type is eval_lib.AgentType.IMITATION
-      if len(summary.characters) == 1:
-        add_agent(
-            self._single_agent(model=model),
-            char=summary.characters[0],
-            opponents=summary.opponents,
-            imitation=imitation)
-      else:
-        for char in summary.characters:
-          agent_config = self._single_agent(
-              model=model, char=char,
-              name=model + '-' + char.name.lower())
-          add_agent(
-              agent_config, char=char, opponents=summary.opponents,
-              group=model, imitation=imitation)
-          special_pairs.append((model, char.name.lower()))
-
-    # imitation agents
-    imitation_models = eval_lib.get_imitation_agents_from_summaries(
-        summaries, delay=self._auto_delay)
-
-    imitation_group = imitation_prefix.rstrip('-')
-    for char, model in imitation_models.items():
-      agent_config = self._single_agent(
-          model=model,
-          char=char,
-          name=imitation_prefix + char.name.lower(),
-      )
-      add_agent(
-          agent_config, char=char, opponents=summaries[model].opponents,
-          group=imitation_group, imitation=True)
-      special_pairs.append((imitation_group, char.name.lower()))
-
-    self._special_agents.extend(group_special_agents(special_pairs))
-
-    # auto agents
-    self._auto_agents: dict[melee.Character, AutoAgent] = {}
-    # Eval ratings of the loaded models, for !rating, !auto and auto agents.
-    self._ratings: dict[tuple[str, melee.Character], float] = {
-        key: rating for key, rating in self._load_ratings().items()
-        if key[0] in summaries
-    }
-    matchup_table = eval_lib.build_matchup_table_from_ratings(
-        summaries, self._ratings)
-    if matchup_table:
-      logging.info('Picked auto agents using eval ratings.')
-    else:
-      logging.warning(
-          'No eval ratings; picking auto agents by training matchups.')
-      matchup_table = eval_lib.build_matchup_table_from_summaries(
-          summaries, delay=self._auto_delay)
-    auto_names = []
-    for character, opponent_table in matchup_table.items():
-      agent_config = self._auto_agent(character, opponent_table, summaries)
-      self._auto_agents[character] = agent_config
-      add_agent(agent_config, char=character, opponents=opponent_table.keys())
-      auto_names.append(character.name.lower())
-
-    if len(auto_names) > 0:
-      self._special_agents.append(
-          f'{auto_prefix}[{",".join(auto_names)}]')
-
-    # Set default agent
-    if self._default_agent is not None:
-      if self._default_agent not in self._agents:
-        raise ValueError(f'Invalid default agent {self._default_agent}')
-      self._default_agent_config = self._agents[self._default_agent]
-    else:
-      if melee.Character.FOX in self._auto_agents:
-        default_char = melee.Character.FOX
-      else:
-        default_char = next(iter(self._auto_agents))
-
-      self._default_agent_config = self._auto_agents[default_char]
-
-    return num_loaded
-
   @commands.command()
   async def reload(self, ctx: commands.Context):
-    with self.lock:
-      num_loaded = self._reload_models()
+    num_loaded = await self.manager.reload()
     await ctx.send(f'Loaded {num_loaded} new or updated models.')
     await self.agents_full(ctx)
 
@@ -1238,13 +218,15 @@ class Bot(commands.Bot):
       return
 
     agent = words[1]
-    if agent not in self._model_configs:
-      await ctx.send(f'{agent} is not a valid agent')
-      models_str = ", ".join(self._model_configs)
+    try:
+      config = self.manager.model_config(agent)
+    except manager_lib.UserError as e:
+      await ctx.send(str(e))
+      models_str = ", ".join(self.manager.model_names())
       await ctx.send(f'Available agents: {models_str}')
       return
 
-    message = json.dumps(self._model_configs[agent])
+    message = json.dumps(config)
     chunk_size = 500
 
     for i in range(0, len(message), chunk_size):
@@ -1258,14 +240,11 @@ class Bot(commands.Bot):
     !agents <char>: list all agents that play <char>.
     !agents <char> <opp>: list all agents that play <char> vs. <opp>.
     "all" may be used in place of either character.
-    Special agents are grouped as "[groups]-[characters]". Auto agents are
-    meta agents and raw imitation models are already listed as "basic", so
-    both are excluded from filtered lists.
     """
     words = tokens(ctx.message.content)[1:]
 
     if len(words) == 0:
-      await send_list(ctx, sorted(self._special_agents))
+      await send_list(ctx, self.manager.special_agents())
       return
 
     if len(words) > 2:
@@ -1286,41 +265,12 @@ class Bot(commands.Bot):
     char = filters[0]
     opponent = filters[1] if len(filters) > 1 else None
 
-    def matches(info: AgentInfo) -> bool:
-      if char is not None and info.character != char:
-        return False
-      if opponent is not None and opponent not in info.opponents:
-        return False
-      return True
-
-    special_pairs: list[tuple[str, str]] = []
-    regular_names: list[str] = []
-    for name, info in self._agent_infos.items():
-      # Auto agents are meta agents; leave them out of filtered lists.
-      if isinstance(self._agents[name], AutoAgent):
-        continue
-      if not matches(info):
-        continue
-      if info.group is not None:
-        special_pairs.append((info.group, info.character.name.lower()))
-      elif info.imitation:
-        # Imitation models are already listed under the "basic" group.
-        continue
-      else:
-        regular_names.append(name)
-
-    names = sorted(group_special_agents(special_pairs)) + sorted(regular_names)
+    names = self.manager.find_agents(char, opponent)
     if len(names) == 0:
       await ctx.send('No matching agents.')
       return
 
     await send_list(ctx, names)
-
-  def _rating_rank(self, model: str, char: melee.Character) -> tuple[int, int]:
-    """A rated model's rank among the models playing char, and their count."""
-    rating = self._ratings[(model, char)]
-    peers = [r for (_, c), r in self._ratings.items() if c == char]
-    return 1 + sum(r > rating for r in peers), len(peers)
 
   @commands.command()
   async def rating(self, ctx: commands.Context):
@@ -1330,44 +280,30 @@ class Bot(commands.Bot):
       return
     name = words[0]
 
-    agent_config = self._agents.get(name)
-    if isinstance(agent_config, AutoAgent):
-      char_name = agent_config.character.name.lower()
+    auto_char = self.manager.auto_agent_character(name)
+    if auto_char is not None:
+      char_name = auto_char.name.lower()
       await ctx.send(
           f'{name} picks a model per opponent; try !auto {char_name} <opp>.')
       return
 
-    if isinstance(agent_config, SingleAgent):
-      model = os.path.basename(agent_config.agent_kwargs['path'])
-      chars = [self._agent_infos[name].character]
-    elif name in self._loaded_models:
-      # A multi-character model, listed as <model>-<char>.
-      model = name
-      chars = self._loaded_models[name].summary.characters
-    else:
-      await ctx.send(f'{name} is not a valid agent')
-      return
-
-    rated = [c for c in chars if (model, c) in self._ratings]
-    if not rated:
+    model, ratings = self.manager.ratings(name)
+    if not ratings:
       await ctx.send(f'{name} has no rating.')
       return
-    if len(rated) == 1:
-      char = rated[0]
-      char_name = char.name.lower()
-      rank, count = self._rating_rank(model, char)
+    if len(ratings) == 1:
+      r, = ratings
+      char_name = r.character.name.lower()
       await ctx.send(
-          f'{model} ({char_name}): rating {self._ratings[(model, char)]:.0f},'
-          f' #{rank} of {count} {char_name} agents.')
+          f'{model} ({char_name}): rating {r.rating:.0f},'
+          f' #{r.rank} of {r.count} {char_name} agents.')
       return
 
     # One compact entry per character, e.g. "fox 460 (#24/37)".
     items = [f'{model} ratings:']
-    for char in rated:
-      rank, count = self._rating_rank(model, char)
+    for r in ratings:
       items.append(
-          f'{char.name.lower()} {self._ratings[(model, char)]:.0f}'
-          f' (#{rank}/{count}),')
+          f'{r.character.name.lower()} {r.rating:.0f} (#{r.rank}/{r.count}),')
     items[-1] = items[-1].rstrip(',')
     await send_list(ctx, items)
 
@@ -1387,25 +323,19 @@ class Bot(commands.Bot):
       chars.append(char)
     char, opponent = chars
 
-    auto_agent = self._auto_agents.get(char)
-    if auto_agent is None:
-      await ctx.send(f'There is no {auto_prefix}{char.name.lower()} agent.')
-      return
-
-    model = auto_agent.opponent_table[opponent]
-    summary = self._loaded_models[model].summary
-    trained = 'trained' if opponent in summary.opponents else 'not trained'
+    pick = self.manager.auto_pick(char, opponent)
+    opp_name = opponent.name.lower()
+    trained = 'trained' if pick.trained else 'not trained'
     message = (
-        f'{auto_agent.name} vs. {opponent.name.lower()} plays {model}'
-        f' ({trained} vs. {opponent.name.lower()}).')
-    rating = self._ratings.get((model, char))
-    if rating is not None:
-      message += f' Rating {rating:.0f}.'
+        f'{pick.agent} vs. {opp_name} plays {pick.model}'
+        f' ({trained} vs. {opp_name}).')
+    if pick.rating is not None:
+      message += f' Rating {pick.rating:.0f}.'
     await ctx.send(message)
 
   @commands.command()
   async def agents_full(self, ctx: commands.Context):
-    await send_list(ctx, sorted(self._agents.keys()))
+    await send_list(ctx, self.manager.agent_names())
 
   @commands.command()
   async def agent(self, ctx: commands.Context):
@@ -1416,70 +346,53 @@ class Bot(commands.Bot):
       return
 
     agent_name: str = words[1]
+    user = twitch_user(ctx)
+    result = await self.manager.select_agent(user, agent_name)
+    await ctx.send(f'{user.name} has selected {agent_name}')
 
-    agent_config = self._agents.get(agent_name)
-
-    if agent_config is None:
-      await ctx.send(f'{agent_name} is not a valid agent')
-      return
-
-    name = ctx.author.name
-    assert isinstance(name, str)
-    self._user_prefs.set(name, AGENT_PREF, agent_name)
-    await ctx.send(f'{name} has selected {agent_name}')
-
-    # Auto-restart if the person is already playing
-    if name in self._sessions:
-      with self.lock:
-        await ctx.send(f'Restarting session with {name}')
-        self._stop_sessions([self._sessions[name]])
-        await self._play(ctx)
-
-  async def event_ready(self):
-    # Notify us when everything is ready!
-    # We are logged in and ready to chat and use commands...
-    print(f'Logged in as | {self.nick}')
-    print(f'User id is | {self.user_id}')
+    if result.restarted is not None:
+      await ctx.send(f'Restarted session with {user.name}')
+      await ctx.send(play_message(user, result.restarted))
 
   @commands.command()
   async def stages(self, ctx: commands.Context):
-    name = ctx.author.name
-    assert isinstance(name, str)
+    user = twitch_user(ctx)
+    name = user.name
     words = ctx.message.content.split(' ')
 
     stage_names = words[1:]
     if len(stage_names) == 0:
-      stages = self._stages.get(name)
+      stages = self.manager.stages(user)
       if stages is None:
         stages_string = 'all'
       else:
         stages_string = ", ".join([s.name.lower() for s in stages])
       await ctx.send(
           f'{name} has selected {stages_string}.'
-          f' Available stages: {", ".join(NAME_TO_STAGE)}')
+          f' Available stages: {", ".join(manager_lib.NAME_TO_STAGE)}')
       return
 
     stages: list[melee.Stage] = []
     for stage_name in stage_names:
       stage_name = stage_name.lower()
-      if stage_name not in NAME_TO_STAGE:
+      if stage_name not in manager_lib.NAME_TO_STAGE:
           await ctx.send(
               f'{name}, {stage_name} is not a valid stage.'
-              f' Available stages: {", ".join(NAME_TO_STAGE)}')
+              f' Available stages: {", ".join(manager_lib.NAME_TO_STAGE)}')
           return
-      stages.append(NAME_TO_STAGE[stage_name])
+      stages.append(manager_lib.NAME_TO_STAGE[stage_name])
 
-    self._stages[name] = stages
+    self.manager.set_stages(user, stages)
     await ctx.send(f'{name} has set the stages to {", ".join(stage_names)}')
 
   @commands.command()
   async def stocks(self, ctx: commands.Context):
-    name = ctx.author.name
-    assert isinstance(name, str)
+    user = twitch_user(ctx)
+    name = user.name
     words = ctx.message.content.split(' ')
 
     if len(words) == 1:
-      stocks = self._sd_stocks.get(name)
+      stocks = self.manager.sd_stocks(user)
       if stocks is None:
         await ctx.send(
             f'{name}, the bot will play with all its stocks.'
@@ -1494,283 +407,62 @@ class Bot(commands.Bot):
       await ctx.send(f'{name}, "{words[1]}" is not a number.')
       return
 
-    if not 1 <= stocks <= MAX_STOCKS:
-      await ctx.send(f'{name}, stocks must be between 1 and {MAX_STOCKS}.')
-      return
+    self.manager.set_sd_stocks(user, stocks)
 
-    if stocks == MAX_STOCKS:
-      self._sd_stocks.pop(name, None)
+    if stocks == manager_lib.MAX_STOCKS:
       await ctx.send(
           f'{name}, the bot will play with all its stocks.'
           ' Takes effect on your next game.')
       return
 
-    self._sd_stocks[name] = stocks
     await ctx.send(
         f'{name}, the bot will SD down to {stocks} stocks at the start of'
         ' each game. Takes effect on your next session (!play or !reset).')
 
   @commands.command()
   async def stop(self, ctx: commands.Context):
-    with self.lock:
-      name = ctx.author.name
-      if name not in self._sessions:
-        await ctx.send(f"{name}, you're not playing right now.")
-        return
-
-      self._stop_sessions([self._sessions[name]])
-      await ctx.send(f'Stopped playing against {name}')
-
-  async def _play(self, ctx: commands.Context):
-    with self.lock:
-      name = ctx.author.name
-      assert isinstance(name, str)
-      connect_code = self._user_prefs.get(name, CONNECT_CODE_PREF)
-      assert connect_code
-
-      if name in self._sessions:
-        await ctx.send(f'{name}, you are already playing')
-        return
-
-      await self._gc_sessions()
-
-      if len(self._sessions) == self._max_sessions:
-        await ctx.send('Sorry, too many sessions already active.')
-        return
-
-      agent_config = self._get_opponent_config(name)
-      is_weak_agent = parse_imitation_char(agent_config.name) is not None
-
-      is_stream = self._stream and (self._streaming_against is None)
-      if is_weak_agent:
-        is_stream = False
-
-      if is_stream:
-        self._stop_bot_session()
-
-      on_off = "on" if is_stream else "off"
-      message = f"Connecting to {name} ({connect_code}) {on_off} stream."
-      logging.info(message)
-      await ctx.send(message)
-
-      session = self._start_session(
-          connect_code,
-          agent_config=agent_config,
-          render=is_stream,
-          stages=self._stages.get(name, None),
-          save_replays=not is_weak_agent,
-          sd_stocks=self._sd_stocks.get(name, None),
-      )
-      self._sessions[name] = SessionInfo(
-          session=session,
-          start_time=datetime.datetime.now(),
-          twitch_name=name,
-          connect_code=connect_code,
-          agent=agent_config.name,
-      )
-      if is_stream:
-        self._streaming_against = name
+    user = twitch_user(ctx)
+    await self.manager.stop(user)
+    await ctx.send(f'Stopped playing against {user.name}')
 
   @commands.command()
   async def play(self, ctx: commands.Context):
-    name = ctx.author.name
-    assert isinstance(name, str)
+    user = twitch_user(ctx)
     words = ctx.message.content.split(' ')
 
-    if len(words) == 1:
-      connect_code = self._user_prefs.get(name, CONNECT_CODE_PREF)
-      if connect_code is None:
-        await ctx.send('You must specify a connect code')
-        return
-    else:
-      connect_code = words[1].upper()
-      if '#' not in connect_code:
-        await ctx.send(f'{connect_code} is not a valid connect code')
-        return
-      self._user_prefs.set(name, CONNECT_CODE_PREF, connect_code)
+    if len(words) > 1:
+      self.manager.set_connect_code(user, words[1])
 
-    await self._play(ctx)
+    result = await self.manager.play(user)
+    await ctx.send(play_message(user, result))
 
   @commands.command()
   async def botmatch(self, ctx: commands.Context):
-    with self.lock:
-      name = ctx.author.name
-      assert isinstance(name, str)
-      words = ctx.message.content.split(' ')[1:]
+    words = ctx.message.content.split(' ')[1:]
 
-      if len(words) == 1:
-        agent1_name = agent2_name = words[0]
-      elif len(words) == 2:
-        agent1_name, agent2_name = words
-      else:
-        await ctx.send('Usage: !botmatch agent1 [agent2]')
-        return
+    if len(words) == 1:
+      agent1_name = agent2_name = words[0]
+    elif len(words) == 2:
+      agent1_name, agent2_name = words
+    else:
+      await ctx.send('Usage: !botmatch agent1 [agent2]')
+      return
 
-      agent1_config = self._agents.get(agent1_name)
-      if agent1_config is None:
-        await ctx.send(f'Unknown agent: {agent1_name}')
-        return
-
-      agent2_config = self._agents.get(agent2_name)
-      if agent2_config is None:
-        await ctx.send(f'Unknown agent: {agent2_name}')
-        return
-
-      if name in self._sessions:
-        await ctx.send(f'{name}, you already have an active session.')
-        return
-
-      await self._gc_sessions()
-
-      if len(self._sessions) == self._max_sessions:
-        await ctx.send('Sorry, too many sessions already active.')
-        return
-
-      agent_configs = {1: agent1_config, 2: agent2_config}
-      session = self._start_user_bot_session(
-          agent_configs, max_games=self._botmatch_max_games)
-
-      agent_label = f'{agent1_name} vs {agent2_name}'
-      self._sessions[name] = SessionInfo(
-          session=session,
-          start_time=datetime.datetime.now(),
-          twitch_name=name,
-          connect_code=None,
-          agent=agent_label,
-      )
-      await ctx.send(
-          f'Started bot match: {agent_label}'
-          f' ({self._botmatch_max_games} games).')
+    agent_label = await self.manager.botmatch(
+        twitch_user(ctx), agent1_name, agent2_name)
+    await ctx.send(
+        f'Started bot match: {agent_label}'
+        f' ({self.manager.botmatch_max_games} games).')
 
   @commands.command()
   async def reset(self, ctx: commands.Context):
-    with self.lock:
-      name = ctx.author.name
-
-      if name not in self._sessions:
-        await ctx.send(f"{name}, you're not playing right now.")
-        return
-
-      self._stop_sessions([self._sessions[name]])
-
-      # Reusing the context here is a bit of a hack.
-      await self._play(ctx)
-
-  def _start_session(
-      self,
-      connect_code: str,
-      agent_config: AgentConfig,
-      stages: Optional[list[melee.Stage]],
-      render: bool = False,
-      save_replays: bool = True,
-      sd_stocks: Optional[int] = None,
-  ) -> Session:
-    config = dataclasses.replace(self.dolphin_config)
-    config.slippi_port = portpicker.pick_unused_port()
-    config.connect_code = connect_code
-    config.render = render
-    config.headless = not render
-    config.replay_dir = os.path.join(config.replay_dir, agent_config.name)
-    os.makedirs(config.replay_dir, exist_ok=True)
-    extra_dolphin_kwargs = {}
-    if render:
-      # TODO: don't hardcode this
-      extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
-
-    config.save_replays = save_replays
-
-    session_class = RemoteSession if self.run_on_cpu else RemoteGpuSession
-
-    return session_class.remote(
-        config,
-        agent_config,
-        extra_dolphin_kwargs=extra_dolphin_kwargs,
-        stages=stages,
-        run_on_cpu=self.run_on_cpu,
-        costume=self._costume,
-        sd_stocks=sd_stocks,
-    )
-
-  def _start_bot_session(self, render: bool = True) -> BotSession:
-    config = dataclasses.replace(self.dolphin_config)
-    config.slippi_port = portpicker.pick_unused_port()
-    config.connect_code = None
-    config.render = render
-    config.headless = not render
-    config.save_replays = False
-    extra_dolphin_kwargs = {}
-    if render:
-      config.emulation_speed = 1
-      # TODO: don't hardcode this
-      extra_dolphin_kwargs['env_vars'] = dict(DISPLAY=":99")
-
-    session_class = RemoteBotSession if self.run_on_cpu else RemoteGpuBotSession
-
-    return session_class.remote(
-        config, self._bot_configs,
-        extra_dolphin_kwargs=extra_dolphin_kwargs,
-        run_on_cpu=self.run_on_cpu,
-    )
-
-  def _start_user_bot_session(
-      self,
-      agent_configs: dict[int, AgentConfig],
-      max_games: int,
-  ) -> BotSession:
-    config = dataclasses.replace(self.dolphin_config)
-    config.slippi_port = portpicker.pick_unused_port()
-    config.connect_code = None
-    config.render = False
-    config.headless = True
-    config.save_replays = True
-
-    sorted_names = sorted(ac.name for ac in agent_configs.values())
-    config.replay_dir = os.path.join(
-        self._botmatch_replay_dir,
-        f'{sorted_names[0]}_vs_{sorted_names[1]}')
-    config.replay_monthly_folders = False
-    os.makedirs(config.replay_dir, exist_ok=True)
-
-    config.online_delay = min(
-        ac.target_console_delay for ac in agent_configs.values())
-
-    session_class = RemoteBotSession if self.run_on_cpu else RemoteGpuBotSession
-
-    return session_class.remote(
-        config, agent_configs,
-        run_on_cpu=self.run_on_cpu,
-        max_games=max_games,
-    )
-
-  async def _maybe_start_bot_session(self) -> bool:
-    with self.lock:
-      if self._streaming_against is not None:
-        return False
-
-      if self._bot_session is not None:
-        return False
-
-      if self._bot_session_interval < 0:
-        return False
-
-      if self._last_stream_time is not None:
-        time_since_last_stream = time.time() - self._last_stream_time
-        if time_since_last_stream < self._bot_session_interval * 60:
-          return False
-
-      self._bot_session = self._start_bot_session()
-      logging.info('Started bot session.')
-      chan = self.get_channel(self.owner)
-      # Might be None if we haven't logged in yet
-      if chan:
-        bot1 = self._bot_configs[1].name
-        bot2 = self._bot_configs[2].name
-        await chan.send(f'Started {bot1} vs. {bot2} on stream.')
-      return True
+    user = twitch_user(ctx)
+    result = await self.manager.reset(user)
+    await ctx.send(play_message(user, result))
 
   @commands.command()
   async def start_bot_session(self, ctx: commands.Context):
-    started = await self._maybe_start_bot_session()
+    started = await self.manager.start_bot_session()
     if started:
       await ctx.send('Started bot session on stream.')
     else:
@@ -1788,155 +480,60 @@ class Bot(commands.Bot):
       await ctx.send('Must specify one or two agent names')
       return
 
-    bot_names = {
-        1: bot1,
-        2: bot2,
-    }
-
-    with self.lock:
-      if not ctx.author.is_mod and ctx.author.name != self._bots_set_by:
-        remaining = self._bots_lock_remaining()
-        if remaining is not None:
-          await ctx.send(
-              f'{self._bots_set_by} has the bots for another'
-              f' {format_td(remaining)} (or until they !relinquish).')
-          return
-
-      bot_configs: dict[int, AgentConfig] = {}
-      for port, name in bot_names.items():
-        agent_config = self._agents.get(name)
-        if agent_config is None:
-          await ctx.send(f'Unknown agent: {name}')
-          return
-        bot_configs[port] = agent_config
-
-      self._bot_configs = bot_configs
-      now = datetime.datetime.now()
-      # Only a new initiator gets a fresh timer. The same user re-running
-      # !bots keeps their existing timer, and can't regain the lock once it
-      # has expired (or been relinquished) by changing the matchup again;
-      # someone else has to take the bots first.
-      if ctx.author.name != self._bots_set_by:
-        self._bots_set_by = ctx.author.name
-        self._bots_lock_until = now + datetime.timedelta(
-            minutes=self._bots_lock_minutes)
-      self._bots_set_time = now
-
-      self._stop_bot_session()
-      await self._maybe_start_bot_session()
-
-  def _bots_lock_remaining(self) -> Optional[datetime.timedelta]:
-    """Time left on the !bots lock, or None if the bots aren't locked."""
-    if self._bots_lock_until is None:
-      return None
-    remaining = self._bots_lock_until - datetime.datetime.now()
-    if remaining <= datetime.timedelta(0):
-      return None
-    return remaining
+    await self.manager.set_bots(
+        twitch_user(ctx), bot1, bot2, is_mod=ctx.author.is_mod)
 
   @commands.command()
   async def relinquish(self, ctx: commands.Context):
-    with self.lock:
-      if self._bots_lock_remaining() is None:
-        await ctx.send('The bots aren\'t locked; anyone can use !bots.')
-        return
-
-      if not ctx.author.is_mod and ctx.author.name != self._bots_set_by:
-        await ctx.send(
-            f'Only {self._bots_set_by} or a mod can relinquish the bots.')
-        return
-
-      self._bots_lock_until = None
-      await ctx.send('Bots relinquished; anyone can now use !bots.')
-
-  def _get_opponent_config(self, name: str) -> AgentConfig:
-    agent_name = self._user_prefs.get(name, AGENT_PREF)
-    if agent_name is None:
-      return self._default_agent_config
-    # Agents are looked up by name at use time so that the selection survives
-    # restarts and !reload, even if the model has since gone away.
-    agent_config = self._agents.get(agent_name)
-    if agent_config is None:
-      logging.warning(
-          f'{name} selected agent {agent_name} which no longer exists.')
-      return self._default_agent_config
-    return agent_config
+    await self.manager.relinquish(twitch_user(ctx), is_mod=ctx.author.is_mod)
+    await ctx.send('Bots relinquished; anyone can now use !bots.')
 
   @commands.command()
   async def status(self, ctx: commands.Context):
-    with self.lock:
+    user = twitch_user(ctx)
+    await ctx.send(f'Selected agent: {self.manager.selected_agent(user)}')
 
-      agent_config = self._get_opponent_config(ctx.author.name)
-      await ctx.send(f'Selected agent: {agent_config.name}')
+    status = await self.manager.status()
 
-      if self._bot_session:
-        bot1 = self._bot_configs[1].name
-        bot2 = self._bot_configs[2].name
-        message = f'{bot1} vs. {bot2} on stream'
-        if self._bots_set_by is not None and self._bots_set_time is not None:
-          playing_for = format_td(datetime.datetime.now() - self._bots_set_time)
-          message += f' (set by {self._bots_set_by}, playing for {playing_for}'
-          remaining = self._bots_lock_remaining()
-          if remaining is not None:
-            message += f', locked for {format_td(remaining)} more'
-          message += ')'
-        await ctx.send(message + '.')
+    bots = status.bots
+    if bots is not None:
+      message = f'{bots.bot1} vs. {bots.bot2} on stream'
+      if bots.set_by is not None and bots.playing_for is not None:
+        message += (
+            f' (set by {bots.set_by},'
+            f' playing for {format_td(bots.playing_for)}')
+        if bots.lock_remaining is not None:
+          message += f', locked for {format_td(bots.lock_remaining)} more'
+        message += ')'
+      await ctx.send(message + '.')
 
-      if not self._sessions:
-        await ctx.send('No active sessions.')
-        return
+    if not status.sessions:
+      await ctx.send('No active sessions.')
+      return
 
-      now = datetime.datetime.now()
-      for session_info in self._sessions.values():
-        timedelta = format_td(now - session_info.start_time)
-        player = session_info.twitch_name
-        agent = session_info.agent
+    for session in status.sessions:
+      duration = format_td(session.duration)
+      player = session.user.name
+      agent = session.agent
 
-        if session_info.connect_code is None:
-          # Bot-match session
-          status: SessionStatus = ray.get(session_info.session.status.remote())
-          await ctx.send(
-              f'Bot match: {agent} for {timedelta},'
-              f' {status.games_completed} games completed'
-              f' (requested by {player}).')
-        else:
-          is_stream = player == self._streaming_against
-          on_off = "on" if is_stream else "off"
-          menu_frames = ray.get(session_info.session.num_menu_frames.remote())
-          menu_time = format_td(datetime.timedelta(seconds=menu_frames / 60))
-          await ctx.send(
-              f'Playing against {player} as {agent} {on_off} stream'
-              f' for {timedelta} (in menu for {menu_time}).')
-
-  def _stop_sessions(self, infos: list[SessionInfo]):
-    """All (non-bot) session stops go through this method."""
-    with self.lock:
-      ray.wait([info.session.stop.remote() for info in infos])
-
-      logging.info(f'Stopped {len(infos)} human sessions.')
-
-      for info in infos:
-        del self._sessions[info.twitch_name]
-        if self._streaming_against == info.twitch_name:
-          self._streaming_against = None
-          self._last_stream_time = time.time()
-
-  def _stop_bot_session(self):
-    with self.lock:
-      if not self._bot_session:
-        return
-      logging.info('Stopping bot session.')
-      ray.wait([self._bot_session.stop.remote()])
-      self._bot_session = None
+      if session.connect_code is None:
+        await ctx.send(
+            f'Bot match: {agent} for {duration},'
+            f' {session.games_completed} games completed'
+            f' (requested by {player}).')
+      else:
+        on_off = "on" if session.on_stream else "off"
+        menu_time = format_td(session.menu_time)
+        await ctx.send(
+            f'Playing against {player} as {agent} {on_off} stream'
+            f' for {duration} (in menu for {menu_time}).')
 
   @commands.command()
   async def stop_bot_session(self, ctx: commands.Context):
-    if not self._bot_session:
+    if await self.manager.stop_bot_session():
+      await ctx.send('Stopped bot session.')
+    else:
       await ctx.send('Bot session not running.')
-      return
-
-    self._stop_bot_session()
-    await ctx.send('Stopped bot session.')
 
   @commands.command()
   async def kick(self, ctx: commands.Context):
@@ -1949,75 +546,22 @@ class Bot(commands.Bot):
       await ctx.send('Must specify a player to kick')
       return
 
-    name = words[0]
-    if name not in self._sessions:
-      await ctx.send(f'"{name}" isn\'t playing right now')
-      return
-
-    self._stop_sessions([self._sessions[name]])
-    await ctx.send(f'Kicked {name}')
-
-  async def _gc_sessions(self) -> list[SessionInfo]:
-    """Stop sessions that have died or been in the menu for too long."""
-    with self.lock:
-      if self._bot_session is not None:
-        status: SessionStatus = ray.get(self._bot_session.status.remote())
-        if not status.is_alive:
-          logging.info('Bot session died.')
-          self._stop_bot_session()
-
-      to_gc: list[SessionInfo] = []
-      for info in self._sessions.values():
-        status: SessionStatus = ray.get(info.session.status.remote())
-        menu_minutes = status.num_menu_frames / (60 * 60)
-        if not status.is_alive or menu_minutes > self._menu_timeout:
-          to_gc.append(info)
-
-      self._stop_sessions(to_gc)
-      if to_gc:
-        names = ", ".join([info.twitch_name for info in to_gc])
-        logging.info(f'GCed sessions: {names}')
-        chan = self.get_channel(self.owner)
-        await chan.send(f'Stopped idle session against {names}')
-      return to_gc
+    user = await self.manager.kick(words[0])
+    await ctx.send(f'Kicked {user.name}')
 
   @commands.command()
   async def gc(self, ctx: commands.Context):
-    infos = await self._gc_sessions()
-    names = [info.twitch_name for info in infos]
-    names = ", ".join(names)
+    users = await self.manager.gc()
+    names = ", ".join(user.name for user in users)
     await ctx.send(f"GCed ({names})")
 
-  @routines.routine(minutes=1)
-  async def _do_chores(self):
-    with self.lock:
-      await self._gc_sessions()
-      await self._maybe_start_bot_session()
-
-  def shutdown(self):
-    with self.lock:
-      logging.info('Shutting down')
-      self._stop_sessions(list(self._sessions.values()))
-      self._stop_bot_session()
-      self._do_chores.stop()
-
-def set_memory_growth():
-  """Set memory growth for all available GPUs."""
-  import tensorflow as tf
-
-  gpus = tf.config.experimental.list_physical_devices('GPU')
-
-  for gpu in gpus:
-    try:
-      tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-      logging.warning(f'Could not set memory growth for GPU {gpu}: {e}')
+def twitch_user(ctx: commands.Context) -> manager_lib.User:
+  name = ctx.author.name
+  assert isinstance(name, str)
+  return manager_lib.User(frontend='twitch', name=name)
 
 def main(_):
-  bot = Bot(
-      token=ACCESS_TOKEN.value,
-      prefix='!',
-      channel=CHANNEL.value,
+  manager = manager_lib.SessionManager(
       models_path=MODELS_PATH.value,
       eval_db_path=EVAL_DB.value,
       rating_offset=RATING_OFFSET.value,
@@ -2037,10 +581,18 @@ def main(_):
       state_dir=STATE_DIR.value,
   )
 
+  bot = Bot(
+      token=ACCESS_TOKEN.value,
+      prefix='!',
+      channel=CHANNEL.value,
+      manager=manager,
+  )
+  bot.loop.create_task(manager.run_chores())
+
   try:
     bot.run()
   finally:
-    bot.shutdown()
+    manager.shutdown()
 
 if __name__ == '__main__':
     app.run(main)

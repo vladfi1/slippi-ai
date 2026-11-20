@@ -1,0 +1,104 @@
+# Plan: web frontend for the twitchbot
+
+Status: Steps 1-2 implemented (2026-11-20): `slippi_ai/tbot/` holds the
+agents, sessions, persistence and `SessionManager`; `scripts/twitchbot.py`
+is the Twitch frontend. Smoke-tested with fake sessions, not yet on stream.
+
+## Goal
+
+A web page, similar to the Windows GUI (`slippi_ai/gui/app.py` on `main`),
+from which anyone can pick an agent and have it connect to them over Slippi
+netplay, sharing session slots, the stream slot and the screensaver bots with
+Twitch chat. The page is public with no login. Until then it is tested on the
+local network.
+
+## Architecture
+
+`scripts/twitchbot.py`'s `Bot` mixes Twitch command parsing with state that
+both frontends must share: loaded models and ratings, user prefs, the session
+table, `max_sessions`, who is on stream, the screensaver bot session and its
+lock, and the chores loop. That state moves into a `SessionManager` with no
+twitchio import, and each frontend becomes a thin adapter:
+
+```
+SessionManager            slippi_ai/tbot/manager.py
+  agents(char, opp) -> list[AgentInfo]   # name, delay, trained-vs, rating
+  play(user, connect_code, agent, stages, sd_stocks) -> PlayResult
+  stop(user) / reset(user) / botmatch(user, a1, a2) / set_bots(user, a1, a2)
+  status() -> ManagerStatus              # sessions, stream slot, bots lock
+  prefs get/set per user; chores loop (gc, screensaver)
+TwitchFrontend            scripts/twitchbot.py, parses "!play ABC#123"
+WebFrontend               slippi_ai/tbot/web.py, FastAPI + static page + SSE
+```
+
+- Methods return picklable dataclasses (`PlayResult(ok, on_stream, reason)`),
+  not chat strings; each frontend formats its own messages.
+- Users are namespaced ids: `twitch:<name>`, `web:<token>`.
+- Ray calls become `await actor.method.remote()`. Today `status`,
+  `_gc_sessions` and `_stop_sessions` call `ray.get` inside async handlers,
+  which stalls the event loop that both frontends will share.
+
+### Processes and Ray
+
+Phase 1: one process. The manager is a plain object; twitchio and uvicorn run
+on the same asyncio loop (`asyncio.gather(bot.start(), server.serve())`).
+
+Phase 2 (optional): the manager becomes a detached, named async Ray actor
+that creates the session actors, and each frontend is its own process that
+finds it with `ray.get_actor`. This lets a frontend be restarted or
+redeployed without killing games in progress. Restarting the manager still
+does. Ray is chosen only because sessions are already Ray actors; without
+that, a FastAPI service the Twitch bot calls over HTTP would be the
+conventional split.
+
+## Public with no login
+
+Without accounts, the connect code, a browser token and the client IP are
+all there is to go on.
+
+- Identity: the page generates a random token on first visit and keeps it in
+  `localStorage`, sending it with each request; the user is `web:<token>`.
+  Preferences (connect code, agent, stages, stocks) are stored under it.
+  Stop/reset only work for the token that started the session.
+- Web and Twitch users are treated the same: they share `max_sessions` and
+  the stream slot is first come, first served, as it is today. As now, a user
+  has at most one session, and a connect code is in at most one session
+  across both frontends. Starting a session for someone else's code is
+  harmless: they get a netplay request they can ignore, and the menu timeout
+  (`menu_timeout`, 3 minutes) stops it.
+- No other limits up front. Per-IP limits, rate limits or a separate web cap
+  get added if abuse actually shows up.
+- Not on the web: the admin commands `!kick` (mods only), `!reload`, `!gc`.
+- Deployment: behind a reverse proxy with TLS. Ray's ports and dashboard stay
+  bound to localhost.
+
+On the local network, the same code runs with `--web_host=0.0.0.0`.
+
+## The page
+
+| GUI (`app.py`) | Web |
+|---|---|
+| Character and opponent filters, model table (Model, Reaction delay, Trained against, Status) | Same filters; table from `manager.agents()` with a Rating column; auto-* and basic-* grouped as `group_special_agents` does |
+| Opponent group (human port / CPU) | Connect code, stages multi-select, "SD to N stocks" |
+| Start/Stop button and status label | Play / Stop / Reset; status line, e.g. "Connecting to ABC#123 on stream; connect to XYZ#456" |
+| Log pane | Per-session log over SSE, from a ring buffer of log lines in `Session` read by a `logs(since)` actor method |
+| (none) | Server status: active sessions, who is on stream, the bots lock; embedded Twitch player; Botmatch and Bots forms |
+
+One static HTML/JS file served by FastAPI, with no build step. Status and
+logs use server-sent events.
+
+## Steps
+
+1. Move `AgentConfig`, `Session`, `BotSession`, `ModelCache` and `UserPrefs`
+   from `scripts/twitchbot.py` into `slippi_ai/tbot/`, without changing them.
+2. Extract `SessionManager` from `Bot` (structured results, async Ray calls,
+   namespaced users) and reduce `Bot` to `TwitchFrontend`. Check every `!`
+   command behaves as before.
+3. Add the log ring buffer and `logs()` to `Session`.
+4. `WebFrontend`: FastAPI routes, browser token, SSE status, enabled by a
+   `--web_port` absl flag in the same process. Test on the local network.
+5. The static page.
+6. Before going public: reverse proxy, and a check that Ray isn't reachable
+   from outside.
+7. (Optional) Phase 2: the manager as a detached Ray actor, with separate
+   Twitch and web entry points.
