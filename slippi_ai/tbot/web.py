@@ -72,9 +72,6 @@ class WebFrontend:
         web.post('/api/play', self._play),
         web.post('/api/stop', self._stop),
         web.post('/api/reset', self._reset),
-        web.post('/api/botmatch', self._botmatch),
-        web.post('/api/bots', self._bots),
-        web.post('/api/relinquish', self._relinquish),
         web.get('/api/events', self._events),
     ])
 
@@ -137,8 +134,6 @@ class WebFrontend:
     return json_response(dict(
         bot_connect_code=self.manager.bot_connect_code,
         max_sessions=self.manager.max_sessions,
-        botmatch_max_games=self.manager.botmatch_max_games,
-        bots_lock_minutes=self.manager.bots_lock_minutes,
         stages=[s for s in manager_lib.NAME_TO_STAGE if s != 'all'],
         max_stocks=manager_lib.MAX_STOCKS,
         twitch_channel=self.twitch_channel,
@@ -218,30 +213,6 @@ class WebFrontend:
   async def _reset(self, request: web.Request) -> web.Response:
     result = await self.manager.reset(self._user(request))
     return json_response(play_json(result))
-
-  async def _two_agents(
-      self, request: web.Request, keys: tuple[str, str]) -> tuple[str, str]:
-    body = await self._json_body(request)
-    names = [body.get(key) for key in keys]
-    if not all(isinstance(name, str) and name for name in names):
-      raise UserError('Choose two agents.')
-    return names[0], names[1]
-
-  async def _botmatch(self, request: web.Request) -> web.Response:
-    user = self._user(request)
-    agent1, agent2 = await self._two_agents(request, ('agent1', 'agent2'))
-    label = await self.manager.botmatch(user, agent1, agent2)
-    return json_response(dict(label=label))
-
-  async def _bots(self, request: web.Request) -> web.Response:
-    user = self._user(request)
-    bot1, bot2 = await self._two_agents(request, ('bot1', 'bot2'))
-    await self.manager.set_bots(user, bot1, bot2)
-    return json_response({})
-
-  async def _relinquish(self, request: web.Request) -> web.Response:
-    await self.manager.relinquish(self._user(request))
-    return json_response({})
 
   # Live updates
 

@@ -86,7 +86,12 @@ On the local network, the same code runs with `--web_host=0.0.0.0`.
 | Opponent group (human port / CPU) | Connect code, stages multi-select, "SD to N stocks" |
 | Start/Stop button and status label | Play / Stop / Reset; status line, e.g. "Connecting to ABC#123 on stream; connect to XYZ#456" |
 | Log pane | Per-session log over SSE, from a ring buffer of log lines in `Session` read by a `logs(since)` actor method |
-| (none) | Server status: active sessions, who is on stream, the bots lock; embedded Twitch player; Botmatch and Bots forms |
+| (none) | Server status: active sessions, who is on stream, the bots lock; embedded Twitch player |
+
+Bot matches and the stream bots stay Twitch-only (`!botmatch`, `!bots`). On
+the page, anyone can get a new identity by clearing the browser's storage,
+which would get around the 15-minute bots lock. The branch `web-bot-controls`
+has the removed web controls, including agent tables for both bots.
 
 One static HTML/JS file, with no build step. Status, announcements and the
 user's logs use server-sent events (`/api/events`); one poller shares the

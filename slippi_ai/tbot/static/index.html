@@ -154,25 +154,6 @@
     </div>
     <ul id="announcements"></ul>
   </fieldset>
-
-  <fieldset>
-    <legend>Bots</legend>
-    <div class="row">
-      <label>Agent 1 <input type="text" id="agent1" list="agent-names" size="16"></label>
-      <label>Agent 2 <input type="text" id="agent2" list="agent-names" size="16"></label>
-    </div>
-    <div class="row">
-      <button id="botmatch">Start bot match</button>
-      <span class="hint" id="botmatch-hint"></span>
-    </div>
-    <div class="row">
-      <button id="set-bots">Put on stream</button>
-      <button id="relinquish">Relinquish</button>
-      <span class="hint" id="bots-hint"></span>
-    </div>
-    <div class="row"><span id="bots-status"></span></div>
-    <datalist id="agent-names"></datalist>
-  </fieldset>
 </main>
 
 <script>
@@ -426,7 +407,7 @@ function updateControls() {
   const play = $('play');
   play.textContent = playing ? 'Stop' : 'Play';
   play.disabled = state.busy || (!playing && !$('connect-code').value.trim());
-  $('reset').disabled = state.busy || !playing || state.mySession?.botmatch;
+  $('reset').disabled = state.busy || !playing;
 }
 
 function sessionState(s) {
@@ -471,16 +452,11 @@ function renderStatus(status) {
     if (bots.lock_remaining != null) line += ` (locked for ${formatTime(bots.lock_remaining)})`;
   }
   $('bots-line').textContent = line;
-  $('bots-status').textContent = '';
 
   if (state.mySession && !state.busy) {
     const s = state.mySession;
-    if (!s.botmatch) {
-      const where = s.on_stream ? 'on stream' : 'off stream';
-      setStatus(`Playing ${s.agent} ${where} (${sessionState(s)}). Connect to ${state.info.bot_connect_code}.`, 'ok');
-    } else {
-      setStatus(`Bot match ${s.agent}: ${sessionState(s)}.`, 'ok');
-    }
+    const where = s.on_stream ? 'on stream' : 'off stream';
+    setStatus(`Playing ${s.agent} ${where} (${sessionState(s)}). Connect to ${state.info.bot_connect_code}.`, 'ok');
   }
   updateControls();
 }
@@ -499,31 +475,6 @@ function announce(message) {
   list.prepend(el('li', message));
   while (list.children.length > 5) list.lastChild.remove();
 }
-
-// Bots
-
-function twoAgents() {
-  const a1 = $('agent1').value.trim();
-  const a2 = $('agent2').value.trim() || a1;
-  return [a1, a2];
-}
-
-$('botmatch').addEventListener('click', () => run($('botmatch'), async () => {
-  const [agent1, agent2] = twoAgents();
-  const result = await api('POST', '/api/botmatch', { agent1, agent2 });
-  setStatus(`Started bot match ${result.label} (${state.info.botmatch_max_games} games, off stream).`, 'ok');
-}));
-
-$('set-bots').addEventListener('click', () => run($('set-bots'), async () => {
-  const [bot1, bot2] = twoAgents();
-  await api('POST', '/api/bots', { bot1, bot2 });
-  $('bots-status').textContent = `${bot1} vs. ${bot2} will play on stream while no one else is.`;
-}));
-
-$('relinquish').addEventListener('click', () => run($('relinquish'), async () => {
-  await api('POST', '/api/relinquish');
-  $('bots-status').textContent = 'Bots relinquished; anyone can now change them.';
-}));
 
 // Startup
 
@@ -558,11 +509,6 @@ async function start() {
     sub.append(' ', link);
   }
   sub.append('.');
-  $('botmatch-hint').textContent = `Off stream, ${info.botmatch_max_games} games.`;
-  $('bots-hint').textContent = `Plays while no one is on stream; locked to you for ${info.bots_lock_minutes} minutes.`;
-
-  const names = $('agent-names');
-  for (const agent of sortedAgents(state.agents)) names.append(new Option(agent.name));
 
   if (state.me.connect_code) $('connect-code').value = state.me.connect_code;
   $('connect-code').addEventListener('input', updateControls);
