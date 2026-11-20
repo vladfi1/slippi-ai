@@ -203,6 +203,10 @@ def supported(M, D, F, dtype) -> bool:
   for rows, step, _ in (LN_FWD_CONFIG, LN_BWD_CONFIG):
     if M % rows or rows % step:
       return False
+  # The row kernels load whole [*, D] rows, and Triton blocks must be powers
+  # of 2 (e.g. a 768-wide value function fails to lower otherwise).
+  if D & (D - 1):
+    return False
   return D <= 2048
 
 
