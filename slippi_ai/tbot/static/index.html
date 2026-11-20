@@ -272,6 +272,8 @@ function renderAgents() {
   for (const agent of sortedAgents(state.agents)) {
     if (char && agent.character !== char) continue;
     if (opp && !agent.opponents.includes(opp)) continue;
+    // With the opponent known, the models auto-* would pick are listed.
+    if (opp && agent.kind === 'auto') continue;
     const tr = el('tr');
     tr.dataset.name = agent.name;
     if (agent.name === state.me?.agent) tr.className = 'selected';
