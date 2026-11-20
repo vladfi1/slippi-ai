@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Play phillip</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --border: #d9d9d4;
+    --accent: #2f5fd0;
+    --accent-text: #ffffff;
+    --selected: #e3eaff;
+    --ok: #1d7a3a;
+    --error: #b42318;
+    --log-bg: #fbfbfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615;
+      --panel: #1f1f1e;
+      --text: #ebebe7;
+      --muted: #9a9a94;
+      --border: #3a3a37;
+      --accent: #7b9dff;
+      --accent-text: #10131c;
+      --selected: #26304a;
+      --ok: #5cc27e;
+      --error: #ff7b6e;
+      --log-bg: #191918;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 16px; }
+  a { color: var(--accent); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  fieldset {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 0 0 14px;
+    padding: 10px 14px 14px;
+    min-width: 0;
+  }
+  legend { font-weight: 600; padding: 0 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 6px 0; }
+  .row label { display: inline-flex; gap: 6px; align-items: center; }
+  .hint { color: var(--muted); font-size: 13px; }
+  input[type=text], select {
+    font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  }
+  button {
+    font: inherit; border-radius: 6px; padding: 6px 14px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; min-width: 96px; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .table-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--panel); font-weight: 600; }
+  td.wrap { white-space: normal; }
+  #agents tbody tr { cursor: pointer; }
+  #agents tbody tr:hover { background: var(--selected); }
+  #agents tbody tr.selected { background: var(--selected); font-weight: 600; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  #status { flex: 1; min-width: 200px; }
+  #status.ok { color: var(--ok); }
+  #status.error { color: var(--error); }
+  #log {
+    background: var(--log-bg); border: 1px solid var(--border); border-radius: 6px;
+    height: 180px; overflow: auto; margin: 8px 0 0; padding: 6px 8px;
+    font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  }
+  #announcements { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+  .empty { color: var(--muted); }
+  @media (max-width: 560px) {
+    .hide-narrow { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Play phillip</h1>
+  <p class="subtitle" id="subtitle">Loading…</p>
+
+  <fieldset>
+    <legend>You</legend>
+    <div class="row">
+      <label>Slippi connect code
+        <input type="text" id="connect-code" placeholder="ABCD#123" maxlength="12" size="12" autocomplete="off">
+      </label>
+      <span class="hint" id="connect-hint"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>phillip</legend>
+    <div class="row">
+      <label>phillip's character <select id="char-filter"></select></label>
+      <label>Your character <select id="opp-filter"></select></label>
+      <span>Selected: <strong id="selected-agent"></strong></span>
+    </div>
+    <div class="table-wrap">
+      <table id="agents">
+        <thead><tr>
+          <th>Agent</th><th class="num">Reaction delay</th>
+          <th class="hide-narrow">Trained against</th><th class="num">Rating</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="hint" id="agent-hint">auto-* agents pick the strongest model for your character. basic-* agents are much weaker.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Game</legend>
+    <div class="row" id="stages"><span>Stages</span></div>
+    <div class="row">
+      <label>phillip's stocks
+        <select id="sd-stocks"></select>
+      </label>
+      <span class="hint">Fewer than 4: phillip SDs at the start of each game.</span>
+    </div>
+  </fieldset>
+
+  <div class="row">
+    <button class="primary" id="play">Play</button>
+    <button id="reset" title="Stop and start a new session with the same agent">Reset</button>
+    <span id="status"></span>
+  </div>
+  <div id="log" class="mono"></div>
+
+  <fieldset style="margin-top: 14px">
+    <legend>Now playing</legend>
+    <div id="bots-line"></div>
+    <div class="table-wrap" style="max-height: none; margin-top: 6px">
+      <table id="sessions">
+        <thead><tr><th>Player</th><th>Agent</th><th>Stream</th><th class="num">Time</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <ul id="announcements"></ul>
+  </fieldset>
+
+  <fieldset>
+    <legend>Bots</legend>
+    <div class="row">
+      <label>Agent 1 <input type="text" id="agent1" list="agent-names" size="16"></label>
+      <label>Agent 2 <input type="text" id="agent2" list="agent-names" size="16"></label>
+    </div>
+    <div class="row">
+      <button id="botmatch">Start bot match</button>
+      <span class="hint" id="botmatch-hint"></span>
+    </div>
+    <div class="row">
+      <button id="set-bots">Put on stream</button>
+      <button id="relinquish">Relinquish</button>
+      <span class="hint" id="bots-hint"></span>
+    </div>
+    <div class="row"><span id="bots-status"></span></div>
+    <datalist id="agent-names"></datalist>
+  </fieldset>
+</main>
+
+<script>
+'use strict';
+
+// The token identifies this browser; it is never shown to anyone else.
+function getToken() {
+  const key = 'tbot-token';
+  let token = null;
+  try { token = localStorage.getItem(key); } catch (e) {}
+  if (!token || !/^[A-Za-z0-9_-]{16,64}$/.test(token)) {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    token = btoa(String.fromCharCode(...bytes))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    try { localStorage.setItem(key, token); } catch (e) {}
+  }
+  return token;
+}
+const TOKEN = getToken();
+
+const $ = (id) => document.getElementById(id);
+const state = { info: null, agents: [], me: null, mySession: null, busy: false };
+
+async function api(method, path, body) {
+  const options = { method, headers: { 'X-Tbot-Token': TOKEN } };
+  if (body !== undefined) {
+    options.headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  let data = {};
+  try { data = await response.json(); } catch (e) {}
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+
+function setStatus(text, kind) {
+  const el = $('status');
+  el.textContent = text;
+  el.className = kind || '';
+}
+
+function formatTime(seconds) {
+  if (seconds == null) return '';
+  seconds = Math.floor(seconds);
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, s = seconds % 60;
+  const mm = String(m).padStart(h ? 2 : 1, '0'), ss = String(s).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function el(tag, text, className) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (className) e.className = className;
+  return e;
+}
+
+// Agents
+
+const KIND_ORDER = { auto: 0, model: 1, basic: 2 };
+
+function sortedAgents(rows) {
+  return rows.slice().sort((a, b) =>
+      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
+      (b.rating ?? -Infinity) - (a.rating ?? -Infinity) ||
+      a.name.localeCompare(b.name));
+}
+
+function fillFilters() {
+  const chars = [...new Set(state.agents.map((a) => a.character))].sort();
+  const opps = [...new Set(state.agents.flatMap((a) => a.opponents))].sort();
+  const fill = (select, values, allLabel, saved) => {
+    select.replaceChildren(new Option(allLabel, ''));
+    for (const v of values) select.add(new Option(v, v));
+    if (saved && values.includes(saved)) select.value = saved;
+  };
+  const selected = state.agents.find((a) => a.name === state.me?.agent);
+  fill($('char-filter'), chars, 'Any', loadPref('char') ?? selected?.character);
+  fill($('opp-filter'), opps, 'Any', loadPref('opp'));
+}
+
+function trainedAgainst(agent) {
+  if (agent.kind === 'auto') return 'picks per opponent';
+  const opps = agent.opponents;
+  if (opps.length === 0) return '';
+  if (opps.length > 6) return `${opps.length} characters`;
+  return opps.join(', ');
+}
+
+function renderAgents() {
+  const char = $('char-filter').value, opp = $('opp-filter').value;
+  $('selected-agent').textContent = state.me?.agent ?? '';
+  const tbody = $('agents').querySelector('tbody');
+  tbody.replaceChildren();
+  let shown = 0;
+  for (const agent of sortedAgents(state.agents)) {
+    if (char && agent.character !== char) continue;
+    if (opp && !agent.opponents.includes(opp)) continue;
+    const tr = el('tr');
+    tr.dataset.name = agent.name;
+    if (agent.name === state.me?.agent) tr.className = 'selected';
+    tr.append(
+        el('td', agent.name),
+        el('td', `${agent.delay} frames`, 'num'),
+        el('td', trainedAgainst(agent), 'wrap hide-narrow'),
+        el('td', agent.rating == null ? '' : Math.round(agent.rating), 'num'));
+    tr.addEventListener('click', () => selectAgent(agent.name));
+    tbody.append(tr);
+    shown++;
+  }
+  if (!shown) {
+    const tr = el('tr');
+    const td = el('td', 'No matching agents.', 'empty');
+    td.colSpan = 4;
+    tr.append(td);
+    tbody.append(tr);
+  }
+}
+
+async function selectAgent(name) {
+  try {
+    const result = await api('POST', '/api/me', { agent: name });
+    state.me = result.me;
+    renderAgents();
+    if (result.restarted) {
+      setStatus(`Restarted with ${name}.`, 'ok');
+    } else {
+      setStatus(`Selected ${name}.`);
+    }
+  } catch (e) {
+    setStatus(e.message, 'error');
+  }
+}
+
+// Preferences kept only in this browser.
+function loadPref(key) {
+  try { return localStorage.getItem('tbot-' + key); } catch (e) { return null; }
+}
+function savePref(key, value) {
+  try { localStorage.setItem('tbot-' + key, value); } catch (e) {}
+}
+
+// Game options
+
+function renderGameOptions() {
+  const container = $('stages');
+  container.querySelectorAll('label').forEach((l) => l.remove());
+  const selected = state.me.stages;  // null means all
+  for (const stage of state.info.stages) {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = stage;
+    box.checked = selected == null || selected.includes(stage);
+    box.addEventListener('change', saveStages);
+    const label = el('label');
+    label.append(box, stage);
+    container.append(label);
+  }
+
+  const sd = $('sd-stocks');
+  sd.replaceChildren();
+  for (let n = state.info.max_stocks; n >= 1; n--) sd.add(new Option(String(n), String(n)));
+  sd.value = String(state.me.sd_stocks ?? state.info.max_stocks);
+}
+
+async function saveStages() {
+  const boxes = [...$('stages').querySelectorAll('input')];
+  const checked = boxes.filter((b) => b.checked).map((b) => b.value);
+  if (!checked.length) {
+    setStatus('Choose at least one stage.', 'error');
+    return;
+  }
+  const stages = checked.length === boxes.length ? [] : checked;
+  try {
+    state.me = (await api('POST', '/api/me', { stages })).me;
+    setStatus('Stages saved; they apply to your next session.');
+  } catch (e) {
+    setStatus(e.message, 'error');
+  }
+}
+
+$('sd-stocks').addEventListener('change', async () => {
+  try {
+    state.me = (await api('POST', '/api/me', { sd_stocks: Number($('sd-stocks').value) })).me;
+    setStatus('Stocks saved; they apply to your next session.');
+  } catch (e) {
+    setStatus(e.message, 'error');
+  }
+});
+
+$('connect-code').addEventListener('change', async () => {
+  const code = $('connect-code').value.trim();
+  if (!code) return;
+  try {
+    state.me = (await api('POST', '/api/me', { connect_code: code })).me;
+    $('connect-code').value = state.me.connect_code;
+    $('connect-hint').textContent = 'Saved.';
+  } catch (e) {
+    $('connect-hint').textContent = e.message;
+  }
+  updateControls();
+});
+
+// Sessions
+
+async function run(button, action) {
+  state.busy = true;
+  updateControls();
+  try {
+    await action();
+  } catch (e) {
+    setStatus(e.message, 'error');
+  } finally {
+    state.busy = false;
+    updateControls();
+  }
+}
+
+function connectMessage(result) {
+  const where = result.on_stream ? 'on stream' : 'off stream';
+  return `Connecting ${where} as ${result.agent}. In Slippi, direct connect to ${state.info.bot_connect_code}.`;
+}
+
+$('play').addEventListener('click', () => run($('play'), async () => {
+  if (state.mySession) {
+    setStatus('Stopping…');
+    await api('POST', '/api/stop');
+    state.mySession = null;
+    setStatus('Stopped.');
+  } else {
+    const code = $('connect-code').value.trim();
+    if (code && code !== state.me.connect_code) {
+      state.me = (await api('POST', '/api/me', { connect_code: code })).me;
+    }
+    const result = await api('POST', '/api/play');
+    setStatus(connectMessage(result), 'ok');
+  }
+}));
+
+$('reset').addEventListener('click', () => run($('reset'), async () => {
+  setStatus('Restarting…');
+  const result = await api('POST', '/api/reset');
+  setStatus(connectMessage(result), 'ok');
+}));
+
+function updateControls() {
+  const playing = state.mySession != null;
+  const play = $('play');
+  play.textContent = playing ? 'Stop' : 'Play';
+  play.disabled = state.busy || (!playing && !$('connect-code').value.trim());
+  $('reset').disabled = state.busy || !playing || state.mySession?.botmatch;
+}
+
+function sessionState(s) {
+  if (s.botmatch) {
+    const games = s.games_completed ?? 0;
+    return `${games} ${games === 1 ? 'game' : 'games'}`;
+  }
+  if (s.menu_time == null) return 'starting';
+  if (s.menu_time > 0) return `in menu ${formatTime(s.menu_time)}`;
+  return 'in game';
+}
+
+function renderStatus(status) {
+  state.mySession = status.sessions.find((s) => s.is_me) || null;
+
+  const tbody = $('sessions').querySelector('tbody');
+  tbody.replaceChildren();
+  for (const s of status.sessions) {
+    const tr = el('tr');
+    if (s.is_me) tr.className = 'selected';
+    tr.append(
+        el('td', s.is_me ? `${s.name} (you)` : s.name),
+        el('td', s.agent),
+        el('td', s.botmatch ? 'bot match' : (s.on_stream ? 'on stream' : '')),
+        el('td', formatTime(s.duration), 'num'),
+        el('td', sessionState(s)));
+    tbody.append(tr);
+  }
+  if (!status.sessions.length) {
+    const tr = el('tr');
+    const td = el('td', 'No one is playing.', 'empty');
+    td.colSpan = 5;
+    tr.append(td);
+    tbody.append(tr);
+  }
+
+  const bots = status.bots;
+  let line = '';
+  if (bots) {
+    line = `On stream: ${bots.bot1} vs. ${bots.bot2}`;
+    if (bots.set_by) line += `, set by ${bots.set_by}`;
+    if (bots.lock_remaining != null) line += ` (locked for ${formatTime(bots.lock_remaining)})`;
+  }
+  $('bots-line').textContent = line;
+  $('bots-status').textContent = '';
+
+  if (state.mySession && !state.busy) {
+    const s = state.mySession;
+    if (!s.botmatch) {
+      const where = s.on_stream ? 'on stream' : 'off stream';
+      setStatus(`Playing ${s.agent} ${where} (${sessionState(s)}). Connect to ${state.info.bot_connect_code}.`, 'ok');
+    } else {
+      setStatus(`Bot match ${s.agent}: ${sessionState(s)}.`, 'ok');
+    }
+  }
+  updateControls();
+}
+
+function appendLogs(data) {
+  const log = $('log');
+  if (data.reset) log.textContent = '';
+  if (!data.lines.length) return;
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+  log.textContent += data.lines.join('\n') + '\n';
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function announce(message) {
+  const list = $('announcements');
+  list.prepend(el('li', message));
+  while (list.children.length > 5) list.lastChild.remove();
+}
+
+// Bots
+
+function twoAgents() {
+  const a1 = $('agent1').value.trim();
+  const a2 = $('agent2').value.trim() || a1;
+  return [a1, a2];
+}
+
+$('botmatch').addEventListener('click', () => run($('botmatch'), async () => {
+  const [agent1, agent2] = twoAgents();
+  const result = await api('POST', '/api/botmatch', { agent1, agent2 });
+  setStatus(`Started bot match ${result.label} (${state.info.botmatch_max_games} games, off stream).`, 'ok');
+}));
+
+$('set-bots').addEventListener('click', () => run($('set-bots'), async () => {
+  const [bot1, bot2] = twoAgents();
+  await api('POST', '/api/bots', { bot1, bot2 });
+  $('bots-status').textContent = `${bot1} vs. ${bot2} will play on stream while no one else is.`;
+}));
+
+$('relinquish').addEventListener('click', () => run($('relinquish'), async () => {
+  await api('POST', '/api/relinquish');
+  $('bots-status').textContent = 'Bots relinquished; anyone can now change them.';
+}));
+
+// Startup
+
+function connectEvents() {
+  const events = new EventSource(`/api/events?token=${encodeURIComponent(TOKEN)}`);
+  events.addEventListener('status', (e) => renderStatus(JSON.parse(e.data)));
+  events.addEventListener('logs', (e) => appendLogs(JSON.parse(e.data)));
+  events.addEventListener('announce', (e) => announce(JSON.parse(e.data)));
+  // EventSource reconnects by itself after errors.
+}
+
+async function start() {
+  try {
+    [state.info, state.agents, state.me] = await Promise.all([
+      api('GET', '/api/info'), api('GET', '/api/agents'), api('GET', '/api/me')]);
+  } catch (e) {
+    $('subtitle').textContent = `Could not load: ${e.message}`;
+    return;
+  }
+
+  const info = state.info;
+  const sub = $('subtitle');
+  sub.replaceChildren(
+      'Pick an agent, then press Play and direct connect to ',
+      el('code', info.bot_connect_code),
+      ` in Slippi. Up to ${info.max_sessions} people can play at once; one game is streamed`);
+  if (info.twitch_channel) {
+    const link = el('a', `on Twitch`);
+    link.href = `https://twitch.tv/${info.twitch_channel}`;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    sub.append(' ', link);
+  }
+  sub.append('.');
+  $('botmatch-hint').textContent = `Off stream, ${info.botmatch_max_games} games.`;
+  $('bots-hint').textContent = `Plays while no one is on stream; locked to you for ${info.bots_lock_minutes} minutes.`;
+
+  const names = $('agent-names');
+  for (const agent of sortedAgents(state.agents)) names.append(new Option(agent.name));
+
+  if (state.me.connect_code) $('connect-code').value = state.me.connect_code;
+  $('connect-code').addEventListener('input', updateControls);
+  fillFilters();
+  $('char-filter').addEventListener('change', () => { savePref('char', $('char-filter').value); renderAgents(); });
+  $('opp-filter').addEventListener('change', () => { savePref('opp', $('opp-filter').value); renderAgents(); });
+  renderAgents();
+  renderGameOptions();
+  updateControls();
+  connectEvents();
+}
+
+start();
+</script>
+</body>
+</html>

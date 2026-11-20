@@ -1,8 +1,10 @@
 # Plan: web frontend for the twitchbot
 
-Status: Steps 1-2 implemented (2026-11-20): `slippi_ai/tbot/` holds the
-agents, sessions, persistence and `SessionManager`; `scripts/twitchbot.py`
-is the Twitch frontend. Smoke-tested with fake sessions, not yet on stream.
+Status: Steps 1-5 implemented (2026-11-20). Steps 1-2 (`slippi_ai/tbot/`
+and `SessionManager`, with `scripts/twitchbot.py` as the Twitch frontend)
+are tested on stream. Steps 3-5 (session logs, `slippi_ai/tbot/web.py` and
+`static/index.html`) are tested against fake sessions and in headless
+Chromium, not yet with real Dolphin sessions.
 
 ## Goal
 
@@ -28,7 +30,7 @@ SessionManager            slippi_ai/tbot/manager.py
   status() -> ManagerStatus              # sessions, stream slot, bots lock
   prefs get/set per user; chores loop (gc, screensaver)
 TwitchFrontend            scripts/twitchbot.py, parses "!play ABC#123"
-WebFrontend               slippi_ai/tbot/web.py, FastAPI + static page + SSE
+WebFrontend               slippi_ai/tbot/web.py, aiohttp + static page + SSE
 ```
 
 - Methods return picklable dataclasses (`PlayResult(ok, on_stream, reason)`),
@@ -40,16 +42,17 @@ WebFrontend               slippi_ai/tbot/web.py, FastAPI + static page + SSE
 
 ### Processes and Ray
 
-Phase 1: one process. The manager is a plain object; twitchio and uvicorn run
-on the same asyncio loop (`asyncio.gather(bot.start(), server.serve())`).
+Phase 1: one process. The manager is a plain object; the twitch bot, the
+aiohttp server and the chores loop run on one asyncio loop. aiohttp rather
+than FastAPI because twitchio already depends on it. `--notwitch` runs only
+the web frontend.
 
 Phase 2 (optional): the manager becomes a detached, named async Ray actor
 that creates the session actors, and each frontend is its own process that
 finds it with `ray.get_actor`. This lets a frontend be restarted or
 redeployed without killing games in progress. Restarting the manager still
 does. Ray is chosen only because sessions are already Ray actors; without
-that, a FastAPI service the Twitch bot calls over HTTP would be the
-conventional split.
+that, an HTTP service the Twitch bot calls would be the conventional split.
 
 ## Public with no login
 
@@ -84,8 +87,11 @@ On the local network, the same code runs with `--web_host=0.0.0.0`.
 | Log pane | Per-session log over SSE, from a ring buffer of log lines in `Session` read by a `logs(since)` actor method |
 | (none) | Server status: active sessions, who is on stream, the bots lock; embedded Twitch player; Botmatch and Bots forms |
 
-One static HTML/JS file served by FastAPI, with no build step. Status and
-logs use server-sent events.
+One static HTML/JS file, with no build step. Status, announcements and the
+user's logs use server-sent events (`/api/events`); one poller shares the
+status among all open pages. Session actors take concurrent calls
+(`max_concurrency`) and the status times out on sessions still loading their
+agents, so the page doesn't stall behind them.
 
 ## Steps
 

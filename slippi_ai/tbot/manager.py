@@ -51,15 +51,18 @@ class UserError(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class User:
+  """A user of one of the frontends; users are equal if their ids are."""
   frontend: str  # e.g. 'twitch' or 'web'
-  name: str  # unique within the frontend, shown to other users
+  key: str  # unique within the frontend; may be secret
+  name: str = dataclasses.field(compare=False)  # shown to other users
 
   @property
   def id(self) -> str:
-    return f'{self.frontend}:{self.name}'
+    return f'{self.frontend}:{self.key}'
 
 @dataclasses.dataclass
 class SessionInfo:
+  id: int  # unique among the sessions this manager has started
   session: sessions_lib.Session  # actually a RemoteSession or RemoteBotSession
   start_time: datetime.datetime
   user: User
@@ -76,6 +79,23 @@ class PlayResult:
 class SelectResult:
   # Set if the user was playing and their session was restarted.
   restarted: Optional[PlayResult] = None
+
+@dataclasses.dataclass
+class AgentRow:
+  """An agent as listed by the web frontend."""
+  name: str
+  kind: str  # 'auto', 'basic' or 'model'
+  character: melee.Character
+  opponents: list[melee.Character]  # trained against, or picked for (auto)
+  delay: int
+  model: Optional[str]  # None for auto agents
+  rating: Optional[float]
+
+@dataclasses.dataclass
+class SessionLogs:
+  session_id: int
+  next: int  # number of the next log line
+  lines: list[str]
 
 @dataclasses.dataclass
 class CharacterRating:
@@ -101,14 +121,16 @@ class BotsStatus:
 
 @dataclasses.dataclass
 class SessionStatusInfo:
+  session_id: int
   user: User
   agent: str
   duration: datetime.timedelta
   # Bot matches have no connect code and count games instead of menu time.
   connect_code: Optional[str]
   on_stream: bool
-  menu_time: datetime.timedelta
-  games_completed: int
+  # None while the session is starting up (or otherwise not responding).
+  menu_time: Optional[datetime.timedelta]
+  games_completed: Optional[int]
 
 @dataclasses.dataclass
 class ManagerStatus:
@@ -176,6 +198,7 @@ class SessionManager:
 
     # Keyed by User.id.
     self._sessions: dict[str, SessionInfo] = {}
+    self._next_session_id = 0
     self._streaming_against: Optional[User] = None
     self._last_stream_time: Optional[float] = None
     self._bot_session: Optional[sessions_lib.BotSession] = None  # actually RemoteBotSession
@@ -516,6 +539,36 @@ class SessionManager:
 
     return sorted(group_special_agents(special_pairs)) + sorted(regular_names)
 
+  def agent_table(self) -> list[AgentRow]:
+    """All agents except the multi-character models' per-character ones."""
+    rows = []
+    for name, agent_config in self._agents.items():
+      info = self._agent_infos[name]
+      if isinstance(agent_config, AutoAgent):
+        rows.append(AgentRow(
+            name=name, kind='auto', character=info.character,
+            opponents=sorted(info.opponents, key=lambda c: c.name),
+            delay=agent_config.delay, model=None, rating=None))
+        continue
+
+      assert isinstance(agent_config, SingleAgent)
+      if info.imitation and info.group is None:
+        # Imitation models are already listed as basic-<char>.
+        continue
+
+      model = os.path.basename(agent_config.agent_kwargs['path'])
+      summary = self._loaded_models[model].summary
+      rows.append(AgentRow(
+          name=name,
+          kind='basic' if name.startswith(imitation_prefix) else 'model',
+          character=info.character,
+          opponents=sorted(info.opponents, key=lambda c: c.name),
+          delay=summary.delay,
+          model=model,
+          rating=self._ratings.get((model, info.character)),
+      ))
+    return rows
+
   def model_names(self) -> list[str]:
     return list(self._model_configs)
 
@@ -623,8 +676,12 @@ class SessionManager:
     """The user's stages, or None for all stages."""
     return self._stages.get(user.id)
 
-  def set_stages(self, user: User, stages: list[melee.Stage]):
-    self._stages[user.id] = stages
+  def set_stages(self, user: User, stages: Optional[list[melee.Stage]]):
+    """Sets the user's stages; None means all stages."""
+    if stages is None:
+      self._stages.pop(user.id, None)
+    else:
+      self._stages[user.id] = stages
 
   def sd_stocks(self, user: User) -> Optional[int]:
     """Stocks the bot SDs down to, or None to play with all its stocks."""
@@ -686,6 +743,7 @@ class SessionManager:
         sd_stocks=self._sd_stocks.get(user.id, None),
     )
     self._sessions[user.id] = SessionInfo(
+        id=self._new_session_id(),
         session=session,
         start_time=datetime.datetime.now(),
         user=user,
@@ -750,6 +808,7 @@ class SessionManager:
 
       agent_label = f'{agent1_name} vs {agent2_name}'
       self._sessions[user.id] = SessionInfo(
+          id=self._new_session_id(),
           session=session,
           start_time=datetime.datetime.now(),
           user=user,
@@ -757,6 +816,23 @@ class SessionManager:
           agent=agent_label,
       )
       return agent_label
+
+  def _new_session_id(self) -> int:
+    self._next_session_id += 1
+    return self._next_session_id
+
+  def session_id(self, user: User) -> Optional[int]:
+    """The id of the user's session, or None if they aren't playing."""
+    info = self._sessions.get(user.id)
+    return None if info is None else info.id
+
+  async def session_logs(self, user: User, since: int) -> Optional[SessionLogs]:
+    """The user's session's log lines from since on; None if not playing."""
+    info = self._sessions.get(user.id)
+    if info is None:
+      return None
+    next_line, lines = await info.session.logs.remote(since)
+    return SessionLogs(session_id=info.id, next=next_line, lines=lines)
 
   def _start_session(
       self,
@@ -969,38 +1045,48 @@ class SessionManager:
   # Status and chores
 
   async def status(self) -> ManagerStatus:
-    async with self._lock:
-      now = datetime.datetime.now()
+    # Doesn't take the lock, so that it doesn't wait behind slow stops.
+    now = datetime.datetime.now()
 
-      bots = None
-      if self._bot_session:
-        bot1, bot2 = self._bot_names()
-        bots = BotsStatus(
-            bot1=bot1,
-            bot2=bot2,
-            set_by=self._bots_set_by.name if self._bots_set_by else None,
-            playing_for=(
-                now - self._bots_set_time if self._bots_set_time else None),
-            lock_remaining=self._bots_lock_remaining(),
-        )
+    bots = None
+    if self._bot_session:
+      bot1, bot2 = self._bot_names()
+      bots = BotsStatus(
+          bot1=bot1,
+          bot2=bot2,
+          set_by=self._bots_set_by.name if self._bots_set_by else None,
+          playing_for=(
+              now - self._bots_set_time if self._bots_set_time else None),
+          lock_remaining=self._bots_lock_remaining(),
+      )
 
-      infos = list(self._sessions.values())
-      statuses: list[sessions_lib.SessionStatus] = await asyncio.gather(
-          *[info.session.status.remote() for info in infos])
+    async def get_status(
+        info: SessionInfo) -> Optional[sessions_lib.SessionStatus]:
+      # Sessions don't answer until they have loaded their agents.
+      try:
+        return await asyncio.wait_for(info.session.status.remote(), timeout=1)
+      except asyncio.TimeoutError:
+        return None
 
-      sessions = []
-      for info, status in zip(infos, statuses):
-        sessions.append(SessionStatusInfo(
-            user=info.user,
-            agent=info.agent,
-            duration=now - info.start_time,
-            connect_code=info.connect_code,
-            on_stream=info.user == self._streaming_against,
-            menu_time=datetime.timedelta(seconds=status.num_menu_frames / 60),
-            games_completed=status.games_completed,
-        ))
+    infos = list(self._sessions.values())
+    statuses = await asyncio.gather(*map(get_status, infos))
 
-      return ManagerStatus(bots=bots, sessions=sessions)
+    sessions = []
+    for info, status in zip(infos, statuses):
+      sessions.append(SessionStatusInfo(
+          session_id=info.id,
+          user=info.user,
+          agent=info.agent,
+          duration=now - info.start_time,
+          connect_code=info.connect_code,
+          on_stream=info.user == self._streaming_against,
+          menu_time=(
+              None if status is None else
+              datetime.timedelta(seconds=status.num_menu_frames / 60)),
+          games_completed=None if status is None else status.games_completed,
+      ))
+
+    return ManagerStatus(bots=bots, sessions=sessions)
 
   async def _gc_sessions(self) -> list[User]:
     """Stop sessions that have died or been in the menu for too long."""

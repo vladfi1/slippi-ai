@@ -1,5 +1,6 @@
 """Dolphin sessions, run as ray actors."""
 
+import collections
 import dataclasses
 import enum
 import json
@@ -38,6 +39,37 @@ class SessionStatus:
   is_alive: bool
   games_completed: int = 0
 
+class LogBuffer(logging.Handler):
+  """Keeps a session's latest log lines for the frontends to show.
+
+  Each session is its own ray actor process, so the buffer is attached to the
+  root logger and sees everything the session logs.
+  """
+
+  def __init__(self, max_lines: int = 1000):
+    super().__init__(level=logging.INFO)
+    self.setFormatter(logging.Formatter(
+        '%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S'))
+    self._lines: collections.deque[tuple[int, str]] = collections.deque(
+        maxlen=max_lines)
+    self._next = 0
+    self._lock = threading.Lock()
+
+  def emit(self, record: logging.LogRecord):
+    try:
+      line = self.format(record)
+    except Exception:
+      self.handleError(record)
+      return
+    with self._lock:
+      self._lines.append((self._next, line))
+      self._next += 1
+
+  def since(self, start: int) -> tuple[int, list[str]]:
+    """Lines numbered start and above, and the number of the next line."""
+    with self._lock:
+      return self._next, [line for i, line in self._lines if i >= start]
+
 def set_memory_growth():
   """Set memory growth for all available GPUs."""
   import tensorflow as tf
@@ -62,6 +94,8 @@ class BotSession:
       max_games: Optional[int] = None,
   ):
     logging.basicConfig(level=logging.INFO)
+    self._log_buffer = LogBuffer()
+    logging.getLogger().addHandler(self._log_buffer)
 
     if run_on_cpu:
       eval_lib.disable_gpus()
@@ -130,6 +164,9 @@ class BotSession:
     self.stop_requested.set()
     self._thread.join()
 
+  def logs(self, since: int) -> tuple[int, list[str]]:
+    return self._log_buffer.since(since)
+
   def status(self) -> SessionStatus:
     return SessionStatus(
         num_menu_frames=0,
@@ -137,14 +174,18 @@ class BotSession:
         games_completed=self._games_completed,
     )
 
+# Lets status and logs be read while the session is stopping.
+MAX_CONCURRENCY = 4
+
 GPU_KWARGS = dict(
   num_gpus=0.1,
+  max_concurrency=MAX_CONCURRENCY,
   runtime_env={
     'XLA_PYTHON_CLIENT_PREALLOCATE': 'false',
   }
 )
 
-RemoteBotSession = ray.remote(num_gpus=0)(BotSession)
+RemoteBotSession = ray.remote(num_gpus=0, max_concurrency=MAX_CONCURRENCY)(BotSession)
 RemoteGpuBotSession = ray.remote(**GPU_KWARGS)(BotSession)
 
 def get_ports(gamestate: melee.GameState, display_name: str):
@@ -178,6 +219,8 @@ class Session:
         until it has at most this many stocks left.
     """
     logging.basicConfig(level=logging.INFO)
+    self._log_buffer = LogBuffer()
+    logging.getLogger().addHandler(self._log_buffer)
 
     if run_on_cpu:
       eval_lib.disable_gpus()
@@ -222,6 +265,9 @@ class Session:
       user_json = json.load(f)
     display_name = user_json['displayName']
 
+    logging.info(
+        f'Playing as {agent_config.name}; waiting for'
+        f' {dolphin_config.connect_code} to connect.')
     self._num_menu_frames = 0
 
     def run():
@@ -245,6 +291,7 @@ class Session:
             # Ports may change if opponent disconnects and reconnects.
             if gamestate.frame == -123:
               actual_port, opponent_port = get_ports(gamestate, display_name)
+              logging.info(f'Game started on {gamestate.stage.name}.')
               agent.set_ports(actual_port, opponent_port)
               agent_needs_reset = True
               if self._sd_stocks is not None:
@@ -328,5 +375,8 @@ class Session:
     self.stop_requested.set()
     self._thread.join()
 
-RemoteSession = ray.remote(num_gpus=0)(Session)
+  def logs(self, since: int) -> tuple[int, list[str]]:
+    return self._log_buffer.since(since)
+
+RemoteSession = ray.remote(num_gpus=0, max_concurrency=MAX_CONCURRENCY)(Session)
 RemoteGpuSession = ray.remote(**GPU_KWARGS)(Session)

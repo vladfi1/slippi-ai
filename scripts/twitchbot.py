@@ -1,5 +1,10 @@
-"""Bot that runs on twitch and lets people play against phillip 2."""
+"""Bot that runs on twitch and lets people play against phillip 2.
 
+With --web_port, also serves a web page (slippi_ai/tbot/web.py) that shares
+the sessions with twitch chat.
+"""
+
+import asyncio
 import json
 import os
 from typing import Optional
@@ -16,15 +21,23 @@ import melee
 from slippi_ai import flag_utils, eval_lib, utils
 from slippi_ai import dolphin as dolphin_lib
 from slippi_ai.tbot import manager as manager_lib
+from slippi_ai.tbot import web as web_lib
 from slippi_ai.tbot.agents import parse_character
 from slippi_ai.tbot.manager import format_td
 
 # Twitch settings
-default_access_token = os.environ.get('TWITCHBOT_ACCESS_TOKEN')
+TWITCH = flags.DEFINE_boolean('twitch', True, 'Run the twitch chat bot.')
 ACCESS_TOKEN = flags.DEFINE_string(
-    'token', default_access_token, 'Access token for the twitch bot.',
-    required=default_access_token is None)
+    'token', os.environ.get('TWITCHBOT_ACCESS_TOKEN'),
+    'Access token for the twitch bot.')
 CHANNEL = flags.DEFINE_string('channel', 'x_pilot', 'twitch channel')
+
+# Web settings
+WEB_PORT = flags.DEFINE_integer(
+    'web_port', None, 'Port for the web frontend; None disables it.')
+WEB_HOST = flags.DEFINE_string(
+    'web_host', '127.0.0.1',
+    'Address to serve the web frontend on; 0.0.0.0 for the local network.')
 
 STREAM = flags.DEFINE_boolean('stream', True, 'Stream one of the sessions.')
 
@@ -517,16 +530,19 @@ class Bot(commands.Bot):
       agent = session.agent
 
       if session.connect_code is None:
+        games = session.games_completed or 0
         await ctx.send(
-            f'Bot match: {agent} for {duration},'
-            f' {session.games_completed} games completed'
+            f'Bot match: {agent} for {duration}, {games} games completed'
             f' (requested by {player}).')
       else:
         on_off = "on" if session.on_stream else "off"
-        menu_time = format_td(session.menu_time)
+        if session.menu_time is None:
+          menu = 'starting up'
+        else:
+          menu = f'in menu for {format_td(session.menu_time)}'
         await ctx.send(
             f'Playing against {player} as {agent} {on_off} stream'
-            f' for {duration} (in menu for {menu_time}).')
+            f' for {duration} ({menu}).')
 
   @commands.command()
   async def stop_bot_session(self, ctx: commands.Context):
@@ -558,9 +574,15 @@ class Bot(commands.Bot):
 def twitch_user(ctx: commands.Context) -> manager_lib.User:
   name = ctx.author.name
   assert isinstance(name, str)
-  return manager_lib.User(frontend='twitch', name=name)
+  return manager_lib.User(frontend='twitch', key=name, name=name)
 
 def main(_):
+  if TWITCH.value and not ACCESS_TOKEN.value:
+    raise app.UsageError(
+        'Set --token or TWITCHBOT_ACCESS_TOKEN, or pass --notwitch.')
+  if not TWITCH.value and WEB_PORT.value is None:
+    raise app.UsageError('Enable at least one of --twitch and --web_port.')
+
   manager = manager_lib.SessionManager(
       models_path=MODELS_PATH.value,
       eval_db_path=EVAL_DB.value,
@@ -581,18 +603,37 @@ def main(_):
       state_dir=STATE_DIR.value,
   )
 
-  bot = Bot(
-      token=ACCESS_TOKEN.value,
-      prefix='!',
-      channel=CHANNEL.value,
-      manager=manager,
-  )
-  bot.loop.create_task(manager.run_chores())
-
   try:
-    bot.run()
+    asyncio.run(run(manager))
+  except KeyboardInterrupt:
+    pass
   finally:
     manager.shutdown()
+
+async def run(manager: manager_lib.SessionManager):
+  tasks = [manager.run_chores()]
+
+  if TWITCH.value:
+    # Made inside the event loop, which twitchio picks up.
+    bot = Bot(
+        token=ACCESS_TOKEN.value,
+        prefix='!',
+        channel=CHANNEL.value,
+        manager=manager,
+    )
+    tasks.append(bot.start())
+
+  runner = None
+  if WEB_PORT.value is not None:
+    frontend = web_lib.WebFrontend(
+        manager, twitch_channel=CHANNEL.value if TWITCH.value else None)
+    runner = await web_lib.start(frontend, WEB_HOST.value, WEB_PORT.value)
+
+  try:
+    await asyncio.gather(*tasks)
+  finally:
+    if runner is not None:
+      await runner.cleanup()
 
 if __name__ == '__main__':
     app.run(main)
