@@ -198,6 +198,10 @@ class MatchupTest(unittest.TestCase):
     agents = {self.by_name[n]['hash']: self.by_name[n] for n in names}
     return set(matchups.relevant_pairs(agents, filters, tiers))
 
+  def cross_pairs(self, names, filters=matchups.MatchupFilters(max_tier_gap=None)):
+    """Like `pairs`, without an agent's characters against each other."""
+    return {(a, b) for a, b in self.pairs(names, filters) if a.hash != b.hash}
+
   def test_relevance(self):
     cp = matchups.canonical_pair
     # Both trained against each other's character.
@@ -209,22 +213,51 @@ class MatchupTest(unittest.TestCase):
     # Imitation agents accept any opponent, but the other side must accept them.
     self.assertEqual(self.pairs(['marth_imitation', 'fox_ditto']), set())
     self.assertEqual(len(self.pairs(['marth_imitation', 'fox_vs_marth'])), 1)
-    # No self play, and each unordered pair appears once.
+    # No mirror of a player against itself, and each unordered pair appears
+    # once.
     self.assertEqual(self.pairs(['fox_ditto']), set())
     all_pairs = matchups.relevant_pairs(
         self.agents, matchups.MatchupFilters(max_tier_gap=None))
     self.assertEqual(len(all_pairs), len(set(all_pairs)))
     for a, b in all_pairs:
-      self.assertLessEqual(a, b)
-      self.assertNotEqual(a.hash, b.hash)
+      self.assertLess(a, b)
+
+  def test_multichar_agent_plays_its_own_characters(self):
+    cp = matchups.canonical_pair
+    p = lambda c: self.player('multi', c)
+    want = {cp(p('FOX'), p('MARTH')), cp(p('FOX'), p('PEACH')),
+            cp(p('MARTH'), p('PEACH'))}
+    self.assertEqual(self.pairs(['multi']), want)
+    # Same-agent pairs pass any tier gap filter.
+    multi = self.by_name['multi']
+    self.assertEqual(
+        set(matchups.relevant_pairs(
+            {multi['hash']: multi}, matchups.MatchupFilters(max_tier_gap=0),
+            {multi['hash']: 'gold'})),
+        want)
+    # ... unless turned off.
+    self.assertEqual(
+        self.pairs(['multi'], matchups.MatchupFilters(
+            max_tier_gap=None, same_agent=False)),
+        set())
+    self.assertEqual(
+        self.pairs(['multi', 'marth_imitation'], matchups.MatchupFilters(
+            max_tier_gap=None, same_agent=False)),
+        self.cross_pairs(['multi', 'marth_imitation']))
+    matchup = matchups.Matchup.from_player_pairs(sorted(want))
+    self.assertEqual(matchup.pair, (multi['hash'], multi['hash']))
+    self.assertEqual(set(matchup.player_pairs), want)
+    for m in matchups.pending_matchups(self.conn, 'k', pool='all'):
+      if m.p1_hash == m.p2_hash:
+        self.assertEqual(set(m.player_pairs), want)
 
   def test_multichar_agent_is_one_player_per_character(self):
     # multi plays fox/marth/peach and (self-play RL) faces the same set.
     self.assertEqual(
-        self.pairs(['multi', 'fox_vs_marth']),
+        self.cross_pairs(['multi', 'fox_vs_marth']),
         {matchups.canonical_pair(
             self.player('multi', 'MARTH'), self.player('fox_vs_marth', 'FOX'))})
-    got = self.pairs(['multi', 'marth_imitation'])
+    got = self.cross_pairs(['multi', 'marth_imitation'])
     self.assertEqual(
         {p.character for pair in got for p in pair if p.hash == self.by_name['multi']['hash']},
         {'FOX', 'MARTH', 'PEACH'})
@@ -303,7 +336,7 @@ class MatchupTest(unittest.TestCase):
     self.assertEqual(self.pairs(['multi', 'marth_imitation'], only_fox), set())
     fox_marth = matchups.MatchupFilters(
         None, allowed_chars=frozenset({'FOX', 'MARTH'}))
-    got = self.pairs(['multi', 'marth_imitation'], fox_marth)
+    got = self.cross_pairs(['multi', 'marth_imitation'], fox_marth)
     self.assertEqual(
         sorted(p.character for pair in got for p in pair
                if p.hash == multi['hash']), ['FOX', 'MARTH'])
@@ -324,15 +357,16 @@ class MatchupTest(unittest.TestCase):
     # One eval per agent pair when everything fits.
     self.assertEqual(len({m.pair for m in pending}), len(pending))
     for m in pending:
-      self.assertLess(m.p1_hash, m.p2_hash)
+      self.assertLessEqual(m.p1_hash, m.p2_hash)
     multi_vs_imit = [m for m in pending if set(m.pair) == {
         self.by_name['multi']['hash'], self.by_name['marth_imitation']['hash']}]
     self.assertEqual(len(multi_vs_imit), 1)
     self.assertEqual(len(multi_vs_imit[0].character_pairs), 3)
-    # Capping pairs per eval splits an agent pair into several evals.
+    # Capping pairs per eval splits an agent pair into several evals: both
+    # multi vs marth_imitation and multi vs itself have three pairs.
     split = matchups.pending_matchups(
         self.conn, params.key(), max_pairs_per_eval=2, **kw)
-    self.assertEqual(len(split), len(pending) + 1)
+    self.assertEqual(len(split), len(pending) + 2)
 
     # Finishing an eval covers exactly its character pairs, in either
     # orientation; the remaining pairs of that agent pair stay pending.
@@ -373,10 +407,12 @@ class MatchupTest(unittest.TestCase):
     kw = dict(
         agents={self.by_name[n]['hash']: self.by_name[n] for n in names},
         pool='all', filters=matchups.MatchupFilters(None))
+    # multi's own character pairs get evals of their own; set them aside.
+    cross = lambda ms: [x for x in ms if x.p1_hash != x.p2_hash]
     # 10 games each at 1 game per lane: 10 lanes per pair, so all three
     # pairs fit in one 64-env eval.
-    (m,) = matchups.topup_matchups(
-        self.conn, params.key(), 10, 64, 1.0, **kw)
+    (m,) = cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 64, 1.0, **kw))
     self.assertEqual(len(m.character_pairs), 3)
     pair0, pair1, pair2 = m.player_pairs
 
@@ -390,21 +426,21 @@ class MatchupTest(unittest.TestCase):
 
     # pair0 is done. pair2 (short 10) needs 10 of 16 lanes, so it runs
     # alone; pair1 (short 6) gets the next eval.
-    todo = matchups.topup_matchups(
-        self.conn, params.key(), 10, 16, 1.0, **kw)
+    todo = cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 1.0, **kw))
     self.assertEqual([x.player_pairs for x in todo], [[pair2], [pair1]])
     # A higher games-per-lane estimate packs them together, but
     # min_lanes_per_pair still caps how many share an eval.
-    self.assertEqual(len(matchups.topup_matchups(
-        self.conn, params.key(), 10, 16, 4.0, **kw)), 1)
-    self.assertEqual(len(matchups.topup_matchups(
-        self.conn, params.key(), 10, 16, 4.0, min_lanes_per_pair=16, **kw)), 2)
+    self.assertEqual(len(cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 4.0, **kw))), 1)
+    self.assertEqual(len(cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 4.0, min_lanes_per_pair=16, **kw))), 2)
 
     # Pairs in a running eval are skipped.
     runner.start_eval(
         self.conn, matchups.Matchup.from_player_pairs([pair2]), params)
-    todo = matchups.topup_matchups(
-        self.conn, params.key(), 10, 16, 1.0, **kw)
+    todo = cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 1.0, **kw))
     self.assertEqual([x.player_pairs for x in todo], [[pair1]])
 
     # Games from evals with other params don't count.

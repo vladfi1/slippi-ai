@@ -175,10 +175,12 @@ class MatchupFilters:
   allowed_opponents: if set, one player must use a character from
     allowed_chars and the other one from allowed_opponents, so e.g.
     allowed_chars={FOX}, allowed_opponents={FALCO} targets Fox vs Falco only.
+  same_agent: whether a multi-character agent's characters play each other.
   """
   max_tier_gap: tp.Optional[int] = 1
   allowed_chars: tp.Optional[frozenset[str]] = None
   allowed_opponents: tp.Optional[frozenset[str]] = None
+  same_agent: bool = True
 
   def characters_ok(self, a: str, b: str) -> bool:
     chars = self.allowed_chars
@@ -200,15 +202,18 @@ def relevant_pairs(
 ) -> list[PlayerPair]:
   """Every unordered player pair worth evaluating among `agents`.
 
-  A pair is relevant when the agents differ, each was trained to face the
-  other's character, and the pair passes `filters`.
+  A pair is relevant when the players differ, each was trained to face the
+  other's character, and the pair passes `filters`. Players are (agent,
+  character), so a multi-character agent's characters play each other (e.g.
+  gold-fox vs gold-falco) unless `filters.same_agent` is off; mirrors of the
+  same player are always skipped.
   """
   opponents = {h: set(db.loads(a['opponents'])) for h, a in agents.items()}
   players = {h: agent_players(a) for h, a in agents.items()}
   hashes = sorted(agents)
   result = []
   for i, h1 in enumerate(hashes):
-    for h2 in hashes[i + 1:]:
+    for h2 in hashes[i if filters.same_agent else i + 1:]:
       if filters.max_tier_gap is not None and tiers is not None:
         gap = tier_gap(tiers.get(h1), tiers.get(h2))
         if gap is not None and gap > filters.max_tier_gap:
@@ -217,6 +222,9 @@ def relevant_pairs(
         if p.character not in opponents[h2]:
           continue
         for q in players[h2]:
+          # Within one agent, take each unordered pair of characters once.
+          if h1 == h2 and q.character <= p.character:
+            continue
           if q.character not in opponents[h1]:
             continue
           if not filters.characters_ok(p.character, q.character):
@@ -248,9 +256,12 @@ class Matchup:
   @classmethod
   def from_player_pairs(cls, pairs: tp.Sequence[PlayerPair]) -> 'Matchup':
     hashes = {p.hash for pair in pairs for p in pair}
-    if len(hashes) != 2:
-      raise ValueError(f'A matchup needs exactly two agents, got {hashes}')
-    p1_hash, p2_hash = sorted(hashes)
+    if len(hashes) == 1:  # An agent's characters against each other.
+      (p1_hash,) = (p2_hash,) = hashes
+    elif len(hashes) == 2:
+      p1_hash, p2_hash = sorted(hashes)
+    else:
+      raise ValueError(f'A matchup needs one or two agents, got {hashes}')
     character_pairs = []
     for a, b in pairs:
       if a.hash != p1_hash:

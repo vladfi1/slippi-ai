@@ -91,6 +91,11 @@ if __name__ == '__main__':
       'With --allowed_chars, one side plays from --allowed_chars and the '
       'other from this list, in either port order. E.g. --allowed_chars=fox '
       '--allowed_opponents=falco targets Fox vs Falco only.')
+  SAME_AGENT_PAIRS = flags.DEFINE_boolean(
+      'same_agent_pairs', True,
+      'Also pit a multi-character agent\'s characters against each other '
+      '(e.g. gold-fox vs gold-falco, same agent on both ports). '
+      '--nosame_agent_pairs only plans pairs between different agents.')
   MIN_LANES_PER_PAIR = flags.DEFINE_integer(
       'min_lanes_per_pair', 8,
       'An eval between two agents cycles its envs over their pending '
@@ -148,6 +153,7 @@ if __name__ == '__main__':
         max_tier_gap=None if MAX_TIER_GAP.value < 0 else MAX_TIER_GAP.value,
         allowed_chars=character_set(ALLOWED_CHARS.value),
         allowed_opponents=character_set(ALLOWED_OPPONENTS.value),
+        same_agent=SAME_AGENT_PAIRS.value,
     )
 
   # Games per env per rollout step when the db has no finished evals yet;
