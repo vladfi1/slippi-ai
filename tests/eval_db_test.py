@@ -691,7 +691,7 @@ class RatingsTest(unittest.TestCase):
     self.assertEqual(by_pair[(a_fox, b_fox)].p1_wins, 8)
     self.assertEqual(by_pair[(a_marth, b_fox)].p1_wins, 2)
 
-    run_id, result = ratings.compute_and_store(conn)
+    run_id, result = ratings.compute_and_store(conn, active_only=True)
     self.assertEqual(set(result.ratings), {a_fox, a_marth, b_fox})
     self.assertGreater(result.ratings[a_fox], result.ratings[b_fox])
     self.assertGreater(result.ratings[b_fox], result.ratings[a_marth])
@@ -700,7 +700,8 @@ class RatingsTest(unittest.TestCase):
     self.assertEqual([(r['name'], r['character']) for r in board],
                      [('aaa', 'FOX'), ('bbb', 'FOX'), ('aaa', 'MARTH')])
     self.assertAlmostEqual(board[1]['win_rate'], 10 / 20)
-    _, result = ratings.compute_and_store(conn, active_only=False)
+    # Retired agents are rated by default.
+    _, result = ratings.compute_and_store(conn)
     self.assertEqual(len(result.ratings), 4)
     self.assertEqual(result.num_evals, 2)
     self.assertEqual(ratings.latest_run_id(conn), run_id + 1)

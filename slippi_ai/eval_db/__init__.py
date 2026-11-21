@@ -10,5 +10,5 @@ Modules:
   agents    scanning deployed_models and registering agents
   matchups  which pairs still need evaluating
   runner    running scripts/run_evaluator.py and ingesting its results
-  ratings   Bradley-Terry ratings via choix
+  ratings   Bradley-Terry ratings (scipy)
 """

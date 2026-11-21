@@ -120,12 +120,15 @@ if __name__ == '__main__':
       'Only use when no other eval_db process is active.')
 
   ALPHA = flags.DEFINE_float(
-      'alpha', 0.01, 'Bradley-Terry prior strength (choix alpha).')
-  METHOD = flags.DEFINE_enum(
-      'method', 'opt', ['opt', 'mm', 'ilsr'], 'choix fitting method.')
+      'alpha', 0.01,
+      'Bradley-Terry prior strength: the precision of a Gaussian prior on '
+      'log-strengths, per game.')
   INCLUDE_INACTIVE = flags.DEFINE_boolean(
-      'include_inactive', False,
-      'Rate agents no longer deployed too, not just active ones.')
+      'include_inactive', True,
+      'Rate retired agents (no longer deployed) too. Their games often link '
+      'otherwise disconnected parts of the comparison graph, e.g. an updated '
+      'agent that has not yet replayed its predecessor\'s opponents. '
+      '--noinclude_inactive rates active agents only.')
   TOP = flags.DEFINE_integer('top', 0, 'Rows to show; 0 means all.')
 
   def params() -> runner.EvalParams:
@@ -281,7 +284,7 @@ if __name__ == '__main__':
   def do_rate(conn):
     run_id, result = ratings.compute_and_store(
         conn, active_only=not INCLUDE_INACTIVE.value,
-        alpha=ALPHA.value, method=METHOD.value)
+        alpha=ALPHA.value)
     print(
         f'rate: run {run_id}: {len(result.ratings)} players, '
         f'{result.num_evals} evals, {result.num_games_total} games')

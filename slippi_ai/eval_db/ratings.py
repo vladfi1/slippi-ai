@@ -1,4 +1,4 @@
-"""Bradley-Terry ratings of players from recorded games, via choix.
+"""Bradley-Terry ratings of players from recorded games.
 
 A player is an (agent, character) pair; see matchups.Player.
 """
@@ -7,8 +7,11 @@ import dataclasses
 import math
 import sqlite3
 import typing as tp
+import warnings
 
 import numpy as np
+import scipy.optimize
+import scipy.special
 
 from slippi_ai.eval_db import db
 from slippi_ai.eval_db.matchups import Player, tier_of
@@ -80,42 +83,82 @@ def load_pair_results(
   return results, len(eval_ids)
 
 
-def comparisons(
-    results: tp.Iterable[PairResult],
-    index: tp.Mapping[Player, int],
-) -> list[tuple[int, int]]:
-  """Expands aggregated results into choix's (winner, loser) list.
+def bradley_terry(
+    n: int,
+    i: np.ndarray,
+    j: np.ndarray,
+    w_ij: np.ndarray,
+    w_ji: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+  """MAP Bradley-Terry log-strengths from aggregated pairwise outcomes.
 
-  choix has no tie support and no per-comparison weights, so a decisive game
-  becomes two comparisons and a tie becomes one comparison each way: the usual
-  half-win-each convention, at twice the count.
+  Pair k is players i[k] and j[k]; i[k] beat j[k] w_ij[k] times and lost
+  w_ji[k] times (weights, so a tie can count half each way). The prior is an
+  isotropic Gaussian with precision `alpha`. Minimizes
+
+    alpha/2 |theta|^2 + sum_k w_ij log(1 + e^-d_k) + w_ji log(1 + e^d_k),
+
+  with d_k = theta[i] - theta[j], by Newton-CG with an exact Hessian-vector
+  product. Each step costs O(n + pairs), independent of the number of games.
   """
-  data: list[tuple[int, int]] = []
-  for r in results:
-    a, b = index[r.p1], index[r.p2]
-    data.extend([(a, b)] * (2 * r.p1_wins))
-    data.extend([(b, a)] * (2 * r.p2_wins))
-    data.extend([(a, b)] * r.ties)
-    data.extend([(b, a)] * r.ties)
-  return data
+  def objective(theta):
+    d = theta[i] - theta[j]
+    value = 0.5 * alpha * (theta @ theta)
+    value += w_ij @ np.logaddexp(0, -d) + w_ji @ np.logaddexp(0, d)
+    p = scipy.special.expit(d)  # P(i beats j)
+    g = w_ji * p - w_ij * (1 - p)  # d value / d d_k
+    grad = alpha * theta
+    grad += np.bincount(i, weights=g, minlength=n)
+    grad -= np.bincount(j, weights=g, minlength=n)
+    return value, grad
+
+  def hessp(theta, v):
+    p = scipy.special.expit(theta[i] - theta[j])
+    h = (w_ij + w_ji) * p * (1 - p) * (v[i] - v[j])
+    out = alpha * v
+    out += np.bincount(i, weights=h, minlength=n)
+    out -= np.bincount(j, weights=h, minlength=n)
+    return out
+
+  with warnings.catch_warnings():
+    warnings.simplefilter('ignore', scipy.optimize.OptimizeWarning)
+    result = scipy.optimize.minimize(
+        objective, np.zeros(n), jac=True, hessp=hessp, method='Newton-CG',
+        options=dict(xtol=1e-10))
+  # With many games the objective is large (~1e5-1e6), so scipy stops on
+  # "precision loss" once improvements fall below float64 resolution, i.e. at
+  # the optimum. Judge convergence by the per-player Newton step estimate
+  # |grad_k| / H_kk instead of result.success.
+  theta = result.x
+  p = scipy.special.expit(theta[i] - theta[j])
+  h = (w_ij + w_ji) * p * (1 - p)
+  hess_diag = (
+      alpha + np.bincount(i, weights=h, minlength=n)
+      + np.bincount(j, weights=h, minlength=n))
+  _, grad = objective(theta)
+  step = np.abs(grad / hess_diag).max()
+  if step > 1e-5:
+    raise RuntimeError(
+        f'Bradley-Terry fit did not converge (max step {step:.1e} nats): '
+        f'{result.message}')
+  return theta
 
 
 def fit(
     results: list[PairResult],
     alpha: float = 0.01,
-    method: str = 'opt',
     num_evals: int = 0,
 ) -> RatingResult:
   """Fits Bradley-Terry log-strengths and converts to an Elo-like scale.
 
-  `alpha` is choix's Gaussian prior strength. A small positive value keeps
-  undefeated players and disconnected clusters finite; it barely moves players
-  with hundreds of games.
+  Ties count as half a win for each side. `alpha` is the Gaussian prior's
+  precision per game: a small positive value keeps undefeated players and
+  disconnected clusters finite, and barely moves players with hundreds of
+  games.
   """
-  import choix  # pylint: disable=import-outside-toplevel
-
   players = sorted({p for r in results for p in (r.p1, r.p2)})
-  index = {p: i for i, p in enumerate(players)}
+  index = {p: k for k, p in enumerate(players)}
   num_games = {p: 0 for p in players}
   score = {p: 0.0 for p in players}
   total = 0
@@ -130,18 +173,15 @@ def fit(
   if not players:
     return RatingResult({}, {}, {}, num_evals, 0)
 
-  data = comparisons(results, index)
-  if method == 'opt':
-    params = choix.opt_pairwise(len(players), data, alpha=alpha)
-  elif method == 'mm':
-    params = choix.mm_pairwise(len(players), data, alpha=alpha)
-  elif method == 'ilsr':
-    params = choix.ilsr_pairwise(len(players), data, alpha=alpha)
-  else:
-    raise ValueError(f'Unknown method {method!r}')
-  params = np.asarray(params, dtype=np.float64)
+  params = bradley_terry(
+      len(players),
+      i=np.array([index[r.p1] for r in results], dtype=np.intp),
+      j=np.array([index[r.p2] for r in results], dtype=np.intp),
+      w_ij=np.array([r.p1_wins + r.ties / 2 for r in results]),
+      w_ji=np.array([r.p2_wins + r.ties / 2 for r in results]),
+      alpha=alpha)
   params -= params.mean()
-  ratings = {p: float(params[i] * ELO_PER_NAT) for p, i in index.items()}
+  ratings = {p: float(params[k] * ELO_PER_NAT) for p, k in index.items()}
   return RatingResult(
       ratings=ratings,
       num_games=num_games,
@@ -153,20 +193,19 @@ def fit(
 
 def compute_and_store(
     conn: sqlite3.Connection,
-    active_only: bool = True,
+    active_only: bool = False,
     alpha: float = 0.01,
-    method: str = 'opt',
 ) -> tuple[int, RatingResult]:
   """Fits ratings over the database and records them as a rating run."""
   hashes = set(db.active_agents(conn)) if active_only else None
   results, num_evals = load_pair_results(conn, hashes)
-  result = fit(results, alpha=alpha, method=method, num_evals=num_evals)
+  result = fit(results, alpha=alpha, num_evals=num_evals)
   with conn:
     cursor = conn.execute(
         """INSERT INTO rating_runs (computed_at, method, params, num_agents,
              num_evals, num_games)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (db.now(), f'bradley_terry/{method}',
+        (db.now(), 'bradley_terry/newton_cg',
          db.dumps(dict(alpha=alpha, active_only=active_only)),
          len(result.ratings), result.num_evals, result.num_games_total))
     run_id = tp.cast(int, cursor.lastrowid)
