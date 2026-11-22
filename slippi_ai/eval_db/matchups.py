@@ -389,6 +389,29 @@ def games_per_lane_step(conn: sqlite3.Connection) -> tp.Optional[float]:
   return games / lane_steps if lane_steps else None
 
 
+def agent_pair_games_per_lane_step(
+    conn: sqlite3.Connection,
+    params_key: str,
+) -> dict[tuple[str, str], float]:
+  """Games per env per rollout step for each agent pair, from its finished
+  evals with these params; keyed by the sorted hash pair.
+
+  Game length depends a lot on the agents (ladder agents play longer games
+  than the single-character ones, and floaty characters longer still), so
+  this predicts a top-up far better than the rate pooled over all evals.
+  """
+  totals: dict[tuple[str, str], list[float]] = collections.defaultdict(
+      lambda: [0, 0])
+  for row in conn.execute(
+      """SELECT p1_hash, p2_hash, params, num_games FROM evals
+         WHERE status = 'done' AND params_key = ?""", (params_key,)):
+    params = db.loads(row['params'])
+    total = totals[tuple(sorted((row['p1_hash'], row['p2_hash'])))]  # type: ignore[index]
+    total[0] += row['num_games']
+    total[1] += params['num_envs'] * params['rollout_length']
+  return {k: games / steps for k, (games, steps) in totals.items() if steps}
+
+
 def topup_matchups(
     conn: sqlite3.Connection,
     params_key: str,
@@ -399,6 +422,7 @@ def topup_matchups(
     pool: str = 'strong',
     filters: MatchupFilters = MatchupFilters(),
     min_lanes_per_pair: int = 1,
+    agent_pair_games_per_lane: tp.Mapping[tuple[str, str], float] = {},
 ) -> list[Matchup]:
   """Evals that bring every relevant player pair up to `min_games` games.
 
@@ -407,7 +431,8 @@ def topup_matchups(
   `min_games` is planned again (pairs in a running eval are skipped). Within
   an agent pair, the neediest pairs are batched first and each eval holds as
   many pairs as can still get enough lanes for the neediest one, at an
-  expected `games_per_lane` games per env.
+  expected `agent_pair_games_per_lane[sorted hash pair]` games per env, or
+  `games_per_lane` for agent pairs without one.
   """
   if agents is None:
     agents = db.active_agents(conn)
@@ -427,12 +452,13 @@ def topup_matchups(
   matchups = []
   for key in sorted(by_agents):
     group = sorted(by_agents[key], key=lambda p: (-deficits[p], p))
+    rate = agent_pair_games_per_lane.get(key) or games_per_lane
     start = 0
     while start < len(group):
       # The eval cycles its lanes evenly, so each of k pairs gets at least
       # num_envs // k of them.
       lanes = max(
-          min_lanes_per_pair, math.ceil(deficits[group[start]] / games_per_lane))
+          min_lanes_per_pair, math.ceil(deficits[group[start]] / rate))
       size = max(1, num_envs // lanes)
       matchups.append(Matchup.from_player_pairs(group[start:start + size]))
       start += size

@@ -164,13 +164,20 @@ if __name__ == '__main__':
     rate = matchups.games_per_lane_step(conn) or DEFAULT_GAMES_PER_LANE_STEP
     return rate * params().config.rollout_length
 
+  def agent_pair_games_per_lane(conn) -> dict[tuple[str, str], float]:
+    rollout_length = params().config.rollout_length
+    return {
+        k: rate * rollout_length for k, rate in
+        matchups.agent_pair_games_per_lane_step(conn, params().key()).items()}
+
   def pending(conn) -> list[matchups.Matchup]:
     num_envs = params().config.num_envs
     if MIN_GAMES_PER_PAIR.value > 0:
       return matchups.topup_matchups(
           conn, params().key(), MIN_GAMES_PER_PAIR.value, num_envs,
           games_per_lane(conn), pool=POOL.value, filters=filters(),
-          min_lanes_per_pair=max(1, MIN_LANES_PER_PAIR.value))
+          min_lanes_per_pair=max(1, MIN_LANES_PER_PAIR.value),
+          agent_pair_games_per_lane=agent_pair_games_per_lane(conn))
     max_pairs = max(1, num_envs // max(1, MIN_LANES_PER_PAIR.value))
     return matchups.pending_matchups(
         conn, params().key(), pool=POOL.value, filters=filters(),
@@ -210,8 +217,15 @@ if __name__ == '__main__':
     print(f'plan: {len(active)} active agents, {len(pool)} in the pool, '
           f'{num_pairs} pending player pairs in {len(todo)} evals')
     if MIN_GAMES_PER_PAIR.value > 0:
+      measured = agent_pair_games_per_lane(conn)
+      planned = {tuple(sorted(m.pair)) for m in todo}
+      rates = sorted(measured[k] for k in planned if k in measured)
+      known = (
+          f'{rates[0]:.2f}-{rates[-1]:.2f} for the {len(rates)} planned agent '
+          f'pairs with finished evals, ' if rates else '')
       print(f'  top-up to {MIN_GAMES_PER_PAIR.value} games per player pair, '
-            f'expecting {games_per_lane(conn):.2f} games per env')
+            f'expecting {known}{games_per_lane(conn):.2f} for the rest '
+            '(games per env)')
     if not active:
       print(f'  ({DB.value} has no agents; run --mode=sync first)')
     for tier in [*matchups.TIERS, 'untiered']:

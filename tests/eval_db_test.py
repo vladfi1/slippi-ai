@@ -435,6 +435,18 @@ class MatchupTest(unittest.TestCase):
         self.conn, params.key(), 10, 16, 4.0, **kw))), 1)
     self.assertEqual(len(cross(matchups.topup_matchups(
         self.conn, params.key(), 10, 16, 4.0, min_lanes_per_pair=16, **kw))), 2)
+    # An agent pair's own rate overrides the pooled one, in either direction.
+    key = tuple(sorted(m.pair))
+    self.assertEqual(len(cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 1.0,
+        agent_pair_games_per_lane={key: 4.0}, **kw))), 1)
+    self.assertEqual(len(cross(matchups.topup_matchups(
+        self.conn, params.key(), 10, 16, 4.0,
+        agent_pair_games_per_lane={key: 1.0}, **kw))), 2)
+    # Measured per agent pair, from finished evals with these params only.
+    self.assertEqual(
+        matchups.agent_pair_games_per_lane_step(self.conn, params.key()),
+        {key: 16 / (1024 * 18000)})
 
     # Pairs in a running eval are skipped.
     runner.start_eval(
